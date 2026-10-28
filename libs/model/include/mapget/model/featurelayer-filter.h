@@ -121,7 +121,7 @@ struct FeatureLayerFilterChannel
     std::optional<std::string> geometryName_;
 
     /** Explicit visualization-only point-cloud sampling. Zero requests exact delivery.
-     * The quota is shared across the channel's features in each source partition. */
+     * The quota applies independently to each feature's matching point geometries. */
     std::optional<uint32_t> pointCloudMaxPoints_;
 
     /** Present only for the feature-only point-grid grouping channel. */

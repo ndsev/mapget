@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <limits>
 #include <sstream>
 
 #include "mapget/model/featurelayer.h"
@@ -95,6 +96,17 @@ auto makeTile() {
     tile->setIdPrefix({{"areaId", "TheBestArea"}});
 
     return tile;
+}
+
+TEST_CASE("Geometry allocation validates model capacity before allocating", "[geometry][limits]")
+{
+    auto tile = makeTile();
+    REQUIRE_THROWS(tile->newGeometry(GeomType::Points, std::numeric_limits<size_t>::max(), true));
+    // The tile remains usable after rejecting an unrepresentable request.
+    auto geometry = tile->newGeometry(GeomType::Points, 2, true);
+    geometry->append({8., 47., 400.});
+    geometry->append({9., 48., 410.});
+    REQUIRE(geometry->numPoints() == 2);
 }
 
 #define REQUIRE_EVAL_1(query, type, result)                 \

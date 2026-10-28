@@ -1,4 +1,5 @@
 #include "tiles-request-json.h"
+#include "mapget/model/pointcloud-sampler.h"
 
 #include <algorithm>
 #include <array>
@@ -311,8 +312,9 @@ FeatureLayerFilterChannel parseChannel(
         }
     }
     if (auto found = channelJson.find("pointCloudMaxPoints"); found != channelJson.end()) {
-        if (!found->is_number_integer() || found->get<int64_t>() < 0 || found->get<int64_t>() > 1048576)
-            throw std::runtime_error("channel.pointCloudMaxPoints must be an integer in 0..1048576");
+        if (!found->is_number_integer() || found->get<int64_t>() < 0 ||
+            found->get<int64_t>() > DefaultPointCloudMaxPoints)
+            throw std::invalid_argument("channel.pointCloudMaxPoints must be an integer in 0..13999999");
         channel.pointCloudMaxPoints_ = found->get<uint32_t>();
     }
     if (auto found = channelJson.find("group");

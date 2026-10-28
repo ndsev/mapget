@@ -1048,8 +1048,7 @@ TEST_CASE("Explicit point-cloud filtering shares an object quota and preserves e
         });
         return true;
     });
-    REQUIRE(delivered > 0);
-    REQUIRE(delivered <= 8);
+    REQUIRE(delivered == 8);
     REQUIRE((*result)->info()["PointCloud/SourceRecords"] == 201);
     REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == delivered);
     REQUIRE(source->toJson() == original);
@@ -1064,4 +1063,33 @@ TEST_CASE("Explicit point-cloud filtering shares an object quota and preserves e
         return true;
     });
     REQUIRE(delivered == 201);
+}
+
+TEST_CASE("Point-cloud quotas belong to each object and each channel", "[pointcloud][filter]")
+{
+    auto source = makePointGroupSource(TileId::fromTileXY(1, 0, 1), 42, Point{11, 48, 0});
+    auto second = source->newFeature("Road", {{"tileId", int64_t{source->tileId().value()}}, {"roadId", int64_t{43}}});
+    auto geometry = source->newGeometry(GeomType::Points, 6, true);
+    geometry->setName("merge");
+    for (int i = 0; i < 6; ++i) geometry->append({11, 48, double(i)});
+    source->at(0)->addGeometry(geometry);
+    second->addGeometry(geometry);
+    auto const original = source->toJson();
+    FeatureLayerFilterRequest request;
+    request.filterId_ = "per-object-cloud-test";
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "first";
+    channel.scope_ = FeatureLayerFilterScope::Feature;
+    channel.geometryTypes_ = 1U << static_cast<uint8_t>(GeomType::Points);
+    channel.pointCloudMaxPoints_ = 8;
+    request.channels_.push_back(channel);
+    channel.channelId_ = "second";
+    request.channels_.push_back(channel);
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE(*result);
+    REQUIRE((*result)->info()["PointCloud/SourceRecords"] == 26);
+    REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == 26);
+    REQUIRE((*result)->info()["PointCloud/Representation"] == "visualization/proportional-v1");
+    REQUIRE(source->toJson() == original);
 }

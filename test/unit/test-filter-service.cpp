@@ -2454,7 +2454,7 @@ TEST_CASE("Filter outputs preserve warnings even when no features match", "[feat
 
 TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointcloud][filter]")
 {
-    for (uint32_t quota : {0U, 262144U, 1048576U}) {
+    for (uint32_t quota : {0U, 262144U, 1048576U, 9'000'000U, 13'999'999U}) {
         nlohmann::json input = {
             {"filterId", "cloud"}, {"generation", 1},
             {"channels", {{{"channelId", "points"}, {"scope", "feature"},
@@ -2464,7 +2464,7 @@ TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointclo
         auto request = mapget::detail::parseRestFilterEnvelopeJson(input);
         REQUIRE(request.channels_.at(0).pointCloudMaxPoints_ == quota);
         REQUIRE(mapget::detail::filterRequestToJson(request)["channels"][0]["pointCloudMaxPoints"] == quota);
-        input["channels"][0]["pointCloudMaxPoints"] = 1048577;
+        input["channels"][0]["pointCloudMaxPoints"] = 14'000'000;
         REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
         input["channels"][0]["pointCloudMaxPoints"] = -1;
         REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));

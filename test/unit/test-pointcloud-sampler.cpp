@@ -1,108 +1,43 @@
 #include <catch2/catch_test_macros.hpp>
-#include <set>
+#include <limits>
 #include "mapget/model/pointcloud-sampler.h"
 #include "mapget/model/pointcloud-geometry.h"
 
-namespace
+TEST_CASE("Proportional selection keeps small clouds complete and fills the large-cloud allowance", "[pointcloud]")
 {
-struct Record
-{
-    std::array<double, 3> position;
-    uint32_t source;
-};
-}
-
-TEST_CASE("Point-cloud selection preserves complete small inputs and source records", "[pointcloud]")
-{
-    mapget::PointCloudGrid grid({-8., -8., -8.}, {8., 8., 8.}, 8);
-    mapget::PointCloudSampler<Record> sampler(grid, 8);
-    for (uint32_t i = 0; i < 8; ++i) sampler.add({{0., 0., 0.}, i});
-    REQUIRE(sampler.records().size() == 8);
-    sampler.add({{0., 0., 0.}, 8});
-    REQUIRE(sampler.sourceCount() == 9);
-    REQUIRE(sampler.records().size() == 1);
-    REQUIRE(sampler.records()[0].source == 0);
-    sampler.add({{-8., -8., -8.}, 9});
-    REQUIRE(sampler.records().size() == 2);
-    REQUIRE(sampler.records()[1].source == 9);
-}
-
-TEST_CASE("Point-cloud grids bound occupancy and cover endpoints and degenerate extents", "[pointcloud]")
-{
-    mapget::PointCloudGrid grid({-10., 0., 0.}, {10., 0., 0.}, 7);
-    REQUIRE(grid.cellCount() == 4);
-    REQUIRE(grid.dimensions() == std::array<uint32_t, 3>{4, 1, 1});
-    REQUIRE(grid.index(std::array{-10., 0., 0.}) == 0);
-    REQUIRE(grid.index(std::array{10., 0., 0.}) == 3);
-    REQUIRE_THROWS(grid.index(std::array{11., 0., 0.}));
-    REQUIRE_THROWS(grid.index(std::array{std::numeric_limits<double>::quiet_NaN(), 0., 0.}));
-    REQUIRE_THROWS(mapget::PointCloudGrid({0., 0., 0.}, {1., 1., 1.}, 0));
-    mapget::PointCloudSampler<Record> omitted(grid, 0);
-    omitted.add({{0., 0., 0.}, 1});
-    REQUIRE(omitted.sourceCount() == 1);
-    REQUIRE(omitted.records().empty());
-}
-
-TEST_CASE("Cached first-point representatives reproduce a direct aligned coarse selection", "[pointcloud]")
-{
-    mapget::PointCloudGrid fineGrid({-16., -16., -16.}, {16., 16., 16.}, 256);
-    mapget::PointCloudGrid coarseGrid({-16., -16., -16.}, {16., 16., 16.}, 16);
-    mapget::PointCloudSampler<Record> fine(fineGrid, 256, false);
-    mapget::PointCloudSampler<Record> direct(coarseGrid, 16, false);
-    for (uint32_t i = 0; i < 20000; ++i) {
-        Record r{{double((i * 13) % 33) - 16., double((i * 7) % 33) - 16.,
-                  double((i / 31) % 33) - 16.}, i};
-        fine.add(r);
-        direct.add(r);
-    }
-    mapget::PointCloudSampler<Record> cached(coarseGrid, 16, false);
-    for (auto const& record : fine.records()) cached.add(record);
-    REQUIRE(cached.records().size() == direct.records().size());
-    for (size_t i = 0; i < cached.records().size(); ++i)
-        REQUIRE(cached.records()[i].source == direct.records()[i].source);
-    REQUIRE(fine.records().size() <= 256);
-    REQUIRE(fine.allocatedBytes() <= 256 * sizeof(Record) + fineGrid.occupancyBytes());
-}
-
-TEST_CASE("Grid coverage retains the first original point in every occupied compact or thin cell", "[pointcloud]")
-{
-    for (bool diagonal : {false, true}) {
-        mapget::PointCloudGrid grid({0., 0., 0.}, {1., 1., diagonal ? 1. : 0.}, 64);
-        mapget::PointCloudSampler<Record> sampler(grid, 64);
-        std::set<size_t> expected, actual;
-        for (uint32_t i = 0; i < 10000; ++i) {
-            double x = double(i % 100) / 99., y = diagonal ? x : double(i / 100) / 99.;
-            Record point{{x, y, diagonal ? x : 0.}, i};
-            expected.insert(grid.index(point.position));
-            sampler.add(point);
+    constexpr auto quota = mapget::DefaultPointCloudMaxPoints;
+    for (uint64_t count : {0ULL, 1ULL, 9'000'000ULL, 13'999'999ULL, 14'000'000ULL, 16'000'000ULL}) {
+        mapget::PointCloudIndexSelection selection(count, quota);
+        REQUIRE(selection.size() == std::min<uint64_t>(count, quota));
+        if (!count) {
+            REQUIRE_THROWS_AS(selection.index(0), std::out_of_range);
+            continue;
         }
-        uint32_t previous = 0;
-        for (auto const& record : sampler.records()) {
-            REQUIRE(record.source >= previous);
-            previous = record.source;
-            actual.insert(grid.index(record.position));
+        REQUIRE(selection.index(0) == 0);
+        REQUIRE(selection.index(selection.size() - 1) == count - 1);
+        // Every source index survives below the threshold; larger inputs are
+        // evenly spaced over the entire original object, including its tail.
+        uint64_t previous = 0;
+        for (uint64_t i = 1; i < selection.size(); ++i) {
+            auto index = selection.index(i);
+            if (count <= quota) {
+                if (index != i) FAIL("A small cloud lost a source record");
+            } else if (index <= previous || index - previous > 2) {
+                FAIL("Large-cloud selection is not progressive and evenly spaced");
+            }
+            previous = index;
         }
-        REQUIRE(actual == expected);
-        REQUIRE(sampler.records().size() == expected.size());
-        REQUIRE(sampler.records().size() <= 64);
+        REQUIRE_THROWS_AS(selection.index(selection.size()), std::out_of_range);
     }
 }
 
-TEST_CASE("Sparse cached geometry still merges occupied coarse cells", "[pointcloud]")
+TEST_CASE("Proportional indices avoid overflow and preserve both ends of sparse input", "[pointcloud]")
 {
-    mapget::PointCloudGeometrySample sample;
-    sample.lower = {0., 0., 0.};
-    sample.upper = {8., 0., 0.};
-    sample.quota = 8;
-    sample.sourceCount = 100;
-    sample.records = {{{0., 0., 0.}, {0., 0., 0.}, 10},
-                      {{1.5, 0., 0.}, {0., 0., 1.5}, 11},
-                      {{8., 0., 0.}, {0., 0., 8.}, 12}};
-    auto coarse = sample.coarsen(4, 0);
-    REQUIRE(coarse.size() == 2);
-    REQUIRE(coarse[0].geometryAddress == 10);
-    REQUIRE(coarse[1].geometryAddress == 12);
-    sample.sourceCount = 3;
-    REQUIRE(sample.coarsen(4, 0).size() == 3);
-    REQUIRE(sample.coarsen(4, 100).size() == 3);
+    mapget::PointCloudIndexSelection selection(std::numeric_limits<uint64_t>::max(), 4);
+    REQUIRE(selection.size() == 4);
+    REQUIRE(selection.index(0) == 0);
+    REQUIRE(selection.index(1) == (std::numeric_limits<uint64_t>::max() - 1) / 3);
+    REQUIRE(selection.index(3) == std::numeric_limits<uint64_t>::max() - 1);
+    REQUIRE(mapget::PointCloudIndexSelection(100, 1).index(0) == 0);
+    REQUIRE(mapget::PointCloudIndexSelection(100, 0).size() == 0);
 }
