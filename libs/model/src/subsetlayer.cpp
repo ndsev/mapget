@@ -1665,16 +1665,17 @@ model_ptr<Array> PartitionSubsetLayer::newValueErrors(
         if (!createdEntry)
             raise<std::length_error>(createdEntry.error().message);
         auto entry = *createdEntry;
-        auto addValue = [&](auto key, auto const& value)
+        auto addValue = [&](std::string_view key, auto const& value)
         {
             auto node = tryNewValue(value);
             if (!node)
                 raise<std::length_error>(node.error().message);
-            entry->addField(key, *node);
+            if (auto added = entry->addField(key, *node); !added)
+                raise(added.error().message);
         };
-        addValue(StringPool::ExpressionIndexStr, static_cast<int64_t>(error.expressionIndex_));
-        addValue(StringPool::StageStr, error.stage_);
-        addValue(StringPool::MessageStr, error.message_);
+        addValue("expressionIndex", static_cast<int64_t>(error.expressionIndex_));
+        addValue("stage", error.stage_);
+        addValue("message", error.message_);
         array->append(entry);
     }
     return array;
