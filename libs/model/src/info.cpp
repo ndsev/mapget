@@ -10,6 +10,7 @@
 #include <charconv>
 #include <cctype>
 #include <regex>
+#include <set>
 
 namespace mapget
 {
@@ -556,6 +557,7 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
         result->coverage_ = std::move(coverages);
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
+        if (j.contains("defaultVisible")) result->defaultVisible_ = j.at("defaultVisible").get<bool>();
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
         if (auto schemaIt = j.find("featureModelSchema"); schemaIt != j.end()) {
             result->featureModelSchema_ = LayerSchema::fromJsonSchema(*schemaIt);
@@ -595,8 +597,24 @@ nlohmann::json LayerInfo::toJson() const
     result["partitionKind"] = partitionKind_ == PartitionKind::Object ? "object" : "tile";
     if (tileAssociationLevel_)
         result["tileAssociationLevel"] = *tileAssociationLevel_;
+    if (defaultVisible_)
+        result["defaultVisible"] = *defaultVisible_;
     if (featureModelSchema_) {
         result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
+        // Identifier metadata also includes cross-layer reference targets. Expose
+        // actual schema roots separately so discovery need not decode the schema.
+        result["schemaFeatureTypes"] = featureModelSchema_->featureTypes();
+        // Lightweight clients intentionally omit full schemas from their shared parser.
+        // Publish only a capability hint here; the service still enforces family eligibility.
+        try {
+            std::set<std::string> targets;
+            for (auto const& relation : featureModelSchema_->relationDeclarations())
+                if (relation.incoming_)
+                    targets.insert(relation.targetTypes_.begin(), relation.targetTypes_.end());
+            if (!targets.empty()) result["incomingRelationTargetTypes"] = targets;
+        } catch (std::exception const&) {
+            // Malformed declarations do not enable discovery or block ordinary metadata.
+        }
     }
 
     return result;

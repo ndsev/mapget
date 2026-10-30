@@ -28,6 +28,37 @@ Embedded applications can also register additional public top-level sections for
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
+Reloading reconciles individual datasource rows. An already-ready datasource
+keeps its instance, string pool, cached tiles and in-flight requests when its
+effective `sourceId` and complete constructor configuration are unchanged.
+For example, disabling one source does not reconnect the other ready sources.
+YAML key order, quoting and comments do not force reconstruction; scalar
+spelling, explicit type tags and sequence order remain significant.
+
+New or changed sources initialize asynchronously. Removed or disabled sources
+are withdrawn, and their maps are invalidated. Failed sources are retried on a
+reload; unfinished constructors are cancelled and restarted with the new
+generation. Changing shared settings outside `sources`, or the config file
+path, conservatively reconstructs all configured sources. To deliberately
+reconnect an otherwise unchanged source, disable it, apply, then re-enable it.
+Adding or removing an add-on invalidates its composed map's tiles even when
+the primary datasource itself is retained.
+
+The default source identity is `datasource-<configIndex>`. Moving a row changes
+that default identity; an explicit unchanged `sourceId` permits instance reuse
+across reordering while `configIndex` continues to reflect current YAML order.
+
+Agent access is opt-in through `--mcp local` or `--mcp oauth`; the default is
+`off`. All MCP options share the normal CLI11/YAML pipeline under `mapget.serve`,
+with CLI values overriding YAML (including complete replacement of lists).
+The [MCP guide](mapget-mcp.md) covers local defaults, the generated
+`web-mcp-actions.json` catalog, provider-neutral OAuth/proxy settings, artifact
+path resolution, and the full option reference. These restart-scoped settings
+stay outside the browser-readable/writable `/config` model. Native embedders
+set the typed `HttpServiceConfig::mcp` directly. Unknown options in the `mapget`
+section now fail startup, just like unknown CLI options; unrelated top-level
+YAML sections are unaffected.
+
 ## The `sources` section
 
 The `sources` key must contain a YAML list. Each entry describes a datasource and must provide a `type` field. At runtime, mapget matches the type string to a registered constructor and passes the remaining fields in the entry as configuration.
@@ -70,6 +101,10 @@ sources:
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
+<!-- mcp:
+title: "Mapget tile TTL"
+keywords: ["TTL", "tile expiry", "expiration", "refresh interval"]
+-->
 ### Tile TTL
 
 <!-- --8<-- [start:ttl] -->
@@ -462,6 +497,10 @@ The optional `http-settings` top‑level key is reserved for HTTP‑related conf
 
 Mapget itself treats this section as opaque data and does not interpret it when serving tiles. It is included in `/config.model` only when the active datasource schema contains an `http-settings` property, for example through a deployment-specific `--config-schema` patch. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
+<!-- mcp:
+title: "Configuration environment variables"
+keywords: ["environment", "env", "secret", "configuration interpolation"]
+-->
 ## Environment variables
 
 <!-- --8<-- [start:env] -->

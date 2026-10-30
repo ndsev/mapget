@@ -224,18 +224,21 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](std::optional<std::string> namePattern,
                    bool recursive,
-                   bool mergeTwoway)
+                   bool mergeTwoway, bool incoming)
                 {
                     return FeatureLayerStoredRelationOptions{
                         .relationNamePattern_ =
                             std::move(namePattern),
                         .recursive_ = recursive,
                         .mergeTwoway_ = mergeTwoway,
+                        .incoming_ = incoming,
                     };
                 }),
             py::arg("name_pattern") = py::none(),
             py::arg("recursive") = false,
-            py::arg("merge_twoway") = false);
+            py::arg("merge_twoway") = false,
+            py::arg("incoming") = false,
+            "Select outgoing traversal by default; incoming is reserved for Client.incoming_relations.");
 
     py::class_<FeatureLayerFilterRoot>(m, "FilterRoot")
         .def(
@@ -504,6 +507,31 @@ void bindHttpClient(py::module_& m)
         resulting layer metadata for request decoding, and can submit tile and
         server-side filter requests.
     )pbdoc")
+        .def("incoming_relations", [](HttpClient& client, std::string map, std::string layer,
+                                     py::object partitionValue, std::string featureId) {
+            auto partition = partitionIdFromPython(partitionValue);
+            FeatureLayerFilterRequest filter;
+            FeatureLayerFilterChannel channel;
+            channel.channelId_ = "incoming";
+            channel.scope_ = FeatureLayerFilterScope::Relation;
+            channel.relation_ = FeatureLayerStoredRelationOptions{};
+            channel.relation_->incoming_ = true;
+            filter.channels_.push_back(channel);
+            auto request = std::make_shared<FeatureLayerFilterTilesRequest>(map, layer,
+                std::vector<PartitionId>{partition}, filter);
+            FeatureLayerFilterRoot root;
+            root.partitionId_ = partition; root.canonicalFeatureId_ = featureId;
+            request->exactRoots_.push_back(root);
+            std::vector<PartitionFeatureLayer::Ptr> snapshots;
+            std::optional<IncomingRelationCollection> collection;
+            request->onFeatureSnapshot([&](auto const& value) { snapshots.push_back(value); });
+            request->onIncomingRelations([&](auto const& value) { collection = value; });
+            { py::gil_scoped_release release; client.filter(request); }
+            if (request->getStatus() != RequestStatus::Success || !collection)
+                throw std::runtime_error("Incoming inspection failed or is unsupported");
+            return std::make_unique<FeatureInspectionView>(std::move(*collection), std::move(snapshots));
+        }, py::arg("map_id"), py::arg("layer_id"), py::arg("partition"), py::arg("feature_id"),
+            "Load incoming context for an exact feature in the same partition. Conventional relations are excluded.")
         .def(
             "discover_objects",
             &HttpClient::discoverObjects,
@@ -559,6 +587,9 @@ void bindHttpClient(py::module_& m)
             "filter",
             [](HttpClient& self, std::shared_ptr<PyFilterRequest> request)
             {
+                for (auto const& channel : request->filter_.channels_)
+                    if (channel.relation_ && channel.relation_->incoming_)
+                        throw py::value_error("Use Client.incoming_relations to receive typed incoming inspection results");
                 self.filter(request);
                 return std::move(request);
             },

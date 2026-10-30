@@ -1,120 +1,14 @@
 #include "mapget/location/location.h"
-
-#include <sqlite3.h>
-
-#include <algorithm>
-#include <cctype>
-#include <filesystem>
-#include <mutex>
-#include <optional>
-#include <sstream>
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
+#include <charconv>
+#include "../../detail/module-path.h"
 #include "mapget/log.h"
-
-#include "fmt/format.h"
+#include "plazs/gazetteer.h"
 
 namespace mapget
 {
 namespace
 {
-
-constexpr uint32_t kHardMaxLimit = 50;
-constexpr std::string_view kSourceName = "geonames-cities5000";
 int kModuleAnchor = 0;
-
-/** Trim leading and trailing ASCII whitespace before building an FTS query. */
-std::string trim(std::string_view value)
-{
-    size_t begin = 0;
-    while (begin < value.size() && std::isspace(static_cast<unsigned char>(value[begin]))) {
-        ++begin;
-    }
-    size_t end = value.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
-        --end;
-    }
-    return std::string(value.substr(begin, end - begin));
-}
-
-/** Return whether a byte can be kept unescaped in a SQLite FTS token. */
-bool isAsciiTokenChar(unsigned char c)
-{
-    return std::isalnum(c) || c == '_';
-}
-
-/** Build a bounded prefix query from user text for the GeoNames FTS index. */
-std::string buildFtsPrefixQuery(std::string_view input)
-{
-    std::vector<std::string> tokens;
-    std::string token;
-    for (unsigned char c : input) {
-        if (c < 0x80 && !isAsciiTokenChar(c)) {
-            if (!token.empty()) {
-                tokens.push_back(std::move(token));
-                token.clear();
-            }
-            continue;
-        }
-        if (token.size() < 64) {
-            token.push_back(static_cast<char>(c));
-        }
-    }
-    if (!token.empty()) {
-        tokens.push_back(std::move(token));
-    }
-    if (tokens.size() > 8) {
-        tokens.resize(8);
-    }
-
-    std::ostringstream query;
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        if (i) {
-            query << " AND ";
-        }
-        query << tokens[i] << "*";
-    }
-    return query.str();
-}
-
-/** Resolve the binary module containing this implementation. */
-std::filesystem::path moduleDirectory()
-{
-#ifdef _WIN32
-    HMODULE module = nullptr;
-    auto flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
-    if (GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&kModuleAnchor), &module)) {
-        std::wstring buffer(256, L'\0');
-        while (buffer.size() <= 32768) {
-            auto size = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-            if (size == 0) {
-                break;
-            }
-            // A full buffer means the path was truncated; retry for long
-            // virtual-environment and package installation paths.
-            if (size < buffer.size()) {
-                buffer.resize(size);
-                return std::filesystem::path(buffer).parent_path();
-            }
-            buffer.resize(buffer.size() * 2);
-        }
-    }
-#else
-    Dl_info info{};
-    if (dladdr(&kModuleAnchor, &info) != 0 && info.dli_fname && *info.dli_fname) {
-        return std::filesystem::path(info.dli_fname).parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
-}
 
 }  // namespace
 
@@ -125,10 +19,7 @@ nlohmann::json LocationPoint::serialize() const
 
 nlohmann::json LocationAabb::serialize() const
 {
-    return nlohmann::json::array({
-        southWest.serialize(),
-        extent.serialize()
-    });
+    return nlohmann::json::array({southWest.serialize(), extent.serialize()});
 }
 
 nlohmann::json LocationMatch::serialize() const
@@ -139,45 +30,39 @@ nlohmann::json LocationMatch::serialize() const
         {"lonLat", lonLat.serialize()},
         {"aabb", aabb.serialize()},
         {"source", source},
-        {"countryCode", countryCode}
-    };
+        {"countryCode", countryCode}};
     if (population.has_value()) {
         result["population"] = *population;
     }
+    result["geometryAvailable"] = geometryAvailable;
+    result["placeType"] = placeType;
+    if (source == "whosonfirst")
+        result["attribution"] = {
+            {"name", "Who's On First"},
+            {"url", "https://whosonfirst.org/"},
+            {"licenseUrl", "https://whosonfirst.org/docs/licenses/"}};
+    if (geometry)
+        result["geometry"] = *geometry;
     return result;
 }
 
 SqliteLocationLookup::SqliteLocationLookup(std::filesystem::path databasePath)
     : databasePath_(std::move(databasePath))
 {
-    if (databasePath_.empty() || !std::filesystem::exists(databasePath_)) {
-        return;
+    try {
+        gazetteer_ = std::make_unique<plazs::Gazetteer>(databasePath_);
     }
-
-    auto rc = sqlite3_open_v2(
-        databasePath_.string().c_str(),
-        &db_,
-        SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
-        nullptr);
-    if (rc != SQLITE_OK) {
-        log().warn("Failed to open location database {}: {}", databasePath_.string(), db_ ? sqlite3_errmsg(db_) : "unknown error");
-        if (db_) {
-            sqlite3_close(db_);
-            db_ = nullptr;
-        }
+    catch (std::exception const& error) {
+        // Optional place lookup must not prevent the tile service from starting.
+        log().warn("Location database {} unavailable: {}", databasePath_.string(), error.what());
     }
 }
 
-SqliteLocationLookup::~SqliteLocationLookup()
-{
-    if (db_) {
-        sqlite3_close(db_);
-    }
-}
+SqliteLocationLookup::~SqliteLocationLookup() = default;
 
 bool SqliteLocationLookup::available() const
 {
-    return db_ != nullptr;
+    return static_cast<bool>(gazetteer_);
 }
 
 std::filesystem::path const& SqliteLocationLookup::databasePath() const
@@ -185,103 +70,56 @@ std::filesystem::path const& SqliteLocationLookup::databasePath() const
     return databasePath_;
 }
 
+LocationMatch SqliteLocationLookup::adapt(plazs::Place place)
+{
+    LocationMatch match;
+    match.id = "wof:" + std::to_string(place.id);
+    match.name = std::move(place.name);
+    match.countryCode = std::move(place.countryCode);
+    if (!match.countryCode.empty())
+        match.name += ", " + match.countryCode;
+    match.source = "whosonfirst";
+    match.lonLat = {place.position[0], place.position[1]};
+    auto const& bounds = place.bounds;
+    match.aabb.southWest = {bounds[0], bounds[1]};
+    // The public mapget bbox is an origin plus extent, including dateline-crossing boxes.
+    match.aabb.extent = {
+        bounds[2] - bounds[0] + (bounds[2] < bounds[0] ? 360 : 0),
+        bounds[3] - bounds[1]};
+    match.population = place.population;
+    match.placeType = std::move(place.placeType);
+    match.geometryAvailable = place.geometryAvailable;
+    match.geometry = std::move(place.geometry);
+    return match;
+}
+
 std::vector<LocationMatch> SqliteLocationLookup::search(std::string_view name, uint32_t limit) const
 {
-    if (!db_) {
-        return {};
-    }
-    auto trimmed = trim(name);
-    if (trimmed.size() < 2) {
-        return {};
-    }
-    auto ftsQuery = buildFtsPrefixQuery(trimmed);
-    if (ftsQuery.empty()) {
-        return {};
-    }
-
-    limit = std::max<uint32_t>(1, std::min<uint32_t>(limit, kHardMaxLimit));
-    auto prefix = trimmed + "%";
-
-    static constexpr char const* kQuery = R"sql(
-        SELECT
-          geoname_id,
-          name,
-          ascii_name,
-          latitude,
-          longitude,
-          feature_code,
-          country_code,
-          population
-        FROM location
-        WHERE geoname_id IN (
-          SELECT rowid FROM location_fts WHERE location_fts MATCH ?
-        )
-        ORDER BY
-          CASE
-            WHEN lower(ascii_name) = lower(?) OR lower(name) = lower(?) THEN 0
-            WHEN lower(ascii_name) LIKE lower(?) OR lower(name) LIKE lower(?) THEN 1
-            ELSE 2
-          END,
-          CASE feature_code
-            WHEN 'PPLC' THEN 0
-            WHEN 'PPLA' THEN 1
-            WHEN 'PPLA2' THEN 2
-            WHEN 'PPLA3' THEN 3
-            WHEN 'PPL' THEN 4
-            ELSE 5
-          END,
-          COALESCE(population, 0) DESC,
-          ascii_name COLLATE NOCASE,
-          country_code,
-          geoname_id
-        LIMIT ?
-    )sql";
-
-    sqlite3_stmt* stmt = nullptr;
-    auto rc = sqlite3_prepare_v2(db_, kQuery, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        log().warn("Failed to prepare location query: {}", sqlite3_errmsg(db_));
-        return {};
-    }
-
-    sqlite3_bind_text(stmt, 1, ftsQuery.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, trimmed.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, trimmed.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, prefix.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, prefix.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 6, static_cast<int>(limit));
-
     std::vector<LocationMatch> matches;
-    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        auto textColumn = [stmt](int column) -> std::string {
-            auto text = sqlite3_column_text(stmt, column);
-            return text ? reinterpret_cast<char const*>(text) : "";
-        };
-        LocationMatch match;
-        match.id = fmt::format("geonames:{}", sqlite3_column_int64(stmt, 0));
-        auto nameValue = textColumn(2).empty() ? textColumn(1) : textColumn(2);
-        auto countryCode = textColumn(6);
-        match.name = countryCode.empty() ? nameValue : fmt::format("{}, {}", nameValue, countryCode);
-        match.lonLat.latitude = sqlite3_column_double(stmt, 3);
-        match.lonLat.longitude = sqlite3_column_double(stmt, 4);
-        match.aabb.southWest = match.lonLat;
-        match.countryCode = std::move(countryCode);
-        match.source = std::string(kSourceName);
-        if (sqlite3_column_type(stmt, 7) != SQLITE_NULL) {
-            match.population = sqlite3_column_int64(stmt, 7);
-        }
-        matches.push_back(std::move(match));
-    }
-    if (rc != SQLITE_DONE) {
-        log().warn("Location query failed: {}", sqlite3_errmsg(db_));
-    }
-    sqlite3_finalize(stmt);
+    if (gazetteer_)
+        for (auto& place : gazetteer_->search(name, limit))
+            matches.push_back(adapt(std::move(place)));
     return matches;
+}
+
+std::optional<LocationMatch> SqliteLocationLookup::find(std::string_view id) const
+{
+    constexpr std::string_view prefix = "wof:";
+    if (!gazetteer_ || !id.starts_with(prefix))
+        return {};
+    id.remove_prefix(prefix.size());
+    int64_t numericId = 0;
+    auto [end, error] = std::from_chars(id.data(), id.data() + id.size(), numericId);
+    if (error != std::errc() || end != id.data() + id.size() || numericId <= 0)
+        return {};
+    if (auto place = gazetteer_->find(numericId))
+        return adapt(std::move(*place));
+    return {};
 }
 
 std::filesystem::path defaultLocationDatabasePath()
 {
-    return moduleDirectory() / "geonames-cities5000.sqlite";
+    return detail::moduleDirectory(&kModuleAnchor) / "mapget-places.sqlite";
 }
 
 }  // namespace mapget

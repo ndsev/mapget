@@ -6,6 +6,7 @@
 #include "mapget/service/locate.h"
 #include "service-impl.h"
 #include "service-memory.h"
+#include "service-incoming.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2462,6 +2463,16 @@ void FeatureLayerFilterTilesRequest::notifyProgress(nlohmann::json const& status
     }
 }
 
+void FeatureLayerFilterTilesRequest::notifyFeatureSnapshot(PartitionFeatureLayer::Ptr const& layer)
+{
+    if (!isCancelled() && !isDone() && onFeatureSnapshot_) onFeatureSnapshot_(layer);
+}
+
+void FeatureLayerFilterTilesRequest::notifyIncomingRelations(IncomingRelationCollection const& collection)
+{
+    if (!isCancelled() && !isDone() && onIncomingRelations_) onIncomingRelations_(collection);
+}
+
 void FeatureLayerFilterTilesRequest::setStatus(RequestStatus s)
 {
     auto expected = RequestStatus::Open;
@@ -2536,7 +2547,9 @@ detail::FilterRequestExecution::processingPartitionIds(
     bool hasPointGroups,
     std::set<PartitionId>& prioritySourceMembership)
 {
-    if (!hasPointGroups ||
+    auto const declaresPointGroups = std::ranges::any_of(
+        request.filter_.channels_, [](auto const& channel) { return channel.group_.has_value(); });
+    if (!declaresPointGroups ||
         (!request.tileIds_.empty() && request.tileIds_.front().kind() == PartitionKind::Object))
     {
         return request.tileIds_;
@@ -2568,6 +2581,11 @@ detail::FilterRequestExecution::processingPartitionIds(
                     channel.channelId_),
             });
         }
+    }
+
+    // Validate every declared group, but only active groups need source neighbours.
+    if (!hasPointGroups) {
+        return request.tileIds_;
     }
 
     std::set<PartitionId> sourceTileMembership;
@@ -2652,15 +2670,23 @@ bool detail::FilterRequestExecution::start(
             request->tileIds_,
             [&](auto const& id) { return id.kind() != context.partitionKind_; }))
         return rejectStart(request, "Requested partition kind does not match layer metadata.");
-    auto const hasPointGroups = std::ranges::any_of(
-        request->filter_.channels_,
-        [](auto const& channel) { return channel.group_.has_value(); });
+    auto const activeChannels = request->filter_.activeChannels();
+    bool hasPointGroups = false;
+    for (size_t index = 0; index < activeChannels.size(); ++index) {
+        hasPointGroups |= activeChannels[index] && request->filter_.channels_[index].group_.has_value();
+    }
     auto const hasStoredRelations = std::ranges::any_of(
         request->filter_.channels_,
         [](auto const& channel) { return channel.scope_ == FeatureLayerFilterScope::Relation; });
     auto exactRootsPrepared = prepareExactRoots(request, hasStoredRelations);
     if (!exactRootsPrepared) {
         return rejectStart(request, exactRootsPrepared.error().message);
+    }
+
+    if (std::ranges::any_of(request->filter_.channels_, [](auto const& channel) {
+            return channel.relation_ && channel.relation_->incoming_;
+        })) {
+        return IncomingRequestExecution::start(service, request, clientHeaders);
     }
 
     auto prioritySourceMembership = request->priorityPartitionIds_;

@@ -1,4 +1,5 @@
 #include "http-service-impl.h"
+#include "mcp-server.h"
 
 #include "mapget/log.h"
 #include "mapget/service/detail/allocator-memory.h"
@@ -38,10 +39,23 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
     if (config_.locationLookupEnabled) {
         auto locationDbPath = config_.locationDatabasePath.value_or(defaultLocationDatabasePath());
-        locationLookup_ = std::make_unique<SqliteLocationLookup>(locationDbPath);
+        locationLookup_ = std::make_shared<SqliteLocationLookup>(locationDbPath);
         if (!locationLookup_->available()) {
             log().info("Location database unavailable at {}", locationDbPath.string());
         }
+    }
+
+    // Validate trust/catalog and establish borrowed collectors before maintenance threads start.
+    if (config_.mcp.mode != McpConfig::Mode::Off) {
+        auto native = std::make_shared<detail::McpNativeTools>(
+            self_,
+            config_.mcp,
+            [this] { return statusSnapshot(); },
+            locationLookup_ && locationLookup_->available() ? locationLookup_.get() : nullptr,
+            [this] { return datasourceConfiguration(); },
+            [this](auto const& model, auto const& revision)
+            { return updateDatasourceConfiguration(model, revision); });
+        mcp_ = std::make_shared<detail::McpServer>(config_.mcp, std::move(native));
     }
 
     auto const allocator = detail::allocatorMemoryStatistics();
@@ -69,6 +83,8 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
 HttpService::Impl::~Impl()
 {
+    if (mcp_)
+        mcp_->stop();
     {
         std::lock_guard lock(interactiveControlMutex_);
         stopInteractiveControl_ = true;

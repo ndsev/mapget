@@ -21,6 +21,8 @@
 #include "mapget/service/service.h"
 #include "../../libs/http-service/src/tiles-request-json.h"
 
+
+
 using namespace mapget;
 
 namespace
@@ -1277,9 +1279,15 @@ TEST_CASE(
         },
         std::vector<PartitionId>{easternTile});
 
+    // Independent output tiles may complete on different service workers.
+    std::mutex resultsMutex;
     std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(resultsMutex);
+            results.push_back(std::move(layer));
+        });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1338,9 +1346,58 @@ TEST_CASE(
     REQUIRE(group);
     REQUIRE(
         group->values()->toJson() ==
-        nlohmann::json::array({2}));
+        nlohmann::json::array({nlohmann::json::array({2})}));
     REQUIRE(
         group->memberFeatureIds()->size() == 2);
+}
+
+TEST_CASE("Disabled point groups do not load a halo", "[feature-layer-filter][Service][filter-activity]")
+{
+    auto const tile = TileId::fromTileXY(10, 4, 4);
+    auto const [longitude, latitude] = tile.centerWgs84();
+    nlohmann::json ordinaryEntries;
+    for (bool enabled : {false, true, false}) {
+        Service service(std::make_shared<MemCache>(32), false);
+        auto dataSource = std::make_shared<PointGroupDataSource>(
+            tile, tile.eastNeighbour(), Point{longitude, latitude, 0},
+            Point{longitude + 1, latitude, 0});
+        service.add(dataSource);
+        FeatureLayerFilterRequest filter;
+        filter.bindings_ = {{"enabled", enabled}};
+        filter.channels_ = {
+            FeatureLayerFilterChannel{.channelId_ = "points", .featureFields_ = {"roadId"}},
+            FeatureLayerFilterChannel{
+                .channelId_ = "groups", .featureFilter_ = "any(enabled)",
+                .entryFields_ = {"count($features.*)"},
+                .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                .group_ = FeatureLayerPointGridGroup{
+                    .origin_ = {longitude - 0.5, latitude - 0.5, -0.5}, .cellSize_ = {1, 1, 1}},
+            },
+        };
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        PartitionSubsetLayer::Ptr result;
+        request->onFilterResult([&](auto layer) { result = std::move(layer); });
+        REQUIRE(service.request(request));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        CHECK(dataSource->requestedTiles().size() == (enabled ? 9 : 1));
+        CHECK(result->dependencies().size() == (enabled ? 9 : 1));
+        CHECK(result->at(1)->groupEntryCount() == (enabled ? 2 : 0));
+        auto entries = result->at(0)->toJson();
+        if (ordinaryEntries.is_null()) {
+            ordinaryEntries = entries;
+        }
+        CHECK(entries == ordinaryEntries);
+
+        // Disabling a group must not hide malformed request declarations.
+        filter.channels_[1].group_->cellSize_.x = tile.wgs84Size().first * 2;
+        auto invalid = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        CHECK_FALSE(service.request(invalid));
+        CHECK(invalid->getStatus() == RequestStatus::Aborted);
+    }
 }
 
 TEST_CASE(
@@ -2442,4 +2499,23 @@ TEST_CASE("Filter outputs preserve warnings even when no features match", "[feat
         REQUIRE(output->at(i)->entryCount() == 0);
     REQUIRE(output->warnings() == std::vector<std::string>{"duplicate Road.42"});
     REQUIRE(output->toJson()["warnings"] == output->warnings());
+}
+
+TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointcloud][filter]")
+{
+    for (uint32_t quota : {0U, 262144U, 1048576U, 9'000'000U, 13'999'999U}) {
+        nlohmann::json input = {
+            {"filterId", "cloud"}, {"generation", 1},
+            {"channels", {{{"channelId", "points"}, {"scope", "feature"},
+                           {"geometryTypes", uint32_t{1} << static_cast<uint8_t>(mapget::GeomType::Points)},
+                           {"pointCloudMaxPoints", quota}}}}
+        };
+        auto request = mapget::detail::parseRestFilterEnvelopeJson(input);
+        REQUIRE(request.channels_.at(0).pointCloudMaxPoints_ == quota);
+        REQUIRE(mapget::detail::filterRequestToJson(request)["channels"][0]["pointCloudMaxPoints"] == quota);
+        input["channels"][0]["pointCloudMaxPoints"] = 14'000'000;
+        REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
+        input["channels"][0]["pointCloudMaxPoints"] = -1;
+        REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
+    }
 }

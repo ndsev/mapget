@@ -284,6 +284,79 @@ TEST_CASE(
     CHECK(statistics.failedCompiles == 1);
 }
 
+TEST_CASE("Filter activity uses bound constant predicates conservatively", "[feature-layer-filter][filter-activity]")
+{
+    FeatureLayerFilterRequest request;
+    request.bindings_ = {{"enabled", false}};
+    for (auto const& expression : {"any(enabled)", "not enabled", "roadId == 42", "(", "trace(false, -1, 'gate')"}) {
+        FeatureLayerFilterChannel channel;
+        channel.channelId_ = std::to_string(request.channels_.size());
+        channel.featureFilter_ = expression;
+        channel.rewrite_ = false;
+        request.channels_.push_back(std::move(channel));
+    }
+    CHECK(request.activeChannels() == std::vector<bool>{false, true, true, true, true});
+    request.bindings_["enabled"] = true;
+    CHECK(request.activeChannels() == std::vector<bool>{true, false, true, true, true});
+
+    FeatureLayerFilterChannel relation;
+    relation.scope_ = FeatureLayerFilterScope::Relation;
+    relation.rewrite_ = false;
+    relation.entryFilter_ = "not enabled";
+    request.channels_ = {relation};
+    CHECK(request.activeChannels() == std::vector<bool>{false});
+    request.channels_.front().featureFilter_ = "trace(roadId == 42, -1, 'host')";
+    CHECK(request.activeChannels() == std::vector<bool>{true});
+}
+
+TEST_CASE("Inactive filter channels retain identity and empty output", "[feature-layer-filter][filter-activity]")
+{
+    FeatureLayerFilterRequest request;
+    request.bindings_ = {{"enabled", false}};
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "off", .featureFilter_ = "any(enabled)",
+            .scope_ = FeatureLayerFilterScope::Feature, .rewrite_ = false},
+        FeatureLayerFilterChannel{.channelId_ = "on", .scope_ = FeatureLayerFilterScope::Feature,
+            .rewrite_ = false, .featureFields_ = {"roadId"}},
+    };
+    auto source = makeFilterSource();
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE((*result)->size() == 2);
+    CHECK((*result)->at(0)->featureEntryCount() == 0);
+    CHECK((*result)->at(1)->featureEntryCount() == 1);
+    request.bindings_["enabled"] = true;
+    auto enabled = request.filter(*source);
+    REQUIRE(enabled);
+    CHECK((*enabled)->at(0)->featureEntryCount() == 1);
+    CHECK((*enabled)->at(1)->toJson() == (*result)->at(1)->toJson());
+}
+
+TEST_CASE("Inactive filter gates preserve predicate and relation-pattern errors", "[feature-layer-filter][filter-activity]")
+{
+    auto source = makeRelationSource();
+    FeatureLayerFilterRequest request;
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "empty-predicate", .featureFilter_ = "",
+            .entryFilter_ = "false", .scope_ = FeatureLayerFilterScope::Feature, .rewrite_ = false},
+    };
+    CHECK(request.activeChannels() == std::vector<bool>{true});
+    auto result = request.filterSource(*source, true);
+    REQUIRE(result);
+    CHECK_FALSE(result->issues_.empty());
+
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "bad-pattern", .featureFilter_ = "false",
+            .scope_ = FeatureLayerFilterScope::Relation, .rewrite_ = false,
+            .relation_ = FeatureLayerStoredRelationOptions{.relationNamePattern_ = "["}},
+    };
+    CHECK(request.activeChannels() == std::vector<bool>{false});
+    auto relationResult = request.filterSource(*source, true);
+    REQUIRE(relationResult);
+    CHECK(relationResult->relationDescriptors_.empty());
+    CHECK(relationResult->issues_.size() == 1);
+}
+
 TEST_CASE(
     "SIMFIL expression cache compiles a concurrent first use once",
     "[feature-layer-filter][expression-cache]")
@@ -435,7 +508,7 @@ TEST_CASE(
         }));
     REQUIRE(featureEntry);
     REQUIRE(featureEntry->featureId()->toString() == "Road.1.42");
-    REQUIRE(featureEntry->values()->toJson() == nlohmann::json::array({"Road", ""}));
+    REQUIRE(featureEntry->values()->toJson() == R"([["Road"],[""]])"_json);
     REQUIRE(featureEntry->geometry()->numGeometries() == 1);
     std::optional<std::string_view> copiedGeometryName;
     featureEntry->geometry()->forEachGeometry(
@@ -462,8 +535,8 @@ TEST_CASE(
     REQUIRE_FALSE(attributeEntry->hasValidity());
     REQUIRE(attributeEntry->validityIndex() == 0);
     REQUIRE(attributeEntry->validityCount() == 1);
-    REQUIRE(attributeEntry->hostValues()->toJson() == nlohmann::json::array({"Road"}));
-    REQUIRE(attributeEntry->values()->toJson() == nlohmann::json::array({80, false, 0, 1}));
+    REQUIRE(attributeEntry->hostValues()->toJson() == R"([["Road"]])"_json);
+    REQUIRE(attributeEntry->values()->toJson() == R"([[80],[false],[0],[1]])"_json);
     REQUIRE(subset->issues().empty());
 }
 
@@ -641,7 +714,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Filter compilation failure is channel-local and structured values become null",
+    "Filter compilation failure is channel-local and structured values retain native shape",
     "[feature-layer-filter]")
 {
     auto source = makeFilterSource();
@@ -669,10 +742,92 @@ TEST_CASE(
     REQUIRE((*result)->at(0)->featureEntryCount() == 0);
     REQUIRE((*result)->at(1)->featureEntryCount() == 1);
     auto json = (*result)->at(1)->toJson();
-    REQUIRE(json["featureEntries"][0]["values"] == nlohmann::json::array({nullptr, "Road"}));
-    REQUIRE((*result)->issues().size() == 2);
+    auto const& values = json["featureEntries"][0]["values"];
+    REQUIRE(values.size() == 2);
+    REQUIRE(values[0].size() == 1);
+    REQUIRE(values[0][0].is_object());
+    REQUIRE(values[0][0]["type"] == "LineString");
+    REQUIRE(values[0][0]["coordinates"].size() == 2);
+    REQUIRE(values[1] == R"(["Road"])"_json);
+    REQUIRE((*result)->issues().size() == 1);
     REQUIRE((*result)->issues()[0].occurrenceCount_ == 1);
-    REQUIRE((*result)->issues()[1].occurrenceCount_ == 1);
+}
+
+TEST_CASE("Projection sequences preserve cardinality and row-local failures", "[feature-layer-filter][projection]")
+{
+    auto source = makeFilterSource();
+    auto fields = source->at(0)->attributes();
+    auto list = source->newArray(2, true);
+    list->append(int64_t{1});
+    list->append(int64_t{2});
+    fields->addField("list", list);
+    fields->addField("unknown", source->newUndefined());
+    fields->addField("zero", source->newValue(int64_t{0}));
+    fields->addField("big", source->newValue(int64_t{200000}));
+    auto object = source->newObject();
+    object->addField("_undefined", source->newSmallValue(true));
+    fields->addField("marker", object);
+    const auto dictionarySize = source->strings()->size();
+
+    FeatureLayerFilterRequest request{
+        .filterId_ = "sequences",
+        .channels_ = {FeatureLayerFilterChannel{
+            .channelId_ = "values",
+            .scope_ = FeatureLayerFilterScope::Feature,
+            .featureFields_ = {"properties.list[99]", "null", "properties.unknown",
+                "properties.list.*", "properties.list", "properties.marker", "1 +",
+                "1 / properties.zero", "range(0, properties.big)..."},
+        }},
+    };
+    auto filtered = request.filter(*source);
+    REQUIRE(filtered);
+    auto subset = *filtered;
+    model_ptr<FeatureEntry> entry;
+    subset->at(0)->forEachFeatureEntry([&](auto const& value) { entry = value; return false; });
+    REQUIRE(entry);
+    auto values = entry->values();
+    REQUIRE(values->size() == 9);
+    // Missing paths yield one Null in SIMFIL; they are not an empty result stream.
+    REQUIRE(values->at(0)->size() == 1);
+    CHECK(values->at(0)->at(0)->type() == simfil::ValueType::Null);
+    CHECK(values->at(1)->at(0)->type() == simfil::ValueType::Null);
+    CHECK(values->at(2)->at(0)->type() == simfil::ValueType::Undef);
+    CHECK(values->at(3)->toJson() == R"([1,2])"_json);
+    CHECK(values->at(4)->toJson() == R"([[1,2]])"_json);
+    CHECK(values->at(5)->at(0)->type() == simfil::ValueType::Object);
+    CHECK(values->at(5)->toJson() == R"([{"_undefined":true}])"_json);
+    for (auto index : {6, 7, 8}) CHECK(values->at(index)->size() == 0);
+    auto errors = entry->valueErrors();
+    REQUIRE(errors.size() == 3);
+    CHECK(errors[0].expressionIndex_ == 6);
+    CHECK(errors[0].stage_ == "compilation");
+    CHECK(errors[1].expressionIndex_ == 7);
+    CHECK(errors[1].stage_ == "evaluation");
+    CHECK(errors[2].expressionIndex_ == 8);
+    CHECK(errors[2].stage_ == "evaluation");
+    CHECK(subset->issues().size() == 3);
+    CHECK(source->strings()->size() == dictionarySize);
+    auto expected = subset->toJson();
+    std::weak_ptr<PartitionFeatureLayer> sourceLifetime = source;
+    fields = {};
+    list = {};
+    object = {};
+    source.reset();
+    CHECK(sourceLifetime.expired());
+    CHECK(subset->toJson() == expected);
+
+    std::stringstream stream;
+    REQUIRE(subset->write(stream));
+    auto bytes = stream.str();
+    auto decoded = std::make_shared<PartitionSubsetLayer>(std::vector<uint8_t>(bytes.begin(), bytes.end()),
+        [&](auto const&, auto const&) { return subset->layerInfo(); },
+        [&](auto const&) { return subset->strings(); });
+    CHECK(decoded->toJson() == subset->toJson());
+    model_ptr<FeatureEntry> decodedEntry;
+    decoded->at(0)->forEachFeatureEntry([&](auto const& value) { decodedEntry = value; return false; });
+    REQUIRE(decodedEntry);
+    CHECK(decodedEntry->valueErrors() == errors);
+    CHECK(decodedEntry->values()->at(2)->at(0)->type() == simfil::ValueType::Undef);
 }
 
 TEST_CASE(
@@ -794,7 +949,7 @@ TEST_CASE(
             return true;
         }));
     REQUIRE(group);
-    REQUIRE(group->values()->toJson() == nlohmann::json::array({2, "Road"}));
+    REQUIRE(group->values()->toJson() == R"([[2],["Road"]])"_json);
     REQUIRE(group->memberFeatureIds()->size() == 2);
     REQUIRE(
         firstResult->layer_->resolve<FeatureId>(*group->memberFeatureIds()->at(0))->addr() ==
@@ -900,7 +1055,7 @@ TEST_CASE(
         }));
     REQUIRE(relation);
     REQUIRE(relation->twoway());
-    REQUIRE(relation->values()->toJson() == nlohmann::json::array({"Road", "Road", true}));
+    REQUIRE(relation->values()->toJson() == R"([["Road"],["Road"],[true]])"_json);
     REQUIRE(relation->sourceGeometry()->numGeometries() == 1);
     REQUIRE(relation->targetGeometry()->numGeometries() == 1);
 }
@@ -933,4 +1088,81 @@ TEST_CASE(
     REQUIRE(sourceResult.has_value());
     REQUIRE(sourceResult->layer_);
     REQUIRE(sourceResult->relationDescriptors_.empty());
+}
+
+TEST_CASE("Explicit point-cloud filtering shares an object quota and preserves exact input", "[pointcloud][filter]")
+{
+    auto source = makePointGroupSource(TileId::fromTileXY(1, 0, 1), 42, Point{11, 48, 0});
+    auto feature = source->at(0);
+    for (int cluster = 0; cluster < 2; ++cluster) {
+        auto geometry = source->newGeometry(GeomType::Points, 100, true);
+        geometry->setName("merge");
+        for (int i = 0; i < 100; ++i) geometry->append({11, 48, double(cluster * 100 + i)});
+        feature->addGeometry(geometry);
+    }
+    auto const original = source->toJson();
+    FeatureLayerFilterRequest request;
+    request.filterId_ = "point-cloud-test";
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "cloud";
+    channel.scope_ = FeatureLayerFilterScope::Feature;
+    channel.geometryTypes_ = 1U << static_cast<uint8_t>(GeomType::Points);
+    channel.pointCloudMaxPoints_ = 8;
+    request.channels_.push_back(channel);
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE(*result);
+    size_t delivered = 0;
+    (*result)->at(0)->forEachFeatureEntry([&](auto const& entry) {
+        entry->geometry()->forEachGeometry([&](auto const& geometry) {
+            REQUIRE(geometry->name() == "merge");
+            delivered += geometry->numPoints();
+            return true;
+        });
+        return true;
+    });
+    REQUIRE(delivered == 8);
+    REQUIRE((*result)->info()["PointCloud/SourceRecords"] == 201);
+    REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == delivered);
+    REQUIRE(source->toJson() == original);
+    request.channels_[0].pointCloudMaxPoints_ = 0;
+    result = request.filter(*source);
+    REQUIRE(result);
+    delivered = 0;
+    (*result)->at(0)->forEachFeatureEntry([&](auto const& entry) {
+        entry->geometry()->forEachGeometry([&](auto const& geometry) {
+            delivered += geometry->numPoints(); return true;
+        });
+        return true;
+    });
+    REQUIRE(delivered == 201);
+}
+
+TEST_CASE("Point-cloud quotas belong to each object and each channel", "[pointcloud][filter]")
+{
+    auto source = makePointGroupSource(TileId::fromTileXY(1, 0, 1), 42, Point{11, 48, 0});
+    auto second = source->newFeature("Road", {{"tileId", int64_t{source->tileId().value()}}, {"roadId", int64_t{43}}});
+    auto geometry = source->newGeometry(GeomType::Points, 6, true);
+    geometry->setName("merge");
+    for (int i = 0; i < 6; ++i) geometry->append({11, 48, double(i)});
+    source->at(0)->addGeometry(geometry);
+    second->addGeometry(geometry);
+    auto const original = source->toJson();
+    FeatureLayerFilterRequest request;
+    request.filterId_ = "per-object-cloud-test";
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "first";
+    channel.scope_ = FeatureLayerFilterScope::Feature;
+    channel.geometryTypes_ = 1U << static_cast<uint8_t>(GeomType::Points);
+    channel.pointCloudMaxPoints_ = 8;
+    request.channels_.push_back(channel);
+    channel.channelId_ = "second";
+    request.channels_.push_back(channel);
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE(*result);
+    REQUIRE((*result)->info()["PointCloud/SourceRecords"] == 26);
+    REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == 26);
+    REQUIRE((*result)->info()["PointCloud/Representation"] == "visualization/proportional-v1");
+    REQUIRE(source->toJson() == original);
 }

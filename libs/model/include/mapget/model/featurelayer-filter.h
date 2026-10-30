@@ -88,6 +88,8 @@ struct FeatureLayerStoredRelationOptions
     std::optional<std::string> relationNamePattern_;
     bool recursive_ = false;
     bool mergeTwoway_ = false;
+    /** Incoming inspection is a bounded same-partition service operation. */
+    bool incoming_ = false;
 
     bool operator==(FeatureLayerStoredRelationOptions const&) const = default;
 };
@@ -117,6 +119,10 @@ struct FeatureLayerFilterChannel
 
     /** Nullopt selects all geometry names; a value selects that exact name. */
     std::optional<std::string> geometryName_;
+
+    /** Explicit visualization-only point-cloud sampling. Zero requests exact delivery.
+     * The quota applies independently to each feature's matching point geometries. */
+    std::optional<uint32_t> pointCloudMaxPoints_;
 
     /** Present only for the feature-only point-grid grouping channel. */
     std::optional<FeatureLayerPointGridGroup> group_;
@@ -242,6 +248,13 @@ struct FeatureLayerFilterRequest
     uint64_t generation_ = 0;
     std::vector<FeatureLayerFilterChannel> channels_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
+
+    /**
+     * Identify channels whose membership is not provably false after binding constants.
+     * Unknown/invalid predicates remain active for normal evaluation and diagnostics.
+     * The mask retains channel order and does not change the serialized request.
+     */
+    [[nodiscard]] std::vector<bool> activeChannels() const;
 
     /**
      * Scan one source tile in source-major order.

@@ -81,6 +81,7 @@ std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
     result->version_ = info.version_;
     result->partitionKind_ = info.partitionKind_;
     result->tileAssociationLevel_ = info.tileAssociationLevel_;
+    result->defaultVisible_ = info.defaultVisible_;
     result->featureModelSchema_ = info.featureModelSchema_ ?
         info.featureModelSchema_->detachedCopy() :
         nullptr;
@@ -513,20 +514,38 @@ bool Service::Impl::markCatalogConstructionReady(
         if (entry == sourceCatalog_.end()) {
             return false;
         }
-        // Registration and the Ready transition share the catalog lock. A
-        // superseding reload can therefore never leave a late source visible
-        // in the ready registry without a matching current-generation row.
+        // Retain every registration in the current catalog generation so a
+        // superseding reload can withdraw it, including during add-on invalidation.
         auto source = dataSources_.add(dataSource, std::move(sourceId));
         scheduler_.registerDataSource(source);
+        entry->dataSource = source->dataSource;
+        entry->info = source->info;
+        dataSourcesFromConfig_.push_back(source->dataSource);
+        if (source->info->isAddOn_) {
+            // A retained primary may have cached/in-flight tiles without this
+            // add-on. Callbacks can re-enter the catalog, so invalidate outside
+            // its lock, but do not advertise Ready before invalidation completes.
+            lock.unlock();
+            scheduler_.invalidateMap(source->info->mapId_);
+            lock.lock();
+            if (generation != sourceCatalogGeneration_) {
+                return false;
+            }
+            // Reload can relocate the vector while the lock is released.
+            entry = std::ranges::find_if(
+                sourceCatalog_,
+                [&](auto const& candidate)
+                { return candidate.descriptor.configIndex == configIndex; });
+            if (entry == sourceCatalog_.end()) {
+                return false;
+            }
+        }
         if (entry->status == DataSourceCatalogStatus::Failed)
             --dataSourceConstructionFailed_;
         entry->status = DataSourceCatalogStatus::Ready;
         entry->retrying = false;
         entry->statusMessage.clear();
         entry->progress.reset();
-        entry->dataSource = source->dataSource;
-        entry->info = source->info;
-        dataSourcesFromConfig_.push_back(source->dataSource);
         change = markSourceCatalogChangedLocked("status", &*entry);
     }
     notifySourceCatalogChanged(*change);
@@ -660,6 +679,13 @@ void Service::Impl::launchDataSourceConstruction(
 
 void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configNodes)
 {
+    // Compute config-owned hashes before taking the catalog lock, preserving
+    // the config -> catalog lock order used by subscription callbacks.
+    std::vector<std::string> fingerprints;
+    fingerprints.reserve(configNodes.size());
+    for (auto const& node : configNodes) {
+        fingerprints.push_back(DataSourceConfigService::get().dataSourceConfigFingerprint(node));
+    }
     std::vector<DataSource::Ptr> previousDataSources;
     std::vector<std::pair<YAML::Node, DataSourceDescriptor>> constructionInputs;
     uint64_t generation = 0;
@@ -670,7 +696,9 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
         requestStopForConstructionThreadsLocked();
         previousDataSources.swap(dataSourcesFromConfig_);
         dataSourceConstructionFailed_ = 0;
+        auto previousCatalog = std::move(sourceCatalog_);
         sourceCatalog_.clear();
+        sourceCatalog_.reserve(configNodes.size());
         sourceConfigStatus_ = "ok";
         sourceConfigStatusMessage_.clear();
         generation = ++sourceCatalogGeneration_;
@@ -682,6 +710,26 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
                 continue;
             }
             auto descriptor = DataSourceConfigService::get().describeDataSource(configNode, index);
+            auto previous = std::ranges::find_if(
+                previousCatalog,
+                [&](auto const& entry)
+                {
+                    auto const oldIndex = entry.descriptor.configIndex;
+                    return entry.status == DataSourceCatalogStatus::Ready && entry.dataSource &&
+                        entry.descriptor.sourceId == descriptor.sourceId &&
+                        oldIndex < dataSourceConfigFingerprints_.size() &&
+                        dataSourceConfigFingerprints_[oldIndex] == fingerprints[index];
+                });
+            if (previous != previousCatalog.end()) {
+                // Retain the actual registration, not just its namespace ID:
+                // cached tiles, dictionary contents and in-flight work belong to it.
+                std::erase(previousDataSources, previous->dataSource);
+                dataSourcesFromConfig_.push_back(previous->dataSource);
+                previous->descriptor = std::move(descriptor);
+                sourceCatalog_.push_back(std::move(*previous));
+                ++index;
+                continue;
+            }
             sourceCatalog_.push_back(DataSourceCatalogEntry{
                 .descriptor = descriptor,
                 .status = DataSourceCatalogStatus::Initializing,
@@ -690,10 +738,14 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
             constructionInputs.emplace_back(configNode, std::move(descriptor));
             ++index;
         }
+        dataSourceConfigFingerprints_ = std::move(fingerprints);
         change = markSourceCatalogChangedLocked("reload");
     }
 
-    log().info("Config changed. Removing previous datasources.");
+    log().info(
+        "Config changed. Removing {} datasources and initializing {}.",
+        previousDataSources.size(),
+        constructionInputs.size());
     for (auto const& dataSource : previousDataSources) {
         removeDataSource(dataSource, false);
     }

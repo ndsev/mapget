@@ -1,4 +1,5 @@
 #include "tiles-request-json.h"
+#include "mapget/model/pointcloud-sampler.h"
 
 #include <algorithm>
 #include <array>
@@ -225,6 +226,11 @@ FeatureLayerStoredRelationOptions parseRelation(
         throw std::runtime_error("channel.relation must be an object");
     }
     FeatureLayerStoredRelationOptions result;
+    auto traversal = relation.value("traversal", std::string("outgoing"));
+    if (traversal != "outgoing" && traversal != "incoming") {
+        throw std::runtime_error("channel.relation.traversal must be outgoing or incoming");
+    }
+    result.incoming_ = traversal == "incoming";
     result.relationNamePattern_ =
         optionalString(relation, "namePattern");
     if (auto found = relation.find("recursive");
@@ -304,6 +310,12 @@ FeatureLayerFilterChannel parseChannel(
         if (*geometryName != "*") {
             channel.geometryName_ = std::move(*geometryName);
         }
+    }
+    if (auto found = channelJson.find("pointCloudMaxPoints"); found != channelJson.end()) {
+        if (!found->is_number_integer() || found->get<int64_t>() < 0 ||
+            found->get<int64_t>() > DefaultPointCloudMaxPoints)
+            throw std::invalid_argument("channel.pointCloudMaxPoints must be an integer in 0..13999999");
+        channel.pointCloudMaxPoints_ = found->get<uint32_t>();
     }
     if (auto found = channelJson.find("group");
         found != channelJson.end())
@@ -710,6 +722,10 @@ ParsedLayerTilesRequest parseLayerTilesRequestJson(
         }
         result.filterRequest =
             parseFilterDefinition(requestJson, true);
+        if (std::ranges::any_of(result.filterRequest->channels_, [](auto const& channel) {
+                return channel.relation_ && channel.relation_->incoming_;
+            }))
+            throw std::runtime_error("Incoming relation inspection is supported only by POST /filter");
     }
     return result;
 }
@@ -824,6 +840,7 @@ nlohmann::json filterRequestToJson(
                  ? nlohmann::json(*channel.geometryName_)
                  : nlohmann::json("*")},
         });
+        if (channel.pointCloudMaxPoints_) json["pointCloudMaxPoints"] = *channel.pointCloudMaxPoints_;
         if (channel.featureFilter_) {
             json["featureFilter"] = *channel.featureFilter_;
         }
@@ -847,6 +864,7 @@ nlohmann::json filterRequestToJson(
         }
         if (channel.relation_) {
             json["relation"] = {
+                {"traversal", channel.relation_->incoming_ ? "incoming" : "outgoing"},
                 {"recursive", channel.relation_->recursive_},
                 {"mergeTwoway", channel.relation_->mergeTwoway_},
             };

@@ -147,7 +147,7 @@ class HttpStreamCloseTest(unittest.TestCase):
                     entries = layer["channels"][0]["featureEntries"]
                     self.assertEqual(len(entries), 1)
                     ids.append(entries[0]["featureId"])
-                    self.assertEqual(entries[0]["values"], [self.PAYLOAD])
+                    self.assertEqual(entries[0]["values"], [[self.PAYLOAD]])
             self.assertCountEqual(ids, [f"Way.{tile_id}" for tile_id in tile_ids])
             return
         # VTLV is version (3 uint16), type (uint8), length (uint32), then payload.
