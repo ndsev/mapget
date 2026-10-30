@@ -22,8 +22,10 @@ TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
     std::function<void(PartitionLayer::Ptr)> onParsedLayer,
     std::shared_ptr<StringPoolCache> stringPoolProvider,
-    std::function<void(MessageType, std::string_view)> onControlMessage)
+    std::function<void(MessageType, std::string_view)> onControlMessage,
+    SchemaResolveFun schemas)
     : layerInfoProvider_(std::move(layerInfoProvider)),
+      schemas_(std::move(schemas)),
       stringPoolProvider_(
           stringPoolProvider ? std::move(stringPoolProvider) :
                                std::make_shared<TileLayerStream::StringPoolCache>()),
@@ -93,7 +95,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
 
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
@@ -105,7 +108,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::PartitionSourceDataLayer) {
@@ -113,7 +117,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::StringPool)

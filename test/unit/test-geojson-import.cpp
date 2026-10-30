@@ -358,6 +358,54 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "PartitionFeatureLayer GeoJSON import infers the sole produced feature type",
+    "[GeoJsonImport]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"json(
+    {
+      "layerId": "RoadLayer",
+      "type": "Features",
+      "featureTypes": [
+        {
+          "name": "Road",
+          "uniqueIdCompositions": [[
+            {"partId": "roadId", "datatype": "U32", "isSynthetic": true}
+          ]]
+        },
+        {
+          "name": "Target",
+          "uniqueIdCompositions": [[{"partId": "targetId", "datatype": "U32"}]]
+        }
+      ],
+      "featureModelSchema": {
+        "type": "object",
+        "x-mapget": {"metaType": "Feature", "featureType": "Road"}
+      }
+    })json"_json);
+    REQUIRE(layerInfo->featureTypes().size() == 2);
+    REQUIRE(layerInfo->layerSchema()->featureTypes() == std::vector<std::string>{"Road"});
+    REQUIRE_FALSE(layerInfo->layerSchema()->producesFeatureType("Target"));
+
+    auto tile = makeTile(131073, layerInfo, "ProducedTypeImportNode");
+    auto input = R"json(
+    {
+      "type": "FeatureCollection",
+      "features": [{
+        "type": "Feature",
+        "geometry": null,
+        "relations": [{"name": "target", "target": "Target.7"}]
+      }]
+    })json"_json;
+    REQUIRE_NOTHROW(tile->fromJson(input, GeoJsonImportOptions{.strict_ = false}));
+
+    auto output = tile->toJson();
+    REQUIRE(output["features"].size() == 1);
+    REQUIRE(output["features"][0]["typeId"] == "Road");
+    REQUIRE(output["features"][0]["id"] == "Road.0");
+    REQUIRE(output["features"][0]["relations"][0]["target"] == "Target.7");
+}
+
+TEST_CASE(
     "PartitionFeatureLayer GeoJSON import accepts attributes as properties alias",
     "[GeoJsonImport]")
 {

@@ -149,16 +149,19 @@ PartitionFeatureModelLayerBase::PartitionFeatureModelLayerBase(
     std::shared_ptr<simfil::StringPool> const& strings)
     : PartitionLayer(tileId, stringPoolId, mapId, layerInfo), simfil::ModelPool(strings)
 {
+    installSchemaResolver(*this);
 }
 
 PartitionFeatureModelLayerBase::PartitionFeatureModelLayerBase(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
     StringPoolResolveFun const& stringPoolGetter,
-    size_t* bytesRead)
+    size_t* bytesRead,
+    SchemaResolveFun const& schemas)
     : PartitionLayer(input, layerInfoResolveFun, bytesRead),
       simfil::ModelPool(stringPoolGetter(stringPoolId_))
 {
+    installSchemaResolver(*this, schemas);
 }
 
 model_ptr<Object> PartitionFeatureModelLayerBase::getIdPrefix() const
@@ -188,6 +191,9 @@ MemoryUsageBreakdown PartitionFeatureModelLayerBase::memoryUsage() const
     result.add("model-pool.object-schemas", model.objectSchemas);
     result.add("model-pool.array-members", model.arrayMembers);
     result.add("model-pool.array-schemas", model.arraySchemas);
+    result.add("model-pool.qualified-scalars", model.qualifiedScalars);
+    result.add("model-pool.bitmasks", model.bitmasks);
+    result.add("model-pool.schema-bindings", model.schemaBindings);
 
     result.add("common.feature-ids", featureIds_.memory_usage());
     result.add("common.geometry-source-data-references", geomSourceDataRefs_.memory_usage());

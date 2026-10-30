@@ -13,6 +13,7 @@
 #include "simfil/simfil.h"
 
 #include "py-model.h"
+#include "py-schema.h"
 
 namespace py = pybind11;
 using namespace py::literals;
@@ -473,19 +474,77 @@ void bindTileLayer(py::module_& m)
         .def_readonly("relation_index", &IncomingRelationReference::relationIndex_, "Original zero-based relation ordinal.")
         .def_readonly("name", &IncomingRelationReference::name_, "Stored relation name.")
         .def_readonly("target_feature_id", &IncomingRelationReference::targetFeatureId_, "Backend-resolved canonical target ID.");
-    py::class_<IncomingRelationCollection>(m, "IncomingRelationCollection", "Typed incoming manifest with dependency completeness and expiry.")
-        .def_static("from_json", [](std::string const& value) {
-            return IncomingRelationCollection::fromJson(nlohmann::json::parse(value));
-        }, "Parse and validate a versioned incoming manifest.")
-        .def("to_json", [](IncomingRelationCollection const& value) { return value.toJson().dump(); }, "Serialize the manifest as JSON.")
-        .def("to_dict", [](IncomingRelationCollection const& value) { return layerJsonToPython(value.toJson()); }, "Return the manifest as Python values.")
-        .def_readonly("target", &IncomingRelationCollection::target_, "Selected target partition key.")
-        .def_readonly("feature_id", &IncomingRelationCollection::featureId_, "Selected canonical feature ID.")
-        .def_readonly("snapshots", &IncomingRelationCollection::snapshots_, "Required feature snapshot keys.")
-        .def_readonly("relations", &IncomingRelationCollection::relations_, "Backend-associated source relation descriptors.")
-        .def_readonly("complete", &IncomingRelationCollection::complete_, "Whether all declared eligible families were fully inspected.")
+    py::enum_<IncomingRelationCollection::Status>(
+        m,
+        "IncomingRelationStatus",
+        "Incoming discovery outcome within the explicitly reported provider partitions.")
+        .value(
+            "NO_POSSIBLE_FAMILY",
+            IncomingRelationCollection::Status::NoPossibleFamily,
+            "The authorized available schema admits no incoming family in this scope.")
+        .value(
+            "COMPLETE",
+            IncomingRelationCollection::Status::Complete,
+            "All admitted provider partitions were fully inspected, not the whole map.")
+        .value(
+            "PARTIAL",
+            IncomingRelationCollection::Status::Partial,
+            "Some admitted work is incomplete; inspect issues and scope.")
+        .value(
+            "UNSUPPORTED_SCOPE",
+            IncomingRelationCollection::Status::UnsupportedScope,
+            "The requested provider scope cannot be inspected by this operation.");
+    py::class_<IncomingRelationCollection>(
+        m,
+        "IncomingRelationCollection",
+        "Typed incoming manifest with dependency completeness and expiry.")
+        .def_static(
+            "from_json",
+            [](std::string const& value)
+            { return IncomingRelationCollection::fromJson(nlohmann::json::parse(value)); },
+            "Parse and validate a versioned incoming manifest.")
+        .def(
+            "to_json",
+            [](IncomingRelationCollection const& value) { return value.toJson().dump(); },
+            "Serialize the manifest as JSON.")
+        .def(
+            "to_dict",
+            [](IncomingRelationCollection const& value)
+            { return layerJsonToPython(value.toJson()); },
+            "Return the manifest as Python values.")
+        .def_readonly(
+            "target",
+            &IncomingRelationCollection::target_,
+            "Selected target partition key.")
+        .def_readonly(
+            "feature_id",
+            &IncomingRelationCollection::featureId_,
+            "Selected canonical feature ID.")
+        .def_readonly(
+            "snapshots",
+            &IncomingRelationCollection::snapshots_,
+            "Required feature snapshot keys.")
+        .def_readonly(
+            "relations",
+            &IncomingRelationCollection::relations_,
+            "Backend-associated source relation descriptors.")
+        .def_readonly(
+            "complete",
+            &IncomingRelationCollection::complete_,
+            "Whether all declared eligible families were fully inspected.")
+        .def_readonly(
+            "status",
+            &IncomingRelationCollection::status_,
+            "Typed outcome within scope, never a global completeness assertion.")
+        .def_readonly(
+            "scope",
+            &IncomingRelationCollection::scope_,
+            "Admitted provider partition keys, including providers with zero matching relations.")
         .def_readonly("issues", &IncomingRelationCollection::issues_, "Partial-result diagnostics.")
-        .def_readonly("expires_at_ms", &IncomingRelationCollection::expiresAtMs_, "Earliest finite dependency expiry, or None.");
+        .def_readonly(
+            "expires_at_ms",
+            &IncomingRelationCollection::expiresAtMs_,
+            "Earliest finite dependency expiry, or None.");
     py::class_<FeatureInspectionView>(m, "FeatureInspectionView", "Owns the selected target and validated original source relation models.")
         .def(py::init<IncomingRelationCollection, std::vector<PartitionFeatureLayer::Ptr>>(),
              "Validate a manifest and retain its supporting snapshots.")
@@ -525,6 +584,21 @@ void bindTileLayer(py::module_& m)
             "layer_id",
             [](PartitionLayer const& self) { return self.layerInfo()->layerId_; },
             "Get the layer id.")
+        .def_property_readonly(
+            "map_schema",
+            [](PartitionLayer const& self)
+            { return self.layerInfo()->schemaOwner(); },
+            "Return this partition's immutable schema owner, not a newer catalog replacement.")
+        .def_property_readonly(
+            "layer_schema",
+            [](PartitionLayer const& self)
+            {
+                auto layer = self.layerInfo()->layerSchema();
+                if (!layer || !layer->mapSchema()->finalized())
+                    throw py::value_error("A layer in a finalized MapSchema is required");
+                return layer;
+            },
+            "Return the bound LayerSchema view, retaining the exact graph used by this payload.")
         .def("error", &PartitionLayer::error, "Get the tile error if one was set.")
         .def(
             "set_error",
@@ -578,7 +652,11 @@ void bindTileLayer(py::module_& m)
                             return;
                         } else if constexpr (std::is_same_v<V, ByteArray>) {
                             self.setInfo(key, vv.toHex());
-                        } else {
+                        }
+                        else if constexpr (std::is_same_v<V, simfil::Bitmask>) {
+                            self.setInfo(key, vv.toJson());
+                        }
+                        else {
                             self.setInfo(key, vv);
                         }
                     },
@@ -665,6 +743,9 @@ void bindTileLayer(py::module_& m)
                         else if constexpr (std::is_same_v<V, ByteArray>) {
                             // Store bytes in hex to keep JSON valid and readable.
                             self.setInfo(k, vv.toHex());
+                        }
+                        else if constexpr (std::is_same_v<V, simfil::Bitmask>) {
+                            self.setInfo(k, vv.toJson());
                         }
                         else {
                             self.setInfo(k, vv);

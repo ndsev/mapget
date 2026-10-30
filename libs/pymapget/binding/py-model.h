@@ -72,9 +72,23 @@ struct BoundModelNodeBase : public BoundModelNode
             Concrete subclasses represent objects, arrays, features, attributes,
             geometry, feature ids, subset entries, and other typed nodes.
         )pbdoc")
+            .def_property_readonly(
+                "schema_reference",
+                [](BoundModelNode& self)
+                {
+                    auto node = self.node();
+                    return node ? node->schemaReference() : simfil::SchemaReference{};
+                },
+                R"pbdoc(
+                Return an explicit, owner-retaining SchemaReference for this node.
+                Unqualified scalar leaves may be described only by their parent edge;
+                a detached leaf cannot recover that context. Empty means unknown.
+                Ordinary JSON export keeps qualified primitive values primitive.
+            )pbdoc")
             .def(
                 "value",
-                [](BoundModelNode& self) {
+                [](BoundModelNode& self)
+                {
                     if (auto n = self.node())
                         return n->value();
                     return ScalarValueType{};
@@ -87,7 +101,8 @@ struct BoundModelNodeBase : public BoundModelNode
         )pbdoc")
             .def(
                 "to_json",
-                [](BoundModelNode& self) {
+                [](BoundModelNode& self)
+                {
                     if (auto n = self.node())
                         return n->toJson().dump();
                     return std::string("null");
@@ -97,7 +112,8 @@ struct BoundModelNodeBase : public BoundModelNode
             )pbdoc")
             .def(
                 "to_dict",
-                [](BoundModelNode& self) -> py::object {
+                [](BoundModelNode& self) -> py::object
+                {
                     if (auto n = self.node()) {
                         auto& model = self.featureModelLayer();
                         return nodeToPython(n, model);
@@ -123,6 +139,7 @@ struct BoundModelNodeBase : public BoundModelNode
             .value("FLOAT", ValueType::Float)
             .value("STRING", ValueType::String)
             .value("BYTES", ValueType::Bytes)
+            .value("BITMASK", ValueType::Bitmask)
             .value("OBJECT", ValueType::Object)
             .value("ARRAY", ValueType::Array);
 
@@ -219,6 +236,10 @@ ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
     }
     else if (py::isinstance<BoundModelNode>(pyValue)) {
         return pyValue.cast<BoundModelNode&>().node();
+    }
+    else if (py::isinstance<simfil::Bitmask>(pyValue)) {
+        auto const& value = pyValue.cast<simfil::Bitmask const&>();
+        return model.newBitmask(value.bits, value.domain);
     }
     else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.
@@ -1557,6 +1578,8 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
                 d["number"] = py::none();
             return d;
         }
+        else if constexpr (std::is_same_v<T, simfil::Bitmask>)
+            return py::cast(val);
         else
             return py::none();
     }, v);

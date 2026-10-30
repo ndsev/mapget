@@ -46,6 +46,9 @@ public:
     [[nodiscard]] bool isSourceDataAddressScope() const;
 
     void setSchemaName(std::string_view name);
+    /** Attach an exact raw-domain identity from this partition's immutable MapSchema. */
+    void setSchema(simfil::SchemaId id);
+    [[nodiscard]] simfil::SchemaId schema() const override;
     std::string_view schemaName() const;
 
     /**

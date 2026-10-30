@@ -11,6 +11,7 @@ add_library(mapget-model STATIC
   include/mapget/model/geojson-import.h
   include/mapget/model/json-compare.h
   include/mapget/model/layerschema.h
+  include/mapget/model/mapschema.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
@@ -50,6 +51,7 @@ add_library(mapget-model STATIC
   src/geojson-import.cpp
   src/json-compare.cpp
   src/layerschema.cpp
+  src/mapschema.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
@@ -86,6 +88,8 @@ target_link_libraries(mapget-model
     tl::expected
     nlohmann_json::nlohmann_json
     nlohmann_json_schema_validator)
+
+target_link_libraries(mapget-model PRIVATE picosha2)
 
 if (MSVC)
   target_compile_definitions(mapget-model

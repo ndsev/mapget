@@ -15,7 +15,11 @@
 #include <vector>
 #include <tl/expected.hpp>
 
-namespace simfil { struct StringPool; }
+namespace simfil
+{
+struct StringPool;
+class ModelPool;
+}  // namespace simfil
 
 namespace mapget
 {
@@ -127,6 +131,13 @@ public:
     [[nodiscard]] MapPartitionKey partitionKey() const { return MapPartitionKey(*this); }
     /** The partition owning all nodes in this payload. */
     [[nodiscard]] PartitionId const& partitionId() const { return partitionId_; }
+
+    /** Exact schema artifact pinned by this partition, independent of datasource reloads. */
+    [[nodiscard]] std::string_view schemaId() const;
+
+    /** Install an exact, in-memory schema resolver for a partition's ModelPool payload. */
+    void
+    installSchemaResolver(simfil::ModelPool& model, SchemaResolveFun const& schemas = {}) const;
 
     /**
      * Getter and setter for layer's tileId. This controls the rough

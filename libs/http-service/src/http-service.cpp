@@ -84,6 +84,14 @@ void HttpService::setup(drogon::HttpAppFramework& app)
         {drogon::Get});
 
     app.registerHandler(
+        "/schema",
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        { impl_->handleSchemaRequest(req, std::move(callback)); },
+        {drogon::Get});
+
+    app.registerHandler(
         "/sources",
         [this](
             const drogon::HttpRequestPtr& req,

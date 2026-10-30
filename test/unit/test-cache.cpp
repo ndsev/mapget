@@ -72,31 +72,26 @@ namespace {
             ]
         })"_json);
 
-        return std::make_shared<LayerInfo>(LayerInfo{
-            layerInfo->layerId_,
-            layerInfo->type_,
-            layerInfo->featureTypes_,
-            std::vector<int>{0, 1, 2},
-            std::vector<Coverage>{
-                {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
-                {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
-            true,
-            false,
-            Version{0, 0, 0}});
+        layerInfo->zoomLevels_ = {0, 1, 2};
+        layerInfo->coverage_ = {
+            {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
+            {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}};
+        return layerInfo;
     }
 
     std::shared_ptr<LayerInfo> createMetadataSourceDataLayerInfo() {
         return LayerInfo::fromJson(R"({
             "layerId": "Metadata-Test",
-            "type": "SourceData"
+            "type": "SourceData",
+            "featureModelSchema": {}
         })"_json);
     }
 
     DataSourceInfo createTestDataSourceInfo(const std::string& stringPoolId, const std::string& mapId, std::shared_ptr<LayerInfo> layerInfo) {
         std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         layers[layerInfo->layerId_] = layerInfo;
-        
-        return DataSourceInfo{
+
+        auto result = DataSourceInfo{
             stringPoolId,
             mapId,
             layers,
@@ -104,6 +99,8 @@ namespace {
             false,
             nlohmann::json::object(),
             TileLayerStream::CurrentProtocolVersion};
+        result.setMapSchema(layerInfo->schemaOwner());
+        return result;
     }
 
     std::string createSerializedStringPoolMessage(

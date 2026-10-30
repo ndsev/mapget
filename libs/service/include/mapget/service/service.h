@@ -678,6 +678,17 @@ public:
     std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
 
     /**
+     * Return the immutable schema currently bound to an authorized, ready source.
+     * Both IDs must match exactly. Missing, unauthorized, removed, or rebound sources
+     * return null; a shared content-cache hit never bypasses the source check.
+     * This only acquires an initialized owner: no schema construction or network I/O.
+     */
+    [[nodiscard]] std::shared_ptr<MapSchema const> getSchema(
+        std::string_view sourceId,
+        std::string_view schemaId,
+        std::optional<AuthHeaders> const& clientHeaders = {}) const;
+
+    /**
      * Ordered datasource catalog including initializing/failed config entries.
      * Set `waitUntilReloadDone` when serving legacy callers that expect `/sources`
      * to block until the current config-backed datasource reload has completed.

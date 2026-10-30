@@ -83,7 +83,7 @@ void resolveVisiblePartLayout(
                                            std::is_same_v<T, std::string>) {
                             prefixFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
                         }
-                        else {
+                        else if constexpr (std::is_integral_v<T>) {
                             prefixFeatureIdParts.emplace_back(*keyStr, static_cast<int64_t>(v));
                         }
                     },
@@ -145,8 +145,9 @@ void appendTypedKeyValue(
         [&](auto&& v)
         {
             using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, simfil::ByteArray>) {
-                raiseFmt("FeatureId part '{}' cannot be a ByteArray.", *keyStr);
+            if constexpr (
+                std::is_same_v<T, simfil::ByteArray> || std::is_same_v<T, simfil::Bitmask>) {
+                raiseFmt("FeatureId part '{}' must be an integer or string.", *keyStr);
             }
             else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>) {
                 fn(*keyStr, v);

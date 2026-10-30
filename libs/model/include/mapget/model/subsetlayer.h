@@ -563,7 +563,8 @@ public:
     PartitionSubsetLayer(
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     ~PartitionSubsetLayer() override;
 
@@ -598,8 +599,6 @@ public:
 
     void setGlbAttachmentName(std::optional<std::string> name);
     [[nodiscard]] std::optional<std::string> const& glbAttachmentName() const;
-
-    [[nodiscard]] simfil::ModelNode::Ptr materializeValue(simfil::Value const& value);
 
     model_ptr<TileSubsetChannel> newChannel(
         std::string_view channelId,

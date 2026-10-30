@@ -56,7 +56,7 @@ public:
      * Return one shared AST, compiling on a miss and retaining the result while
      * capacity permits. Deterministic compilation failures are retained too.
      *
-     * `schemaIdentity` must remain immutable while its entries are cached.
+     * `schemaIdentity` must be finalized; keys use its exact artifact identity and layer name.
      * `compileContext` must distinguish every other compile-affecting input,
      * including constants, bindings, and custom compiler environment state. It
      * need only be stable for this cache's lifetime.
@@ -64,7 +64,7 @@ public:
     [[nodiscard]] tl::expected<simfil::SharedAST, simfil::Error> getOrCompile(
         std::string_view query,
         simfil::CompileOptions options,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> const& schemaIdentity,
         std::string_view compileContext,
         CompileFunction const& compile);
 

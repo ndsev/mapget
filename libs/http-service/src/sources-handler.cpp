@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
+#include <set>
 
 #include "fmt/format.h"
+#include "mapget/model/layerschema.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
 
@@ -92,9 +95,41 @@ void HttpService::Impl::handleSourcesRequest(
         return;
     }
 
+    // A small, authorization-filtered capability projection. This is derived from
+    // finalized forward declarations, not a producer opt-in or a second schema.
+    std::map<std::string, std::set<std::string>> possibleTargets;
+    std::set<std::string> unknownMaps;
+    for (auto const& source : catalog.sources) {
+        if (!source.info)
+            continue;
+        for (auto const& [_, layer] : source.info->layers_) {
+            if (!layer->canRead_ || layer->type_ != LayerType::Features)
+                continue;
+            auto schema = layer->layerSchema();
+            if (!schema->hasRelationDeclarations())
+                unknownMaps.insert(source.info->mapId_);
+            for (auto const& family : schema->relationDeclarations())
+                possibleTargets[source.info->mapId_]
+                    .insert(family.targetTypes_.begin(), family.targetTypes_.end());
+        }
+    }
     auto sourcesInfo = nlohmann::json::array();
-    for (auto& source : catalog.sources) {
-        sourcesInfo.push_back(sourceCatalogEntryToJson(source));
+    for (auto const& source : catalog.sources) {
+        auto json = sourceCatalogEntryToJson(source);
+        if (source.info) {
+            for (auto const& [name, layer] : source.info->layers_) {
+                if (layer->type_ != LayerType::Features)
+                    continue;
+                auto eligible = nlohmann::json::array();
+                for (auto const& type : layer->layerSchema()->featureTypes())
+                    if (possibleTargets[source.info->mapId_].contains(type))
+                        eligible.push_back(type);
+                json["layers"][name]["incomingRelationTargetTypes"] = std::move(eligible);
+                json["layers"][name]["incomingRelationCoverageUnknown"] =
+                    unknownMaps.contains(source.info->mapId_);
+            }
+        }
+        sourcesInfo.push_back(std::move(json));
     }
 
     auto resp = drogon::HttpResponse::newHttpResponse();

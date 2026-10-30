@@ -1228,8 +1228,9 @@ importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJ
     if (options.fallbackFeatureType_) {
         return *options.fallbackFeatureType_;
     }
-    if (tile.layerInfo()->featureTypes_.size() == 1) {
-        return tile.layerInfo()->featureTypes_.front().name_;
+    auto const producedTypes = tile.layerInfo()->layerSchema()->featureTypes();
+    if (producedTypes.size() == 1) {
+        return producedTypes.front();
     }
     raiseImport("Could not determine feature type. Missing 'typeId' and no fallback feature type was configured.");
     return {};

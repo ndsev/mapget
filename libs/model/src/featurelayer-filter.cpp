@@ -217,7 +217,7 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
 
     std::set<std::string> channelIds;
     auto const layerInfo = sourceLayer.layerInfo();
-    auto const canValidateTypes = layerInfo && !layerInfo->featureTypes_.empty();
+    auto const canValidateTypes = layerInfo && !layerInfo->featureTypes().empty();
     for (auto const& channel : channels_) {
         if (channel.relation_ && channel.relation_->incoming_) {
             return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
@@ -528,7 +528,7 @@ public:
             std::move(fields),
             traces,
             expressionCache,
-            sourceLayer.layerSchema().get(),
+            sourceLayer.layerSchema(),
             bindingCompileContext(bindings)));
     }
 
@@ -646,7 +646,7 @@ private:
         std::vector<std::pair<simfil::StringId, simfil::Value>> bindings,
         std::map<std::string, simfil::Trace>& traces,
         SimfilExpressionCache& expressionCache,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> schemaIdentity,
         std::string compileContext)
         : environment_(std::move(environment)),
           bindings_(std::move(bindings)),
@@ -748,7 +748,7 @@ private:
     std::vector<std::pair<simfil::StringId, simfil::Value>> bindings_;
     std::map<std::string, simfil::Trace>& traces_;
     SimfilExpressionCache& expressionCache_;
-    LayerSchema const* schemaIdentity_ = nullptr;
+    simfil::model_ptr<LayerSchema> schemaIdentity_ = nullptr;
     std::string compileContext_;
     std::map<ProgramKey, simfil::BoundExpression> programs_;
 };
@@ -2823,7 +2823,7 @@ PartitionFeatureLayer::find(
         auto compiled = compileCache.getOrCompile(
             expression,
             options,
-            layerSchema().get(),
+            layerSchema(),
             bindingCompileContext(selector.bindings_),
             [&] { return simfil::compile(*environment, expression, options); });
         if (!compiled) {

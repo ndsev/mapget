@@ -1182,6 +1182,7 @@ function renderMemory(memory) {
         const mapget = memory.mapget || {};
         const transport = memory.transport || {};
         const rest = transport["rest-streams"] || {};
+        const schemas = transport["schema-artifacts"] || {};
         const interactive = transport.interactive || {};
         appendMemoryRow(body, "Process RSS", "Physical pages currently resident for this process. RSS includes anonymous and file-backed pages and is not the same as allocated heap capacity.", process["resident-bytes"] || 0, process["resident-peak-bytes"] ?? null);
         if (process["resident-anonymous-bytes"] !== undefined) appendMemoryRow(body, "Anonymous resident pages", "Resident anonymous mappings, primarily allocator arenas, thread stacks, and opaque anonymous mappings.", process["resident-anonymous-bytes"]);
@@ -1200,6 +1201,7 @@ function renderMemory(memory) {
         appendMemoryRow(body, "Datasource-owned state", "Datasource-provided cooperative estimates of retained state. Estimator coverage and exactness depend on each datasource implementation.", memory["datasource-measured-bytes"] || 0);
         appendMemoryRow(body, "Cache", "Allocated serialized tile blobs, indexes, and retained datasource string-pool state owned by the selected cache implementation.", memory["cache-current-bytes"] || 0);
         appendMemoryRow(body, "REST pending stream buffers", "Capacity retained by active stateless streaming responses while clients consume their payloads.", rest["pending-capacity-bytes"] || 0, rest["peak-pending-capacity-bytes"] ?? null);
+        appendMemoryRow(body, "Schema artifact buffers", "Encoded schema capacity retained by the one-entry HTTP cache or active schema responses, counted once even when several responses share a buffer. Evicted buffers remain counted until their last response finishes. Excludes decoded schemas, already counted under mapget metadata.", schemas["allocated-bytes"] || 0);
         appendMemoryRow(body, "Interactive pending frame buffers", "Capacity retained by interactive sessions for binary frames waiting to be pulled by clients.", interactive["pending-controller-allocated-bytes"] || 0, interactive["peak-pending-controller-allocated-bytes"] ?? null);
         if (reconciliation["allocator-live-outside-known-ownership-bytes"] !== undefined) appendMemoryRow(body, "Allocator live outside known ownership", "Diagnostic difference between allocator-live bytes and instrumented ownership. It can include uninstrumented heap, allocator bookkeeping, and estimator mismatch.", reconciliation["allocator-live-outside-known-ownership-bytes"]);
         if (reconciliation["anonymous-resident-outside-allocator-live-bytes"] !== undefined) appendMemoryRow(body, "Anonymous residency outside allocator live", "Diagnostic difference between anonymous RSS and allocator-live bytes. Common causes are resident allocator slack or fragmentation, thread stacks, and opaque anonymous mappings.", reconciliation["anonymous-resident-outside-allocator-live-bytes"]);

@@ -128,8 +128,10 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
     if (!attributeLayerNodeAddress()) {
         auto result = model().newAttributeLayers();
-        if (auto schemaId = model().attributeLayerMapSchemaId(typeId());
-            schemaId != simfil::NoSchemaId) {
+        if (auto schemaId =
+                model().childSchemaId(model().childSchemaId(schema(), "properties"), "layer");
+            schemaId != simfil::NoSchemaId)
+        {
             if (auto schemaResult = result->setObjectSchema(schemaId); !schemaResult) {
                 log().warn("Failed to set attribute-layer-list schema: {}", schemaResult.error().message);
             }
@@ -153,7 +155,7 @@ model_ptr<Object> Feature::attributes()
 {
     if (!attributeNodeAddress()) {
         auto result = model().newObject(8);
-        model().applyObjectSchema(*result, model().featurePropertiesSchemaId(typeId()));
+        model().applyObjectSchema(*result, model().childSchemaId(schema(), "properties"));
         attributeNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -248,7 +250,26 @@ simfil::ValueType Feature::type() const
 
 simfil::SchemaId Feature::schema() const
 {
-    return model().featureSchemaId(typeId());
+    return basicData_->typeId_.schemaId_ ?
+        basicData_->typeId_.schemaId_ :
+        model().featureSchemaId(typeId());
+}
+
+void Feature::setSchema(simfil::SchemaId schemaId)
+{
+    auto checked = model().checkedContainerSchema(
+        schemaId,
+        model().featureSchemaId(typeId()),
+        simfil::ValueType::Object);
+    if (checked == schema())
+        return;
+    // Rebinding an already populated root would silently change its children's domains.
+    auto const& existing = *static_cast<Feature const*>(this);
+    if (existing.attributeNodeAddress() || existing.attributeLayerNodeAddress() ||
+        existing.relationNodeAddress())
+        throw std::logic_error(
+            "Bind the concrete feature schema before populating its containers.");
+    basicData_->typeId_.schemaId_ = checked;
 }
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
@@ -792,7 +813,9 @@ simfil::ValueType Feature::MergedBasicAttributesView::type() const
 simfil::SchemaId Feature::MergedBasicAttributesView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
-        return model().featurePropertiesSchemaId(feature->typeId());
+        if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
+            return attrs->schema();
+        return model().childSchemaId(feature->schema(), "properties");
     }
     return simfil::NoSchemaId;
 }
@@ -862,7 +885,9 @@ simfil::ValueType Feature::FeaturePropertyView::type() const
 simfil::SchemaId Feature::FeaturePropertyView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
-        return model().featurePropertiesSchemaId(feature->typeId());
+        if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
+            return attrs->schema();
+        return model().childSchemaId(feature->schema(), "properties");
     }
     return simfil::NoSchemaId;
 }

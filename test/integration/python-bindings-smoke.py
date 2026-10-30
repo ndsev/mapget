@@ -34,11 +34,14 @@ def main() -> int:
     assert hasattr(mapget, "FeatureInspectionView")
     assert hasattr(mapget.Client, "incoming_relations")
     incoming = mapget.IncomingRelationCollection.from_json(json.dumps({
-        "type": "mapget.incoming.relations", "version": 1,
+        "type": "mapget.incoming.relations", "version": 2,
         "target": "Features:Map:WayLayer:65536", "featureId": "Way.1",
-        "complete": True, "issues": [], "snapshots": ["Features:Map:WayLayer:65536"], "relations": []
+        "complete": True, "status": "complete", "scope": ["Features:Map:WayLayer:65536"],
+        "issues": [], "snapshots": ["Features:Map:WayLayer:65536"], "relations": []
     }))
     assert incoming.complete and incoming.feature_id == "Way.1"
+    assert incoming.status == mapget.IncomingRelationStatus.COMPLETE
+    assert [str(key) for key in incoming.scope] == ["Features:Map:WayLayer:65536"]
     assert incoming.to_dict()["relations"] == []
     assert hasattr(mapget, "FilterRequest")
     assert hasattr(mapget, "FilterChannel")
@@ -177,8 +180,9 @@ def main() -> int:
         tile.new_feature("Way", [("wayId", 2)])
         key = "Features:Map:WayLayer:65536"
         collection = mapget.IncomingRelationCollection.from_json(json.dumps({
-            "type": "mapget.incoming.relations", "version": 1,
+            "type": "mapget.incoming.relations", "version": 2,
             "target": key, "featureId": "Way.2", "complete": True, "issues": [],
+            "status": "complete", "scope": [key],
             "snapshots": [key], "relations": [{"source": key, "featureId": "Way.1",
                 "relationIndex": 0, "name": "next", "targetFeatureId": "Way.2"}]
         }))
@@ -269,6 +273,7 @@ def main() -> int:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
         feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&responseType=json")
+        assert feature_tile["schemaId"] == datasource.map_schema.schema_id
         assert feature_tile["warnings"] == ["nonfatal duplicate fixture"]
         assert "error" not in feature_tile
         assert requested_tiles == [65536]
@@ -305,6 +310,7 @@ def main() -> int:
         assert discovery["ttlMs"] == 5000
         encoded_partition = urllib.parse.quote(partition.to_json())
         object_tile = _get_json(f"{base_url}/tile?layer=ObjectRoad&partition={encoded_partition}&responseType=json")
+        assert object_tile["schemaId"] == datasource.map_schema.schema_id
         assert object_tile["partition"] == {"kind": "object", "id": str(object_id)}
         assert object_tile["features"][0]["id"] == f"Road.{object_id}.1"
 
@@ -312,9 +318,10 @@ def main() -> int:
         assert source_tile.pop("timestamp") > 0
         assert source_tile == {
             "type": "SourceData", "mapId": "Map", "mapgetLayerId": "RawLayer",
+            "schemaId": datasource.map_schema.schema_id,
             "partition": {"kind": "tile", "id": 65536},
             "data": [{"answer": 42}], "warnings": ["partial source diagnostics"],
-        }
+        }, source_tile
 
         locate_response = _post_json(
             f"{base_url}/locate",

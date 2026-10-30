@@ -10,6 +10,7 @@
 #include <queue>
 
 #include "mapget/http-service/http-client.h"
+#include "py-schema.h"
 
 namespace py = pybind11;
 
@@ -504,8 +505,10 @@ void bindHttpClient(py::module_& m)
         Synchronous HTTP client for a running mapget service.
 
         The client fetches `/sources` once during construction, keeps the
-        resulting layer metadata for request decoding, and can submit tile and
-        server-side filter requests.
+        resulting layer metadata and exact immutable schemas for request decoding,
+        and can submit tile and server-side filter requests. Schema hydration completes
+        before a usable source or tile is exposed; raw catalog references are not
+        sufficient to decode schema-bound payloads.
     )pbdoc")
         .def("incoming_relations", [](HttpClient& client, std::string map, std::string layer,
                                      py::object partitionValue, std::string featureId) {
@@ -544,14 +547,16 @@ void bindHttpClient(py::module_& m)
             R"pbdoc(
                 Connect to a running mapget HTTP service.
 
-                The constructor immediately calls `/sources` and caches the
-                ready datasource metadata for the lifetime of this object.
+                The constructor immediately calls `/sources`, resolves each ready
+                source's exact schema with the same authorization, and retains the
+                complete metadata for this object's lifetime. Failed schema resolution
+                raises rather than publishing an unusable source.
 
                 Args:
                     host: Hostname or IP address of the mapget HTTP service.
                     port: TCP port of the mapget HTTP service.
                     headers: Optional HTTP headers sent with `/sources`,
-                        `/tiles`, and `/filter` requests. Use this for auth.
+                        `/schema`, `/tiles`, and `/filter` requests. Use this for auth.
                     enable_compression: Request gzip responses unless the
                         headers already contain an `Accept-Encoding` override.
             )pbdoc",
@@ -560,22 +565,45 @@ void bindHttpClient(py::module_& m)
             py::arg("headers") = AuthHeaders{},
             py::arg("enable_compression") = true)
         .def(
-            "sources",
-            [](HttpClient& self)
+            "get_schema",
+            [](HttpClient& self, std::string const& sourceId, std::string const& expectedId)
             {
-                auto jsonArray = nlohmann::json::array();
-                for (auto const& dsInfo : self.sources())
-                    jsonArray.push_back(dsInfo.toJson());
-                return json_to_py_value(jsonArray);
+                MapSchema::ConstPtr schema;
+                {
+                    py::gil_scoped_release release;
+                    schema = self.getSchema(sourceId, expectedId);
+                }
+                return schema;
             },
+            py::arg("source_id"),
+            py::arg("expected_schema_id"),
             R"pbdoc(
-                Get the sources as they were retrieved when the Client was instantiated.
+                Fetch or reuse the exact schema for an authorized catalog sourceId.
+
+                Use sourceId and schemaId from source discovery, never a mapId inferred
+                from a display name. Authorization and expected identity are checked
+                even on cache hits. Transport, authorization and identity failures raise.
+                The returned read-only MapSchema keeps its graph alive after this client
+                is destroyed. Use write() for binary bytes or layer() for native views.
+            )pbdoc")
+        .def(
+            "sources",
+            [](HttpClient& self) { return json_to_py_value(self.sourceCatalog()); },
+            R"pbdoc(
+                Return detached canonical metadata dictionaries from client initialization.
+                Inline legacy schema/type fields are not re-emitted. Schema owners are
+                installed internally before this method returns; use get_schema with the
+                sourceId/schemaId from these dictionaries to inspect one explicitly.
             )pbdoc")
         .def(
             "request",
             [](HttpClient& self, std::shared_ptr<PyRequest> request)
             {
-                self.request(request);
+                // Python datasource callbacks may need the GIL while this client waits for I/O.
+                {
+                    py::gil_scoped_release release;
+                    self.request(request);
+                }
                 return std::move(request);
             },
             R"pbdoc(
@@ -590,7 +618,10 @@ void bindHttpClient(py::module_& m)
                 for (auto const& channel : request->filter_.channels_)
                     if (channel.relation_ && channel.relation_->incoming_)
                         throw py::value_error("Use Client.incoming_relations to receive typed incoming inspection results");
-                self.filter(request);
+                {
+                    py::gil_scoped_release release;
+                    self.filter(request);
+                }
                 return std::move(request);
             },
             R"pbdoc(

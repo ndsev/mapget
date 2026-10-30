@@ -16,6 +16,21 @@
 
 using namespace mapget;
 
+TEST_CASE("Static field names resolve to their procedural field IDs", "[model][schema2]")
+{
+    StringPool strings("StaticVocabulary");
+    // Duplicate names at different IDs make string lookups disagree with procedural get().
+    for (simfil::StringId id = 1; id < simfil::StringPool::FirstDynamicId; ++id) {
+        if (auto name = strings.resolve(id)) {
+            CAPTURE(id, *name);
+            CHECK(strings.get(*name) == id);
+        }
+    }
+    CHECK(strings.get("name") == StringPool::NameStr);
+    CHECK(strings.get("bitmask") == StringPool::SchemaBitmaskStr);
+    CHECK(LayerSchema::BitmaskKind == simfil::Schema::Kind::Bitmask);
+}
+
 TEST_CASE("Action-control frames use the ordinary stream control callback", "[interactive-session]")
 {
     auto const payload =
@@ -91,7 +106,8 @@ TEST_CASE(
 {
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "SourceData-Test",
-        "type": "SourceData"
+        "type": "SourceData",
+        "featureModelSchema": {}
     })"_json);
     auto strings = std::make_shared<StringPool>("SourceDataScopeNode");
     auto tile = std::make_shared<PartitionSourceDataLayer>(

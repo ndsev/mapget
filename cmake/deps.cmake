@@ -59,6 +59,8 @@ CPMAddPackage(
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
 CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
+# Exact schema identities are also needed by model-only/WASM consumers.
+CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
     OPTIONS
@@ -222,7 +224,6 @@ endif()
             "YAML_CPP_BUILD_TOOLS OFF"
             "YAML_CPP_BUILD_CONTRIB OFF")
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
-    CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
 endif ()
 

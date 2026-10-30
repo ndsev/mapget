@@ -9,9 +9,10 @@
 #include <limits>
 #include <set>
 
-#include "mapget/log.h"
 #include "fmt/format.h"
 #include "glm/ext.hpp"
+#include "mapget/log.h"
+#include "mapget/model/mapschema.h"
 
 using namespace mapget;
 using namespace mapget::gridsource;
@@ -113,6 +114,7 @@ nlohmann::json trafficFeatureSchema(const LayerConfig& layer) {
     nlohmann::json schema = {
         {"$schema", "http://json-schema.org/draft-07/schema#"},
         {"type", "object"},
+        {"x-mapget", {{"metaType", "Feature"}, {"featureType", layer.featureType}}},
         {"required", nlohmann::json::array({"type", "typeId", "properties"})},
         {"additionalProperties", true}};
     schema["properties"]["type"] = {{"const", "Feature"}};
@@ -720,43 +722,57 @@ DataSourceInfo GridDataSource::info() {
         allFeatureTypes.insert(layer.featureType);
     }
 
-    // Register each layer with ALL feature types (for cross-layer relations)
+    auto contract = nlohmann::json::object();
     for (const auto& layer : config_.layers) {
-        nlohmann::json layerInfo;
-        layerInfo["featureTypes"] = nlohmann::json::array();
+        auto layerInfo = nlohmann::json::object();
+        contract[layer.name] = {{"featureType", layer.featureType}, {"schema", nullptr}};
         if (layer.kind == LayerKind::Traffic) {
             layerInfo["zoomLevels"] = nlohmann::json::array({layer.traffic->tileLevel});
-            layerInfo["featureModelSchema"] = trafficFeatureSchema(layer);
+            contract[layer.name]["schema"] = trafficFeatureSchema(layer);
         }
-
-        // Register all feature types in this layer
-        for (const auto& typeName : allFeatureTypes) {
-            nlohmann::json featureType;
-            featureType["name"] = typeName;
-
-            nlohmann::json idComp = nlohmann::json::array();
-            idComp.push_back({
-                {"partId", "tileId"},
-                {"description", "Tile identifier"},
-                {"datatype", "I64"}
-            });
-            idComp.push_back({
-                {"partId", typeName + "Id"},
-                {"description", "Per-tile unique ID"},
-                {"datatype", "U32"}
-            });
-
-            featureType["uniqueIdCompositions"] = nlohmann::json::array();
-            featureType["uniqueIdCompositions"].push_back(idComp);
-
-            layerInfo["featureTypes"].push_back(featureType);
-        }
-
         info["layers"][layer.name] = layerInfo;
         mapget::log().debug("  Layer '{}' with {} feature types", layer.name, allFeatureTypes.size());
     }
 
-    return DataSourceInfo::fromJson(info);
+    // Coalesce before compiling; map names, coverage and dictionaries are not schema identity.
+    auto schema = MapSchema::getOrBuild(
+        "mapget.gridsource.schema2:v1:" + contract.dump() + ":" +
+            nlohmann::json(allFeatureTypes).dump(),
+        [contract, allFeatureTypes]
+        {
+            auto owner = std::make_shared<MapSchema>();
+            for (auto const& [name, definition] : contract.items()) {
+                auto const producedType = definition.at("featureType").get<std::string>();
+                auto layer = definition.at("schema").is_null() ?
+                    owner->newLayer(name, LayerType::Features) :
+                    owner->importLayer(name, LayerType::Features, definition.at("schema"));
+                if (layer->rootSchema() == simfil::NoSchemaId) {
+                    auto root = layer->addSchema(
+                        LayerSchema::FeatureKind,
+                        LayerSchema::featureKey(producedType),
+                        "Feature");
+                    layer->setOpen(root, true);
+                    layer->setTypeName(root, producedType);
+                    layer->setRootSchema(root);
+                }
+                for (auto const& typeName : allFeatureTypes) {
+                    FeatureTypeInfo type{
+                        typeName,
+                        {{{"tileId", "Tile identifier", IdPartDataType::I64},
+                          {typeName + "Id", "Per-tile unique ID", IdPartDataType::U32}}}};
+                    // Other layers' identities are reference targets, not selectable roots.
+                    auto const produced = typeName == producedType;
+                    layer->addFeatureType(
+                        std::move(type),
+                        produced ? layer->rootSchema() : simfil::NoSchemaId,
+                        produced);
+                }
+            }
+            owner->finalize();
+            return owner;
+        });
+    info["schemaId"] = std::string(schema->schemaId());
+    return DataSourceInfo::fromJson(info, [schema](std::string_view) { return schema; });
 }
 
 std::optional<uint64_t> GridDataSource::estimatedRetainedMemoryBytes() const

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/http-datasource/datasource-server.h"
+#include "py-schema.h"
 
 #include <chrono>
 #include <pybind11/functional.h>
@@ -509,7 +510,7 @@ void bindDataSourceServer(py::module_& m)
     )pbdoc")
         .def(
             py::init(
-                [](py::dict const& dict)
+                [](py::dict const& dict, MapSchema::ConstPtr schema)
                 {
                     // import json.dumps
                     py::module json_module = py::module::import("json");
@@ -521,13 +522,36 @@ void bindDataSourceServer(py::module_& m)
                     // parse JSON string into nlohmann::json
                     nlohmann::json j = nlohmann::json::parse(json_str);
 
-                    // construct DataSource
-                    return std::make_unique<DataSourceServer>(DataSourceInfo::fromJson(j));
+                    SchemaResolveFun resolve;
+                    if (schema)
+                        resolve = [owner = schema](std::string_view id)
+                        {
+                            if (id != owner->schemaId())
+                                throw py::value_error(
+                                    "map_schema does not match info_dict schemaId");
+                            return owner;
+                        };
+                    auto info = DataSourceInfo::fromJson(j, resolve);
+                    if (schema) {
+                        // Legacy import still validates its declarations; an explicit owner
+                        // may replace it only when it identifies exactly the same contract.
+                        if (info.schemaId_ != schema->schemaId())
+                            throw py::value_error("map_schema does not match normalized metadata");
+                        info.setMapSchema(schema);
+                    }
+                    return std::make_unique<DataSourceServer>(std::move(info));
                 }),
             R"pbdoc(
-                Construct a DataSource with a DataSourceInfo metadata instance.
+                Construct a datasource from metadata and an optional exact MapSchema.
+
+                Existing featureTypes/featureModelSchema dictionaries normalize through
+                the native legacy adapter without changes. Canonical metadata contains
+                schemaId references instead: pass the matching finalized map_schema.
+                Wrong identity, missing layers, or incompatible layer kinds raise.
+                No constructor network I/O or per-tile schema reconstruction occurs.
         )pbdoc",
-            py::arg("info_dict"))
+            py::arg("info_dict"),
+            py::arg("map_schema") = nullptr)
         .def(
             "on_tile_feature_request",
             [](DataSourceServer& self, py::function callback) -> DataSourceServer&
@@ -684,6 +708,14 @@ void bindDataSourceServer(py::module_& m)
             "info",
             [](DataSourceServer& self) { return datasourceJsonToPython(self.info().toJson()); },
             R"pbdoc(
-            Get the DataSourceInfo metadata which this instance was constructed with.
-        )pbdoc");
+            Return a detached canonical DataSourceInfo dictionary. This retains the
+            existing dictionary API, but emits mapFormat/schemaId references rather
+            than legacy inline featureTypes/featureModelSchema. Use map_schema for
+            native type definitions; pass it alongside this dictionary to reconstruct
+            a datasource without losing its identity contract.
+        )pbdoc")
+        .def_property_readonly(
+            "map_schema",
+            [](DataSourceServer& self) { return self.info().mapSchema_; },
+            "Return the shared immutable MapSchema, retaining its native owner.");
 }

@@ -200,13 +200,35 @@ void loadAddOnTiles(
             continue;
         }
 
+        auto layer = addOn->info->getLayer(baseTile->layerInfo()->layerId_, false);
+        if (!layer)
+            continue;
+        if (layer->type_ != LayerType::Features) {
+            baseTile->addWarning("An advertised add-on provider has an incompatible layer type.");
+            continue;
+        }
+        // Native feature pools have one exact graph. Check the advertised contract before
+        // fetching any contribution or mutating dictionaries, lifetimes, or feature contents.
+        // An open/minimal schema is still an identified contract, not permission to erase it.
+        if (addOn->info->schemaId_ != baseTile->schemaId()) {
+            baseTile->addWarning(fmt::format(
+                "Add-on '{}' skipped for map '{}' layer '{}': schema '{}' does not match primary "
+                "schema '{}'. Cross-schema add-on composition is not supported; bind both "
+                "datasources to the same MapSchema artifact.",
+                addOn->sourceId,
+                baseTile->mapId(),
+                layer->layerId_,
+                addOn->info->schemaId_,
+                baseTile->schemaId()));
+            continue;
+        }
+
         if (isCancelled && isCancelled())
             throw TileLoadCancelled();
         auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info, {}, isCancelled);
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning("An advertised add-on provider returned no tile.");
+            baseTile->addWarning("An advertised add-on provider returned no tile.");
             continue;
         }
         if (loaded->error()) {
@@ -214,17 +236,22 @@ void loadAddOnTiles(
                 "Error while fetching add-on tile {}: {}",
                 baseTile->id().toString(),
                 *loaded->error());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
+            baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
             continue;
         }
         if (loaded->layerInfo()->type_ != LayerType::Features) {
             log().warn("Add-on tile {} is not a feature layer.", baseTile->id().toString());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
+            baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
+        if (addOnTile->schemaId() != baseTile->schemaId()) {
+            baseTile->addWarning(fmt::format(
+                "Add-on '{}' skipped: returned schema '{}' differs from its advertised "
+                "schema '{}'. Fix the provider's schema binding; cross-schema composition is not supported.",
+                addOn->sourceId, addOnTile->schemaId(), baseTile->schemaId()));
+            continue;
+        }
         // Even an empty add-on may gain features later. Its lifetime must reach
         // the composite rather than disappearing during the merge.
         applySuccessfulTileTtl(*addOnTile, *addOn->dataSource, defaultTtl, emptyTileTtl);

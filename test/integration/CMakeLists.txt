@@ -66,6 +66,12 @@ add_wheel_test(test-python-mcp-help-smoke
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-mcp-help-smoke.py")
 set_tests_properties(test-python-mcp-help-smoke PROPERTIES TIMEOUT 120)
 
+add_wheel_test(test-python-schema2-smoke
+  WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+  COMMANDS ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    -f "python ${CMAKE_CURRENT_LIST_DIR}/python-schema2-smoke.py")
+set_tests_properties(test-python-schema2-smoke PROPERTIES TIMEOUT 120)
+
 add_wheel_test(test-python-object-datasource-example
   WORKING_DIRECTORY
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"

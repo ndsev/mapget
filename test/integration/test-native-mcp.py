@@ -132,7 +132,8 @@ class ViewerConnection:
                 raise EOFError("Viewer received a close frame")
             assert opcode == 2
             major, minor, patch, message_type, length = struct.unpack_from("<HHHBI", payload)
-            assert (major, minor) == (5, 5)
+            # Native TileLayerStream version; independent of the MCP specification revision.
+            assert (major, minor) == (6, 0), (major, minor, patch)
             assert len(payload) == 11 + length
             if message_type == kind:
                 return json.loads(payload[11:])

@@ -37,6 +37,7 @@ add_library(mapget-http-service STATIC
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
+  src/schema-handler.cpp
   src/status-handler.cpp
   src/status-page.h
   src/status-page.cpp

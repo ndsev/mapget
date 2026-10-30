@@ -8,6 +8,7 @@
 
 #include "gridsource/gridsource.h"
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/mapschema.h"
 
 using namespace mapget;
 using namespace mapget::gridsource;
@@ -230,17 +231,32 @@ TEST_CASE("Grid traffic metadata and locate expose the traffic layer", "[gridsou
     const auto layer = info.getLayer("DevSrc-TrafficLayer");
     REQUIRE(layer != nullptr);
     REQUIRE(layer->zoomLevels_ == std::vector<int>{13});
-    REQUIRE(layer->featureModelSchema_ != nullptr);
+    REQUIRE(layer->layerSchema());
+    REQUIRE(info.mapSchema_ == source.info().mapSchema_);
+    REQUIRE(layer->schemaOwner() == info.getLayer("DevSrc-RoadLayer")->schemaOwner());
+    REQUIRE(layer->layerSchema()->featureTypes() == std::vector<std::string>{"DevSrc-Traffic"});
+    REQUIRE_FALSE(layer->layerSchema()->producesFeatureType("DevSrc-Road"));
+    REQUIRE(layer->getTypeInfo("DevSrc-Road", false) != nullptr);
+    REQUIRE_FALSE(layer->toJson().contains("featureTypes"));
+    REQUIRE_FALSE(layer->toJson().contains("featureModelSchema"));
 
     const auto trafficType = std::find_if(
-        layer->featureTypes_.begin(),
-        layer->featureTypes_.end(),
+        layer->featureTypes().begin(),
+        layer->featureTypes().end(),
         [](const auto& type) { return type.name_ == "DevSrc-Traffic"; });
-    REQUIRE(trafficType != layer->featureTypes_.end());
+    REQUIRE(trafficType != layer->featureTypes().end());
     REQUIRE(trafficType->uniqueIdCompositions_.front().back().idPartLabel_ ==
         "DevSrc-TrafficId");
 
     const auto tileId = TileId::fromWgs84(11.0, 48.0, 13).value();
+    auto tile = makeTile(info, "DevSrc-TrafficLayer");
+    REQUIRE_NOTHROW(tile->newFeatureId(
+        "DevSrc-Road",
+        {{"tileId", int64_t{tileId}}, {"DevSrc-RoadId", int64_t{1}}}));
+    REQUIRE_THROWS(tile->newFeature(
+        "DevSrc-Road",
+        {{"tileId", int64_t{tileId}}, {"DevSrc-RoadId", int64_t{1}}}));
+    CHECK(tile->numRoots() == 0);
     auto candidates = source.locate(LocateRequest{
         "GridTrafficTest",
         "DevSrc-Traffic",

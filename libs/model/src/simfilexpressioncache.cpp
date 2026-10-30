@@ -1,4 +1,6 @@
 #include "mapget/model/simfilexpressioncache.h"
+#include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,7 +23,7 @@ public:
     tl::expected<simfil::SharedAST, simfil::Error> getOrCompile(
         std::string_view query,
         simfil::CompileOptions options,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> const& schemaIdentity,
         std::string_view compileContext,
         CompileFunction const& compile)
     {
@@ -30,7 +32,11 @@ public:
             options.any,
             options.rewriteMode,
             options.rootSchema,
-            reinterpret_cast<std::uintptr_t>(schemaIdentity),
+            schemaIdentity ?
+                std::pair(
+                    std::string(schemaIdentity->mapSchema()->schemaId()),
+                    std::string(schemaIdentity->name())) :
+                std::pair<std::string, std::string>{},
             std::string(compileContext),
         };
 
@@ -112,6 +118,11 @@ public:
         for (auto const& [key, entry] : cache_) {
             result.logicalBytes += key.query_.size() + key.compileContext_.size();
             result.allocatedBytes += key.query_.capacity() + 1 + key.compileContext_.capacity() + 1;
+            for (auto const* identity : {&key.schemaIdentity_.first, &key.schemaIdentity_.second}) {
+                auto usage = stringMemoryUsage(*identity);
+                result.logicalBytes += usage.logicalBytes;
+                result.allocatedBytes += usage.allocatedBytes;
+            }
             if (entry.error_) {
                 result.logicalBytes += entry.error_->message.size();
                 result.allocatedBytes += entry.error_->message.capacity() + 1;
@@ -132,7 +143,9 @@ private:
         bool anyMode_ = true;
         simfil::RewriteMode rewriteMode_ = simfil::RewriteMode::None;
         simfil::SchemaId rootSchema_ = simfil::NoSchemaId;
-        std::uintptr_t schemaIdentity_ = 0;
+        // LayerSchema is now a temporary ModelNode view. Pointer identity would alias unrelated
+        // layers and dangle; the exact artifact + layer name is stable across readers/reloads.
+        std::pair<std::string, std::string> schemaIdentity_;
         std::string compileContext_;
 
         bool operator<(CacheKey const& other) const
@@ -187,7 +200,7 @@ SimfilExpressionCache::~SimfilExpressionCache() = default;
 tl::expected<simfil::SharedAST, simfil::Error> SimfilExpressionCache::getOrCompile(
     std::string_view query,
     simfil::CompileOptions options,
-    LayerSchema const* schemaIdentity,
+    simfil::model_ptr<LayerSchema> const& schemaIdentity,
     std::string_view compileContext,
     CompileFunction const& compile)
 {

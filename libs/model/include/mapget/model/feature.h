@@ -121,6 +121,8 @@ public:
     model_ptr<Object> attributes();
     [[nodiscard]] model_ptr<Object> attributesOrNull() const;
     [[nodiscard]] model_ptr<MergedBasicAttributesView> mergedAttributesOrNull() const;
+    /** Bind a concrete root admitted by this feature type before populating its containers. */
+    void setSchema(simfil::SchemaId schemaId);
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
@@ -222,6 +224,8 @@ protected:
         MODEL_COLUMN_TYPE(4);
 
         simfil::StringId typeId_ = 0;
+        /** Zero uses the type's declared root; occupies the former two padding bytes. */
+        simfil::SchemaId schemaId_ = simfil::NoSchemaId;
     };
 
     /**

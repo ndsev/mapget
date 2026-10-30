@@ -1,7 +1,9 @@
 #include "info.h"
+#include <picosha2.h>
 #include <bit>
 #include "layerschema.h"
 #include "mapget/log.h"
+#include "mapschema.h"
 #include "stream.h"
 
 #include <tuple>
@@ -14,6 +16,36 @@
 
 namespace mapget
 {
+
+MapFormat MapFormat::fromJson(nlohmann::json const& json)
+{
+    if (!json.is_object())
+        throw std::invalid_argument("mapFormat must be an object.");
+    if (json.contains("profiles"))
+        throw std::invalid_argument(
+            "mapFormat uses a flat subsystem name/version map, not profiles.");
+    MapFormat result;
+    result.name_ = json.value("name", std::string{});
+    result.version_ = json.value("version", std::string{});
+    if (auto it = json.find("subsystems"); it != json.end()) {
+        if (!it->is_object())
+            throw std::invalid_argument("mapFormat.subsystems must contain name/version pairs.");
+        for (auto const& [name, version] : it->items()) {
+            if (name.empty() || !version.is_string())
+                throw std::invalid_argument(
+                    "Map subsystem names must be nonempty and versions must be strings.");
+            result.subsystems_.emplace(name, version.get<std::string>());
+        }
+    }
+    if (result.name_.empty() && (!result.version_.empty() || !result.subsystems_.empty()))
+        throw std::invalid_argument("A versioned map format requires a name.");
+    return result;
+}
+
+nlohmann::json MapFormat::toJson() const
+{
+    return {{"name", name_}, {"version", version_}, {"subsystems", subsystems_}};
+}
 
 namespace {
 
@@ -521,17 +553,35 @@ nlohmann::json Coverage::toJson() const
     return nlohmann::json{{"min", min_.value()}, {"max", max_.value()}, {"filled", filled_}};
 }
 
-std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::string const& layerId)
+std::shared_ptr<LayerInfo> LayerInfo::fromJson(
+    const nlohmann::json& j,
+    std::string const& layerId,
+    std::shared_ptr<MapSchema> const& schemaBuilder)
+{
+    auto result = fromJsonMetadata(j, layerId);
+    std::vector<FeatureTypeInfo> featureTypes;
+    for (auto const& item : j.value("featureTypes", nlohmann::json::array()))
+        featureTypes.push_back(FeatureTypeInfo::fromJson(item));
+    auto owner = schemaBuilder ? schemaBuilder : std::make_shared<MapSchema>();
+    // Standalone legacy layers, including untyped SourceData, still need an installed
+    // open contract. Canonical catalog parsing uses fromJsonMetadata() instead.
+    (void)owner->importLayer(
+        result->layerId_,
+        result->type_,
+        j.value("featureModelSchema", nlohmann::json{}),
+        featureTypes);
+    if (!schemaBuilder) {
+        owner->finalize();
+        result->schemaOwner_ = std::move(owner);
+    }
+    return result;
+}
+
+std::shared_ptr<LayerInfo>
+LayerInfo::fromJsonMetadata(nlohmann::json const& j, std::string const& layerId)
 {
     try {
         const auto type = j.value("type", LayerType::Features);
-
-        std::vector<FeatureTypeInfo> featureTypes;
-        if (type == LayerType::Features) {
-            for (auto& item : j.at("featureTypes")) {
-                featureTypes.push_back(FeatureTypeInfo::fromJson(item));
-            }
-        }
 
         std::vector<Coverage> coverages;
         if (j.contains("coverage"))
@@ -552,16 +602,12 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
                 throw std::invalid_argument("tileAssociationLevel must be an integer in 0..15.");
             result->tileAssociationLevel_ = level.get<int>();
         }
-        result->featureTypes_ = std::move(featureTypes);
         result->zoomLevels_ = j.value("zoomLevels", std::vector<int>());
         result->coverage_ = std::move(coverages);
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
         if (j.contains("defaultVisible")) result->defaultVisible_ = j.at("defaultVisible").get<bool>();
         result->version_ = Version::fromJson(j.value("version", Version().toJson()));
-        if (auto schemaIt = j.find("featureModelSchema"); schemaIt != j.end()) {
-            result->featureModelSchema_ = LayerSchema::fromJsonSchema(*schemaIt);
-        }
         result->validateIdentifiers();
         return result;
     }
@@ -572,12 +618,6 @@ std::shared_ptr<LayerInfo> LayerInfo::fromJson(const nlohmann::json& j, std::str
 
 nlohmann::json LayerInfo::toJson() const
 {
-    std::vector<nlohmann::json> featureTypes;
-    featureTypes.reserve(featureTypes_.size());
-    for (const auto& item : featureTypes_) {
-        featureTypes.push_back(item.toJson());
-    }
-
     std::vector<nlohmann::json> coverages;
     coverages.reserve(coverage_.size());
     for (const auto& item : coverage_) {
@@ -587,7 +627,6 @@ nlohmann::json LayerInfo::toJson() const
     auto result = nlohmann::json{
         {"layerId", layerId_},
         {"type", type_},
-        {"featureTypes", featureTypes},
         {"zoomLevels", zoomLevels_},
         {"coverage", coverages},
         {"canRead", canRead_},
@@ -599,24 +638,6 @@ nlohmann::json LayerInfo::toJson() const
         result["tileAssociationLevel"] = *tileAssociationLevel_;
     if (defaultVisible_)
         result["defaultVisible"] = *defaultVisible_;
-    if (featureModelSchema_) {
-        result["featureModelSchema"] = featureModelSchema_->toJsonSchema();
-        // Identifier metadata also includes cross-layer reference targets. Expose
-        // actual schema roots separately so discovery need not decode the schema.
-        result["schemaFeatureTypes"] = featureModelSchema_->featureTypes();
-        // Lightweight clients intentionally omit full schemas from their shared parser.
-        // Publish only a capability hint here; the service still enforces family eligibility.
-        try {
-            std::set<std::string> targets;
-            for (auto const& relation : featureModelSchema_->relationDeclarations())
-                if (relation.incoming_)
-                    targets.insert(relation.targetTypes_.begin(), relation.targetTypes_.end());
-            if (!targets.empty()) result["incomingRelationTargetTypes"] = targets;
-        } catch (std::exception const&) {
-            // Malformed declarations do not enable discovery or block ordinary metadata.
-        }
-    }
-
     return result;
 }
 
@@ -625,18 +646,6 @@ MemoryUsageBreakdown LayerInfo::memoryUsage() const
     MemoryUsageBreakdown result;
     result.add("object", {sizeof(LayerInfo), sizeof(LayerInfo)});
     result.add("layer-id", stringMemoryUsage(layerId_));
-    result.add("feature-types", vectorMemoryUsage(featureTypes_));
-    for (auto const& featureType : featureTypes_) {
-        result.add("feature-type-names", stringMemoryUsage(featureType.name_));
-        result.add("id-compositions", vectorMemoryUsage(featureType.uniqueIdCompositions_));
-        for (auto const& composition : featureType.uniqueIdCompositions_) {
-            result.add("id-parts", vectorMemoryUsage(composition));
-            for (auto const& part : composition) {
-                result.add("id-part-strings", stringMemoryUsage(part.idPartLabel_));
-                result.add("id-part-strings", stringMemoryUsage(part.description_));
-            }
-        }
-    }
     result.add("zoom-levels", vectorMemoryUsage(zoomLevels_));
     result.add("coverage", vectorMemoryUsage(coverage_));
     for (auto const& coverage : coverage_) {
@@ -644,15 +653,26 @@ MemoryUsageBreakdown LayerInfo::memoryUsage() const
         auto const allocatedBytes = (coverage.filled_.capacity() + 7) / 8;
         result.add("coverage-bits", {logicalBytes, allocatedBytes});
     }
-    if (featureModelSchema_) {
-        result.merge("schema", featureModelSchema_->memoryUsage());
-    }
+    // The service accounts unique MapSchema owners once, not once for each layer/source.
     return result;
 }
 
-std::shared_ptr<LayerSchema const> LayerInfo::layerSchema() const
+simfil::model_ptr<LayerSchema> LayerInfo::layerSchema() const
 {
-    return featureModelSchema_;
+    return schemaOwner_ ? schemaOwner_->layer(layerId_) : simfil::model_ptr<LayerSchema>{};
+}
+
+std::shared_ptr<MapSchema const> LayerInfo::schemaOwner() const
+{
+    return schemaOwner_;
+}
+
+std::span<FeatureTypeInfo const> LayerInfo::featureTypes() const
+{
+    auto schema = layerSchema();
+    if (!schema)
+        throw std::logic_error("Layer metadata has no installed MapSchema: " + layerId_);
+    return schema->featureTypeInfos();
 }
 
 void LayerInfo::validateIdentifiers() const
@@ -665,7 +685,9 @@ void LayerInfo::validateIdentifiers() const
     if (partitionKind_ == PartitionKind::Tile && tileAssociationLevel_)
         throw std::invalid_argument("Tile layers do not have an object association level.");
     validateIdentifierName("layer id", layerId_);
-    for (auto const& featureType : featureTypes_) {
+    if (!schemaOwner_)
+        return;  // Catalog metadata can be parsed before local schema installation.
+    for (auto const& featureType : featureTypes()) {
         validateIdentifierName("feature type name", featureType.name_, ".");
         for (auto const& composition : featureType.uniqueIdCompositions_) {
             for (auto const& idPart : composition) {
@@ -677,16 +699,10 @@ void LayerInfo::validateIdentifiers() const
 
 FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
 {
-    auto typeIt = std::find_if(
-        featureTypes_.begin(),
-        featureTypes_.end(),
-        [&sv](auto&& tp) { return tp.name_ == sv; });
-    if (typeIt != featureTypes_.end())
-        return &*typeIt;
-    if (throwIfMissing) {
-        raise(fmt::format("Could not find feature type {}", sv));
-    }
-    return nullptr;
+    auto schema = layerSchema();
+    if (!schema)
+        throw std::logic_error("Layer metadata has no installed MapSchema: " + layerId_);
+    return schema->getTypeInfo(sv, throwIfMissing);
 }
 
 std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
@@ -695,6 +711,8 @@ std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
     bool validateForNewFeature) const
 {
     auto typeInfo = getTypeInfo(typeId);
+    if (validateForNewFeature && !layerSchema()->producesFeatureType(typeId))
+        return std::nullopt;
 
     for (uint32_t compositionIndex = 0;
          compositionIndex < typeInfo->uniqueIdCompositions_.size();
@@ -742,13 +760,40 @@ std::shared_ptr<LayerInfo> DataSourceInfo::getLayer(std::string const& layerId, 
     return {};
 }
 
-DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
+DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j, SchemaResolveFun const& schemas)
 {
     try {
+        auto format = MapFormat::fromJson(j.value("mapFormat", nlohmann::json::object()));
+        auto schemaId = j.value("schemaId", std::string{});
+        // Hash only schema-producing inputs. Runtime names, credentials, coverage and
+        // dictionary identity must neither duplicate graphs nor enter a cache key.
+        picosha2::hash256_one_by_one hash;
+        auto hashValue = [&](nlohmann::json const& value)
+        {
+            auto bytes = value.dump();
+            hash.process(bytes.begin(), bytes.end());
+            const char separator = '\0';
+            hash.process(&separator, &separator + 1);
+        };
+        if (schemaId.empty())
+            hashValue(format.toJson());
         std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
         for (auto& item : j.at("layers").items()) {
             validateIdentifierName("layer id", item.key());
-            layers[item.key()] = LayerInfo::fromJson(item.value(), item.key());
+            if (!schemaId.empty() &&
+                (item.value().contains("featureTypes") ||
+                 item.value().contains("featureModelSchema")))
+                throw std::invalid_argument(
+                    "Schema references and inline legacy declarations must not be mixed.");
+            layers[item.key()] = LayerInfo::fromJsonMetadata(item.value(), item.key());
+            if (schemaId.empty()) {
+                hashValue(item.key());
+                hashValue(item.value().value("type", LayerType::Features));
+                hashValue(item.value().value("featureTypes", nlohmann::json::array()));
+                hashValue(item.value().value("featureModelSchema", nlohmann::json{}));
+            }
+            if (layers[item.key()]->layerId_ != item.key())
+                throw std::invalid_argument("Layer metadata key and layerId must agree.");
         }
 
         std::string stringPoolId;
@@ -759,15 +804,40 @@ DataSourceInfo DataSourceInfo::fromJson(const nlohmann::json& j)
             // sources, so synthesize one to keep string-pool ownership valid.
             stringPoolId = generateNodeHexUuid();
 
-        auto result = DataSourceInfo{
-            stringPoolId,
-            j.at("mapId").get<std::string>(),
-            layers,
-            j.value("maxParallelJobs", 8),
-            j.value("addOn", false),
-            j.value("extraJsonAttachment", nlohmann::json::object()),
-            Version::fromJson(
-                j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()))};
+        DataSourceInfo result;
+        result.stringPoolId_ = std::move(stringPoolId);
+        result.mapId_ = j.at("mapId").get<std::string>();
+        result.layers_ = std::move(layers);
+        result.maxParallelJobs_ = j.value("maxParallelJobs", 8);
+        result.isAddOn_ = j.value("addOn", false);
+        result.extraJsonAttachment_ = j.value("extraJsonAttachment", nlohmann::json::object());
+        result.protocolVersion_ = Version::fromJson(
+            j.value("protocolVersion", TileLayerStream::CurrentProtocolVersion.toJson()));
+        result.mapFormat_ = std::move(format);
+        result.schemaId_ = std::move(schemaId);
+        if (result.schemaId_.empty()) {
+            hash.finish();
+            auto cacheKey = "mapget-legacy:" + picosha2::get_hash_hex_string(hash);
+            // This synchronous import has no cancellation callback: j remains alive
+            // until the shared builder completes, including when construction fails.
+            auto schema = MapSchema::getOrBuild(
+                std::move(cacheKey),
+                [&j, format = result.mapFormat_]
+                {
+                    auto owner = std::make_shared<MapSchema>(format);
+                    for (auto const& [name, layer] : j.at("layers").items())
+                        (void)LayerInfo::fromJson(layer, name, owner);
+                    owner->finalize();
+                    return owner;
+                });
+            result.setMapSchema(std::move(schema));
+        }
+        else if (schemas) {
+            auto schema = schemas(result.schemaId_);
+            if (!schema)
+                throw std::invalid_argument("Schema is not installed: " + result.schemaId_);
+            result.setMapSchema(std::move(schema));
+        }
         result.validateIdentifiers();
         return result;
     }
@@ -789,8 +859,55 @@ nlohmann::json DataSourceInfo::toJson() const
         {"layers", layersJson},
         {"maxParallelJobs", maxParallelJobs_},
         {"addOn", isAddOn_},
+        {"mapFormat", mapFormat_.toJson()},
+        {"schemaId", schemaId_},
         {"extraJsonAttachment", extraJsonAttachment_},
         {"protocolVersion", effectiveDataSourceProtocolVersion(protocolVersion_).toJson()}};
+}
+
+void DataSourceInfo::setMapSchema(std::shared_ptr<MapSchema const> schema)
+{
+    if (!schema || !schema->finalized())
+        throw std::invalid_argument("DataSourceInfo requires a finalized MapSchema.");
+    if (!schemaId_.empty() && schemaId_ != schema->schemaId())
+        throw std::invalid_argument("MapSchema identity does not match the advertised schemaId.");
+    if (mapFormat_ != MapFormat{} && mapFormat_ != schema->format())
+        throw std::invalid_argument("MapSchema format does not match the advertised mapFormat.");
+
+    // Build privately so one bad layer cannot leave half the source rebound, nor mutate
+    // LayerInfos still held by a previous published source incarnation.
+    decltype(layers_) boundLayers;
+    boundLayers.reserve(layers_.size());
+    for (auto const& [name, metadata] : layers_) {
+        auto layer = schema->layer(name);
+        if (!metadata || metadata->layerId_ != name || !layer || layer->name() != name ||
+            layer->layerType() != metadata->type_)
+            throw std::invalid_argument("MapSchema has no matching layer contract: " + name);
+        auto bound = std::make_shared<LayerInfo>(*metadata);
+        bound->schemaOwner_ = schema;
+        bound->validateIdentifiers();
+        boundLayers.emplace(name, std::move(bound));
+    }
+    auto format = schema->format();
+    std::string id(schema->schemaId());
+    layers_ = std::move(boundLayers);
+    mapFormat_ = std::move(format);
+    schemaId_ = std::move(id);
+    mapSchema_ = std::move(schema);
+}
+
+void DataSourceInfo::validateSchema() const
+{
+    if (!mapSchema_ || !mapSchema_->finalized() || schemaId_ != mapSchema_->schemaId() ||
+        mapFormat_ != mapSchema_->format())
+        throw std::invalid_argument("Datasource has no complete matching MapSchema: " + mapId_);
+    for (auto const& [name, layer] : layers_) {
+        auto definition = mapSchema_->layer(name);
+        if (!layer || layer->layerId_ != name || layer->schemaOwner_ != mapSchema_ || !definition ||
+            definition->layerType() != layer->type_)
+            throw std::invalid_argument(
+                "Datasource has an incomplete layer schema binding: " + name);
+    }
 }
 
 MemoryUsageBreakdown DataSourceInfo::memoryUsage() const
@@ -799,6 +916,18 @@ MemoryUsageBreakdown DataSourceInfo::memoryUsage() const
     result.add("object", {sizeof(DataSourceInfo), sizeof(DataSourceInfo)});
     result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
     result.add("map-id", stringMemoryUsage(mapId_));
+    result.add("schema-id", stringMemoryUsage(schemaId_));
+    result.add("format", stringMemoryUsage(mapFormat_.name_));
+    result.add("format", stringMemoryUsage(mapFormat_.version_));
+    result.add(
+        "format",
+        {mapFormat_.subsystems_.size() * sizeof(decltype(mapFormat_.subsystems_)::value_type),
+         mapFormat_.subsystems_.size() *
+             (sizeof(decltype(mapFormat_.subsystems_)::value_type) + 3 * sizeof(void*))});
+    for (auto const& [name, version] : mapFormat_.subsystems_) {
+        result.add("format", stringMemoryUsage(name));
+        result.add("format", stringMemoryUsage(version));
+    }
     result.add("layers-index", {
         layers_.size() * sizeof(decltype(layers_)::value_type),
         layers_.bucket_count() * sizeof(void*) +
@@ -819,9 +948,9 @@ void DataSourceInfo::validateIdentifiers() const
     validateIdentifierName("map id", mapId_, {}, "/");
     for (auto const& [layerId, layerInfo] : layers_) {
         validateIdentifierName("layer id", layerId);
-        if (layerInfo) {
-            layerInfo->validateIdentifiers();
-        }
+        if (!layerInfo || layerInfo->layerId_ != layerId)
+            throw std::invalid_argument("Datasource layer key and metadata must agree: " + layerId);
+        layerInfo->validateIdentifiers();
     }
 }
 

@@ -3,6 +3,7 @@
 
 #include "cli.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "ndsmath/wgs84.h"
 
 #include <openssl/rand.h>
@@ -431,6 +432,10 @@ void McpNativeTools::Call::finishItems()
         {"reason", incomplete_.empty() ? Json(nullptr) : Json(incomplete_)},
         {"issues", std::move(issues_)},
         {"traces", std::move(traces_)}};
+    if (layer_ && (name == "mapget_query_schema" || name == "mapget_validate_expression")) {
+        if (auto schema = layer_->schemaOwner())
+            result["mapSchemaId"] = schema->schemaId();
+    }
     if (name == "mapget_list_sources" && !incomplete_.empty() && result["issues"].size() < 100) {
         result["issues"].push_back(
             {{"phase", "budget"},
@@ -743,6 +748,8 @@ void McpNativeTools::Call::listSources()
         if (source.info) {
             value["mapId"] = source.info->mapId_;
             value["addOn"] = source.info->isAddOn_;
+            value["mapFormat"] = source.info->mapFormat_.toJson();
+            value["schemaId"] = source.info->schemaId_;
             if (details) {
                 value["stringPoolId"] = source.info->stringPoolId_;
                 value["maxParallelJobs"] = source.info->maxParallelJobs_;
@@ -774,20 +781,21 @@ void McpNativeTools::Call::listSources()
                     {"zoomLevels", layer->zoomLevels_},
                     {"canRead", layer->canRead_},
                     {"canWrite", layer->canWrite_},
-                    {"hasFeatureModelSchema", bool(layer->featureModelSchema_)},
+                    {"hasSchema", bool(layer->layerSchema())},
                     {"featureTypes", Json::array()},
                     {"coverageRangeCount", layer->coverage_.size()}};
-                if (layer->featureModelSchema_)
-                    metadata["schemaFeatureTypes"] = layer->featureModelSchema_->featureTypes();
+                auto schema = layer->layerSchema();
                 if (details)
                     metadata["version"] = layer->version_.toJson();
                 if (layer->tileAssociationLevel_)
                     metadata["tileAssociationLevel"] = *layer->tileAssociationLevel_;
                 metadata = boundedJson(metadata);
-                for (auto const& type : layer->featureTypes_) {
+                for (auto const& type : layer->featureTypes()) {
                     if (!step())
                         break;
-                    auto info = boundedJson({{"name", type.name_}});
+                    auto info = boundedJson(
+                        {{"name", type.name_},
+                         {"produced", schema && schema->producesFeatureType(type.name_)}});
                     if (details)
                         info["uniqueIdCompositions"] = Json::array();
                     if (details)

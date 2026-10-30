@@ -165,13 +165,10 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
             name,
             simfil::Schema::Kind::Object);
         if (schemaId != simfil::NoSchemaId) {
-            // A shared attribute layer may be reached through multiple feature schemas.
-            auto const current = l->schema();
-            auto const target = current == simfil::NoSchemaId || current == schemaId
-                ? schemaId
-                : simfil::NoSchemaId;
+            auto const target =
+                model().checkedContainerSchema(l->schema(), schemaId, simfil::ValueType::Object);
             if (auto result = l->setSchema(target); !result) {
-                log().warn("Failed to set attribute layer schema: {}", result.error().message);
+                raise(result.error().message);
             }
         }
     }

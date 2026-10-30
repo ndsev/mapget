@@ -134,6 +134,28 @@ void IncomingRequestExecution::targetLoaded(PartitionFeatureLayer::Ptr const& la
     }
 }
 
+bool IncomingRequestExecution::compatibleTarget(LayerInfo const& provider, Feature const& target)
+{
+    auto expected = target.model().layerInfo()->getTypeInfo(target.typeId(), false);
+    auto declared = provider.getTypeInfo(target.typeId(), false);
+    if (!expected || !declared)
+        return false;
+    return std::ranges::equal(
+        expected->uniqueIdCompositions_,
+        declared->uniqueIdCompositions_,
+        [](auto const& a, auto const& b)
+        {
+            return std::ranges::equal(
+                a,
+                b,
+                [](IdPart const& x, IdPart const& y)
+                {
+                    return x.idPartLabel_ == y.idPartLabel_ && x.datatype_ == y.datatype_ &&
+                        x.isOptional_ == y.isOptional_;
+                });
+        });
+}
+
 void IncomingRequestExecution::discover(RequestStatus status)
 {
     if (terminal_ || request_->isCancelled()) return;
@@ -141,54 +163,98 @@ void IncomingRequestExecution::discover(RequestStatus status)
         fail("Incoming inspection could not resolve every selected target snapshot.");
         return;
     }
+    using Status = IncomingRelationCollection::Status;
+    for (auto& collection : collections_)
+        collection.status_ = Status::NoPossibleFamily;
     std::vector<LayerTilesRequest::Ptr> jobs;
     std::set<MapPartitionKey> scheduled;
     std::set<std::string> ownerLayers;
-    std::set<size_t> supportedTargets;
+    std::map<
+        MapPartitionKey,
+        std::pair<std::vector<LayerSchema::RelationDeclaration>, DataSource::Ptr>>
+        readyProviders;
     auto addons = service_->dataSources_.addOnSources();
     for (auto const& source : service_->dataSources_.snapshot()) {
+        if (terminal_ || request_->isCancelled())
+            return;
         if (source->info->mapId_ != request_->mapId_ || source->info->isAddOn_ ||
             (headers_ && !source->dataSource->isDataSourceAuthorized(*headers_))) continue;
         for (auto const& [layerId, info] : source->info->layers_) {
+            if (info->type_ != LayerType::Features || !info->canRead_)
+                continue;
             if (layerId == request_->layerId_ && request_->sourceId_ && source->sourceId != *request_->sourceId_)
                 continue;
             // Match normal primary-source precedence and the selected target's explicit owner.
             if (!ownerLayers.insert(layerId).second) continue;
             auto schema = info->layerSchema();
-            if (info->type_ != LayerType::Features || !info->canRead_) continue;
-            auto declarations = schema ? schema->relationDeclarations() : std::vector<LayerSchema::RelationDeclaration>{};
-            bool unknownAddition = false;
+            auto declarations = schema->relationDeclarations();
+            bool unknown = !schema->hasRelationDeclarations();
             for (auto const& addon : addons) {
-                if (addon->info->mapId_ != request_->mapId_) continue;
+                if (addon->info->mapId_ != request_->mapId_ ||
+                    (headers_ && !addon->dataSource->isDataSourceAuthorized(*headers_)))
+                    continue;
                 auto found = addon->info->layers_.find(layerId);
                 if (found == addon->info->layers_.end()) continue;
                 auto addedSchema = found->second->layerSchema();
-                auto added = addedSchema ? addedSchema->relationDeclarations() : std::vector<LayerSchema::RelationDeclaration>{};
-                if (!addedSchema || !addedSchema->hasRelationDeclarations()) {
-                    unknownAddition = true;
-                } else declarations.insert(declarations.end(), added.begin(), added.end());
+                unknown = unknown || !addedSchema->hasRelationDeclarations();
+                auto added = addedSchema->relationDeclarations();
+                declarations.insert(declarations.end(), added.begin(), added.end());
             }
             for (size_t i = 0; i < targets_.size(); ++i) {
-                auto const& key = collections_[i].target_;
-                if (key.partitionId_.kind() != info->partitionKind_) continue;
-                auto type = targets_[i]->id()->typeId();
-                if (!std::ranges::any_of(declarations, [&](auto const& d) {
-                        return d.incoming_ && std::ranges::find(d.targetTypes_, type) != d.targetTypes_.end();
-                    })) continue;
-                supportedTargets.insert(i);
-                for (auto const& declaration : declarations)
-                    if (declaration.incoming_ && !declaration.complete_ &&
-                        std::ranges::find(declaration.targetTypes_, type) != declaration.targetTypes_.end())
-                        issues_.push_back("An incoming relation family has unknown conversion coverage.");
-                if (unknownAddition) issues_.push_back("Incoming coverage of a composite provider is not established.");
-                MapPartitionKey provider(LayerType::Features, key.mapId_, layerId, key.partitionId_);
-                if (!scheduled.insert(provider).second) continue;
-                if (scheduled.size() > IncomingRelationCollection::MaxSnapshots) {
-                    issues_.push_back("Incoming inspection reached its provider limit.");
+                auto& collection = collections_[i];
+                auto const& key = collection.target_;
+                auto type = targets_[i]->typeId();
+                if (unknown) {
+                    collection.issues_.push_back(
+                        "A readable provider has no complete forward-relation inventory.");
+                    collection.status_ = Status::Partial;
+                }
+                bool possible = false;
+                for (auto const& declaration : declarations) {
+                    if (std::ranges::find(declaration.targetTypes_, type) ==
+                        declaration.targetTypes_.end())
+                        continue;
+                    possible = true;
+                    if (!declaration.complete_)
+                        collection.issues_.push_back(
+                            "An incoming relation family has unknown conversion coverage.");
+                }
+                if (!possible)
+                    continue;
+                bool compatible = key.partitionId_.kind() == info->partitionKind_ &&
+                    compatibleTarget(*info, *targets_[i]);
+                if (compatible && info->partitionKind_ == PartitionKind::Tile &&
+                    !info->zoomLevels_.empty()) {
+                    auto tile = key.partitionId_.tileId();
+                    compatible = tile.value() != 0 &&
+                        std::ranges::find(info->zoomLevels_, tile.level()) !=
+                            info->zoomLevels_.end();
+                }
+                if (!compatible) {
+                    collection.issues_.push_back(
+                        "A possible incoming family requires a different partition or identity "
+                        "scope.");
+                    collection.status_ = collection.scope_.empty() ?
+                        Status::UnsupportedScope :
+                        Status::Partial;
                     continue;
                 }
+                MapPartitionKey provider(LayerType::Features, key.mapId_, layerId, key.partitionId_);
+                if (!scheduled.contains(provider) &&
+                    scheduled.size() >= IncomingRelationCollection::MaxSnapshots) {
+                    collection.issues_.push_back("Incoming inspection reached its provider limit.");
+                    collection.status_ = Status::Partial;
+                    continue;
+                }
+                collection.scope_.push_back(provider);
+                collection.status_ = collection.issues_.empty() ?
+                    Status::Complete :
+                    Status::Partial;
+                if (!scheduled.insert(provider).second)
+                    continue;
                 if (auto loaded = models_.find(provider); loaded != models_.end()) {
-                    scan(loaded->second, declarations, source->dataSource);
+                    readyProviders
+                        .emplace(provider, std::make_pair(declarations, source->dataSource));
                     continue;
                 }
                 auto child = std::make_shared<LayerTilesRequest>(key.mapId_, layerId,
@@ -202,10 +268,10 @@ void IncomingRequestExecution::discover(RequestStatus status)
             }
         }
     }
-    if (supportedTargets.size() != targets_.size()) {
-        fail("Incoming inspection is unsupported for a selected feature: no eligible provider declarations.");
-        return;
-    }
+    // Build every target's scope before scanning a provider shared by several targets.
+    for (auto const& [key, provider] : readyProviders)
+        scan(models_.at(key), provider.first, provider.second);
+    // Even a known-empty family index is a successful scoped discovery result.
     { std::lock_guard lock(mutex_); pending_ = jobs.size(); }
     if (jobs.empty()) finish();
     else submit(jobs);
@@ -227,11 +293,20 @@ void IncomingRequestExecution::scan(PartitionFeatureLayer::Ptr const& layer,
             auto reference = relation->target();
             for (size_t i = 0; i < targets_.size(); ++i) {
                 auto const& target = targets_[i];
-                if (layer->partitionId() != target->model().partitionId() ||
-                    !std::ranges::any_of(declarations, [&](auto const& d) {
-                        return d.permitsIncoming(source->id()->typeId(), relation->name(), target->typeId());
-                    }) || !reference || reference->mapId() != target->model().mapId() ||
-                    reference->typeId() != target->typeId()) continue;
+                if (std::ranges::find(collections_[i].scope_, layer->id()) ==
+                        collections_[i].scope_.end() ||
+                    layer->partitionId() != target->model().partitionId() ||
+                    !std::ranges::any_of(
+                        declarations,
+                        [&](auto const& d) {
+                            return d.permitsIncoming(
+                                source->id()->typeId(),
+                                relation->name(),
+                                target->typeId());
+                        }) ||
+                    !reference || reference->mapId() != target->model().mapId() ||
+                    reference->typeId() != target->typeId())
+                    continue;
                 bool matches = relationTargetsFeature(*relation, *target);
                 auto composition = target->model().layerInfo()->matchingFeatureIdCompositionIndex(
                     reference->typeId(), reference->keyValuePairs(), false);
@@ -362,8 +437,17 @@ void IncomingRequestExecution::finish()
                 collection.snapshots_.push_back(ref.source_);
             std::sort(collection.snapshots_.begin(), collection.snapshots_.end());
             collection.snapshots_.erase(std::unique(collection.snapshots_.begin(), collection.snapshots_.end()), collection.snapshots_.end());
-            collection.issues_ = issues_;
-            collection.complete_ = issues_.empty();
+            collection.issues_.insert(collection.issues_.end(), issues_.begin(), issues_.end());
+            std::sort(collection.issues_.begin(), collection.issues_.end());
+            collection.issues_.erase(
+                std::unique(collection.issues_.begin(), collection.issues_.end()),
+                collection.issues_.end());
+            if (!collection.issues_.empty() &&
+                collection.status_ != IncomingRelationCollection::Status::UnsupportedScope)
+                collection.status_ = IncomingRelationCollection::Status::Partial;
+            collection.complete_ = collection.status_ ==
+                    IncomingRelationCollection::Status::Complete ||
+                collection.status_ == IncomingRelationCollection::Status::NoPossibleFamily;
             collection.expiresAtMs_ = expiresAtMs_;
             request_->notifyIncomingRelations(collection);
         }

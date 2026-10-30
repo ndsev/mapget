@@ -21,7 +21,10 @@ class DataSourceServer : public HttpServer
 {
 public:
     /**
-     * Construct a DataSource with a DataSourceInfo metadata instance.
+     * Construct a DataSource with complete, schema-bound DataSourceInfo.
+     * GET /info advertises the small catalog; GET /schema?schemaId=... serves the
+     * exact immutable binary artifact off the I/O thread. This endpoint is the
+     * trusted remote/process boundary, not the public service's source-auth gate.
      */
     explicit DataSourceServer(DataSourceInfo const& info);
 

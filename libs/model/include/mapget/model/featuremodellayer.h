@@ -248,7 +248,8 @@ protected:
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
         StringPoolResolveFun const& stringPoolGetter,
-        size_t* bytesRead = nullptr);
+        size_t* bytesRead = nullptr,
+        SchemaResolveFun const& schemas = {});
 
     /** Access the concrete vertex buffer arena backing geometry nodes. */
     GeometryStorage& vertexBufferStorage();

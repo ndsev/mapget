@@ -2,6 +2,7 @@
 #include "../../libs/http-service/src/mcp-native-tools.h"
 #include "mapget/http-service/cli.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/service/locate.h"
 #include "mapget/service/memcache.h"
@@ -39,9 +40,9 @@ public:
     std::string secondaryLocateMode = "canonical";
 
     /** Attach a small native schema, including a recursive domain. */
-    NativeSource()
+    explicit NativeSource(std::string idDescription = {}, size_t rawLayers = 0)
     {
-        auto schema = std::make_shared<LayerSchema>();
+        auto schema = newSchema(rawLayers);
         auto root = schema->addSchema(
             simfil::Schema::Kind::Object,
             LayerSchema::featureKey("Road"),
@@ -49,8 +50,45 @@ public:
         auto text = schema->addSchema(simfil::Schema::Kind::String);
         schema->addFieldSchema(root, "typeId", text);
         schema->setOpen(root, true);
+        for (size_t i = 0; i < rawLayers; ++i) {
+            auto name = "Raw-" + std::to_string(i);
+            auto raw = std::make_shared<LayerInfo>();
+            raw->layerId_ = name;
+            raw->type_ = LayerType::SourceData;
+            metadata.layers_.emplace(name, std::move(raw));
+        }
+        setSchema(schema, {"Road"}, std::move(idDescription));
+    }
+
+    /** Build privately with every advertised raw root, before freezing the feature contract. */
+    static LayerSchema::Ptr newSchema(size_t rawLayers = 0)
+    {
+        auto owner = std::make_shared<MapSchema>();
+        auto schema = owner->newLayer("Road", LayerType::Features);
+        (void)owner->importLayer("Raw", LayerType::SourceData, NativeJson::object());
+        for (size_t i = 0; i < rawLayers; ++i)
+            (void)owner->importLayer(
+                "Raw-" + std::to_string(i),
+                LayerType::SourceData,
+                NativeJson::object());
+        return schema;
+    }
+
+    /** Declare identities once and publish a new immutable fixture incarnation. */
+    void setSchema(
+        LayerSchema::Ptr schema,
+        std::vector<std::string> const& produced = {"Road"},
+        std::string description = {})
+    {
+        for (auto const& name : produced) {
+            schema->addFeatureType(FeatureTypeInfo{
+                name,
+                {{{"id", description, IdPartDataType::U64}},
+                 {{"alias", {}, IdPartDataType::STR}}}});
+        }
         schema->finalize();
-        metadata.layers_.at("Road")->featureModelSchema_ = schema;
+        metadata.schemaId_.clear();
+        metadata.setMapSchema(schema->mapSchema());
     }
     /** Expose stable metadata owned by this synthetic source. */
     DataSourceInfo info() override { return metadata; }
@@ -370,7 +408,10 @@ TEST_CASE("Native metadata and conversions need neither browser nor tile loads",
     REQUIRE(sources["items"].size() == 1);
     CHECK(sources.dump().find("featureModelSchema\"") == std::string::npos);
     CHECK_FALSE(sources["items"][0]["layers"][1].contains("coverage"));
-    CHECK(sources["items"][0]["layers"][1]["schemaFeatureTypes"] == NativeJson::array({"Road"}));
+    CHECK(sources["items"][0]["schemaId"] == fixture.source->metadata.schemaId_);
+    CHECK(sources["items"][0]["layers"][1]["hasSchema"] == true);
+    CHECK_FALSE(sources["items"][0]["layers"][1].contains("schemaFeatureTypes"));
+    CHECK(sources["items"][0]["layers"][1]["featureTypes"][0]["produced"] == true);
     CHECK(
         sources["items"][0]["layers"][1]["featureTypes"][0]["uniqueIdCompositions"][0][0]
                ["partId"] == "id");
@@ -431,7 +472,7 @@ TEST_CASE("Native metadata and conversions need neither browser nor tile loads",
 TEST_CASE("Native schema discovery retains every feature type beside deep domains", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto deep =
         schema
             ->addSchema(simfil::Schema::Kind::Object, LayerSchema::featureKey("ADeep"), "Feature");
@@ -454,8 +495,7 @@ TEST_CASE("Native schema discovery retains every feature type beside deep domain
     schema->addFieldSchema(properties, "choice", roads);
     schema->addFieldSchema(properties, "choice", road);
     schema->addElementSchema(roads, road);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema, {"ADeep", "Intersection"});
     NativeFixture fixture(false, source);
     auto args = NativeJson{{"mapId", "Native"}, {"layerId", "Road"}};
     auto overview = fixture.call("mapget_query_schema", args)["result"];
@@ -517,9 +557,8 @@ TEST_CASE(
     "Native compact discovery pages sources without expanding identifier descriptions",
     "[mcp-native]")
 {
-    auto source = std::make_shared<NativeSource>();
-    source->metadata.layers_.at("Road")->featureTypes_[0].uniqueIdCompositions_[0][0].description_ =
-        std::string(100000, 'x');
+    auto source = std::make_shared<NativeSource>(std::string(100000, 'x'));
+
     NativeFixture fixture(false, source);
     auto second = std::make_shared<NativeSource>();
     second->metadata.mapId_ = "Second";
@@ -558,12 +597,7 @@ TEST_CASE(
     "Native source discovery groups raw layer IDs without losing focused metadata",
     "[mcp-native]")
 {
-    auto source = std::make_shared<NativeSource>();
-    for (size_t i = 0; i < 80; ++i) {
-        auto raw = std::make_shared<LayerInfo>(*source->metadata.layers_.at("Raw"));
-        raw->layerId_ = "Raw-" + std::to_string(i);
-        source->metadata.layers_[raw->layerId_] = raw;
-    }
+    auto source = std::make_shared<NativeSource>(std::string{}, 80);
     NativeFixture fixture(false, source);
     auto summary = fixture.call("mapget_list_sources")["result"];
     REQUIRE(summary["complete"] == true);
@@ -660,7 +694,7 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto feature =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
     auto properties = schema->addSchema(simfil::Schema::Kind::Object);
@@ -678,8 +712,7 @@ TEST_CASE(
     schema->setTypeName(speed, "SpeedLimit");
     schema->setAttributeMetadata(speed, {"Road", "rules", "speed", speed}, "SpeedLimit");
     schema->addFieldSchema(geometry, "coordinateCount", value);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema);
     NativeFixture fixture(false, source);
     NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}};
     auto response = fixture.call("mapget_query_schema", args)["result"];
@@ -860,15 +893,14 @@ TEST_CASE(
 TEST_CASE("Native schema enum previews retain explicit access to all choices", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
     auto category = schema->addSchema(simfil::Schema::Kind::Int);
     for (int64_t i = 0; i < 40; ++i)
         schema->addEnumValue(category, i);
     schema->addFieldSchema(root, "category", category);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema);
     NativeFixture fixture(false, source);
     NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}, {"schemaId", category}};
     auto response = fixture.call("mapget_query_schema", args)["result"];
@@ -897,15 +929,14 @@ TEST_CASE("Native schema enum previews retain explicit access to all choices", "
 TEST_CASE("Native validation pages independently compiled feature contexts", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     for (auto type : {"First", "Second", "Third"}) {
         auto root =
             schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey(type), "Feature");
         auto value = schema->addSchema(simfil::Schema::Kind::Int);
         schema->addFieldSchema(root, "value", value);
     }
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema, {"First", "Second", "Third"});
     NativeFixture fixture(false, source);
     NativeJson
         args{{"mapId", "Native"}, {"layerId", "Road"}, {"expression", "value > 0"}, {"limit", 2}};
@@ -931,7 +962,7 @@ TEST_CASE("Native validation pages independently compiled feature contexts", "[m
 TEST_CASE("Native validation recognizes feature attributes aliases", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto root = schema->addSchema(
         simfil::Schema::Kind::Object,
         LayerSchema::featureKey("Intersection"),
@@ -942,8 +973,7 @@ TEST_CASE("Native validation recognizes feature attributes aliases", "[mcp-nativ
     schema->addFieldSchema(root, "properties", properties);
     schema->addFieldSchema(properties, "connectedRoads", roads);
     schema->addElementSchema(roads, road);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema, {"Intersection"});
     NativeFixture fixture(false, source);
     for (auto expression : {"#attributes.connectedRoads > 3", "#properties.connectedRoads > 3"}) {
         auto result = fixture.call(
@@ -962,6 +992,14 @@ TEST_CASE(
     "[mcp-native]")
 {
     NativeFixture fixture;
+    auto schema = fixture.source->metadata.getLayer("Road")->layerSchema();
+    auto typeIdDomain = schema->childSchema(schema->featureSchema("Road"), "typeId");
+    REQUIRE(typeIdDomain != simfil::NoSchemaId);
+    NativeJson qualifiedTypeId{
+        {"$mapget", "qualified"},
+        {"value", "Road"},
+        {"schema", fixture.source->metadata.schemaId_},
+        {"domain", typeIdDomain}};
     auto args = NativeFixture::selection();
     args["expressions"] = {
         "properties.numbers.*",
@@ -983,7 +1021,8 @@ TEST_CASE(
     CHECK(values[1][0]["literal"]["$mapget"] == "object");
     CHECK(values[2] == NativeJson::array({nullptr}));
     CHECK(values[4][0]["value"] == std::to_string(INT64_MAX));
-    CHECK(reply["result"]["traces"]["types"]["values"] == NativeJson::array({"Road"}));
+    CHECK(values[5] == NativeJson::array({qualifiedTypeId}));
+    CHECK(reply["result"]["traces"]["types"]["values"] == NativeJson::array({qualifiedTypeId}));
     args.erase("expressions");
     args["scope"] = "attribute";
     args["query"] = "$feature.typeId";
@@ -993,7 +1032,7 @@ TEST_CASE(
     auto attribute = fixture.call("mapget_extract_features", args)["result"];
     INFO(attribute.dump());
     REQUIRE(attribute["items"].size() == 1);
-    CHECK(attribute["items"][0]["values"][0] == NativeJson::array({"Road"}));
+    CHECK(attribute["items"][0]["values"][0] == NativeJson::array({qualifiedTypeId}));
     CHECK(attribute["items"][0]["geometry"]["type"] == "MultiPoint");
     CHECK(attribute["items"][0]["geometry"]["coordinates"].size() == 1);
     CHECK(
@@ -1302,17 +1341,17 @@ TEST_CASE(
 TEST_CASE("Native imported schemas preserve aliases in recursive queries", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = LayerSchema::fromJsonSchema(NativeJson::parse(R"({
+    auto schema = NativeSource::newSchema();
+    schema->setRootSchema(schema->addJsonSchema(NativeJson::parse(R"({
         "oneOf":[{"$ref":"#/$defs/RoadFeature"}],"$defs":{"RoadFeature":{
             "type":"object", "additionalProperties":false,
             "x-mapget":{"metaType":"Feature","featureType":"Road"},
             "properties":{"properties":{"type":"object","additionalProperties":false,
                 "properties":{"numbers":{"type":"array","items":{"type":"integer"}}}}}
         }}
-    })"));
-    schema->finalize();
+    })")));
+    source->setSchema(schema);
     REQUIRE(schema->featureSchema("Road") != simfil::NoSchemaId);
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
     NativeFixture fixture(false, source);
     for (std::string query :
          {"attributes.numbers",
@@ -1336,7 +1375,7 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
     auto properties = schema->addSchema(simfil::Schema::Kind::Object);
@@ -1357,8 +1396,7 @@ TEST_CASE(
     schema->addEnumSymbol(vehicle, "TRUCK");
     schema->addEnumSymbol(vehicle, "SPEED_SIGN");
     schema->addFieldSchema(properties, "cycle", properties);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema);
     NativeFixture fixture(false, source);
     auto args =
         NativeJson{{"mapId", "Native"}, {"layerId", "Road"}, {"find", "SpEeD"}, {"limit", 1}};
@@ -1877,7 +1915,7 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
     auto text = schema->addSchema(simfil::Schema::Kind::String);
@@ -1890,8 +1928,7 @@ TEST_CASE(
     schema->addEnumSymbol(domain, "FORWARD");
     schema->addFieldSchema(root, "direction", domain);
     schema->addFieldSchema(root, "otherDirection", domain);
-    schema->finalize();
-    source->metadata.layers_.at("Road")->featureModelSchema_ = schema;
+    source->setSchema(schema);
     NativeFixture fixture(false, source);
     auto args =
         NativeJson{{"mapId", "Native"}, {"layerId", "Road"}, {"find", "forward"}, {"limit", 1}};
@@ -1921,6 +1958,14 @@ TEST_CASE(
 TEST_CASE("Native schema field discovery provides executable feature queries", "[mcp-native]")
 {
     NativeFixture fixture;
+    auto schema = fixture.source->metadata.getLayer("Road")->layerSchema();
+    auto typeIdDomain = schema->childSchema(schema->featureSchema("Road"), "typeId");
+    REQUIRE(typeIdDomain != simfil::NoSchemaId);
+    NativeJson qualifiedTypeId{
+        {"$mapget", "qualified"},
+        {"value", "Road"},
+        {"schema", fixture.source->metadata.schemaId_},
+        {"domain", typeIdDomain}};
     auto found = fixture.call(
         "mapget_query_schema",
         {{"mapId", "Native"}, {"layerId", "Road"}, {"find", "typeId"}})["result"];
@@ -1929,7 +1974,7 @@ TEST_CASE("Native schema field discovery provides executable feature queries", "
     args["query"] = found["items"][0]["contexts"][0]["featureQuery"];
     auto values = fixture.call("mapget_extract_features", args)["result"];
     CHECK(values["complete"] == true);
-    CHECK(values["items"][0]["values"][0] == NativeJson::array({"Road"}));
+    CHECK(values["items"][0]["values"][0] == NativeJson::array({qualifiedTypeId}));
 }
 
 TEST_CASE("Native extraction cursors expire with originating authority", "[mcp-native]")
@@ -1970,10 +2015,9 @@ TEST_CASE("Native extraction rejects oversized retained checkpoints", "[mcp-nati
 
 TEST_CASE("Native extraction does not charge service-owned metadata per checkpoint", "[mcp-native]")
 {
-    auto source = std::make_shared<NativeSource>();
+    auto source = std::make_shared<NativeSource>(std::string(34 * 1024 * 1024, 'x'));
     source->additionalFeatures = 1;
-    source->metadata.layers_.at("Road")->featureTypes_[0].uniqueIdCompositions_[0][0].description_ =
-        std::string(34 * 1024 * 1024, 'x');
+
     NativeFixture fixture(false, source);
     auto args = NativeFixture::selection();
     args["query"] = "id";

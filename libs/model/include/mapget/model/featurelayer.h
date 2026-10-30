@@ -141,7 +141,8 @@ public:
     PartitionFeatureLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     /**
      * Get/Set common id prefix for all features in this layer.
@@ -318,7 +319,7 @@ public:
     [[nodiscard]] std::vector<std::string> checkForErrors() const override;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
-    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
+    [[nodiscard]] simfil::model_ptr<LayerSchema> layerSchema() const;
 
     /** Return a schema entry by schema key, or by feature type name as a convenience. */
     [[nodiscard]] LayerSchema::Entry const* getSchema(std::string_view typeName) const;
@@ -497,6 +498,11 @@ protected:
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
     void applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const;
     void applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const;
+    /** Preserve a concrete binding when the containing declaration explicitly admits it. */
+    [[nodiscard]] simfil::SchemaId checkedContainerSchema(
+        simfil::SchemaId concrete,
+        simfil::SchemaId declared,
+        simfil::ValueType type) const;
 
     /**
      * Create a new attribute layer collection.

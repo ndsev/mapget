@@ -506,10 +506,10 @@ void registerDefaultDatasourceTypes()
     auto& service = DataSourceConfigService::get();
     service.registerDataSourceType(
         "DataSourceHost",
-        [](YAML::Node const& config) -> DataSource::Ptr
+        [](YAML::Node const& config, DataSourceInitContext& context) -> DataSource::Ptr
         {
             if (auto url = config["url"])
-                return RemoteDataSource::fromHostPort(url.as<std::string>());
+                return RemoteDataSource::fromHostPort(url.as<std::string>(), context.isCancelled);
             else
                 throw std::runtime_error("Missing `url` field.");
         },

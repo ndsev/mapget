@@ -3,6 +3,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
@@ -135,6 +136,13 @@ public:
         if (partitionKind == PartitionKind::Object)
             layer->tileAssociationLevel_ = 13;
         result.layers_["WayLayer"] = std::move(layer);
+        if (layerType == LayerType::SourceData) {
+            auto owner = std::make_shared<MapSchema>();
+            (void)owner->importLayer("WayLayer", LayerType::SourceData, nlohmann::json::object());
+            owner->finalize();
+            result.schemaId_.clear();
+            result.setMapSchema(std::move(owner));
+        }
         return result;
     }
 
@@ -195,6 +203,8 @@ public:
         info_.stringPoolId_ = "MutableInfoNode";
         info_.mapId_ = "MutableMap";
         info_.layers_.try_emplace("MutableLayer", layerInfo_);
+        info_.setMapSchema(layerInfo_->schemaOwner());
+        layerInfo_ = info_.getLayer("MutableLayer");
     }
 
     DataSourceInfo info() override { return info_; }
@@ -213,8 +223,9 @@ public:
     void mutateAdvertisedInfo()
     {
         layerInfo_->layerId_ = "MutatedLayer";
-        layerInfo_->featureTypes_.clear();
         info_.layers_.clear();
+        info_.mapSchema_.reset();
+        info_.schemaId_.clear();
     }
 
 private:
@@ -293,6 +304,7 @@ public:
                 {"type", "Features"},
                 {"featureTypes", nlohmann::json::array()},
             }));
+        info_.setMapSchema(info_.getLayer("Features")->schemaOwner());
     }
 
     /** Return the synthetic source metadata used for scheduler admission. */
@@ -819,6 +831,7 @@ TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service]
 {
     auto service = Service(std::make_shared<MemCache>(32), false);
     auto dataSource = std::make_shared<MutableInfoDataSource>();
+    auto schema = dataSource->info().mapSchema_;
     service.add(dataSource);
 
     dataSource->mutateAdvertisedInfo();
@@ -827,13 +840,15 @@ TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service]
     REQUIRE(firstSnapshot.size() == 1);
     REQUIRE(firstSnapshot.front().layers_.size() == 1);
     REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
-    REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->featureTypes_.size() == 1);
+    REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->featureTypes().size() == 1);
+    REQUIRE(firstSnapshot.front().mapSchema_ == schema);
 
     firstSnapshot.front().layers_.at("MutableLayer")->layerId_ = "CallerMutation";
 
     auto secondSnapshot = service.info();
     REQUIRE(secondSnapshot.size() == 1);
     REQUIRE(secondSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
+    REQUIRE(secondSnapshot.front().mapSchema_ == schema);
 }
 
 TEST_CASE("LayerTilesRequest preserves tile order and priority hints in JSON", "[Service][JSON]")

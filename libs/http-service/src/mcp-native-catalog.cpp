@@ -48,6 +48,7 @@ void McpNativeTools::buildCatalog()
          {"reason", {{"type", {"string", "null"}}}},
          {"issues", array(Json::object(), 100)},
          {"traces", {{"type", "object"}}},
+         {"mapSchemaId", string()},
          {"nextOffset", integer(0, INT32_MAX)}},
         {"items", "complete", "reason", "issues", "traces"});
     auto add =
@@ -108,9 +109,10 @@ void McpNativeTools::buildCatalog()
         "List authorized sources in configuration order with lifecycle state and layer metadata. "
         "mapId/sourceId selects detailed metadata by default; unfocused discovery is compact. "
         "Compact layers contains renderable layers; sourceDataLayers lists raw layer IDs. "
-        "A layerId filter returns that layer's metadata, including raw layers. schemaFeatureTypes "
-        "lists schema roots; featureTypes also includes reference-only identifier types. "
-        "Excludes schemas and coverage records; no tile I/O. "
+        "A layerId filter returns that layer's metadata, including raw layers. featureTypes "
+        "comes from the authoritative schema; produced=false marks reference-only types. "
+        "mapFormat describes the source format; schemaId identifies the exact shared schema. "
+        "Excludes inline schemas and coverage records; no tile I/O or schema reconstruction. "
         "offset/nextOffset page matching sources in this snapshot; retain the same filters.",
         sources);
     auto coverage = selection;
@@ -161,13 +163,15 @@ void McpNativeTools::buildCatalog()
          "paths through shared definitions. Mutually exclusive with query."}};
     schema["schemaId"] = integer(1, simfil::MaxSchemaId);
     schema["schemaId"]["description"] =
-        "Open a descriptor's $ref within this layer; mutually exclusive with featureType.";
+        "Open a descriptor's numeric $ref within this layer; mutually exclusive with featureType. "
+        "Local to the response's mapSchemaId, not the source catalog's string schemaId.";
     schema["query"]["description"] =
         "Simfil over descriptor metadata, e.g. fields.properties.fields or **.typename; "
         "evaluates the full lazy graph, not the default overview.";
     add("mapget_query_schema",
         "Inspect schema descriptors, not feature values; no tile I/O. Unfocused calls list "
-        "feature types and schema IDs. featureType/schemaId opens immediate fields and shallow "
+        "produced feature types and schema IDs, or the SourceData layer root. "
+        "featureType/schemaId opens immediate fields and shallow "
         "properties; childrenOmitted/$ref identifies unexpanded compounds. Explicit query/find "
         "is not overview-limited. find groups field/type and enum-symbol matches, with "
         "schemaId, owning contexts and grouped enum symbols. Exact symbols rank first. "

@@ -137,8 +137,11 @@ public:
      *     format, which previously evolved without that header on the release branch.
      * - Version 5.5:
      *   + Added typed incoming-relation manifests with ordinary feature snapshots.
+     * - Version 6.0:
+     *   + Exact MapSchema identities in partition headers, separate binary schema artifacts.
+     *   + Schema-bound ModelPool values, persistent bitmasks and qualified scalar projections.
      */
-    static constexpr Version CurrentProtocolVersion{5, 5, 0};
+    static constexpr Version CurrentProtocolVersion{6, 0, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -156,7 +159,8 @@ public:
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(PartitionLayer::Ptr)> onParsedLayer,
             std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
-            std::function<void(MessageType, std::string_view)> onControlMessage = {});
+            std::function<void(MessageType, std::string_view)> onControlMessage = {},
+            SchemaResolveFun schemas = {});
 
         /**
          * Add some bytes to parse. The next object will be parsed once
@@ -197,6 +201,7 @@ public:
         std::vector<uint8_t> buffer_;
         size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
+        SchemaResolveFun schemas_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(PartitionLayer::Ptr)> onParsedLayer_;
         std::function<void(MessageType, std::string_view)> onControlMessage_;

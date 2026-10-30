@@ -217,6 +217,14 @@ std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clie
     return impl_->getDataSourceInfos(clientHeaders);
 }
 
+std::shared_ptr<MapSchema const> Service::getSchema(
+    std::string_view sourceId,
+    std::string_view schemaId,
+    std::optional<AuthHeaders> const& clientHeaders) const
+{
+    return impl_->dataSources_.getSchema(sourceId, schemaId, clientHeaders);
+}
+
 DataSourceCatalogSnapshot
 Service::sourceCatalog(std::optional<AuthHeaders> const& clientHeaders, bool waitUntilReloadDone)
     const

@@ -10,11 +10,27 @@ namespace mapget
 
 nlohmann::json IncomingRelationCollection::toJson() const
 {
-    auto result = nlohmann::json{{"type", "mapget.incoming.relations"}, {"version", 1},
-        {"target", target_.toString()}, {"featureId", featureId_}, {"complete", complete_},
-        {"issues", issues_}, {"snapshots", nlohmann::json::array()},
+    auto status = status_ == Status::NoPossibleFamily ?
+        "no-possible-family" :
+        status_ == Status::Complete ?
+        "complete" :
+        status_ == Status::Partial ?
+        "partial" :
+        "unsupported-scope";
+    auto result = nlohmann::json{
+        {"type", "mapget.incoming.relations"},
+        {"version", 2},
+        {"target", target_.toString()},
+        {"featureId", featureId_},
+        {"complete", complete_},
+        {"status", status},
+        {"scope", nlohmann::json::array()},
+        {"issues", issues_},
+        {"snapshots", nlohmann::json::array()},
         {"relations", nlohmann::json::array()}};
     for (auto const& snapshot : snapshots_) result["snapshots"].push_back(snapshot.toString());
+    for (auto const& provider : scope_)
+        result["scope"].push_back(provider.toString());
     for (auto const& relation : relations_) {
         result["relations"].push_back({{"source", relation.source_.toString()},
             {"featureId", relation.featureId_}, {"relationIndex", relation.relationIndex_},
@@ -26,19 +42,36 @@ nlohmann::json IncomingRelationCollection::toJson() const
 
 IncomingRelationCollection IncomingRelationCollection::fromJson(nlohmann::json const& json)
 {
-    if (json.at("type") != "mapget.incoming.relations" || json.at("version") != 1)
+    if (json.at("type") != "mapget.incoming.relations" || json.at("version") != 2)
         throw std::invalid_argument("Unsupported incoming relation manifest");
     IncomingRelationCollection result;
     result.target_ = MapPartitionKey(json.at("target").get<std::string>());
     result.featureId_ = json.at("featureId").get<std::string>();
     result.complete_ = json.at("complete").get<bool>();
+    auto status = json.at("status").get<std::string>();
+    if (status == "no-possible-family")
+        result.status_ = Status::NoPossibleFamily;
+    else if (status == "complete")
+        result.status_ = Status::Complete;
+    else if (status == "partial")
+        result.status_ = Status::Partial;
+    else if (status == "unsupported-scope")
+        result.status_ = Status::UnsupportedScope;
+    else
+        throw std::invalid_argument("Unknown incoming relation discovery status");
+    if (result.complete_ !=
+        (result.status_ == Status::Complete || result.status_ == Status::NoPossibleFamily))
+        throw std::invalid_argument("Inconsistent incoming relation completeness");
     result.issues_ = json.at("issues").get<std::vector<std::string>>();
     if (json.contains("expiresAtMs")) result.expiresAtMs_ = json.at("expiresAtMs").get<int64_t>();
     if (!json.at("snapshots").is_array() || !json.at("relations").is_array() ||
+        !json.at("scope").is_array() || json.at("scope").size() > MaxSnapshots ||
         json.at("snapshots").size() > MaxSnapshots || json.at("relations").size() > MaxRelations)
         throw std::invalid_argument("Incoming relation manifest exceeds bounds");
     for (auto const& key : json.at("snapshots"))
         result.snapshots_.emplace_back(key.get<std::string>());
+    for (auto const& key : json.at("scope"))
+        result.scope_.emplace_back(key.get<std::string>());
     for (auto const& entry : json.at("relations")) {
         auto ordinal = entry.at("relationIndex").get<int64_t>();
         if (ordinal < 0 || ordinal >= Relation::InvalidFeatureRelationIndex)

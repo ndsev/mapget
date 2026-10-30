@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <nlohmann/json-schema.hpp>
 
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/simfilutil.h"
 #include "simfil/model/json.h"
 #include "simfil/model/schema-model.h"
@@ -14,8 +16,37 @@ using Composition = simfil::Schema::Composition;
 namespace
 {
 
+/** Create a mutable layer view whose graph survives the local builder variable. */
+LayerSchema::Ptr newTestSchema()
+{
+    return std::make_shared<MapSchema>()->newLayer("Test", LayerType::Features);
+}
+
+/** Supply real identity metadata without constraining the property-domain fixture. */
+FeatureTypeInfo testFeatureType(std::string name)
+{
+    return {std::move(name), {{{"id", {}, IdPartDataType::I64}}}};
+}
+
+/** Explicit JSON import builds a new immutable owner, never a detached runtime snapshot. */
+LayerSchema::Ptr
+importTestSchema(nlohmann::json const& json, std::vector<FeatureTypeInfo> const& features = {})
+{
+    auto owner = std::make_shared<MapSchema>();
+    auto layer = owner->importLayer("Test", LayerType::Features, json, features);
+    owner->finalize();
+    return layer;
+}
+
+/** Exercise the codec with the same schema-owned identity declarations. */
+LayerSchema::Ptr roundtripSchema(LayerSchema::Ptr const& schema)
+{
+    auto features = schema->featureTypeInfos();
+    return importTestSchema(schema->toJsonSchema(), {features.begin(), features.end()});
+}
+
 /** Bind the same typed graph used by completion to a bounded metadata descriptor. */
-nlohmann::json describe(std::shared_ptr<LayerSchema const> registry, simfil::SchemaId root)
+nlohmann::json describe(LayerSchema::Ptr registry, simfil::SchemaId root)
 {
     auto strings = std::make_shared<StringPool>("SchemaDescriptorTest");
     auto env = makeEnvironment(strings);
@@ -44,8 +75,9 @@ TEST_CASE(
     "Feature lookup aliases resolve canonical schema paths without duplicating enumeration",
     "[schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Intersection"), "Feature");
+    schema->addFeatureType(testFeatureType("Intersection"), root);
     auto properties = schema->addSchema(Kind::Object);
     auto roads = schema->addSchema(Kind::Array);
     auto road = schema->addSchema(Kind::Int);
@@ -57,7 +89,7 @@ TEST_CASE(
     schema->finalize();
 
     for (bool imported : {false, true}) {
-        auto registry = imported ? LayerSchema::fromJsonSchema(schema->toJsonSchema()) : schema;
+        auto registry = imported ? roundtripSchema(schema) : schema;
         auto strings = std::make_shared<StringPool>("FeatureAliasTest");
         auto env = makeEnvironment(strings);
         installCompletionLayerSchema(*env, registry, strings);
@@ -107,7 +139,17 @@ TEST_CASE(
             registry->nestedFields(wrapper).end());
     }
 
-    // Feature::get gives a real attributes member precedence over its properties alias.
+    // A new immutable contract gives a real attributes member precedence over the alias.
+    REQUIRE_THROWS(schema->addSchema(Kind::Object));
+    schema = newTestSchema();
+    root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Intersection"), "Feature");
+    schema->addFeatureType(testFeatureType("Intersection"), root);
+    properties = schema->addSchema(Kind::Object);
+    roads = schema->addSchema(Kind::Array);
+    road = schema->addSchema(Kind::Int);
+    schema->addFieldSchema(root, "properties", properties);
+    schema->addFieldSchema(properties, "connectedRoads", roads);
+    schema->addElementSchema(roads, road);
     auto real = schema->addSchema(Kind::Object);
     schema->addFieldSchema(real, "actual", road);
     schema->addFieldSchema(root, "attributes", real);
@@ -131,8 +173,9 @@ TEST_CASE(
     "Native schema transport preserves validation constraints and JSON projections",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    schema->addFeatureType(testFeatureType("Carrier"), root);
     auto count = schema->addSchema(Kind::Int);
     auto label = schema->addSchema(Kind::String);
     auto phase = schema->addSchema(Kind::String);
@@ -147,7 +190,12 @@ TEST_CASE(
     schema->setJsonSchemaAnnotations(
         root,
         {{"title", "Carrier"}, {"x-mapget", {{"layerTarget", "example.Carrier"}}}});
-    schema->addEnumSymbols(flags, std::vector<std::string>{"LEFT", "RIGHT"});
+    schema->addNamedValue(
+        flags,
+        {.name = "LEFT", .value = uint64_t{1}, .role = simfil::Schema::NamedValue::Role::Flag});
+    schema->addNamedValue(
+        flags,
+        {.name = "RIGHT", .value = uint64_t{2}, .role = simfil::Schema::NamedValue::Role::Flag});
     schema->addEnumSymbols(phase, std::vector<std::string>{"WAITING", "ACTIVE", "DONE"});
     schema->addFieldSchema(attribute, "label", label);
     schema->setFieldRequired(attribute, "label", true);
@@ -165,9 +213,10 @@ TEST_CASE(
     schema->finalize();
 
     auto exported = schema->toJsonSchema();
-    auto restored = LayerSchema::fromJsonSchema(exported);
-    // Discard the imported JSON cache: this must exercise export from the restored graph.
-    restored->finalize();
+    auto restored = importTestSchema(
+        exported,
+        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
+    // The codec exports from the immutable graph; there is no retained transport JSON cache.
     REQUIRE(restored->toJsonSchema() == exported);
     REQUIRE(describe(restored, root) == describe(schema, root));
     REQUIRE(restored->childSchema(root, "attribute") == attribute);
@@ -176,14 +225,25 @@ TEST_CASE(
     REQUIRE(
         std::ranges::find(restored->directFields(root), "_multimap") ==
         restored->directFields(root).end());
-    REQUIRE(
-        exported["definitions"][std::to_string(flags)]["x-mapget"]["bitmaskValues"].size() == 2);
+    auto const& namedFlags =
+        exported["definitions"][std::to_string(flags)]["x-mapget"]["namedValues"];
+    REQUIRE(namedFlags.size() == 2);
+    REQUIRE(namedFlags[0]["name"] == "LEFT");
+    REQUIRE(namedFlags[0]["value"] == 1);
+    REQUIRE(namedFlags[0]["role"] == "flag");
+    REQUIRE(namedFlags[1]["name"] == "RIGHT");
+    REQUIRE(namedFlags[1]["value"] == 2);
+    REQUIRE(namedFlags[1]["role"] == "flag");
     REQUIRE_FALSE(exported["definitions"][std::to_string(flags)].contains("enum"));
 
     nlohmann::json_schema::json_validator validator;
     REQUIRE_NOTHROW(validator.set_root_schema(exported));
-    REQUIRE_NOTHROW(validator.validate(R"({"id":2,"attribute":{"label":"road"},"flags":"LEFT|RIGHT",
-        "bytes":{"_bytes":true,"hex":"abcd","number":43981}})"_json));
+    auto projected = R"({"id":2,"attribute":{"label":"road"},
+        "bytes":{"_bytes":true,"hex":"abcd","number":43981}})"_json;
+    projected["flags"] = simfil::Bitmask{3, {schema->mapSchema()->binding(), flags}}.toJson();
+    REQUIRE_NOTHROW(validator.validate(projected));
+    projected["flags"] = "LEFT|RIGHT";
+    REQUIRE_THROWS(validator.validate(projected));
     REQUIRE_NOTHROW(validator.validate(
         R"({"id":[2],"attribute":[{"label":"road"},{"label":"lane"}],"_multimap":true})"_json));
     REQUIRE_NOTHROW(
@@ -204,10 +264,12 @@ TEST_CASE(
     "Native schema transport preserves explicit alias ownership",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto root = schema->addSchema(Kind::Object);
+    schema->setRootSchema(root);
     auto first = schema->addSchema(Kind::Object, "shared-context-key");
-    auto second = schema->addSchema(Kind::Object, "shared-context-key");
+    auto second = schema->addSchema(Kind::Object);
+    REQUIRE_THROWS(schema->registerSchemaKey("shared-context-key", second));
     schema->registerSchemaKey("second-context", second);
     // Reference traversal reaches the second context first, unlike producer allocation.
     schema->addFieldSchema(root, "a", second);
@@ -215,10 +277,11 @@ TEST_CASE(
     schema->finalize();
 
     auto const transport = schema->toJsonSchema();
-    auto restored = LayerSchema::fromJsonSchema(transport);
+    auto restored = importTestSchema(
+        transport,
+        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
     REQUIRE(restored->schemaId("shared-context-key") == schema->schemaId("shared-context-key"));
     REQUIRE(restored->schemaId("second-context") == second);
-    restored->finalize();
     REQUIRE(restored->toJsonSchema() == transport);
 }
 
@@ -226,9 +289,10 @@ TEST_CASE(
     "Converter fragments share native domains but keep local references isolated",
     "[schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto shared = schema->addSchema(Kind::String, "shared");
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    schema->addFeatureType(testFeatureType("Carrier"), root);
     auto fragment = R"({"type":"object","additionalProperties":false,"properties":{
         "value":{"$ref":"#/$defs/Value"},"shared":{"$ref":"shared"}},
         "$defs":{"Value":{"type":"integer","minimum":0,"maximum":7}}})"_json;
@@ -243,8 +307,9 @@ TEST_CASE(
     REQUIRE(schema->kind(schema->childSchema(first, "value")) == Kind::Int);
     REQUIRE(schema->kind(schema->childSchema(second, "value")) == Kind::String);
     auto exported = schema->toJsonSchema();
-    auto restored = LayerSchema::fromJsonSchema(exported);
-    restored->finalize();
+    auto restored = importTestSchema(
+        exported,
+        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
     REQUIRE(restored->toJsonSchema() == exported);
     nlohmann::json_schema::json_validator validator;
     REQUIRE_NOTHROW(validator.set_root_schema(exported));
@@ -253,20 +318,28 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Schema snapshots preserve imported validation and finalization refreshes native export",
+    "Schema snapshots share frozen owners and replacement preserves imported validation",
     "[schema-domain]")
 {
-    auto imported = LayerSchema::fromJsonSchema(R"({"type":"object","if":{"required":["mode"]},
+    auto imported = importTestSchema(R"({"type":"object","if":{"required":["mode"]},
         "then":{"required":["value"]},"properties":{"mode":{"type":"string"}}})"_json);
-    REQUIRE(imported->detachedCopy()->toJsonSchema() == imported->toJsonSchema());
-    auto native = std::make_shared<LayerSchema>();
+    REQUIRE(roundtripSchema(imported)->toJsonSchema() == imported->toJsonSchema());
+    auto native = newTestSchema();
     auto root = native->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    native->addFeatureType(testFeatureType("Carrier"), root);
     native->finalize();
-    auto snapshot = native->detachedCopy();
+    auto snapshot = native;
     auto before = native->toJsonSchema();
-    native->addFieldSchema(root, "added", native->addSchema(Kind::Int));
-    native->finalize();
-    REQUIRE(native->toJsonSchema() != before);
+    REQUIRE(snapshot->mapSchema() == native->mapSchema());
+    REQUIRE_THROWS(native->addSchema(Kind::Int));
+    auto replacement = newTestSchema();
+    auto replacementRoot =
+        replacement->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    replacement->addFeatureType(testFeatureType("Carrier"), replacementRoot);
+    replacement->addFieldSchema(replacementRoot, "added", replacement->addSchema(Kind::Int));
+    replacement->finalize();
+    REQUIRE(replacement->toJsonSchema() != before);
+    REQUIRE(replacement->mapSchema() != snapshot->mapSchema());
     REQUIRE(snapshot->toJsonSchema() == before);
 }
 
@@ -274,7 +347,8 @@ TEST_CASE(
     "LayerSchema retains typed JSON domains rather than flattening combiners",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = LayerSchema::fromJsonSchema(R"({
+    auto schema = importTestSchema(
+        R"({
         "type":"object", "additionalProperties":false,
         "x-mapget":{"metaType":"Feature", "featureType":"Thing"},
         "required":["items"],
@@ -291,7 +365,8 @@ TEST_CASE(
             "number":{"type":"number","enum":[2.5,3.5]},
             "bool":{"const":true}
         }
-    })"_json);
+    })"_json,
+        {testFeatureType("Thing")});
     auto root = schema->featureSchema("Thing");
     REQUIRE(root != simfil::NoSchemaId);
     REQUIRE(schema->kind(root) == LayerSchema::FeatureKind);
@@ -320,7 +395,7 @@ TEST_CASE(
     REQUIRE(suggests(*env, root, "items[17].na", "name"));
     REQUIRE(suggests(*env, root, "items[17].name == ru", "\"rural\""));
     REQUIRE(suggests(*env, root, "both.ri", "right"));
-    auto roundtrip = LayerSchema::fromJsonSchema(schema->toJsonSchema());
+    auto roundtrip = roundtripSchema(schema);
     REQUIRE(roundtrip->featureSchema("Thing") == root);
     REQUIRE(describe(roundtrip, root) == json);
 }
@@ -329,8 +404,9 @@ TEST_CASE(
     "Direct rich LayerSchema transport preserves IDs metadata and plural edges",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    schema->addFeatureType(testFeatureType("Carrier"), root);
     auto number = schema->addSchema(Kind::Int, "count");
     auto text = schema->addSchema(Kind::String, "text");
     auto array = schema->addSchema(Kind::Array, "list");
@@ -363,7 +439,9 @@ TEST_CASE(
     schema->registerSchemaKey("textAlias", text);
     schema->finalize();
     auto json = schema->toJsonSchema();
-    auto roundtrip = LayerSchema::fromJsonSchema(json);
+    auto roundtrip = importTestSchema(
+        json,
+        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
     REQUIRE(roundtrip->featureSchema("Carrier") == root);
     REQUIRE(roundtrip->schemaId("textAlias") == text);
     REQUIRE(roundtrip->kind(number) == schema->kind(number));
@@ -377,15 +455,18 @@ TEST_CASE(
 
     auto invalid = json;
     invalid["definitions"]["bad"] = invalid["definitions"]["1"];
-    REQUIRE_THROWS(LayerSchema::fromJsonSchema(invalid));
+    REQUIRE_THROWS(importTestSchema(
+        invalid,
+        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()}));
 }
 
 TEST_CASE(
     "Attribute query roots preserve payload aliases and exact runtime overlays",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto schema = newTestSchema();
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    schema->addFeatureType(testFeatureType("Carrier"), feature);
     auto attribute = schema->addSchema(Kind::Object, "speed", "Attribute");
     auto value = schema->addSchema(Kind::Int);
     schema->addFieldSchema(feature, "speed", attribute);
@@ -401,7 +482,7 @@ TEST_CASE(
     REQUIRE(root != attribute);
     REQUIRE(schema->childSchema(root, "$feature") == feature);
     auto transport = schema->toJsonSchema();
-    schema->finalize();
+    REQUIRE(schema->mapSchema()->finalized());
     REQUIRE(schema->toJsonSchema() == transport);
     REQUIRE(schema->attributeQuerySchema("Carrier", attribute) == root);
     REQUIRE(schema->attributeQuerySchema("Missing", attribute) == simfil::NoSchemaId);
@@ -429,15 +510,17 @@ TEST_CASE(
     REQUIRE(ast);
     REQUIRE((*ast)->expr().toString().find("value") != std::string::npos);
     REQUIRE(sourceStrings->highest() == highest);
-    auto restored = LayerSchema::fromJsonSchema(schema->toJsonSchema());
+    auto restored = roundtripSchema(schema);
     REQUIRE(restored->attributeQuerySchema("Carrier", attribute) != simfil::NoSchemaId);
     REQUIRE(describe(restored, restored->attributeQuerySchema("Carrier", attribute)) == json);
 }
 
-TEST_CASE("Schema summary reuse preserves cycles and refreshes after mutation", "[schema-domain]")
+TEST_CASE("Schema summaries preserve cycles across immutable contract variants", "[schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto variant = GENERATE(0, 1, 2);
+    auto schema = newTestSchema();
     auto first = schema->addSchema(Kind::Object);
+    schema->setRootSchema(first);
     auto second = schema->addSchema(Kind::Object);
     auto array = schema->addSchema(Kind::Array);
     auto choice = schema->addSchema(Kind::Union);
@@ -451,46 +534,38 @@ TEST_CASE("Schema summary reuse preserves cycles and refreshes after mutation", 
     schema->addAlternative(choice, first);
     schema->addAlternative(choice, value);
     schema->addEnumSymbols(value, std::vector<std::string>{"ON", "OFF"});
+    if (variant != 0) {
+        schema->addFieldSchema(second, "late", value);
+        schema->addEnumSymbol(value, "LATE");
+    }
+    schema->setOpen(second, variant == 1);
     schema->finalize();
 
     for (auto id : {first, second, array, choice}) {
         CAPTURE(id);
         REQUIRE(std::ranges::equal(
             schema->nestedFields(id),
-            std::vector<std::string>{"alias", "items", "next", "state"}));
+            variant == 0 ? std::vector<std::string>{"alias", "items", "next", "state"} :
+                           std::vector<std::string>{"alias", "items", "late", "next", "state"}));
         REQUIRE(std::ranges::equal(
             schema->nestedEnumSymbols(id),
-            std::vector<std::string>{"OFF", "ON"}));
-        REQUIRE(schema->reachabilityComplete(id));
-        REQUIRE_FALSE(schema->canHaveField(id, "absent"));
+            variant == 0 ? std::vector<std::string>{"OFF", "ON"} :
+                           std::vector<std::string>{"LATE", "OFF", "ON"}));
+        REQUIRE(schema->reachabilityComplete(id) == (variant != 1));
+        REQUIRE(schema->canHaveField(id, "absent") == (variant == 1));
     }
     REQUIRE(schema->nestedFields(value).empty());
 
-    // Neither a completed child cache nor an earlier completeness proof may survive edits.
-    schema->addFieldSchema(second, "late", value);
-    schema->addEnumSymbol(value, "LATE");
-    schema->setOpen(second, true);
-    schema->finalize();
-    for (auto id : {first, second, array, choice}) {
-        REQUIRE(std::ranges::equal(
-            schema->nestedFields(id),
-            std::vector<std::string>{"alias", "items", "late", "next", "state"}));
-        REQUIRE(std::ranges::equal(
-            schema->nestedEnumSymbols(id),
-            std::vector<std::string>{"LATE", "OFF", "ON"}));
-        REQUIRE_FALSE(schema->reachabilityComplete(id));
-        REQUIRE(schema->canHaveField(id, "absent"));
-    }
-    schema->setOpen(second, false);
-    schema->finalize();
-    REQUIRE(schema->reachabilityComplete(choice));
-    REQUIRE_FALSE(schema->canHaveField(choice, "absent"));
+    // A published completeness proof cannot be invalidated through a retained builder alias.
+    REQUIRE_THROWS(schema->setOpen(second, false));
 }
 
 TEST_CASE("Many attribute query roots retain the shared feature schema", "[schema-domain]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto partial = GENERATE(false, true);
+    auto schema = newTestSchema();
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
+    schema->addFeatureType(testFeatureType("Carrier"), feature);
     auto shared = schema->addSchema(Kind::Object);
     auto parent = shared;
     for (size_t i = 0; i < 128; ++i) {
@@ -514,6 +589,8 @@ TEST_CASE("Many attribute query roots retain the shared feature schema", "[schem
             "SharedAttribute");
         attributes.push_back(attribute);
     }
+    if (partial)
+        schema->addFieldSchema(parent, "unknown");
     schema->finalize();
     for (auto attribute : attributes) {
         auto root = schema->attributeQuerySchema("Carrier", attribute);
@@ -522,25 +599,19 @@ TEST_CASE("Many attribute query roots retain the shared feature schema", "[schem
         REQUIRE(schema->canHaveField(root, "attribute399"));
         REQUIRE(schema->canHaveField(root, "value"));
         REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
-        REQUIRE(schema->reachabilityComplete(root));
-        REQUIRE_FALSE(schema->canHaveField(root, "absent"));
+        REQUIRE(schema->reachabilityComplete(root) == !partial);
+        REQUIRE(schema->canHaveField(root, "absent") == partial);
     }
-    REQUIRE_FALSE(schema->canHaveField(feature, "$feature"));
-
-    // Partial descendants must also propagate through a reused feature summary.
-    schema->addFieldSchema(parent, "unknown");
-    schema->finalize();
-    auto root = schema->attributeQuerySchema("Carrier", attributes.back());
-    REQUIRE_FALSE(schema->reachabilityComplete(root));
-    REQUIRE(schema->canHaveField(root, "absent"));
-    REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
+    if (!partial)
+        REQUIRE_FALSE(schema->canHaveField(feature, "$feature"));
 }
 
 TEST_CASE(
     "Recursive domains and multimap transport remain logical model views",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = LayerSchema::fromJsonSchema(R"({
+    auto schema = importTestSchema(
+        R"({
         "$ref":"#/$defs/Root", "$defs":{"Root":{
             "type":"object", "additionalProperties":false,
             "x-mapget":{"metaType":"Feature", "featureType":"Recursive"},
@@ -553,7 +624,8 @@ TEST_CASE(
                 ]}
             }
         }}
-    })"_json);
+    })"_json,
+        {testFeatureType("Recursive")});
     auto root = schema->featureSchema("Recursive");
     REQUIRE(schema->reachabilityComplete(root));
     REQUIRE_FALSE(schema->canHaveField(root, "absent"));

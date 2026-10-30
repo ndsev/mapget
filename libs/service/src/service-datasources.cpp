@@ -70,27 +70,14 @@ namespace mapget::detail
 
 std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
 {
-    auto result = std::make_shared<LayerInfo>();
-    result->layerId_ = info.layerId_;
-    result->type_ = info.type_;
-    result->featureTypes_ = info.featureTypes_;
-    result->zoomLevels_ = info.zoomLevels_;
-    result->coverage_ = info.coverage_;
-    result->canRead_ = info.canRead_;
-    result->canWrite_ = info.canWrite_;
-    result->version_ = info.version_;
-    result->partitionKind_ = info.partitionKind_;
-    result->tileAssociationLevel_ = info.tileAssociationLevel_;
-    result->defaultVisible_ = info.defaultVisible_;
-    result->featureModelSchema_ = info.featureModelSchema_ ?
-        info.featureModelSchema_->detachedCopy() :
-        nullptr;
-    return result;
+    // Availability/routing belongs to the source snapshot; finalized schema storage is shared.
+    return std::make_shared<LayerInfo>(info);
 }
 
 DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
 {
     info.validateIdentifiers();
+    info.validateSchema();
 
     auto result = info;
     if (result.protocolVersion_ == Version{}) {
@@ -233,6 +220,34 @@ DataSourceRegistry::infos(std::optional<AuthHeaders> const& clientHeaders) const
         }
     }
     return result;
+}
+
+std::shared_ptr<MapSchema const> DataSourceRegistry::getSchema(
+    std::string_view sourceId,
+    std::string_view schemaId,
+    std::optional<AuthHeaders> const& clientHeaders) const
+{
+    if (sourceId.empty() || schemaId.empty())
+        return {};
+
+    RegisteredDataSource::Ptr source;
+    {
+        std::shared_lock lock(mutex_);
+        auto found = std::ranges::find_if(sources_, [&](auto const& candidate) {
+            return candidate->sourceId == sourceId;
+        });
+        if (found == sources_.end())
+            return {};
+        source = *found;
+    }
+    // Authorization must precede both the content-token lookup and any conditional response.
+    if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders))
+        return {};
+
+    std::shared_lock lock(mutex_);
+    if (std::ranges::find(sources_, source) == sources_.end() || source->info->schemaId_ != schemaId)
+        return {};
+    return source->info->mapSchema_;
 }
 
 size_t DataSourceRegistry::size() const

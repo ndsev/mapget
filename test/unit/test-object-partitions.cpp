@@ -133,8 +133,10 @@ TEST_CASE("Object models roundtrip unsigned feature IDs and explicit geometry an
     CHECK_THROWS(
         PartitionFeatureLayer(TileId::fromValue(131073), "ObjectPool", "Objects", info, pool));
 
-    auto rawInfo = std::make_shared<LayerInfo>(*info);
-    rawInfo->type_ = LayerType::SourceData;
+    auto rawMetadata = info->toJson();
+    rawMetadata["type"] = "SourceData";
+    rawMetadata["featureModelSchema"] = nlohmann::json::object();
+    auto rawInfo = LayerInfo::fromJson(rawMetadata);
     auto raw =
         std::make_shared<PartitionSourceDataLayer>(id, "ObjectPool", "Objects", rawInfo, pool);
     raw->addRoot(raw->newCompound(0));

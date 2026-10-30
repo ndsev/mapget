@@ -58,6 +58,12 @@ public:
     [[nodiscard]] std::vector<DataSourceInfo>
     infos(std::optional<AuthHeaders> const& clientHeaders) const;
 
+    /** Resolve an exact authorized schema binding without copying metadata or doing I/O. */
+    [[nodiscard]] std::shared_ptr<MapSchema const> getSchema(
+        std::string_view sourceId,
+        std::string_view schemaId,
+        std::optional<AuthHeaders> const& clientHeaders) const;
+
     /** Return the number of ready sources. */
     [[nodiscard]] size_t size() const;
 

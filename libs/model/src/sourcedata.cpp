@@ -1,9 +1,10 @@
 #include "sourcedata.h"
 
-#include "sourcedatalayer.h"
-#include "simfil/model/nodes.h"
-#include "sourceinfo.h"
 #include "mapget/log.h"
+#include "mapschema.h"
+#include "simfil/model/nodes.h"
+#include "sourcedatalayer.h"
+#include "sourceinfo.h"
 
 using simfil::ValueType;
 using simfil::ModelNode;
@@ -38,6 +39,21 @@ void SourceDataCompoundNode::setSchemaName(std::string_view name)
     if (!res)
         raise(res.error().message);
     data_->schemaName_ = *res;
+}
+
+void SourceDataCompoundNode::setSchema(simfil::SchemaId id)
+{
+    auto owner = model().layerInfo()->schemaOwner();
+    if (id != simfil::NoSchemaId && (!owner || !owner->domain(id)))
+        throw std::invalid_argument("Source-data domain is not part of the partition's schema.");
+    if (auto result = object()->setSchema(id); !result)
+        raise(result.error().message);
+}
+
+simfil::SchemaId SourceDataCompoundNode::schema() const
+{
+    auto value = object();
+    return value ? value->schema() : simfil::NoSchemaId;
 }
 
 std::string_view SourceDataCompoundNode::schemaName() const

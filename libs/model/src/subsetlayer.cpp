@@ -1,4 +1,5 @@
 #include "subsetlayer.h"
+#include "mapschema.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1280,12 +1281,14 @@ PartitionSubsetLayer::PartitionSubsetLayer(
 PartitionSubsetLayer::PartitionSubsetLayer(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter)
+    StringPoolResolveFun const& stringPoolGetter,
+    SchemaResolveFun const& schemas)
     : PartitionFeatureModelLayerBase(
           input,
           layerInfoResolveFun,
           stringPoolGetter,
-          &deserializationOffsetBytes_),
+          &deserializationOffsetBytes_,
+          schemas),
       geometryAnchor_(
           partitionId_.kind() == PartitionKind::Tile ?
               partitionId_.tileId().centerWgs84() :
@@ -1368,6 +1371,8 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
+    // Imported domains already retain every graph; the transport resolver is construction-only.
+    setSchemaResolver({});
 }
 
 PartitionSubsetLayer::~PartitionSubsetLayer() = default;
@@ -1618,45 +1623,6 @@ void PartitionSubsetLayer::setGlbAttachmentName(std::optional<std::string> name)
 std::optional<std::string> const& PartitionSubsetLayer::glbAttachmentName() const
 {
     return glbAttachmentName_;
-}
-
-simfil::ModelNode::Ptr PartitionSubsetLayer::materializeValue(simfil::Value const& value)
-{
-    switch (value.type) {
-    case simfil::ValueType::Undef:
-        return newUndefined();
-    case simfil::ValueType::Null:
-        return resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{});
-    case simfil::ValueType::Bool:
-        return newSmallValue(value.as<simfil::ValueType::Bool>());
-    case simfil::ValueType::Int:
-        return newValue(value.as<simfil::ValueType::Int>());
-    case simfil::ValueType::Float:
-        return newValue(value.as<simfil::ValueType::Float>());
-    case simfil::ValueType::String:
-        return newValue(value.as<simfil::ValueType::String>());
-    case simfil::ValueType::Bytes:
-        return newValue(value.as<simfil::ValueType::Bytes>());
-    case simfil::ValueType::Object:
-    case simfil::ValueType::Array: {
-        if (!value.node()) {
-            raise("Projected compound value has no native model node.");
-        }
-        auto copied = copyNode(*value.node());
-        if (!copied) {
-            raiseFmt("Could not materialize projected value: {}", copied.error().message);
-        }
-        return *copied;
-    }
-    case simfil::ValueType::TransientObject:
-        raise("Transient objects cannot be materialized in a subset.");
-    case simfil::ValueType::LAST_:
-        break;
-    }
-    raise("Unsupported SIMFIL value type for PartitionSubsetLayer.");
-    return {};
 }
 
 model_ptr<Array> PartitionSubsetLayer::newValueArray(std::span<simfil::ModelNode::Ptr const> values)

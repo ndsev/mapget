@@ -4,6 +4,7 @@
 
 #include "mapget/log.h"
 #include "mapget/model/featureid.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/service/config.h"
 
 #include <drogon/HttpClient.h>
@@ -313,13 +314,10 @@ void finalizeLoadedInfo(DataSourceInfo& info, std::string const& mapIdOverride)
       ]
     })json");
 
-    auto layerInfo = LayerInfo::fromJson(fallbackLayerJson, "GeoJsonAny");
-    DataSourceInfo info;
-    info.stringPoolId_ = generateNodeHexUuid();
-    info.mapId_ = mapId;
-    info.maxParallelJobs_ = defaultParallelJobs();
-    info.layers_.emplace(layerInfo->layerId_, std::move(layerInfo));
-    return info;
+    return DataSourceInfo::fromJson(
+        {{"mapId", mapId},
+         {"maxParallelJobs", defaultParallelJobs()},
+         {"layers", {{"GeoJsonAny", std::move(fallbackLayerJson)}}}});
 }
 
 enum class TileIdEncoding
@@ -393,8 +391,9 @@ enum class TileIdEncoding
 [[nodiscard]] std::string featureTypeNameForTile(const PartitionFeatureLayer::Ptr& tile)
 {
     auto layerInfo = tile->layerInfo();
-    if (!layerInfo->featureTypes_.empty())
-        return layerInfo->featureTypes_.front().name_;
+    auto const producedTypes = layerInfo->layerSchema()->featureTypes();
+    if (!producedTypes.empty())
+        return producedTypes.front();
 
     if (layerInfo->layerId_ == "GeoJsonAny")
         return "AnyFeature";
@@ -647,19 +646,23 @@ bool GeoJsonSource::parseManifest()
 
 void GeoJsonSource::initFromManifest()
 {
+    auto schema = std::make_shared<MapSchema>();
     for (const auto& entry : manifest_.files) {
         layerCoverage_[entry.layer].insert(entry.tileId);
         tileLayerToFile_[{entry.tileId, entry.layer}] = entry.filename;
     }
 
     for (const auto& [layerName, tileIds] : layerCoverage_) {
-        auto layerInfo = mapget::LayerInfo::fromJson(createLayerInfoJson(layerName), layerName);
+        auto layerInfo =
+            mapget::LayerInfo::fromJson(createLayerInfoJson(layerName), layerName, schema);
         for (int32_t tileId : tileIds) {
             auto packedTileId = mapget::TileId::fromValue(tileId);
             layerInfo->coverage_.emplace_back(mapget::Coverage{packedTileId, packedTileId, {}});
         }
         info_.layers_.emplace(layerName, std::move(layerInfo));
     }
+    schema->finalize();
+    info_.setMapSchema(std::move(schema));
 }
 
 void GeoJsonSource::initFromDirectory()
@@ -702,7 +705,9 @@ void GeoJsonSource::initFromDirectory()
             inputDir_);
     }
 
+    auto schema = layerInfo->schemaOwner();
     info_.layers_.emplace(defaultLayer, std::move(layerInfo));
+    info_.setMapSchema(std::move(schema));
 }
 
 GeoJsonSource::GeoJsonSource(
@@ -748,13 +753,11 @@ GeoJsonSource::GeoJsonSource(std::string inputDir, GeoJsonSourceOptions options)
 
         hasManifest_ = parseManifest();
         if (hasManifest_) {
-            if (!manifest_.files.empty()) {
-                initFromManifest();
-            }
-            else {
+            if (manifest_.files.empty()) {
                 mapget::log().info(
                     "manifest.json found but has no index/files section - no tiles available");
             }
+            initFromManifest();
         }
         else {
             mapget::log().warn(

@@ -2,22 +2,50 @@
 
 #include "partitionid.h"
 
+#include <functional>
+#include <map>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
-#include <memory>
-#include <optional>
 #include <unordered_map>
-#include <nlohmann/json.hpp>
-#include "sfl/small_vector.hpp"
 #include <variant>
-#include "tileid.h"
+#include <vector>
 #include "memory.h"
+#include "sfl/small_vector.hpp"
+#include "tileid.h"
+
+namespace simfil
+{
+template <typename>
+struct model_ptr;
+}
 
 namespace mapget
 {
 
 class LayerSchema;
+class MapSchema;
+
+/** Resolve an exact installed schema artifact; model metadata parsing never performs I/O. */
+using SchemaResolveFun = std::function<std::shared_ptr<MapSchema const>(std::string_view)>;
+
+/** Source-format identity, independent of mapget's projected schema and transport versions. */
+struct MapFormat
+{
+    /** Source-format family, e.g. nds.live; empty means unspecified legacy metadata. */
+    std::string name_;
+    /** Exact opaque base-format version; may be unspecified for modular formats. */
+    std::string version_;
+    /** Direct content-module/FTX versions; sorted keys make pair ordering immaterial. */
+    std::map<std::string, std::string, std::less<>> subsystems_;
+
+    bool operator==(MapFormat const&) const = default;
+    [[nodiscard]] static MapFormat fromJson(nlohmann::json const& json);
+    [[nodiscard]] nlohmann::json toJson() const;
+};
 
 /**
  * The KeyValue(View)Pairs type is a vector of pairs, where each pair
@@ -318,8 +346,9 @@ struct LayerInfo
     /** Type of the layer */
     LayerType type_ = LayerType::Features;
 
-    /** List of feature types, only relevant if this is a Feature-layer. */
-    std::vector<FeatureTypeInfo> featureTypes_;
+    /** Borrow the authoritative schema-owned identity definitions, including reference-only types.
+     */
+    [[nodiscard]] std::span<FeatureTypeInfo const> featureTypes() const;
 
     /** Utility function to get some feature type info by name. */
     FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
@@ -345,9 +374,6 @@ struct LayerInfo
     /** Version of the map layer. */
     Version version_;
 
-    /** Typed feature-model schema describing one emitted feature object for this layer. */
-    std::shared_ptr<LayerSchema const> featureModelSchema_;
-
     /** Addressing of payloads; discovery tiles are independent of object identity. */
     PartitionKind partitionKind_ = PartitionKind::Tile;
     /** Required level in 0..15 for object discovery, not object resolution; absent on tile layers. */
@@ -361,7 +387,10 @@ struct LayerInfo
      * SchemaIds are assigned during schema construction and are independent of
      * datasource-owned StringPool state.
      */
-    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
+    [[nodiscard]] simfil::model_ptr<LayerSchema> layerSchema() const;
+
+    /** Keep this layer's immutable schema alive independently of datasource replacement. */
+    [[nodiscard]] std::shared_ptr<MapSchema const> schemaOwner() const;
 
     /**
      * Return the index of the first unique ID composition that matches this feature ID.
@@ -389,14 +418,27 @@ struct LayerInfo
         KeyValueViewPairs const& featureIdParts,
         bool validateForNewFeature) const;
 
-    /** Create LayerInfo from JSON. */
-    static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");
+    /** Import one legacy layer into a shared builder, or finalize a standalone open/typed graph.
+     * Canonical catalogs should be parsed through DataSourceInfo with their exact schema resolver.
+     */
+    static std::shared_ptr<LayerInfo> fromJson(
+        const nlohmann::json& j,
+        std::string const& layerId = "",
+        std::shared_ptr<MapSchema> const& schemaBuilder = {});
 
     /** Serialize LayerInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
 
-    /** Report retained layer metadata and compiled schema capacity. */
+    /** Report layer-owned metadata; the shared schema is accounted once by its owner. */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
+
+private:
+    friend struct DataSourceInfo;
+    /** Parse runtime fields without constructing a separate schema for each layer. */
+    static std::shared_ptr<LayerInfo>
+    fromJsonMetadata(nlohmann::json const& json, std::string const& layerId);
+    /** Shared owner, never a second per-layer feature/schema registry. */
+    std::shared_ptr<MapSchema const> schemaOwner_;
 };
 
 /**
@@ -425,6 +467,18 @@ struct DataSourceInfo
     /** Used mapget protocol version */
     Version protocolVersion_;
 
+    /** Descriptive source-format tuple; not a schema-cache key. */
+    MapFormat mapFormat_;
+    /** Exact immutable projected contract advertised on the wire. */
+    std::string schemaId_;
+    /** Required before native use; omitted from catalog JSON and shared by metadata snapshots. */
+    std::shared_ptr<MapSchema const> mapSchema_;
+
+    /** Bind a finalized artifact atomically to copies of this source's small layer metadata. */
+    void setMapSchema(std::shared_ptr<MapSchema const> schema);
+    /** Reject incomplete or mismatched bindings before publishing a usable datasource. */
+    void validateSchema() const;
+
     /** Get the layer, or a runtime error, if no such layer exists. */
     [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
 
@@ -438,48 +492,59 @@ struct DataSourceInfo
      *
      * {
      *   "mapId": <string>,                   // Mandatory: A unique identifier for the map.
-     *   "layers": {                          // Mandatory: A dictionary mapping layer names to LayerInfo objects.
-     *     <layerId>: {
-     *       "type": <LayerType>,             // Optional: The type of the layer. Defaults to "Features".
-     *       "featureTypes": [<FeatureTypeInfo>...], // Mandatory: A list of feature type information.
-     *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
-     *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
-     *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
-     *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
-     *       "version": {                     // Optional: The version of the layer.
-     *         "major": <int>,                // Mandatory: The major version number.
+     *   "layers": {                          // Mandatory: A dictionary mapping layer names to
+     * LayerInfo objects. <layerId>: { "type": <LayerType>,             // Optional: The type of the
+     * layer. Defaults to "Features". "zoomLevels": [<int>...],        // Optional: A list of zoom
+     * levels. Defaults to empty list. "coverage": [<Coverage>...],     // Optional: A list of
+     * coverage objects. Defaults to empty list. "canRead": <bool>,               // Optional:
+     * Whether the layer can be read. Defaults to true. "canWrite": <bool>,              //
+     * Optional: Whether the layer can be written. Defaults to false. "version": { // Optional: The
+     * version of the layer. "major": <int>,                // Mandatory: The major version number.
      *         "minor": <int>,                // Mandatory: The minor version number.
      *         "patch": <int>                 // Mandatory: The patch version number.
      *       },
-     *       "featureModelSchema": <object>    // Optional: JSON Schema for one emitted feature object.
      *     },
      *     ...
      *   },
-     *   "maxParallelJobs": <int>,            // Optional: The maximum number of parallel jobs allowed. Defaults to 8.
-     *   "extraJsonAttachment": <JSON object>,// Optional: Any extra JSON data attached. Defaults to an empty object.
-     *   "protocolVersion": {                 // Optional: The version of the protocol. Defaults to the current protocol version.
-     *     "major": <int>,                    // Mandatory: The major version number.
-     *     "minor": <int>,                    // Mandatory: The minor version number.
-     *     "patch": <int>                     // Mandatory: The patch version number.
+     *   "mapFormat": {                      // Source format, independent of projected schema
+     * identity. "name": <string>, "version": <string>, "subsystems": {<name>: <version>}
      *   },
-     *   "stringPoolId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
+     *   "schemaId": <string>,               // Exact finalized MapSchema artifact identity.
+     *   "maxParallelJobs": <int>,            // Optional: The maximum number of parallel jobs
+     * allowed. Defaults to 8. "extraJsonAttachment": <JSON object>,// Optional: Any extra JSON data
+     * attached. Defaults to an empty object. "protocolVersion": {                 // Optional: The
+     * version of the protocol. Defaults to the current protocol version. "major": <int>, //
+     * Mandatory: The major version number. "minor": <int>,                    // Mandatory: The
+     * minor version number. "patch": <int>                     // Mandatory: The patch version
+     * number.
+     *   },
+     *   "stringPoolId": <string>,                  // Optional: A UUID for the node. If not
+     * provided, a random UUID will be generated.
      *                                        // Note: Only provide this if you have a good reason.
      *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
      * }
      *
-     * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,
-     * as defined by the corresponding class's fromJson() method.
+     * Canonical catalog metadata references one MapSchema; it never embeds per-layer
+     * featureTypes or featureModelSchema. With a resolver, that exact artifact is installed
+     * before return. Without one, schema-referencing metadata is an unbound discovery record:
+     * setMapSchema() must succeed before native use or datasource publication.
+     *
+     * Legacy input without schemaId may supply per-layer featureTypes (identity definitions)
+     * and featureModelSchema (JSON Schema). These are imported into one shared finalized
+     * MapSchema. Mixing legacy definitions with a schemaId is rejected. A feature-types-only
+     * layer retains its identity contract and has open property domains.
      *
      * @param j The JSON to deserialize.
      * @return The deserialized DataSourceInfo object.
      * @throws std::runtime_error if any mandatory field is missing.
      */
-    static DataSourceInfo fromJson(const nlohmann::json& j);
+    static DataSourceInfo fromJson(const nlohmann::json& j, SchemaResolveFun const& schemas = {});
 
-    /** Serialize DataSourceInfo to JSON. */
+    /** Serialize lightweight catalog metadata, referring to rather than copying the schema. */
     [[nodiscard]] nlohmann::json toJson() const;
 
-    /** Report retained datasource metadata, layer metadata, and schema capacity. */
+    /** Report source-owned metadata; shared MapSchema allocations must be counted separately once.
+     */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 

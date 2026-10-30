@@ -3,6 +3,7 @@
 #include "mapget/model/attrlayer.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/relation.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/service/locate.h"
@@ -165,7 +166,7 @@ void McpNativeTools::Call::prepareExtraction()
             std::string error;
             if (!parseFeatureIdString(id, *layer_, parsed, &error)) {
                 std::string types;
-                for (auto const& type : layer_->featureTypes_) {
+                for (auto const& type : layer_->featureTypes()) {
                     if (types.size() >= 512)
                         break;
                     if (!types.empty())
@@ -204,17 +205,6 @@ void McpNativeTools::Call::prepareExtraction()
                         "Locate exceeds partition limit; supply explicit partitions");
             }
         }
-    }
-    if (arguments.value("rewrite", false) && arguments.contains("predicate") &&
-        layer_->layerSchema()) {
-        auto scope = arguments.value("scope", "feature") == "attribute" ?
-            LayerSchema::SearchQueryRequestedScope::Attribute :
-            LayerSchema::SearchQueryRequestedScope::Feature;
-        auto normal = layer_->layerSchema()
-                          ->normalizeSearchQuery(arguments["predicate"].get<std::string>(), scope);
-        if (!normal)
-            throw std::invalid_argument("Invalid predicate normalization");
-        arguments["predicate"] = normal->normalizedQuery_;
     }
 }
 
@@ -434,8 +424,8 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                             index,
                                             v,
                                             validityCount);
-                                        auto schema = layer_->layerSchema() ?
-                                            layer_->layerSchema()->attributeQuerySchema(
+                                        auto schema = tile->layerSchema() ?
+                                            tile->layerSchema()->attributeQuerySchema(
                                                 feature->typeId(),
                                                 attribute->schema()) :
                                             simfil::NoSchemaId;
@@ -510,6 +500,8 @@ bool McpNativeTools::Call::extractRow(
         return false;
     }
     auto row = boundedJson(identity);
+    if (auto owner = layer_->schemaOwner())
+        row["mapSchemaId"] = boundedJson(owner->schemaId());
     if (!arguments.contains("query") && !arguments.contains("expressions") &&
         arguments.value("scope", "feature") == "feature")
     {
@@ -580,7 +572,7 @@ Json McpNativeTools::Call::fieldSummary(simfil::ModelNode const& node)
         auto child = node.at(i);
         if (!child)
             continue;
-        auto value = simfil::Value::field(child);
+        auto value = simfil::Value::at(node, *child, i);
         auto item = boundedJson(
             {{"name", env_->strings()->resolve(node.keyAt(i)).value_or("")},
              {"kind", simfil::valueType2String(value.type)}});
@@ -589,10 +581,7 @@ Json McpNativeTools::Call::fieldSummary(simfil::ModelNode const& node)
         else if (value.type == simfil::ValueType::Bytes)
             item["byteCount"] = value.as<simfil::ValueType::Bytes>().bytes.size();
         else if (value.type == simfil::ValueType::String) {
-            auto view = std::get_if<std::string_view>(&value.value);
-            std::string_view text = view ?
-                *view :
-                std::string_view(std::get<std::string>(value.value));
+            auto text = value.stringView();
             if (text.size() > 512)
                 item["stringBytes"] = text.size();
             else
@@ -731,7 +720,9 @@ void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const
                 "opaque";
         }
         item = boundedJson(item);
-        item["values"] = evaluate(arguments.value("query", "_"), *node, simfil::NoSchemaId);
+        if (auto owner = layer_->schemaOwner())
+            item["mapSchemaId"] = boundedJson(owner->schemaId());
+        item["values"] = evaluate(arguments.value("query", "_"), *node, node->schema());
         return append(std::move(item)) && incomplete_.empty();
     };
     if (arguments.contains("reference")) {

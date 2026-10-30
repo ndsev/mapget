@@ -1,4 +1,5 @@
 #include "sourcedatalayer.h"
+#include "mapschema.h"
 
 #include <limits>
 #include <memory>
@@ -59,16 +60,24 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
     : PartitionLayer(tileId, stringPoolId, mapId, layerInfo),
       ModelPool(stringPool),
       impl_(std::make_unique<Impl>(stringPool))
-{}
+{
+    installSchemaResolver(*this);
+    setSchemaBinding(layerInfo_->schemaOwner()->binding());
+    installLayerSchema(*impl_->expressionEnvironment_, layerInfo_->layerSchema(), strings());
+}
 
 PartitionSourceDataLayer::PartitionSourceDataLayer(
     const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter)
+    StringPoolResolveFun const& stringPoolGetter,
+    SchemaResolveFun const& schemas)
     : PartitionLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
       ModelPool(stringPoolGetter(stringPoolId_)),
       impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
 {
+    installSchemaResolver(*this, schemas);
+    setSchemaBinding(layerInfo_->schemaOwner()->binding());
+    installLayerSchema(*impl_->expressionEnvironment_, layerInfo_->layerSchema(), strings());
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
         raise("Failed to read PartitionSourceDataLayer: invalid deserialization offset.");
@@ -86,6 +95,11 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
+    // Native source data has one graph; subset-layer imported namespaces are not valid here.
+    if (!hasDirectSchemaBinding(schemaId()))
+        raise("Source-data model schema does not match its partition header.");
+    // Hydrated bindings own their graphs independently of the client or its metadata snapshot.
+    setSchemaResolver({});
 }
 
 PartitionSourceDataLayer::~PartitionSourceDataLayer() = default;
@@ -232,6 +246,9 @@ MemoryUsageBreakdown PartitionSourceDataLayer::memoryUsage() const
     result.add("model-pool.object-schemas", model.objectSchemas);
     result.add("model-pool.array-members", model.arrayMembers);
     result.add("model-pool.array-schemas", model.arraySchemas);
+    result.add("model-pool.qualified-scalars", model.qualifiedScalars);
+    result.add("model-pool.bitmasks", model.bitmasks);
+    result.add("model-pool.schema-bindings", model.schemaBindings);
     result.add("source-data.compounds", impl_->compounds_.memory_usage());
     result.add("source-data.address-scope-flags", impl_->addressScopeFlags_.memory_usage());
     return result;
@@ -251,6 +268,7 @@ PartitionSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& 
     }
 
     impl_->expressionEnvironment_ = makeEnvironment(newDict);
+    installLayerSchema(*impl_->expressionEnvironment_, layerInfo_->layerSchema(), newDict);
 
     return ModelPool::setStrings(newDict);
 }

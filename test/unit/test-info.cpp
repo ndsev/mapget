@@ -3,11 +3,15 @@
 #include <algorithm>
 #include <string>
 
-#include "mapget/model/featurelayer.h"
-#include "mapget/model/info.h"
-#include "mapget/model/simfilutil.h"
-#include "mapget/model/stream.h"
+#include <sstream>
 #include "mapget/log.h"
+#include "mapget/model/featurelayer.h"
+#include "mapget/model/incoming-relations.h"
+#include "mapget/model/info.h"
+#include "mapget/model/mapschema.h"
+#include "mapget/model/simfilutil.h"
+#include "mapget/model/sourcedatalayer.h"
+#include "mapget/model/stream.h"
 
 using namespace mapget;
 
@@ -165,11 +169,12 @@ TEST_CASE(
     metadata["schemaFeatureTypes"] = {"ForgedType"};
     auto layer = LayerInfo::fromJson(metadata);
     auto published = layer->toJson();
-    CHECK(published["featureTypes"].size() == 2);
-    CHECK(published["schemaFeatureTypes"] == nlohmann::json::array({"Carrier"}));
-    CHECK(
-        LayerInfo::fromJson(published)->toJson()["schemaFeatureTypes"] ==
-        published["schemaFeatureTypes"]);
+    CHECK_FALSE(published.contains("featureTypes"));
+    CHECK_FALSE(published.contains("schemaFeatureTypes"));
+    CHECK_FALSE(published.contains("featureModelSchema"));
+    CHECK(layer->featureTypes().size() == 2);
+    CHECK(layer->layerSchema()->featureTypes() == std::vector<std::string>{"Carrier"});
+    CHECK_FALSE(layer->layerSchema()->producesFeatureType("ReferenceOnly"));
     metadata.erase("featureModelSchema");
     CHECK_FALSE(LayerInfo::fromJson(metadata)->toJson().contains("schemaFeatureTypes"));
 }
@@ -181,17 +186,14 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
 
     // Create a DataSourceInfo object.
     std::unordered_map<std::string, std::shared_ptr<LayerInfo>> layers;
-    layers["testLayer"] = std::make_shared<LayerInfo>(LayerInfo{
-        "testLayer",
-        LayerType::Features,
-        std::vector<FeatureTypeInfo>(),
-        std::vector<int>{0, 1, 2},
-        std::vector<Coverage>{
-            {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
-            {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}},
-        true,
-        false,
-        Version{1, 0, 0}});
+    auto layer = std::make_shared<LayerInfo>();
+    layer->layerId_ = "testLayer";
+    layer->zoomLevels_ = {0, 1, 2};
+    layer->coverage_ = {
+        {TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0), {}},
+        {TileId::fromTileXY(0, 0, 1), TileId::fromTileXY(0, 0, 1), {}}};
+    layer->version_ = {1, 0, 0};
+    layers["testLayer"] = layer;
 
     DataSourceInfo info(DataSourceInfo{
         "testStringPoolId",
@@ -202,12 +204,17 @@ TEST_CASE("InfoToJson", "[DataSourceInfo]")
         nlohmann::json::object(),
         TileLayerStream::CurrentProtocolVersion});
 
+    auto owner = std::make_shared<MapSchema>();
+    (void)owner->newLayer("testLayer", LayerType::Features);
+    owner->finalize();
+    info.setMapSchema(owner);
+
     // Serialize it to JSON.
     nlohmann::json j = info.toJson();
     log().trace("Serialized data source info: {}", to_string(j));
 
     // Deserialize it back into a DataSourceInfo object, then serialize it again.
-    auto j2 = DataSourceInfo::fromJson(j).toJson();
+    auto j2 = DataSourceInfo::fromJson(j, [owner](std::string_view) { return owner; }).toJson();
 
     // Check that the two DataSourceInfo objects are equal.
     REQUIRE(j == j2);
@@ -317,7 +324,7 @@ TEST_CASE("DataSourceInfo validates reserved characters in raw metadata identifi
     }
 }
 
-TEST_CASE("LayerInfo roundtrips featureModelSchema", "[DataSourceInfo]")
+TEST_CASE("LayerInfo imports legacy featureModelSchema without publishing it", "[DataSourceInfo]")
 {
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "WayLayer",
@@ -349,9 +356,10 @@ TEST_CASE("LayerInfo roundtrips featureModelSchema", "[DataSourceInfo]")
     })"_json);
 
     auto json = layerInfo->toJson();
-    REQUIRE(json.contains("featureModelSchema"));
-    REQUIRE(json["featureModelSchema"]["properties"]["typeId"]["const"] == "Way");
-    REQUIRE(LayerInfo::fromJson(json)->toJson() == json);
+    REQUIRE_FALSE(json.contains("featureModelSchema"));
+    REQUIRE_FALSE(json.contains("featureTypes"));
+    REQUIRE(layerInfo->schemaOwner()->finalized());
+    REQUIRE(layerInfo->getTypeInfo("Way")->uniqueIdCompositions_.size() == 1);
 }
 
 TEST_CASE(
@@ -397,10 +405,9 @@ TEST_CASE(
 
     REQUIRE_NOTHROW(tile->validateSchema());
 
-    auto invalidSchema = layerInfo->featureModelSchema_->toJsonSchema();
-    invalidSchema["properties"]["typeId"]["const"] = "Road";
-    layerInfo->featureModelSchema_ = LayerSchema::fromJsonSchema(invalidSchema);
-    REQUIRE_THROWS(tile->validateSchema());
+    // Published graphs cannot be changed underneath a live partition.
+    REQUIRE_THROWS(layerInfo->layerSchema()->addSchema(simfil::Schema::Kind::Int));
+    REQUIRE_NOTHROW(tile->validateSchema());
 }
 
 TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSourceInfo]")
@@ -495,9 +502,12 @@ TEST_CASE("LayerSchema does not mutate datasource StringPool", "[DataSourceInfo]
     REQUIRE(strings->size() == sizeBefore);
 }
 
-TEST_CASE("LayerSchema direct construction supports detached snapshots and escaped field paths", "[DataSourceInfo]")
+TEST_CASE(
+    "LayerSchema direct construction supports immutable snapshots and escaped field paths",
+    "[DataSourceInfo]")
 {
-    auto schema = std::make_shared<LayerSchema>();
+    auto owner = std::make_shared<MapSchema>();
+    auto schema = owner->newLayer("Layer", LayerType::Features);
     auto const featureSchema = schema->addSchema(
         simfil::Schema::Kind::Object,
         LayerSchema::featureKey("Road"),
@@ -531,6 +541,11 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
         speedSchema,
         LayerSchema::AttributePathOwner{"Road", "rules", "speed.limit", speedSchema},
         "synthetic.SpeedAttribute");
+    schema->addFeatureType(
+        FeatureTypeInfo::fromJson(
+            {{"name", "Road"},
+             {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "I64"}}}}}}),
+        featureSchema);
     schema->setZserioType(valueSchema, "synthetic.SpeedValue");
     schema->addEnumSymbol(valueSchema, "FAST");
     schema->finalize();
@@ -554,10 +569,14 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
     REQUIRE(normalized->normalizedQuery_.find(R"(["value.with.dot"] == 42)") != std::string::npos);
     REQUIRE(normalized->normalizedQuery_.find(R"(.["value.with.dot"])") == std::string::npos);
 
-    auto detached = schema->detachedCopy();
-    REQUIRE(detached->featureTypes() == std::vector<std::string>{"Road"});
-    REQUIRE(detached->toJsonSchema() == schema->toJsonSchema());
-    auto restored = LayerSchema::fromJsonSchema(detached->toJsonSchema());
+    std::ostringstream binary;
+    REQUIRE(owner->write(binary));
+    auto bytes = binary.str();
+    auto restoredOwner = MapSchema::read(
+        {reinterpret_cast<uint8_t const*>(bytes.data()), bytes.size()},
+        owner->schemaId());
+    auto restored = restoredOwner->layer("Layer");
+    REQUIRE(restored->featureTypes() == std::vector<std::string>{"Road"});
     REQUIRE(restored->featureSchema("Road") == featureSchema);
     REQUIRE(restored->kind(speedSchema) == LayerSchema::AttributeKind);
 }
@@ -565,7 +584,8 @@ TEST_CASE("LayerSchema direct construction supports detached snapshots and escap
 TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard path", "[DataSourceInfo]")
 {
     using Kind = simfil::Schema::Kind;
-    auto schema = std::make_shared<LayerSchema>();
+    auto owner = std::make_shared<MapSchema>();
+    auto schema = owner->newLayer("Layer", LayerType::Features);
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Link"), "Feature");
     auto properties = schema->addSchema(Kind::Object, LayerSchema::featurePropertiesKey("Link"), "FeatureProperties");
     auto layers = schema->addSchema(Kind::Object, LayerSchema::attributeLayerMapKey("Link"), "AttributeLayerMap");
@@ -582,7 +602,18 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
     schema->setAttributeMetadata(attribute,
         LayerSchema::AttributePathOwner{"Link", "Guidance", "NUM_LANES", attribute}, "NumLanesAttribute");
 
+    schema->addFeatureType(
+        FeatureTypeInfo::fromJson(
+            {{"name", "Link"},
+             {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "I64"}}}}}}),
+        feature);
+    bool mixedPaths = false;
     SECTION("Direct schema graph") {}
+    SECTION("Same field under basic properties makes scope ambiguous")
+    {
+        schema->addFieldSchema(properties, "numLanes", numLanes);
+        mixedPaths = true;
+    }
     SECTION("Canonical transport with a large shared conditions graph")
     {
         // These unrelated paths previously consumed the wildcard enumeration
@@ -597,8 +628,12 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
         }
         schema->addFieldSchema(attribute, "conditions", condition);
         schema->finalize();
+        // The produced feature alias, not an optional descriptor type name, identifies Link.
+        REQUIRE(schema->mapSchema()->domain(feature)->typeName().empty());
         schema = LayerSchema::fromJsonSchema(schema->toJsonSchema());
         REQUIRE(schema->featureSchema("Link") == feature);
+        REQUIRE(schema->mapSchema()->domain(feature)->typeName().empty());
+        REQUIRE(schema->featureTypes() == std::vector<std::string>{"Link"});
     }
     schema->finalize();
 
@@ -607,6 +642,10 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
         auto normalized =
             schema->normalizeSearchQuery(query, LayerSchema::SearchQueryRequestedScope::Auto);
         REQUIRE(normalized);
+        if (mixedPaths) {
+            REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
+            continue;
+        }
         REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
         REQUIRE(normalized->attributeScopes_.size() == 1);
         REQUIRE(normalized->attributeScopes_.front().attributeName_ == "NUM_LANES");
@@ -619,13 +658,6 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
     REQUIRE(featureScoped);
     REQUIRE(featureScoped->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
     REQUIRE(featureScoped->normalizedQuery_ == "**.numLanes.normalLanes");
-
-    // The same path under a basic property makes Auto genuinely ambiguous.
-    schema->addFieldSchema(properties, "numLanes", numLanes);
-    schema->finalize();
-    auto mixed = schema->normalizeSearchQuery("**.numLanes.normalLanes", LayerSchema::SearchQueryRequestedScope::Auto);
-    REQUIRE(mixed);
-    REQUIRE(mixed->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Feature);
 }
 
 TEST_CASE(
@@ -646,8 +678,10 @@ TEST_CASE(
     auto layer = feature->attributeLayers()->newLayer("limits");
     auto speed = layer->newAttribute("speed");
 
-    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("unit") == simfil::StringPool::SchemaUnit);
     REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
+    auto const initialStringCount = strings->size();
+    auto const initialStringBytes = strings->bytes();
 
     simfil::CompletionOptions opts;
     opts.showWildcardHints = false;
@@ -661,8 +695,10 @@ TEST_CASE(
     REQUIRE(enumCompletions);
     REQUIRE(hasCompletion(*enumCompletions, "\"km/h\"", simfil::CompletionCandidate::Type::CONSTANT));
 
-    REQUIRE(strings->get("unit") == simfil::StringPool::Empty);
+    REQUIRE(strings->get("unit") == simfil::StringPool::SchemaUnit);
     REQUIRE(strings->get("km/h") == simfil::StringPool::Empty);
+    CHECK(strings->size() == initialStringCount);
+    CHECK(strings->bytes() == initialStringBytes);
 }
 
 TEST_CASE("PartitionFeatureLayer schema rewrites use enum paths", "[DataSourceInfo]")
@@ -928,15 +964,160 @@ TEST_CASE("Model metadata reports retained schema capacity", "[DataSourceInfo][m
 {
     auto layer = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
     auto const layerMemory = layer->memoryUsage();
-    REQUIRE(layerMemory.total().allocatedBytes > sizeof(LayerInfo));
-    REQUIRE(layerMemory.components.contains("schema.object"));
+    REQUIRE(layerMemory.total().allocatedBytes >= sizeof(LayerInfo));
+    REQUIRE_FALSE(layerMemory.components.contains("schema.object"));
+    REQUIRE(layer->schemaOwner()->memoryUsage().total().allocatedBytes > 0);
 
     auto info = DataSourceInfo::fromJson(nlohmann::json{
         {"stringPoolId", "MemoryPool"},
         {"mapId", "MemoryMap"},
-        {"layers", {{"MemoryLayer", layer->toJson()}}},
+        {"layers", {{"CarrierLayer", schemaAnnotatedLayerInfoJson()}}},
     });
     auto const infoMemory = info.memoryUsage();
     REQUIRE(infoMemory.total().allocatedBytes > sizeof(DataSourceInfo));
     REQUIRE(infoMemory.toJson()["quality"] == "capacity-lower-bound");
+}
+
+TEST_CASE("MapFormat is a flat order-independent identity", "[DataSourceInfo][schema2]")
+{
+    auto first = MapFormat::fromJson(
+        {{"name", "NDS.Live"},
+         {"version", "2024.05"},
+         {"subsystems", {{"road", "2024.05"}, {"lane", "2024.07"}}}});
+    auto second = MapFormat::fromJson(
+        {{"subsystems", {{"lane", "2024.07"}, {"road", "2024.05"}}},
+         {"version", "2024.05"},
+         {"name", "NDS.Live"}});
+    CHECK(first == second);
+    CHECK(first.toJson() == second.toJson());
+    REQUIRE_THROWS(MapFormat::fromJson({{"version", "2024.05"}}));
+    REQUIRE_THROWS(MapFormat::fromJson({{"name", "NDS.Live"}, {"subsystems", {{"lane", 202407}}}}));
+}
+
+TEST_CASE(
+    "Legacy metadata shares one immutable schema without sharing runtime identity",
+    "[DataSourceInfo][schema2]")
+{
+    auto metadata = nlohmann::json{
+        {"mapId", "First"},
+        {"stringPoolId", "PoolA"},
+        {"layers", {{"CarrierLayer", schemaAnnotatedLayerInfoJson()}}}};
+    auto first = DataSourceInfo::fromJson(metadata);
+    metadata["mapId"] = "Second";
+    metadata["stringPoolId"] = "PoolB";
+    metadata["layers"]["CarrierLayer"]["coverage"] = {TileId::fromWgs84(11., 48., 13).value()};
+    auto second = DataSourceInfo::fromJson(metadata);
+    REQUIRE(first.mapSchema_ == second.mapSchema_);
+    CHECK(first.layers_.at("CarrierLayer") != second.layers_.at("CarrierLayer"));
+    CHECK(first.schemaId_ == second.schemaId_);
+    CHECK(first.stringPoolId_ != second.stringPoolId_);
+    auto published = first.toJson();
+    CHECK(published.contains("schemaId"));
+    CHECK(published.contains("mapFormat"));
+    CHECK_FALSE(published["layers"]["CarrierLayer"].contains("featureTypes"));
+    CHECK_FALSE(published["layers"]["CarrierLayer"].contains("featureModelSchema"));
+
+    auto pending = DataSourceInfo::fromJson(published);
+    REQUIRE_FALSE(pending.mapSchema_);
+    REQUIRE_THROWS(pending.validateSchema());
+    REQUIRE_THROWS(std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(11., 48., 13),
+        "PoolA",
+        "First",
+        pending.layers_.at("CarrierLayer"),
+        std::make_shared<StringPool>("PoolA")));
+    pending.setMapSchema(first.mapSchema_);
+    REQUIRE_NOTHROW(pending.validateSchema());
+    CHECK(pending.toJson() == published);
+
+    published["layers"]["CarrierLayer"]["featureTypes"] = nlohmann::json::array();
+    REQUIRE_THROWS(DataSourceInfo::fromJson(published));
+}
+
+TEST_CASE(
+    "Schema replacement is atomic and partitions reject foreign graph identities",
+    "[DataSourceInfo][schema2]")
+{
+    auto metadata = nlohmann::json{
+        {"mapId", "Map"},
+        {"stringPoolId", "Pool"},
+        {"layers", {{"CarrierLayer", schemaAnnotatedLayerInfoJson()}}}};
+    auto first = DataSourceInfo::fromJson(metadata);
+    auto layer = first.layers_.at("CarrierLayer");
+    auto strings = std::make_shared<StringPool>("Pool");
+    auto tile = std::make_shared<
+        PartitionFeatureLayer>(TileId::fromWgs84(11., 48., 13), "Pool", "Map", layer, strings);
+    tile->newFeature("Carrier", {{"carrierId", 7}});
+    std::ostringstream output;
+    REQUIRE(tile->write(output));
+    auto wire = output.str();
+    std::vector<uint8_t> bytes(wire.begin(), wire.end());
+
+    metadata["layers"]["CarrierLayer"]["featureModelSchema"]["$defs"]["CarrierProperties"]
+            ["properties"]["extra"] = {{"type", "boolean"}};
+    auto second = DataSourceInfo::fromJson(metadata);
+    REQUIRE(first.mapFormat_ == second.mapFormat_);
+    REQUIRE(first.schemaId_ != second.schemaId_);
+    REQUIRE_THROWS(first.setMapSchema(second.mapSchema_));
+    CHECK(first.layers_.at("CarrierLayer") == layer);
+    REQUIRE_THROWS(tile->setLayerInfo(second.layers_.at("CarrierLayer")));
+    CHECK(tile->layerInfo() == layer);
+    REQUIRE_THROWS(std::make_shared<PartitionFeatureLayer>(
+        bytes,
+        [&second](auto const&, auto const&) { return second.layers_.at("CarrierLayer"); },
+        [strings](auto const&) { return strings; }));
+
+    first = {};
+    auto restored = std::make_shared<PartitionFeatureLayer>(
+        bytes,
+        [layer](auto const&, auto const&) { return layer; },
+        [strings](auto const&) { return strings; });
+    CHECK(restored->find("Carrier.7"));
+    CHECK(restored->layerSchema()->featureSchema("Carrier") != simfil::NoSchemaId);
+}
+
+TEST_CASE(
+    "Native feature cloning preserves unknown dynamic container domains",
+    "[DataSourceInfo][schema2][clone]")
+{
+    auto info = LayerInfo::fromJson(schemaAnnotatedLayerInfoJson());
+    auto strings = std::make_shared<StringPool>("CloneOpen");
+    auto source = std::make_shared<
+        PartitionFeatureLayer>(TileId::fromWgs84(11., 48., 13), "CloneOpen", "Map", info, strings);
+    auto feature = source->newFeature("Carrier", {{"carrierId", 7}});
+    auto dynamic = source->newObject();
+    auto values = source->newArray();
+    values->append(source->newValue(int64_t{42}));
+    REQUIRE(dynamic->addField("items", values));
+    REQUIRE(feature->attributes()->addField("dynamic", dynamic));
+    REQUIRE(dynamic->schema() == simfil::NoSchemaId);
+    REQUIRE(values->schema() == simfil::NoSchemaId);
+    auto snapshot = cloneInspectionFeatures(source, std::vector<std::string>{"Carrier.7"});
+    auto cloned = snapshot->find("Carrier.7");
+    REQUIRE(cloned);
+    auto object = cloned->attributesOrNull()->get(strings->get("dynamic"));
+    REQUIRE(object);
+    CHECK(object->schema() == simfil::NoSchemaId);
+    auto array = object->get(strings->get("items"));
+    REQUIRE(array);
+    CHECK(array->schema() == simfil::NoSchemaId);
+    CHECK(array->at(0)->value() == simfil::ScalarValueType{int64_t{42}});
+}
+
+TEST_CASE(
+    "Standalone legacy SourceData metadata receives an open bound schema",
+    "[DataSourceInfo][schema2]")
+{
+    auto layer = LayerInfo::fromJson({{"layerId", "Raw"}, {"type", "SourceData"}});
+    REQUIRE(layer->schemaOwner());
+    CHECK(layer->schemaOwner()->finalized());
+    REQUIRE(layer->layerSchema());
+    CHECK(layer->layerSchema()->name() == "Raw");
+    auto strings = std::make_shared<StringPool>("RawPool");
+    CHECK_NOTHROW(std::make_shared<PartitionSourceDataLayer>(
+        TileId::fromWgs84(11., 48., 13),
+        "RawPool",
+        "Map",
+        layer,
+        strings));
 }

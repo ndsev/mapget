@@ -29,6 +29,8 @@ private:
     void targetLoaded(PartitionFeatureLayer::Ptr const& layer);
     /** Schedule all authorized providers after every target snapshot is available. */
     void discover(RequestStatus status);
+    /** Do not merge same-named target types with incompatible feature identity contracts. */
+    static bool compatibleTarget(LayerInfo const& provider, Feature const& target);
     /** Match only declared eligible families against already resolved target models. */
     void scan(PartitionFeatureLayer::Ptr const& layer,
               std::vector<LayerSchema::RelationDeclaration> const& declarations, DataSource::Ptr const& provider);
