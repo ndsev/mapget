@@ -2547,7 +2547,9 @@ detail::FilterRequestExecution::processingPartitionIds(
     bool hasPointGroups,
     std::set<PartitionId>& prioritySourceMembership)
 {
-    if (!hasPointGroups ||
+    auto const declaresPointGroups = std::ranges::any_of(
+        request.filter_.channels_, [](auto const& channel) { return channel.group_.has_value(); });
+    if (!declaresPointGroups ||
         (!request.tileIds_.empty() && request.tileIds_.front().kind() == PartitionKind::Object))
     {
         return request.tileIds_;
@@ -2579,6 +2581,11 @@ detail::FilterRequestExecution::processingPartitionIds(
                     channel.channelId_),
             });
         }
+    }
+
+    // Validate every declared group, but only active groups need source neighbours.
+    if (!hasPointGroups) {
+        return request.tileIds_;
     }
 
     std::set<PartitionId> sourceTileMembership;
@@ -2663,9 +2670,11 @@ bool detail::FilterRequestExecution::start(
             request->tileIds_,
             [&](auto const& id) { return id.kind() != context.partitionKind_; }))
         return rejectStart(request, "Requested partition kind does not match layer metadata.");
-    auto const hasPointGroups = std::ranges::any_of(
-        request->filter_.channels_,
-        [](auto const& channel) { return channel.group_.has_value(); });
+    auto const activeChannels = request->filter_.activeChannels();
+    bool hasPointGroups = false;
+    for (size_t index = 0; index < activeChannels.size(); ++index) {
+        hasPointGroups |= activeChannels[index] && request->filter_.channels_[index].group_.has_value();
+    }
     auto const hasStoredRelations = std::ranges::any_of(
         request->filter_.channels_,
         [](auto const& channel) { return channel.scope_ == FeatureLayerFilterScope::Relation; });

@@ -950,10 +950,11 @@ representations which should start hidden. Clients retain saved user visibility
 in preference to this default; omission preserves their existing defaults.
 
 A feature-scope, point-only filter channel may set `pointCloudMaxPoints` to an
-integer from 0 to 1048576. A positive value selects stable first-point spatial
-representatives before subset geometry allocation. The quota is shared among
-that channel's candidate features; a source partition also caps the sum across
-sampled channels at 1048576. Feature membership and projected expressions are
+integer from 0 to 13999999. A positive value limits each candidate feature's
+matching point geometries together. Objects within the quota retain every point,
+including duplicates. Larger objects retain exactly the requested number of
+original records, spaced evenly through source order, including both endpoints
+when the quota exceeds one. Quotas are independent across features and channels. Feature membership and projected expressions are
 evaluated on the source model before selection. Grouping and relation channels
 cannot use this option.
 
@@ -962,7 +963,8 @@ backend geometry. The field participates in subscription identity, so changing
 it starts a new filter generation. When a positive-quota channel materializes
 candidate features, result info includes `PointCloud/SourceRecords`,
 `PointCloud/DeliveredRecords` and `PointCloud/Representation`. Counts include
-repeated channel instances. This visualization option does not change the
+repeated channel instances. The representation is `visualization/proportional-v1`.
+This visualization option does not change the
 canonical feature model or make an explicitly approximate source layer exact.
 
 ### Deferred incoming inspection

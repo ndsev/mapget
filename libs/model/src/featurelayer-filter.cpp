@@ -236,10 +236,10 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
             });
         }
         if (channel.pointCloudMaxPoints_ &&
-            (*channel.pointCloudMaxPoints_ > 1048576 || channel.scope_ != FeatureLayerFilterScope::Feature ||
+            (*channel.pointCloudMaxPoints_ > DefaultPointCloudMaxPoints || channel.scope_ != FeatureLayerFilterScope::Feature ||
              channel.group_ || channel.relation_ || channel.geometryTypes_ != (1U << static_cast<unsigned>(GeomType::Points)))) {
             return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
-                "Point-cloud sampling requires a feature-only point channel and a quota in 0..1048576."});
+                "Point-cloud sampling requires a feature-only point channel and a per-object quota in 0..13999999."});
         }
         if (channel.geometryName_ && channel.geometryName_->empty()) {
             return tl::unexpected(simfil::Error{
@@ -366,6 +366,53 @@ void mergeTraces(
 }
 
 }  // namespace
+
+std::vector<bool> FeatureLayerFilterRequest::activeChannels() const
+{
+    auto environment = makeEnvironment(simfil::Environment::WithNewStringCache);
+    for (auto const& [name, value] : bindings_) {
+        environment->constants.insert_or_assign(name, bindingValue(value));
+    }
+    auto constantPredicate = [&](std::optional<std::string> const& expression)
+        -> std::optional<bool>
+    {
+        if (!expression) {
+            return true;
+        }
+        environment->traces.clear();
+        auto ast = simfil::compile(*environment, *expression, true);
+        if (!ast || !(*ast)->expr().constant() || !environment->traces.empty()) {
+            return std::nullopt;
+        }
+        std::vector<simfil::Value> values;
+        auto evaluated = (*ast)->expr().eval(
+            simfil::Context(environment.get(), nullptr),
+            simfil::Value::undef(),
+            simfil::LambdaResultFn([&](simfil::Context, simfil::Value value) {
+                values.push_back(std::move(value));
+                return simfil::Continue;
+            }));
+        if (!evaluated || !environment->traces.empty()) {
+            return std::nullopt;
+        }
+        return filterMatches(values);
+    };
+
+    std::vector<bool> result;
+    result.reserve(channels_.size());
+    for (auto const& channel : channels_) {
+        auto feature = constantPredicate(channel.featureFilter_);
+        bool active = feature != false;
+        // An earlier, data-dependent predicate may have observable traces.
+        // Only skip the entry phase when the earlier gate is also constant.
+        if (feature == true && !channel.rewrite_ &&
+            channel.scope_ != FeatureLayerFilterScope::Auto) {
+            active = constantPredicate(channel.entryFilter_) != false;
+        }
+        result.push_back(active);
+    }
+    return result;
+}
 
 /** Deduplicates request-local issues while retaining occurrence counts. */
 class FeatureLayerFilterRequest::Issues
@@ -805,6 +852,7 @@ private:
         model_ptr<TileSubsetChannel> output_;
         std::set<std::string> featureTypes_;
         bool filterCompilationFailed_ = false;
+        bool active_ = true;
         std::vector<FeatureCandidate> featureCandidates_;
         std::vector<AttributeCandidate> attributeCandidates_;
         std::vector<FeatureLayerPointGroupMember> pointGroupMembers_;
@@ -1262,13 +1310,13 @@ static model_ptr<GeometryCollection> copyGeometryCollection(
 /** Sample one object's geometries together, before allocating subset point storage. */
 static model_ptr<GeometryCollection> copyPointCloudGeometry(
     PartitionSubsetLayer& target, model_ptr<GeometryCollection> const& source,
-    std::optional<std::string> const& name, size_t quota)
+    std::optional<std::string> const& name, uint32_t quota)
 {
     auto selected = PointCloudGeometrySample::build(source, quota, name);
     auto info = target.info();
     target.setInfo("PointCloud/SourceRecords", info.value<uint64_t>("PointCloud/SourceRecords", 0) + selected.sourceCount);
     target.setInfo("PointCloud/DeliveredRecords", info.value<uint64_t>("PointCloud/DeliveredRecords", 0) + selected.records.size());
-    target.setInfo("PointCloud/Representation", "visualization/first-point-grid-v1");
+    target.setInfo("PointCloud/Representation", "visualization/proportional-v1");
     size_t geometryCount = 0;
     uint32_t previousAddress = 0;
     for (auto const& record : selected.records) {
@@ -1417,26 +1465,19 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
     Channel& channel,
     FeatureIdCache& featureIds)
 {
-    if (channel.filterCompilationFailed_) {
+    if (!channel.active_ || channel.filterCompilationFailed_) {
         return;
     }
 
-    size_t quota = channel.definition_.pointCloudMaxPoints_.value_or(0);
-    auto const cloudChannels = std::count_if(channels_.begin(), channels_.end(), [](auto const& item) {
-        return item.definition_.pointCloudMaxPoints_.value_or(0) > 0;
-    });
-    if (quota) quota = std::min<size_t>(quota, 1048576 / std::max<size_t>(1, cloudChannels));
-    size_t remainingFeatures = channel.featureCandidates_.size();
+    auto const quota = channel.definition_.pointCloudMaxPoints_.value_or(0);
     for (auto& candidate : channel.featureCandidates_) {
-        auto const featureQuota = remainingFeatures ? quota / remainingFeatures-- : 0;
-        quota -= featureQuota;
         auto values = candidate.featureValues_.materialize(*resultLayer_,
             channel.definition_.channelId_, channel.definition_.featureFields_, Scope::Feature, issues_);
         channel.output_->newFeatureEntry(
             copyFeatureId(candidate.feature_->id(), featureIds),
             channel.definition_.pointCloudMaxPoints_.value_or(0) ?
                 copyPointCloudGeometry(*resultLayer_, candidate.feature_->geomOrNull(),
-                    channel.definition_.geometryName_, featureQuota) :
+                    channel.definition_.geometryName_, quota) :
                 copyGeometryCollection(*resultLayer_, candidate.feature_->geomOrNull(),
                     channel.definition_.geometryTypes_, channel.definition_.geometryName_),
             values,
@@ -1741,6 +1782,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
         }
     }
 
+    auto const activeChannels = request_.activeChannels();
     channels_.reserve(request_.channels_.size());
     for (auto const& requested : request_.channels_) {
         auto effective = requested;
@@ -1792,6 +1834,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
             output,
             std::set<std::string>(requested.featureTypes_.begin(), requested.featureTypes_.end()),
             normalizationFailed,
+            activeChannels[channels_.size()],
         });
     }
 }
@@ -1812,12 +1855,12 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
     size_t sourceFeatureOrdinal)
 {
     auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
-    auto featureContext = evaluator_->context(*feature);
+    simfil::ModelNode::Ptr featureContext;
     ExpressionEvaluator::ValueCache featureEvaluations;
 
     for (size_t channelIndex = 0; channelIndex < channels_.size(); ++channelIndex) {
         auto& channel = channels_[channelIndex];
-        if (channel.filterCompilationFailed_ || !featureTypeAllowed(feature, channel)) {
+        if (!channel.active_ || channel.filterCompilationFailed_ || !featureTypeAllowed(feature, channel)) {
             continue;
         }
         if (!materializeOutput_ && !channel.definition_.group_) {
@@ -1828,6 +1871,9 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
             continue;
         }
 
+        if (!featureContext) {
+            featureContext = evaluator_->context(*feature);
+        }
         auto hostMatch = evaluator_->filter(
             channel.definition_.featureFilter_,
             *featureContext,
@@ -2044,7 +2090,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanExactRoots()
                         sourceLayer_.partitionId().toString()));
                 continue;
             }
-            if (!featureTypeAllowed(feature, channel)) {
+            if (!channel.active_ || !featureTypeAllowed(feature, channel)) {
                 continue;
             }
             auto context = evaluator_->context(*feature);

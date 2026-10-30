@@ -121,7 +121,7 @@ struct FeatureLayerFilterChannel
     std::optional<std::string> geometryName_;
 
     /** Explicit visualization-only point-cloud sampling. Zero requests exact delivery.
-     * The quota is shared across the channel's features in each source partition. */
+     * The quota applies independently to each feature's matching point geometries. */
     std::optional<uint32_t> pointCloudMaxPoints_;
 
     /** Present only for the feature-only point-grid grouping channel. */
@@ -248,6 +248,13 @@ struct FeatureLayerFilterRequest
     uint64_t generation_ = 0;
     std::vector<FeatureLayerFilterChannel> channels_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
+
+    /**
+     * Identify channels whose membership is not provably false after binding constants.
+     * Unknown/invalid predicates remain active for normal evaluation and diagnostics.
+     * The mask retains channel order and does not change the serialized request.
+     */
+    [[nodiscard]] std::vector<bool> activeChannels() const;
 
     /**
      * Scan one source tile in source-major order.

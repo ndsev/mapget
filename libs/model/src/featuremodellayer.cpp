@@ -532,6 +532,8 @@ void PartitionFeatureModelLayerBase::setPolygonRingStarts(
         return;
     }
 
+    if (!polygonRingStarts_.check_capacity(ringStarts.size(), true))
+        raise<std::length_error>("Polygon ring capacity exceeds model storage representation");
     auto const ringStartArray = polygonRingStarts_.new_array(ringStarts.size(), true);
     for (auto const start : ringStarts) {
         polygonRingStarts_.emplace_back(ringStartArray, start);
@@ -541,6 +543,8 @@ void PartitionFeatureModelLayerBase::setPolygonRingStarts(
 
 simfil::ModelNodeAddress PartitionFeatureModelLayerBase::appendFeatureId(FeatureIdData data)
 {
+    if (!simfil::ModelNodeAddress::checkIndex(featureIds_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(featureIds_.size());
     featureIds_.emplace_back(std::move(data));
     return {ColumnId::ExternalFeatureIds, index};
@@ -548,6 +552,8 @@ simfil::ModelNodeAddress PartitionFeatureModelLayerBase::appendFeatureId(Feature
 
 simfil::ModelNodeAddress PartitionFeatureModelLayerBase::appendGeometryView(GeometryViewData data)
 {
+    if (!simfil::ModelNodeAddress::checkIndex(geomViews_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(geomViews_.size());
     geomViews_.emplace_back(std::move(data));
     return {ColumnId::GeometryViews, index};

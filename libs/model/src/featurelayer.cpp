@@ -57,6 +57,20 @@ namespace
     using GeometryPointBufferArena =
         simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize * 2>;
 
+    void checkModelNodeIndex(size_t index)
+    {
+        if (!simfil::ModelNodeAddress::checkIndex(index))
+            mapget::raise<std::length_error>("Model node index exceeds its 24-bit representation");
+    }
+
+    template <typename Arena>
+    simfil::ArrayIndex newModelArray(Arena& arena, size_t capacity, bool fixedSize)
+    {
+        if (!arena.check_capacity(capacity, fixedSize))
+            mapget::raise<std::length_error>("Array capacity exceeds model storage representation");
+        return arena.new_array(capacity, fixedSize);
+    }
+
     /**
      * Views into the sourceDataAddresses_ array are stored as a single u32, which
      * uses 20 bits for the index and 4 bits for the length.
@@ -450,7 +464,7 @@ Feature::ComplexData& PartitionFeatureLayer::ensureFeatureComplexData(uint32_t f
     auto& addr = impl_->complexFeatureDataRefs_.at(featureIndex);
     if (!addr) {
         auto const complexIndex = static_cast<uint32_t>(impl_->complexFeatureData_.size());
-        simfil::ModelNodeAddress::checkIndex(impl_->complexFeatureData_.size());
+        checkModelNodeIndex(impl_->complexFeatureData_.size());
         impl_->complexFeatureData_.emplace_back(Feature::ComplexData{});
         addr = simfil::ModelNodeAddress{ColumnId::FeatureComplexData, complexIndex};
     }
@@ -650,7 +664,7 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
         raise(res.error().message);
 
     auto featureIndex = impl_->features_.size();
-    simfil::ModelNodeAddress::checkIndex(impl_->features_.size());
+    checkModelNodeIndex(impl_->features_.size());
     impl_->features_.emplace_back(Feature::BasicData{
         Feature::TypeId{*res},
         idPartValues,
@@ -705,7 +719,7 @@ model_ptr<FeatureId> PartitionFeatureLayer::newFeatureId(
         // Local references omit the redundant map payload so legacy JSON stays compact.
         externalMapIdStringId = *storedMapId;
     }
-    simfil::ModelNodeAddress::checkIndex(featureIds_.size());
+    checkModelNodeIndex(featureIds_.size());
     featureIds_.emplace_back(FeatureId::Data{
         false,
         idCompositionIndex,
@@ -727,7 +741,7 @@ PartitionFeatureLayer::newRelation(const std::string_view& name, const model_ptr
     auto nameStringId = strings()->emplace(name);
     if (!nameStringId)
         raise(nameStringId.error().message);
-    simfil::ModelNodeAddress::checkIndex(impl_->relations_.size());
+    checkModelNodeIndex(impl_->relations_.size());
     impl_->relations_.emplace_back(Relation::Data{
         .name_ = *nameStringId,
         .targetFeatureId_ = target->addr()
@@ -789,7 +803,7 @@ model_ptr<AttrPointSequence> PartitionFeatureLayer::newAttrPointSequence(
     }
 
     auto const sequenceIndex = static_cast<uint32_t>(impl_->attrPointSequences_.size());
-    simfil::ModelNodeAddress::checkIndex(impl_->attrPointSequences_.size());
+    checkModelNodeIndex(impl_->attrPointSequences_.size());
     impl_->attrPointSequences_.emplace_back(AttrPointSequence::Data{
         .featureId_ = feature->id()->addr(),
         .geometry_ = geometry->addr(),
@@ -885,7 +899,7 @@ model_ptr<AttrPoint> PartitionFeatureLayer::appendAttrPoint(
 
     auto const anchor = geometryAnchor();
     auto const pointIndex = static_cast<uint32_t>(impl_->attrPoints_.size());
-    simfil::ModelNodeAddress::checkIndex(impl_->attrPoints_.size());
+    checkModelNodeIndex(impl_->attrPoints_.size());
     impl_->attrPoints_.emplace_back(AttrPoint::Data{
         .index_ = logicalIndex,
         .point_ = glm::fvec3{
@@ -922,10 +936,10 @@ model_ptr<Attribute> PartitionFeatureLayer::newAttribute(
     auto nameStringId = strings()->emplace(name);
     if (!nameStringId)
         raise(nameStringId.error().message);
-    simfil::ModelNodeAddress::checkIndex(impl_->attributes_.size());
+    checkModelNodeIndex(impl_->attributes_.size());
     impl_->attributes_.emplace_back(Attribute::Data{
         {Null, 0},
-        objectMemberStorage().new_array(initialCapacity, fixedSize),
+        newModelArray(objectMemberStorage(), initialCapacity, fixedSize),
         *nameStringId,
     });
     return Attribute(
@@ -939,8 +953,8 @@ model_ptr<AttributeLayer>
 PartitionFeatureLayer::newAttributeLayer(size_t initialCapacity, bool fixedSize)
 {
     auto layerIndex = impl_->attrLayers_.size();
-    simfil::ModelNodeAddress::checkIndex(impl_->attrLayers_.size());
-    impl_->attrLayers_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
+    checkModelNodeIndex(impl_->attrLayers_.size());
+    impl_->attrLayers_.emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
     return AttributeLayer(
         impl_->attrLayers_.back(),
         shared_from_this(),
@@ -952,8 +966,8 @@ model_ptr<AttributeLayerList>
 PartitionFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize)
 {
     auto listIndex = impl_->attrLayerLists_.size();
-    simfil::ModelNodeAddress::checkIndex(impl_->attrLayerLists_.size());
-    impl_->attrLayerLists_.emplace_back(objectMemberStorage().new_array(initialCapacity, fixedSize));
+    checkModelNodeIndex(impl_->attrLayerLists_.size());
+    impl_->attrLayerLists_.emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
     return AttributeLayerList(
         impl_->attrLayerLists_.back(),
         shared_from_this(),
@@ -964,7 +978,7 @@ PartitionFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize
 model_ptr<GeometryCollection>
 PartitionFeatureLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
 {
-    auto listIndex = arrayMemberStorage().new_array(initialCapacity, fixedSize);
+    auto listIndex = newModelArray(arrayMemberStorage(), initialCapacity, fixedSize);
     return GeometryCollection(
         shared_from_this(),
         {ColumnId::GeometryCollections, (uint32_t)listIndex},
@@ -986,32 +1000,32 @@ PartitionFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity, bo
 
     switch (geomType) {
     case GeomType::Points: {
-        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PointGeometries, vertexArray);
     }
     case GeomType::Line:
     {
-        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::LineGeometries, vertexArray);
     }
     case GeomType::Polygon:
     {
-        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PolygonGeometries, vertexArray);
     }
     case GeomType::Mesh:
     {
-        auto const vertexArray = pointBuffers_.new_array(initialCapacity, fixedSize);
+        auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::MeshGeometries, vertexArray);
     }
     case GeomType::AABB:
     {
-        auto const vertexArray = pointBuffers_.new_array(2, true);
+        auto const vertexArray = newModelArray(pointBuffers_, 2, true);
         return makeGeometry(ColumnId::AabbGeometries, vertexArray);
     }
     case GeomType::GltfNodeIndex:
     {
-        auto const vertexArray = pointBuffers_.new_array(3, true);
+        auto const vertexArray = newModelArray(pointBuffers_, 3, true);
         return makeGeometry(ColumnId::GltfNodeIndexGeometries, vertexArray);
     }
     }
@@ -1032,7 +1046,7 @@ model_ptr<Geometry> PartitionFeatureLayer::newGeometryView(
     if (base->geomType() == GeomType::AABB || base->geomType() == GeomType::GltfNodeIndex) {
         raise("Geometry views cannot reference AABB or GltfNodeIndex geometries.");
     }
-    simfil::ModelNodeAddress::checkIndex(geomViews_.size());
+    checkModelNodeIndex(geomViews_.size());
     geomViews_.emplace_back(geomType, offset, size, base->addr());
     return Geometry(
         &geomViews_.back(),
@@ -1058,7 +1072,7 @@ model_ptr<SourceDataReferenceCollection> PartitionFeatureLayer::newSourceDataRef
 
 model_ptr<Validity> PartitionFeatureLayer::newValidity()
 {
-    simfil::ModelNodeAddress::checkIndex(impl_->validities_.size());
+    checkModelNodeIndex(impl_->validities_.size());
     impl_->validities_.emplace_back();
     return Validity(
         &impl_->validities_.back(),
@@ -1070,7 +1084,7 @@ model_ptr<Validity> PartitionFeatureLayer::newValidity()
 model_ptr<MultiValidity>
 PartitionFeatureLayer::newValidityCollection(size_t initialCapacity, bool fixedSize)
 {
-    auto validityArrId = arrayMemberStorage().new_array(initialCapacity, fixedSize);
+    auto validityArrId = newModelArray(arrayMemberStorage(), initialCapacity, fixedSize);
     return MultiValidity(
         shared_from_this(),
         {ColumnId::ValidityCollections, (uint32_t)validityArrId},
@@ -1094,7 +1108,7 @@ ModelNodeAddress PartitionFeatureLayer::materializeSimpleValidity(
         raise("Simple validity owner slot no longer points at the expected simple validity.");
     }
 
-    simfil::ModelNodeAddress::checkIndex(impl_->validities_.size());
+    checkModelNodeIndex(impl_->validities_.size());
     impl_->validities_.emplace_back();
     auto upgradedAddress = ModelNodeAddress{
         ColumnId::Validities,

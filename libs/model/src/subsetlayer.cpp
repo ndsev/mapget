@@ -1741,6 +1741,8 @@ model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
     auto relationEntries = newArray(1);
     auto groupEntries = newArray(1);
 
+    if (!simfil::ModelNodeAddress::checkIndex(channels_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(channels_.size());
     channels_.emplace_back(TileSubsetChannel::Data{
         channelIdNode->addr(),
@@ -1773,6 +1775,8 @@ model_ptr<FeatureEntry> PartitionSubsetLayer::newFeatureEntry(
     validateOwnedNode(featureId, "feature entry id");
     validateOwnedNode(geometry, "feature entry geometry");
     auto valueArray = newValueArray(values);
+    if (!simfil::ModelNodeAddress::checkIndex(featureEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(featureEntries_.size());
     featureEntries_.emplace_back(FeatureEntry::Data{
         featureId->addr(),
@@ -1862,6 +1866,8 @@ model_ptr<AttributeValidityEntry> PartitionSubsetLayer::newAttributeValidityEntr
     if (attributeLayer) layerAddress = newValue(*attributeLayer)->addr();
     if (attributeName) nameAddress = newValue(*attributeName)->addr();
 
+    if (!simfil::ModelNodeAddress::checkIndex(attributeValidityEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(attributeValidityEntries_.size());
     attributeValidityEntries_.emplace_back(AttributeValidityEntry::Data{
         featureId->addr(),
@@ -1914,6 +1920,8 @@ model_ptr<RelationEntry> PartitionSubsetLayer::newRelationEntry(
     auto provenanceNode = newValue(provenance);
     auto valueArray = newValueArray(values);
 
+    if (!simfil::ModelNodeAddress::checkIndex(relationEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(relationEntries_.size());
     relationEntries_.emplace_back(RelationEntry::Data{
         relationIdNode->addr(),
@@ -1965,6 +1973,8 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
         members->append(member);
     }
 
+    if (!simfil::ModelNodeAddress::checkIndex(groupEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(groupEntries_.size());
     groupEntries_.emplace_back(GroupEntry::Data{
         groupKey->addr(),
@@ -2028,6 +2038,8 @@ model_ptr<FeatureId> PartitionSubsetLayer::newFeatureId(
 model_ptr<GeometryCollection>
 PartitionSubsetLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
 {
+    if (!arrayMemberStorage().check_capacity(initialCapacity, fixedSize))
+        raise<std::length_error>("Geometry collection capacity exceeds model storage representation");
     auto index = arrayMemberStorage().new_array(initialCapacity, fixedSize);
     return GeometryCollection(
         shared_from_this(),
@@ -2039,6 +2051,11 @@ model_ptr<Geometry>
 PartitionSubsetLayer::newGeometry(GeomType geomType, size_t initialCapacity, bool fixedSize)
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
+    auto const capacity = geomType == GeomType::AABB ? 2 :
+        geomType == GeomType::GltfNodeIndex ? 3 : initialCapacity;
+    if (!vertexBufferStorage().check_capacity(
+            capacity, fixedSize || geomType == GeomType::AABB || geomType == GeomType::GltfNodeIndex))
+        raise<std::length_error>("Geometry capacity exceeds model storage representation");
     auto makeGeometry = [this](uint8_t column, simfil::ArrayIndex index) {
         return Geometry(
             shared_from_this(),
