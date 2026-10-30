@@ -1351,6 +1351,55 @@ TEST_CASE(
         group->memberFeatureIds()->size() == 2);
 }
 
+TEST_CASE("Disabled point groups do not load a halo", "[feature-layer-filter][Service][filter-activity]")
+{
+    auto const tile = TileId::fromTileXY(10, 4, 4);
+    auto const [longitude, latitude] = tile.centerWgs84();
+    nlohmann::json ordinaryEntries;
+    for (bool enabled : {false, true, false}) {
+        Service service(std::make_shared<MemCache>(32), false);
+        auto dataSource = std::make_shared<PointGroupDataSource>(
+            tile, tile.eastNeighbour(), Point{longitude, latitude, 0},
+            Point{longitude + 1, latitude, 0});
+        service.add(dataSource);
+        FeatureLayerFilterRequest filter;
+        filter.bindings_ = {{"enabled", enabled}};
+        filter.channels_ = {
+            FeatureLayerFilterChannel{.channelId_ = "points", .featureFields_ = {"roadId"}},
+            FeatureLayerFilterChannel{
+                .channelId_ = "groups", .featureFilter_ = "any(enabled)",
+                .entryFields_ = {"count($features.*)"},
+                .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                .group_ = FeatureLayerPointGridGroup{
+                    .origin_ = {longitude - 0.5, latitude - 0.5, -0.5}, .cellSize_ = {1, 1, 1}},
+            },
+        };
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        PartitionSubsetLayer::Ptr result;
+        request->onFilterResult([&](auto layer) { result = std::move(layer); });
+        REQUIRE(service.request(request));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        CHECK(dataSource->requestedTiles().size() == (enabled ? 9 : 1));
+        CHECK(result->dependencies().size() == (enabled ? 9 : 1));
+        CHECK(result->at(1)->groupEntryCount() == (enabled ? 2 : 0));
+        auto entries = result->at(0)->toJson();
+        if (ordinaryEntries.is_null()) {
+            ordinaryEntries = entries;
+        }
+        CHECK(entries == ordinaryEntries);
+
+        // Disabling a group must not hide malformed request declarations.
+        filter.channels_[1].group_->cellSize_.x = tile.wgs84Size().first * 2;
+        auto invalid = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        CHECK_FALSE(service.request(invalid));
+        CHECK(invalid->getStatus() == RequestStatus::Aborted);
+    }
+}
+
 TEST_CASE(
     "Service resolves sparse cross-tile relations and keeps permanent ownership request-closed",
     "[feature-layer-filter][Service][relation]")

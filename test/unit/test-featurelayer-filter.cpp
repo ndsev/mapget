@@ -284,6 +284,79 @@ TEST_CASE(
     CHECK(statistics.failedCompiles == 1);
 }
 
+TEST_CASE("Filter activity uses bound constant predicates conservatively", "[feature-layer-filter][filter-activity]")
+{
+    FeatureLayerFilterRequest request;
+    request.bindings_ = {{"enabled", false}};
+    for (auto const& expression : {"any(enabled)", "not enabled", "roadId == 42", "(", "trace(false, -1, 'gate')"}) {
+        FeatureLayerFilterChannel channel;
+        channel.channelId_ = std::to_string(request.channels_.size());
+        channel.featureFilter_ = expression;
+        channel.rewrite_ = false;
+        request.channels_.push_back(std::move(channel));
+    }
+    CHECK(request.activeChannels() == std::vector<bool>{false, true, true, true, true});
+    request.bindings_["enabled"] = true;
+    CHECK(request.activeChannels() == std::vector<bool>{true, false, true, true, true});
+
+    FeatureLayerFilterChannel relation;
+    relation.scope_ = FeatureLayerFilterScope::Relation;
+    relation.rewrite_ = false;
+    relation.entryFilter_ = "not enabled";
+    request.channels_ = {relation};
+    CHECK(request.activeChannels() == std::vector<bool>{false});
+    request.channels_.front().featureFilter_ = "trace(roadId == 42, -1, 'host')";
+    CHECK(request.activeChannels() == std::vector<bool>{true});
+}
+
+TEST_CASE("Inactive filter channels retain identity and empty output", "[feature-layer-filter][filter-activity]")
+{
+    FeatureLayerFilterRequest request;
+    request.bindings_ = {{"enabled", false}};
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "off", .featureFilter_ = "any(enabled)",
+            .scope_ = FeatureLayerFilterScope::Feature, .rewrite_ = false},
+        FeatureLayerFilterChannel{.channelId_ = "on", .scope_ = FeatureLayerFilterScope::Feature,
+            .rewrite_ = false, .featureFields_ = {"roadId"}},
+    };
+    auto source = makeFilterSource();
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE((*result)->size() == 2);
+    CHECK((*result)->at(0)->featureEntryCount() == 0);
+    CHECK((*result)->at(1)->featureEntryCount() == 1);
+    request.bindings_["enabled"] = true;
+    auto enabled = request.filter(*source);
+    REQUIRE(enabled);
+    CHECK((*enabled)->at(0)->featureEntryCount() == 1);
+    CHECK((*enabled)->at(1)->toJson() == (*result)->at(1)->toJson());
+}
+
+TEST_CASE("Inactive filter gates preserve predicate and relation-pattern errors", "[feature-layer-filter][filter-activity]")
+{
+    auto source = makeRelationSource();
+    FeatureLayerFilterRequest request;
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "empty-predicate", .featureFilter_ = "",
+            .entryFilter_ = "false", .scope_ = FeatureLayerFilterScope::Feature, .rewrite_ = false},
+    };
+    CHECK(request.activeChannels() == std::vector<bool>{true});
+    auto result = request.filterSource(*source, true);
+    REQUIRE(result);
+    CHECK_FALSE(result->issues_.empty());
+
+    request.channels_ = {
+        FeatureLayerFilterChannel{.channelId_ = "bad-pattern", .featureFilter_ = "false",
+            .scope_ = FeatureLayerFilterScope::Relation, .rewrite_ = false,
+            .relation_ = FeatureLayerStoredRelationOptions{.relationNamePattern_ = "["}},
+    };
+    CHECK(request.activeChannels() == std::vector<bool>{false});
+    auto relationResult = request.filterSource(*source, true);
+    REQUIRE(relationResult);
+    CHECK(relationResult->relationDescriptors_.empty());
+    CHECK(relationResult->issues_.size() == 1);
+}
+
 TEST_CASE(
     "SIMFIL expression cache compiles a concurrent first use once",
     "[feature-layer-filter][expression-cache]")

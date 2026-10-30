@@ -367,6 +367,53 @@ void mergeTraces(
 
 }  // namespace
 
+std::vector<bool> FeatureLayerFilterRequest::activeChannels() const
+{
+    auto environment = makeEnvironment(simfil::Environment::WithNewStringCache);
+    for (auto const& [name, value] : bindings_) {
+        environment->constants.insert_or_assign(name, bindingValue(value));
+    }
+    auto constantPredicate = [&](std::optional<std::string> const& expression)
+        -> std::optional<bool>
+    {
+        if (!expression) {
+            return true;
+        }
+        environment->traces.clear();
+        auto ast = simfil::compile(*environment, *expression, true);
+        if (!ast || !(*ast)->expr().constant() || !environment->traces.empty()) {
+            return std::nullopt;
+        }
+        std::vector<simfil::Value> values;
+        auto evaluated = (*ast)->expr().eval(
+            simfil::Context(environment.get(), nullptr),
+            simfil::Value::undef(),
+            simfil::LambdaResultFn([&](simfil::Context, simfil::Value value) {
+                values.push_back(std::move(value));
+                return simfil::Continue;
+            }));
+        if (!evaluated || !environment->traces.empty()) {
+            return std::nullopt;
+        }
+        return filterMatches(values);
+    };
+
+    std::vector<bool> result;
+    result.reserve(channels_.size());
+    for (auto const& channel : channels_) {
+        auto feature = constantPredicate(channel.featureFilter_);
+        bool active = feature != false;
+        // An earlier, data-dependent predicate may have observable traces.
+        // Only skip the entry phase when the earlier gate is also constant.
+        if (feature == true && !channel.rewrite_ &&
+            channel.scope_ != FeatureLayerFilterScope::Auto) {
+            active = constantPredicate(channel.entryFilter_) != false;
+        }
+        result.push_back(active);
+    }
+    return result;
+}
+
 /** Deduplicates request-local issues while retaining occurrence counts. */
 class FeatureLayerFilterRequest::Issues
 {
@@ -805,6 +852,7 @@ private:
         model_ptr<TileSubsetChannel> output_;
         std::set<std::string> featureTypes_;
         bool filterCompilationFailed_ = false;
+        bool active_ = true;
         std::vector<FeatureCandidate> featureCandidates_;
         std::vector<AttributeCandidate> attributeCandidates_;
         std::vector<FeatureLayerPointGroupMember> pointGroupMembers_;
@@ -1417,7 +1465,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
     Channel& channel,
     FeatureIdCache& featureIds)
 {
-    if (channel.filterCompilationFailed_) {
+    if (!channel.active_ || channel.filterCompilationFailed_) {
         return;
     }
 
@@ -1734,6 +1782,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
         }
     }
 
+    auto const activeChannels = request_.activeChannels();
     channels_.reserve(request_.channels_.size());
     for (auto const& requested : request_.channels_) {
         auto effective = requested;
@@ -1785,6 +1834,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
             output,
             std::set<std::string>(requested.featureTypes_.begin(), requested.featureTypes_.end()),
             normalizationFailed,
+            activeChannels[channels_.size()],
         });
     }
 }
@@ -1805,12 +1855,12 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
     size_t sourceFeatureOrdinal)
 {
     auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
-    auto featureContext = evaluator_->context(*feature);
+    simfil::ModelNode::Ptr featureContext;
     ExpressionEvaluator::ValueCache featureEvaluations;
 
     for (size_t channelIndex = 0; channelIndex < channels_.size(); ++channelIndex) {
         auto& channel = channels_[channelIndex];
-        if (channel.filterCompilationFailed_ || !featureTypeAllowed(feature, channel)) {
+        if (!channel.active_ || channel.filterCompilationFailed_ || !featureTypeAllowed(feature, channel)) {
             continue;
         }
         if (!materializeOutput_ && !channel.definition_.group_) {
@@ -1821,6 +1871,9 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
             continue;
         }
 
+        if (!featureContext) {
+            featureContext = evaluator_->context(*feature);
+        }
         auto hostMatch = evaluator_->filter(
             channel.definition_.featureFilter_,
             *featureContext,
@@ -2037,7 +2090,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanExactRoots()
                         sourceLayer_.partitionId().toString()));
                 continue;
             }
-            if (!featureTypeAllowed(feature, channel)) {
+            if (!channel.active_ || !featureTypeAllowed(feature, channel)) {
                 continue;
             }
             auto context = evaluator_->context(*feature);

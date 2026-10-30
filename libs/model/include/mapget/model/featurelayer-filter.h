@@ -250,6 +250,13 @@ struct FeatureLayerFilterRequest
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
 
     /**
+     * Identify channels whose membership is not provably false after binding constants.
+     * Unknown/invalid predicates remain active for normal evaluation and diagnostics.
+     * The mask retains channel order and does not change the serialized request.
+     */
+    [[nodiscard]] std::vector<bool> activeChannels() const;
+
+    /**
      * Scan one source tile in source-major order.
      *
      * Set `materializeOutput` for requested output tiles. Halo-only scans
