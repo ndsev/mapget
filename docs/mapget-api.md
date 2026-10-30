@@ -1,6 +1,6 @@
 # HTTP / WebSocket API Guide
 
-Mapget protocol 5 exposes complete source partitions to trusted clients and
+Mapget protocol 6 exposes complete source partitions to trusted clients and
 server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
 staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
@@ -174,8 +174,9 @@ hint: "This is the HTTP contract. Native MCP source discovery exposes a compact 
 ## `GET /sources`
 
 `/sources` returns the datasource catalog as a JSON array. Ready entries
-contain `sourceId`, `stringPoolId`, `mapId`, layer metadata, feature ID
-compositions, feature-model schemas, coverage, and supported zoom levels.
+contain `sourceId`, `stringPoolId`, `mapId`, `mapFormat`, `schemaId`, small layer
+metadata, coverage, and supported zoom levels. Feature types, ID compositions,
+and feature-model schemas live in the separately retrieved schema artifact.
 `stringPoolId` is the serialized string namespace; it is not datasource
 routing identity.
 
@@ -198,6 +199,94 @@ Catalog entries include:
 
 Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
 `"sources-<revision>"`. `If-None-Match` may produce `304 Not Modified`.
+
+## `GET /schema`
+
+Resolve a ready source's exact immutable schema before constructing or parsing
+its feature/source/subset partitions:
+
+```http
+GET /schema?sourceId=datasource-0&schemaId=<percent-encoded-schemaId>
+Accept: application/octet-stream
+```
+
+Both parameters are required, nonempty, and at most 4096 bytes each. Use the
+`sourceId` and `schemaId` from the same catalog entry. `mapFormat` describes the
+source format but is **not** a lookup key or a substitute for `schemaId`;
+two providers with the same format can have different projected contracts.
+The request never chooses a schema by a caller-supplied format description.
+
+Successful responses contain the binary `MapSchema` artifact, not JSON Schema
+or a tile stream. It includes its versioned envelope, exact identity, private
+schema dictionary, and native model columns. Readers validate the complete
+artifact and expected identity before installing it. The current transport
+accepts artifacts up to 64 MiB. This dictionary is independent of the
+datasource's streamed `StringPool`.
+The size check applies to the encoded artifact; it does not impose an allocator
+budget on schema construction or the transient encoding buffers.
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Complete binary artifact for the current authorized source binding. |
+| `304` | Authorized binding exists and `If-None-Match` matches. No body. |
+| `400` | Missing, empty, or oversized selector. |
+| `404` | Source is absent, not ready, unauthorized, removed, or bound to another token. |
+| `503` | Bounded work queue is full or shutting down; retry later. |
+| `500` | Artifact serialization failed. |
+
+An artifact-digest ETag supports `If-None-Match`, including weak validators,
+validator lists, and `*`. Responses use `Cache-Control: private, no-cache,
+no-transform` and `Vary: *`: immutable bytes do not grant source access. Every
+request, **including a conditional request or an encoded-cache hit**, checks
+source authorization and the current exact token. Unknown and unauthorized
+bindings return the same `404` without an ETag. A source removed or rebound
+while encoding is rechecked before publication. Re-fetch the catalog after a
+stale binding; do not reinterpret old numeric domain IDs under a new schema.
+
+Encoding runs outside the HTTP event loop and catalog locks on the bounded
+service worker pool. The HTTP representation cache retains at most its most
+recent encoded artifact; response streams share those bytes without full-body
+copies. Active transmissions remain valid after cache eviction.
+
+`/status-data` includes the public endpoint's encoded buffers under
+`memory.transport.schema-artifacts`: `allocated-bytes` counts shared allocations
+once across the cache and active responses, `retained-cache-capacity-bytes` is
+the cache-only subset, and `max-artifact-bytes` advertises the codec limit.
+These allocations contribute once to known ownership. Decoded graph storage
+remains part of service metadata accounting, not this transport subtotal.
+
+### Remote datasource boundary
+
+`DataSourceServer` exposes `GET /schema?schemaId=...` for its one initialized
+datasource. This is the trusted remote/process protocol, not the public
+source-authorization endpoint; secure that listener at the deployment boundary.
+`GET /info` advertises only the small metadata and artifact reference. The
+datasource server encodes off its I/O loop with one lazy worker and at most
+32 admitted schema requests. Its conditional/cache/binary behavior matches
+the public endpoint.
+
+`RemoteDataSource` and `HttpClient` resolve the advertised artifact during
+initialization, before exposing usable metadata. An authorized conditional
+binding check precedes reuse of the shared decoded-content cache; concurrent
+misses coalesce by exact identity and failures remain retryable. Model metadata
+constructors and binary layer readers never perform network I/O. Legacy inline
+`featureTypes` and `featureModelSchema` inputs still normalize into a local
+`MapSchema`, but canonical catalogs no longer emit those redundant fields.
+
+Schema requests use a 30-second network timeout, as does `RemoteDataSource`'s
+initial `/info` request. `HttpClient`'s initial `/sources` request does not set a
+network timeout or expose initialization cancellation. `RemoteDataSource` checks
+initialization cancellation around network requests and during shared schema
+waits; a cancelled waiter exits without cancelling a loader still used by another
+source. A synchronous network request already in progress may wait until its timeout.
+The current HTTP client buffers the response before
+the 64 MiB decoder check, so this is not yet a pre-buffer network byte limit.
+
+`HttpClient::getSchema(sourceId, schemaId)` fetches/revalidates the exact artifact.
+`HttpClient::sourceCatalog()` returns initialized catalog dictionaries retaining
+their real source IDs, including add-ons sharing a map ID. `sources()` retains
+its typed C++ return value. Installed schema owners are supplied to the binary
+reader for cross-layer projected values; unknown identities fail explicitly.
 
 ## `POST /tiles`
 
@@ -878,8 +967,8 @@ canonical feature model or make an explicitly approximate source layer exact.
 
 ### Deferred incoming inspection
 
-`POST /filter` supports `relation.traversal: "incoming"` for relation families explicitly
-marked by the provider's feature-model schema. It is an inspection operation: regular
+`POST /filter` supports `relation.traversal: "incoming"` for relation families derived
+from the provider's forward feature-model declarations; no incoming opt-in is required. It is an inspection operation: regular
 outgoing relation filters retain their existing behavior. Interactive incoming traversal
 is rejected.
 
@@ -900,14 +989,18 @@ Recursion, two-way merging, filters, projections, geometry selection and point g
 are unsupported in this mode.
 
 The response sends ordinary feature snapshots, then typed incoming manifests, terminal
-filter status, and EndOfStream. Binary protocol 5.5 adds message type **10** for the manifest;
+filter status, and EndOfStream. The binary stream uses message type **10** for the manifest;
 JSONL sends the same manifest object as a line. Its `type` is `mapget.incoming.relations`
-and `version` is `1`. Each manifest identifies `target`, `featureId`, required `snapshots`,
+and `version` is `2`. Each manifest identifies `target`, `featureId`, required `snapshots`,
 and `relations` containing the original `source` partition key, source `featureId`,
 `relationIndex`, `name`, and resolved `targetFeatureId`. Relations remain source-owned.
-`complete`, `issues`, and optional `expiresAtMs` distinguish complete, partial and expiring
-results. A successful empty result applies only to the declared deferred families.
-Missing metadata does not opt a provider in; a target with no eligible provider is unsupported.
+`scope` lists admitted provider partition keys, including providers that returned no
+matches. `status` is `no-possible-family`, `complete`, `partial`, or `unsupported-scope`.
+The convenience `complete` flag is true for the first two states, strictly within
+that scope. `issues` explains missing declarations, incompatible identity/partition
+contracts, provider errors or limits. Unknown inventories are not evidence that
+there are no incoming relations. Different tile levels or partition kinds are not
+implicitly routed. Optional `expiresAtMs` includes empty provider dependencies.
 
 Limits are 64 provider/snapshot keys, 4096 associations per target, 64 MiB retained models,
 and 64 MiB snapshot output. Limiting source snapshots yields a consistent partial result;

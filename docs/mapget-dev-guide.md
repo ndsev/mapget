@@ -1,6 +1,6 @@
 # Mapget Developer Guide
 
-This guide describes the protocol-5 implementation: complete source partitions,
+This guide describes complete source partitions,
 server-evaluated subset layers, semantic geometry names, and lazy attachments.
 
 ## Components
@@ -17,6 +17,47 @@ server-evaluated subset layers, semantic geometry names, and lazy attachments.
 - `libs/pymapget` exposes the same model/service contracts to Python.
 
 `apps/mapget` wires these libraries into the CLI.
+
+## Schema ownership and readiness
+
+Build and finalize one `MapSchema` before publishing a usable `DataSourceInfo`.
+Use `MapSchema::getOrBuild()` with a key derived from the complete format and
+converter inputs to coalesce identical construction, then `setMapSchema()` to
+bind runtime layer metadata. Builders can outlive an individually cancelled
+waiter; capture inputs by ownership, never references to a datasource constructor
+or its progress callback. Completed cache entries retain graphs weakly.
+
+A published graph is immutable. Metadata and partitions share it; source reload
+publishes a new snapshot instead of changing an ordinary shared pointer beneath
+readers. Layer names match exactly. A feature type's declared ID definitions are
+available from its LayerSchema, not a second LayerInfo vector. Open legacy
+contracts remain usable for GeoJSON/custom sources without invented field facts.
+
+Remote clients fetch the authorized exact schema separately before using catalog
+metadata. Binary constructors take installed schema resolvers and do no network
+I/O. Missing or mismatched schema identities are errors, including for cached
+partitions. Protocol 6.0 is the coordinated schema-binding/typed-scalar cutover.
+
+The [model contract](mapget-model.md#feature-model-schema) documents graph,
+scalar provenance and incoming relation semantics. The [HTTP API](mapget-api.md)
+documents schema retrieval; [Python schema views](mapget-python-schema.md)
+describe owner-retaining access from bindings.
+
+### Schema memory measurements
+
+Service statistics count each registered `MapSchema` owner once, including its
+dictionary, domain columns and indexes; small metadata snapshots are counted
+separately. Partition counters include qualified scalars, bitmasks and schema
+binding tables. These are capacity-based lower bounds, not a complete heap census:
+binding wrapper/control-block allocations, temporary construction/codec buffers
+and graphs retained only by retired partitions or clients are not fully attributed.
+
+`memory.transport.schema-artifacts` reports the public HTTP service's encoded
+buffer capacities once, including evicted buffers still held by active responses.
+It does not include a separate datasource server's cache or client receive buffers.
+The artifact-size limit is checked after encoding; it is not a bound on scratch
+memory or all concurrent responses. Measure cold construction peaks separately
+from retained graph capacity and distinguish process peak RSS from live allocations.
 
 ## Object datasource integration
 

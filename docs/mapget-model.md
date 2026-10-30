@@ -107,66 +107,26 @@ Binary construction checks the index count and address bounds, but does not run
 full semantic validation. After constructing a shared layer, call `validate()`
 or `checkForErrors()` to detect duplicate IDs and inconsistent index entries in
 untrusted or externally produced layers. `validateSchema()` is a separate check
-against the optional feature-model JSON schema.
+against the schema's JSON validation projection.
 
 ## Datasource metadata
 
-Partitions do not exist in isolation: each datasource publishes metadata that tells clients which maps and layers are available, which feature types exist inside a layer and how feature IDs are structured. The same metadata is exposed over `/sources` and used internally when parsing binary tiles.
+Datasource metadata advertises available maps and layers. Its exact schema reference
+resolves to a separately shared immutable graph before any partition is constructed.
 
-```mermaid
-classDiagram
-  direction LR
-  class DataSourceInfo {
-    +string stringPoolId
-    +string mapId
-    +map<string, LayerInfo> layers
-    +int maxParallelJobs
-    +bool isAddOn
-    +Version protocolVersion
-  }
-
-  class LayerInfo {
-    +string layerId
-    +LayerType type
-    +PartitionKind partitionKind
-    +optional~int~ tileAssociationLevel
-    +vector<int> zoomLevels
-    +vector<Coverage> coverage
-    +bool canRead
-    +bool canWrite
-    +Version version
-    +vector<FeatureTypeInfo> featureTypes
-    +json featureModelSchema
-  }
-
-  class FeatureTypeInfo {
-    +string name
-    +vector<vector<IdPart>> uniqueIdCompositions
-  }
-
-  class IdPart {
-    +string partId
-    +IdPartDataType datatype
-    +bool isSynthetic
-    +bool isOptional
-  }
-
-  class Coverage {
-    +TileId min
-    +TileId max
-    +vector<bool> filled
-  }
-
-  DataSourceInfo "1" *-- "many" LayerInfo
-  LayerInfo "1" *-- "many" FeatureTypeInfo
-  FeatureTypeInfo "1" *-- "many" IdPart
-  LayerInfo "0..*" *-- "many" Coverage
-```
+| Owner | Retained information |
+| --- | --- |
+| `DataSourceInfo` | Map/dictionary identity, runtime limits, layer metadata, format and shared MapSchema owner. |
+| `LayerInfo` | Availability, partition addressing, coverage and same-named schema binding. |
+| `MapSchema` | One immutable domain graph, schema dictionary and exact artifact identity. |
+| `LayerSchema` | ModelNode view of layer roots, produced/reference-only types and their identity definitions. |
+| `FeatureTypeInfo` | Primary and secondary ID compositions made of `IdPart` records. |
+| `Coverage` | Compact discovery tile ranges and optional filled bits. |
 
 - **`DataSourceInfo`** identifies the datasource node, the map ID that node serves, all attached layers and operational limits such as `maxParallelJobs`. When a datasource is marked as `isAddOn`, the service chains it behind the main datasource for the same map.
 - **`LayerInfo`** describes a single layer: type (`Features` or
   `SourceData`), partition kind, advertised zoom levels, coverage rectangles,
-  read/write flags, semantic version and optional `featureModelSchema`. Object
+  read/write flags, semantic version and a shared schema-owner binding. Object
   layers also declare `tileAssociationLevel`; their coverage describes discovery
   tiles, not a spatial encoding of their opaque IDs. The service uses
   this to validate requests, and the reader/writer uses it when parsing tile
@@ -174,7 +134,7 @@ classDiagram
 - **`FeatureTypeInfo`** and **`IdPart`** list the allowed unique ID compositions per feature type, which is why clients can rely on the ID schemes described earlier.
 - **`Coverage`** entries describe filled tile ranges so that caches and clients can reason about availability without probing every tile if a dataset is sparse.
 
-When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. When a client queries `/sources`, it receives the same structures in JSON form, enabling dynamic discovery of map contents.
+When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. A client first reads `/sources`, resolves its schema references and only then publishes bound metadata to its binary readers.
 
 <!-- mcp:
 title: "Feature model schema contract"
@@ -182,17 +142,41 @@ keywords: ["schema", "feature types", "fields", "completion", "attribute context
 -->
 ### Feature Model Schema
 
-Feature layers may attach `LayerInfo.featureModelSchema`, a typed `LayerSchema` that validates one emitted GeoJSON-style feature object from that layer.
+Every usable datasource owns a finalized `MapSchema`, shared by its metadata and
+partitions. A `MapSchema` is a simfil `ModelPool`; each named `LayerSchema` is an
+owner-retaining `ModelNode` view into it. The graph owns structural domains,
+feature-type definitions and their primary/secondary ID compositions. Metadata
+copies retain this owner rather than copying JSON or rebuilding each layer.
 
-- The schema is optional; datasources can adopt it layer by layer.
-- The schema is serialized through `/sources` as JSON Schema transport with the rest of `LayerInfo`.
-- `TileFeatureLayer::validateSchema()` validates every emitted feature against the layer's attached schema.
-- The schema is intended for validation and tooling: simfil wildcard pruning, search/autocomplete, value-aware coloring and generated user-facing feature-model documentation.
-- Datasources should keep `FeatureTypeInfo` as the source for feature ID compositions. `featureModelSchema` describes the full JSON shape and value domains, including converter-owned fields, relations, geometry/source-data extensions and attribute-layer containers.
-- Mapget-specific schema branches may carry an `x-mapget` object with `metaType` values such as `Feature`, `FeatureProperties`, `AttributeLayerMap`, `AttributeContainer` and `Attribute`. `LayerSchema` uses these annotations to map JSON Schema transport branches onto SIMFIL `SchemaId` values for feature, property and attribute-layer nodes.
-- Attribute entries that can render either as a single object or as an array carry `x-mapget-multimap: true` on their `oneOf` wrapper. This lets `LayerSchema` use the logical object branch for SIMFIL pruning without treating the multimap serialization shape as an arbitrary union.
-- Large repeated schema branches may be shared through ordinary local JSON Schema `$ref` entries under `definitions`; consumers must resolve local refs before interpreting mapget-specific annotations.
-- `SchemaId` values are assigned deterministically by schema traversal and are independent of the datasource-owned `StringPool`; SIMFIL pruning resolves existing `StringId` values back to strings instead of inserting schema-only field names.
+- `DataSourceInfo.mapFormat_` describes the map format by name, version and a flat
+  subsystem-name/version map. It is descriptive, not a substitute for the exact
+  content-derived `schemaId_`.
+- `LayerInfo.layerId_` selects the identically named `LayerSchema`. Its kind must
+  agree with runtime metadata; the catalog, not the schema, determines which
+  source layers are available and authorized.
+- Build the graph, finalize it, attach it with `DataSourceInfo::setMapSchema()`,
+  then construct partitions. A published usable datasource never has an unresolved
+  schema. Model constructors and field access do not perform network requests.
+- `/sources` and remote `/info` carry `mapFormat` and `schemaId`, not the graph or
+  repeated feature definitions. The binary [schema endpoint](mapget-api.md)
+  transfers unknown artifacts separately. Consumers resolve each source before
+  publishing it; another source's loading failure need not block that source.
+- Legacy `featureTypes` and `featureModelSchema` input is still accepted, including
+  GeoJSON manifests. Import normalizes it into the common graph. Identity-only
+  declarations yield open property domains, not invented field information.
+  Mixing inline legacy declarations with a canonical `schemaId` is rejected.
+- `SchemaId` and schema dictionary IDs are local to an exact graph. They are not
+  datasource string IDs. Schema discovery and query compilation must not insert
+  schema-only names into the datasource-owned dictionary.
+- `PartitionFeatureLayer::validateSchema()` is explicit full-feature validation.
+  Ordinary identity checks use the schema-owned ID definitions without exporting
+  JSON Schema.
+
+The partition stream carries the exact schema artifact identity. A mismatching
+reader must reject and refetch stale data, not reinterpret numeric domain IDs.
+Already loaded snapshots retain their original graph across catalog replacement.
+This is a coordinated binary protocol cutover; legacy metadata compatibility does
+not mean old binary payload compatibility.
 
 Filter/search-facing consumers use the schema in several distinct ways.
 Completion uses direct and nested schema fields for query suggestions.
@@ -216,9 +200,14 @@ keywords: ["enum", "bitmask", "units", "numeric domain", "schema aliases", "cons
 
 `LayerSchema` stores precise scalar affinities, named feature/attribute kinds,
 `typename`, nullable values, field-presence requirements, open objects, scalar
-enum literals, and explicit `anyOf`/`oneOf`/`allOf` edges. A packed kind contains
-a static name ID above `simfil::ValueType` affinity bits; generic traversal uses
-the affinities, not Mapget-specific names. Unknown metadata is not a scalar leaf
+enum literals, and explicit `anyOf`/`oneOf`/`allOf` edges. Internally, a packed kind
+contains a static name ID above `simfil::ValueType` affinity bits; generic traversal
+uses the affinities, not Mapget-specific names. JSON export uses stable names,
+for example `"kind": {"name": "Feature", "affinities": ["object"]}` inside
+`x-mapget`, rather than serializing enum ordinals. Unversioned integer kinds on
+legacy input use the historical encoding, never the current static-ID table.
+Historical string-backed bitmask annotations remain string-backed: labels without
+numeric masks do not establish raw bit values. Unknown metadata is not a scalar leaf
 or proof that a field is absent. Finalization builds reachability indexes once;
 open or incomplete subgraphs deliberately disable negative pruning.
 
@@ -239,16 +228,13 @@ queries, using that same owning callback and private pool. For example,
 `NoSchemaId`, so feature-field pruning cannot accidentally suppress metadata.
 Recursion and depth/work limits are explicit rather than silently empty domains.
 
-Directly constructed graphs export canonical draft-07 `definitions`
-with `x-mapget` kind/ID/edge annotations. Reimport retains producer SchemaIds,
-plural edges, aliases and typed metadata. Completion overlay roots are derived
-again, not serialized as model identities. Imported ordinary JSON Schema is
-retained for transport, while its supported typed domains are compiled for
-queries. Boolean schemas, local references and combiners are distinct; multimap
-serialization wrappers still select their logical value view, including scalar
-fields such as attribute-layer IDs.
-The export dialect matches the bundled JSON Schema validator, including recursive
-domains. Import also accepts ordinary schemas using `$defs` and local references.
+JSON Schema is an import/export format, not the retained representation or the
+schema RPC payload. Explicit export produces draft-07 `definitions` with mapget
+annotations for typed edges, aliases and semantic metadata. Imports remap foreign
+numeric domain IDs into the destination owner; they never assume equal numbers
+mean equal domains. Local `$defs`/`definitions` references, boolean schemas and
+combiners are supported. Duplicate-key attribute wrappers retain their logical
+value domain rather than becoming an arbitrary union.
 
 The graph is the only producer representation: there is no custom JSON emitter.
 `addJsonSchema` can import a converter's declarative field fragment into the graph;
@@ -262,16 +248,24 @@ These annotations support JSON validation, not additional SIMFIL pruning proofs.
 `addFieldSchema(..., multimap=true)` describes duplicate-key JSON projection
 without changing the native value domain. Its first `anyOf` branch describes one
 native value, and the second describes an array of repeated values. These may
-overlap when the native value is itself an array. `BitmaskKind` carries individual flag symbols
-without restricting valid string combinations to a finite JSON enum. Binary
-scalar domains export the ordinary ModelNode `_bytes`/`hex`/`number` JSON wrapper
-and reimport as `Bytes`, not as objects. `finalize()` rebuilds derived indexes and
-invalidates any previously exported JSON after graph edits. Published schemas
-remain immutable; metadata snapshots copy their graph without forcing export.
+overlap when the native value is itself an array. `BitmaskKind` describes raw unsigned
+bits with individual named masks and aliases; unknown bits remain data, not errors
+or lost string tokens. Binary scalar domains export the ordinary ModelNode
+`_bytes`/`hex`/`number` wrapper and reimport as `Bytes`, not as objects.
+`finalize()` builds indexes and freezes the entire graph. Subsequent mutation
+fails; a changed contract requires a newly built graph and metadata snapshot.
 
 ### Add‑on datasources
 
-Add‑on datasources are registered with `isAddOn` and must share the same `mapId` (and layer IDs) as the base datasource they extend. They have no independent scheduler permits; the worker serving a base feature tile evaluates matching add-ons inline:
+Add‑on datasources are registered with `addOn: true` in metadata (`DataSourceInfo::isAddOn_` in C++) and must share the same `mapId` (and layer IDs) as the base datasource they extend. They have no independent scheduler permits; the worker serving a base feature tile evaluates matching add-ons inline:
+
+The primary source and each contributing add-on must use the **same exact
+MapSchema artifact**, not merely the same format name or feature IDs. Before
+loading an incompatible add-on, the service rejects its contribution and attaches
+an actionable warning to the unchanged primary partition. Incoming discovery then
+reports partial coverage. This is not permission to strip foreign domains or
+reinterpret their numeric IDs. Transparent composition of independently typed
+schemas is deferred; compatible same-schema overlays keep the behavior below.
 
 - Clients request tiles for the base datasource map ID. When a base feature tile is loaded, the service also fetches the matching tile (same map, layer, and tile ID) from every add‑on datasource.
 - The base tile is re-encoded into a combined string pool so that strings introduced by the add‑on tile can be referenced.
@@ -282,7 +276,12 @@ Add‑on datasources are registered with `isAddOn` and must share the same `mapI
   never loads or reconstructs the tile itself.
 - Only feature layers participate in this overlay path; add‑ons cannot introduce standalone maps or layers that are not already present in the base datasource metadata.
 
-Clients see both base and add‑on entries in the `/sources` response (add‑ons are marked `isAddOn`), but the base datasource remains the entry point for tile requests. This mechanism is used by Python LiveSource overlays that attach Road and Lane attribute layers to an existing NDS.Live or NDS.Classic base map.
+Clients see both base and add-on entries in `/sources` (add-ons are marked
+`addOn: true`), but the base datasource remains the entry point for tile requests.
+An overlay producer, including a Python LiveSource overlay, must advertise the
+base map's exact schema artifact and stay within that contract. Importing a
+separate minimal schema from legacy metadata does not make it compatible, even
+when its feature IDs match the base map.
 
 <!-- mcp:
 title: "Semantic geometry names"
@@ -873,20 +872,25 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use the current protocol 5.5, which retains the 5.4 feature layout and adds incoming inspection manifest frames. Error and empty-tile expiry reuse the existing timestamp and TTL fields. Existing incompatible SQLite tile/string-pool caches are cleared by the normal startup compatibility check.
+Binary readers and writers must both use protocol 6.0, including exact schema
+bindings, qualified scalars and version-2 incoming manifests. Error and empty-tile
+expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
+string-pool caches are cleared by the normal startup compatibility check.
 
 ### Incoming inspection ownership
 
-A layer schema can publish `x-mapget.relationDeclarations` on a schema node. Each declaration
-contains `ownerType`, stored relation `name`, `targetTypes`, explicit `incoming` eligibility,
-and `coverage` (`"complete"` or unknown). `LayerSchema::relationDeclarations()` is the typed
-accessor; annotations survive JSON Schema import/export and detached catalog copies.
-Referenced feature types are not inferred to be features owned by the provider layer.
-An absent declaration never enables reverse inspection. Conventional relations use
-`incoming: false`; uncertain conversion coverage produces a partial result.
-Layer metadata also publishes `incomingRelationTargetTypes`, a compact capability projection
-computed from these declarations. It lets schema-free inspection parsers decide whether to
-request incoming context. The service still validates full family declarations for discovery.
+A layer schema declares forward relation families: `ownerType`, stored relation
+`name`, `targetTypes`, converter-backed `complete`, and `locality` (`same-container`,
+`may-cross-container`, or `unknown`). `LayerSchema::relationDeclarations()` reads
+these contracts from produced feature roots; a referenced feature type is not an
+owner merely because its identity is known. There is no incoming opt-in flag.
+
+The service derives `incomingRelationTargetTypes` and
+`incomingRelationCoverageUnknown` from authorized readable providers. Absent/open
+metadata means unknown coverage, not proof that no relations exist. See
+[Incoming Relation Discovery](#incoming-relation-discovery) for scoped result
+statuses and completeness rules. The native shared graph and its explicit JSON
+Schema projection preserve the same declarations.
 
 `IncomingRelationCollection` identifies backend-associated source relation ordinals and
 supporting snapshots. `FeatureInspectionView` retains the selected target and each original
@@ -894,3 +898,73 @@ source model, validates their map/partition and association identities, and expo
 handles. It does not append inverse relations to the target or change normal feature JSON,
 SIMFIL queries, filtering, styles or GeoJSON export. Restricted snapshot cloning also retains
 attribute-point sequence geometry hosts when the host feature was not selected explicitly.
+
+
+<!-- mcp:
+title: "Scalar domains and extracted result ownership"
+keywords: ["enum", "bitmask", "speed limit", "special values", "projection", "provenance", "units"]
+-->
+### Scalar Domains And Extraction
+
+An ordinary scalar acquires its domain from its concrete parent field or array
+element. Enum names, units, integer encoding, bounds, ordinary ranges and named
+special values describe the same raw value rather than replacing it. A speed
+value of `255`, for example, can remain numerically `255` while its domain marks
+it as unbounded. Unknown, variable and saturated states have separate meanings;
+a consumer must not silently place those values on an ordinary speed gradient.
+A unit is present only when the producer can establish it, not guessed from a
+field name.
+
+Known string-valued enums remain strings. If the source can supply an unrecognized
+numeric enum code, its schema admits that numeric branch explicitly and the code
+is preserved. Named values supplement, rather than incorrectly close, a domain
+that also accepts continuous numbers. Bitmasks are a dedicated scalar kind;
+zero, combined masks, aliases and all 64 raw bits survive serialization.
+
+The native leaf representation stays compact. Explicit concrete object/array
+bindings disambiguate aliases and unions. `Feature::setSchema()` selects an
+admitted concrete root before populating its containers; raw
+`SourceDataCompoundNode::setSchema()` binds the corresponding decoder domain.
+Both reject foreign or unknown domains.
+
+`PartitionSubsetLayer` continues to store `values[expression][result]`. The shared
+simfil `copySequence()` path preserves typed compound containers, wraps a scalar
+only when its evaluated `Value` carries domain provenance, and leaves computed
+unqualified scalars ordinary. Qualified-scalar and bitmask columns belong to the
+inherited ModelPool. There are no result-specific schema trees, per-row domain
+side tables or guessed destination domains. The pool retains exact referenced
+graphs once and remaps IDs when a result combines different graphs. Readers must
+supply all those installed bindings before decoding the result.
+
+<!-- mcp:
+title: "Scoped incoming relation discovery"
+keywords: ["incoming", "relation", "inspection", "reverse", "scope", "completeness"]
+-->
+### Incoming Relation Discovery
+
+Producers declare stored **forward** relation families and typed targets on
+produced feature roots. Finalization derives reverse possibilities; no incoming
+opt-in flag or second inverse relation registry is needed. Reference-only feature
+types do not become producing layers. Source-owned relation identities and
+ordinals remain authoritative.
+
+The service searches the selected target partition and compatible readable,
+authorized provider partitions of the same map. It checks partition kind, tile
+level and target identity contracts. It does not scan the whole map, infer a
+cross-partition routing rule from a type name, or manufacture target-owned copies
+of relations. Secondary references remain bounded to the selected snapshot.
+
+An incoming manifest reports `scope` (provider partition keys) and `status`:
+
+| Status | Meaning |
+| --- | --- |
+| `no-possible-family` | Known forward inventories contain no eligible family. |
+| `complete` | Discovery completed within the reported scope, including zero matches. |
+| `partial` | Some declarations, provider loads or conversion coverage are unknown, or a limit was reached. |
+| `unsupported-scope` | A family exists but cannot be searched in the supported partition/identity scope. |
+
+The retained `complete` boolean is true only for the first two states. It never
+claims global completeness. `issues` explains incomplete discovery, and expiry
+includes dependencies that yielded no matches. The catalog's
+`incomingRelationTargetTypes` and `incomingRelationCoverageUnknown` are small
+service-derived hints; backend authorization and scope checks still apply.

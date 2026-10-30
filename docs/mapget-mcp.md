@@ -505,7 +505,7 @@ between bearer users.
 
 <!-- mcp:
 title: "Native source and layer discovery"
-keywords: ["sourceDataLayers", "source discovery", "owning layer", "schemaFeatureTypes"]
+keywords: ["sourceDataLayers", "source discovery", "owning layer", "schemaId", "mapFormat"]
 -->
 ### Source And Layer Discovery
 
@@ -515,9 +515,13 @@ ordered primary/secondary identifier compositions, protocol metadata and expande
 `details:false` explicitly requests the compact form, even with these selectors;
 `details:true` explicitly expands an unfocused inventory. A `layerId` filter alone opens
 that layer's metadata (including raw layers), but does not enable source details.
-Both forms omit the potentially large feature-model schema and coverage records.
-`schemaFeatureTypes` lists schema roots; `featureTypes` also contains identifier definitions
-for reference-only types. Neither schema declarations nor a documentation support table proves
+Both forms include the descriptive `mapFormat` tuple and exact string `schemaId`, but omit
+inline JSON schemas and coverage records. Discovery reads the initialized immutable schema;
+it does not rebuild it, export it to JSON Schema, or fetch tiles. A layer's `hasSchema`
+reports its bound contract. Each `featureTypes` entry comes from that contract's authoritative
+identity definitions; `produced:false` marks a reference-only type. There is no second
+`schemaFeatureTypes` list. Unadvertised schema roots do not become available layers.
+Neither schema declarations nor a documentation support table proves
 that a particular record exists in a loaded map.
 
 <!-- mcp:
@@ -529,8 +533,8 @@ Start with `viewer_get_app_state` and its active `view.layers` map/layer identit
 Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
 and indirect attribute features. Use `mapget_list_sources` filtered to that layer
 for compact type names. `featureTypes` advertises identifier compositions, which
-can include types used only by references. `schemaFeatureTypes` lists the actual
-feature schema roots available for introspection in that layer. Neither list proves
+can include types used only by references. Its `produced` flag distinguishes actual
+feature schema roots available for introspection in that layer. This inventory does not prove
 that a particular tile contains instances. If a type is absent from the current
 layer's roots, check other layers in the same map before concluding it is unavailable.
 Focused `mapId`/`sourceId` discovery includes ordered primary/secondary ID compositions
@@ -592,6 +596,12 @@ same alias while returning canonical property paths. Validate with
 over the active map/layer. Unresolved metadata indicates uncertainty, not an
 invalid runtime field. For runtime sampling, `mapget_extract_features` requires
 explicit nonempty partitions or canonical feature IDs; it never scans a map.
+
+Native feature/source-data layers use one exact schema graph. Add-ons with the same schema
+identity can merge; cross-artifact composition is not supported yet. The service skips an
+incompatible contribution before loading or merging it, retains the primary data, and attaches
+an actionable warning to the base tile. Affected incoming-relation results remain partial,
+not falsely complete. No domain metadata is stripped to make incompatible data fit.
 
 <!-- mcp:
 keywords: [partial results, limits, extraction, integer, bytes]
@@ -657,10 +667,38 @@ nested arrays; objects remain objects. Non-JSON/lossy scalars use explicit tags:
 ]
 ```
 
-A genuine object containing `$mapget` is escaped as `{"$mapget":"object","value":{...}}`.
+A genuine object containing `$mapget` or `_bitmask` is escaped as
+`{"$mapget":"object","value":{...}}`, so application data cannot masquerade as a scalar tag.
 Integers within JavaScript's exact range remain JSON numbers. Null remains null;
 simfil's missing-field behavior is not rewritten (a missing field can yield null and a
 diagnostic). Repeated object fields retain mapget's array/`_multimap` projection.
+
+Schema-qualified scalar projections (including booleans and bytes) have an explicit metadata
+envelope:
+
+```json
+{"$mapget":"qualified","value":255,"schema":"producer:exact-schema-token","domain":123}
+```
+
+The inner `value` keeps its primitive representation, including the existing exact-integer or
+nonfinite/bytes tags when needed. `schema` identifies the immutable artifact; `domain` is local to
+that artifact. Equal raw values can have different domains. Names, units and special meanings
+come from that exact domain, never from the number or field name. A value without provenance
+stays ordinary; null and missing values do not inherit it. Selecting an existing value can
+retain its domain, while arithmetic such as `speed + 0` produces an unqualified number.
+Compound traversal reads the concrete parent's field/element binding before scalarization.
+No result schema is synthesized, and no parallel result-domain array is required.
+
+Bitmasks use simfil's generic lossless representation, not a mapget scalar wrapper:
+
+```json
+{"_bitmask":true,"bits":"0x8000000000000001","schema":"producer:exact-schema-token","domain":124}
+```
+
+The full-width hexadecimal string preserves bit 63, zero and unnamed bits. Labels are not
+substituted for raw bits. This applies to feature projections, raw SourceData and trace samples.
+Use the exact artifact/domain pair to inspect the declaration. Each extraction row also
+reports `mapSchemaId` from its actual retained partition, not a newer catalog replacement.
 
 `trace: true` captures simfil `trace(...)` samples immediately into bounded JSON, rather
 than keeping source models alive. At most 16 names, 100 samples per name, and 512 characters
@@ -673,8 +711,17 @@ keywords: [schema, descriptor, validation, completion, simfil]
 ### Schema And Expression Semantics
 
 `mapget_query_schema` uses simfil's lazy `SchemaModel` on the same `LayerSchema` graph used
-by completion. Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
+by completion and expression validation. `mapSchemaId` on these responses is the exact string
+artifact identity; the tool's numeric `schemaId` argument and descriptor `$ref` values are
+local domain IDs, not the catalog's string `schemaId`. Keep both identities when retaining
+results across reloads. The schema has its own dictionary; query environments bind it to their
+private data dictionaries without mutating a datasource's streamed dictionary.
+Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
 open/nullable/required flags and terminal recursion/budget markers as appropriate.
+Named-value declarations distinguish ordinary constants, special numeric values and flags;
+they do not turn an open numeric range into an exhaustive enum. `find` matches those names
+as well as field/type names and string enum symbols, returning bounded matching-name summaries
+and `valuesArguments` for the native declarations. Missing semantics remain unknown.
 Array elements are possible domains, not fabricated sample records; union alternatives are
 distinct from arrays. Omitting `query` returns the shallow overview; explicit
 queries evaluate the full lazy graph. For example:
