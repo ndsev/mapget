@@ -413,6 +413,46 @@ TEST_CASE("MapSchema binary roundtrip validates identity and pins exact definiti
     CHECK(restored->layer("Road")->mapSchema() == restored);
 }
 
+TEST_CASE("MapSchema preflights inner dictionary and model lengths before allocation", "[mapschema]")
+{
+    auto source = simpleSchema();
+    std::ostringstream dictionaryStream(std::ios::binary), modelStream(std::ios::binary);
+    REQUIRE(source->strings()->simfil::StringPool::write(dictionaryStream));
+    REQUIRE(source->ModelPool::write(modelStream));
+    auto dictionary = dictionaryStream.str(), model = modelStream.str();
+    std::ostringstream tailStream(std::ios::binary);
+    bitsery::Serializer<bitsery::OutputStreamAdapter> tailWriter(tailStream);
+    tailWriter.text1b(dictionary, UINT32_MAX);
+    tailWriter.text1b(model, UINT32_MAX);
+    tailWriter.adapter().flush();
+    auto tail = tailStream.str();
+
+    bool corruptModel = false;
+    SECTION("Dictionary length") {}
+    SECTION("Model length") { corruptModel = true; }
+
+    // The one-byte case exercises actual-input preflight, not just the memory
+    // budget. The large length must likewise fail without allocating its payload.
+    for (size_t length : {size_t{1}, size_t{64 * 1024 * 1024}}) {
+        auto malformed = mutateDomains(
+            *source,
+            [&](std::string& payload, size_t)
+            {
+                REQUIRE(payload.ends_with(tail));
+                payload.resize(payload.size() - tail.size());
+                std::ostringstream replacement(std::ios::binary);
+                bitsery::Serializer<bitsery::OutputStreamAdapter> writer(replacement);
+                if (corruptModel)
+                    writer.text1b(dictionary, UINT32_MAX);
+                bitsery::details::writeSize(writer.adapter(), length);
+                writer.adapter().flush();
+                payload += replacement.str();
+            });
+        REQUIRE(malformed.size() < 64 * 1024);
+        CHECK_THROWS_AS(MapSchema::read(malformed), std::length_error);
+    }
+}
+
 TEST_CASE("MapSchema codec v1 matches the committed binary golden fixture", "[mapschema]")
 {
     // This is a compatibility contract, not a regeneratable snapshot. Replacing the

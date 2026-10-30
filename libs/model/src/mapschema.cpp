@@ -260,8 +260,12 @@ struct MapSchema::Impl
         if (value.empty())
             return {};
         auto [it, inserted] = textIndex.try_emplace(std::string(value));
-        if (inserted)
-            it->second = pool.newValue(value)->addr();
+        if (inserted) {
+            auto node = pool.tryNewValue(value);
+            if (!node)
+                throw std::length_error(node.error().message);
+            it->second = (*node)->addr();
+        }
         return it->second;
     }
     std::string_view text(ModelNodeAddress address) const
@@ -325,9 +329,20 @@ struct MapSchema::Impl
                     throw std::invalid_argument("Bitmask schema literals require named masks.");
                 else if constexpr (
                     std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>)
-                    return v.empty() ? pool.newValue(std::string_view{})->addr() : text(v);
-                else
-                    return pool.newValue(v)->addr();
+                {
+                    if (!v.empty())
+                        return text(v);
+                    auto node = pool.tryNewValue(std::string_view{});
+                    if (!node)
+                        throw std::length_error(node.error().message);
+                    return (*node)->addr();
+                }
+                else {
+                    auto node = pool.tryNewValue(v);
+                    if (!node)
+                        throw std::length_error(node.error().message);
+                    return (*node)->addr();
+                }
             },
             value);
     }
@@ -336,7 +351,10 @@ struct MapSchema::Impl
         if (value.is_null() || value.empty())
             return {};
         auto bytes = nlohmann::json::to_cbor(value);
-        return pool.newValue(simfil::ByteArray{std::string(bytes.begin(), bytes.end())})->addr();
+        auto node = pool.tryNewValue(simfil::ByteArray{std::string(bytes.begin(), bytes.end())});
+        if (!node)
+            throw std::length_error(node.error().message);
+        return (*node)->addr();
     }
     nlohmann::json annotation(ModelNodeAddress address) const
     {
@@ -1817,7 +1835,9 @@ void MapSchema::Impl::validate() const
     (void)MapFormat::fromJson(format.toJson());
     if (domains.empty() || domains.size() > simfil::MaxSchemaId + 1u)
         throw std::invalid_argument("Invalid MapSchema domain count.");
-    if (fields.size() > MaxEdges || edges.size() > MaxEdges || named.size() > MaxEdges)
+    if (fields.size() > MaxEdges || edges.size() > MaxEdges || symbols.size() > MaxEdges ||
+        literals.size() > MaxEdges || owners.size() > MaxEdges || named.size() > MaxEdges ||
+        aliases.size() > MaxEdges || numerics.size() > MaxEdges || numbers.size() > MaxEdges)
         throw std::length_error("MapSchema edge budget exceeded.");
     auto domain = [&](SchemaId id)
     {
@@ -2214,8 +2234,9 @@ void MapSchema::Impl::readBody(std::vector<uint8_t> const& input, size_t budget)
     builder.reset();
     readWrite(s, budget);
     std::string dictionary, model;
-    s.text1b(dictionary, budget);
-    s.text1b(model, budget);
+    size_t memory = input.size();
+    string(s, dictionary, budget, memory);
+    string(s, model, budget, memory);
     if (s.adapter().error() != bitsery::ReaderError::NoError ||
         !s.adapter().isCompletedSuccessfully())
         throw std::invalid_argument("Truncated, malformed or trailing MapSchema data.");

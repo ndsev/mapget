@@ -1630,7 +1630,10 @@ model_ptr<Array> PartitionSubsetLayer::newValueArray(std::span<simfil::ModelNode
     if (values.empty()) {
         return sharedEmptyArray();
     }
-    auto array = newArray(values.size(), true);
+    auto created = tryNewArray(values.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
     for (auto const& value : values) {
         if (!value || value->type() != simfil::ValueType::Array) {
             raise("Each projected expression requires a result sequence (array).");
@@ -1647,7 +1650,10 @@ model_ptr<Array> PartitionSubsetLayer::newValueErrors(
     if (errors.empty()) {
         return sharedEmptyArray();
     }
-    auto array = newArray(errors.size(), true);
+    auto created = tryNewArray(errors.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
     for (auto const& error : errors) {
         if (error.expressionIndex_ >= expressionCount ||
             (error.stage_ != "compilation" && error.stage_ != "evaluation" &&
@@ -1655,11 +1661,20 @@ model_ptr<Array> PartitionSubsetLayer::newValueErrors(
         {
             raise("Invalid projected-value error index or stage.");
         }
-        auto entry = newObject(3, true);
-        entry->addField("expressionIndex",
-            newValue(static_cast<int64_t>(error.expressionIndex_)));
-        entry->addField("stage", newValue(error.stage_));
-        entry->addField("message", newValue(error.message_));
+        auto createdEntry = tryNewObject(3, true);
+        if (!createdEntry)
+            raise<std::length_error>(createdEntry.error().message);
+        auto entry = *createdEntry;
+        auto addValue = [&](auto key, auto const& value)
+        {
+            auto node = tryNewValue(value);
+            if (!node)
+                raise<std::length_error>(node.error().message);
+            entry->addField(key, *node);
+        };
+        addValue(StringPool::ExpressionIndexStr, static_cast<int64_t>(error.expressionIndex_));
+        addValue(StringPool::StageStr, error.stage_);
+        addValue(StringPool::MessageStr, error.message_);
         array->append(entry);
     }
     return array;

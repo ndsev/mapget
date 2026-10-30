@@ -2483,7 +2483,10 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     switch (otherNode->addr().column()) {
     case Objects: {
         auto resolved = otherLayer->resolve<simfil::Object>(otherNode);
-        auto newNode = newObject(resolved->size(), true);
+        auto created = tryNewObject(resolved->size(), true);
+        if (!created)
+            throw std::length_error(created.error().message);
+        auto newNode = *created;
         if (auto assigned = newNode->setSchema(copiedSchema()); !assigned)
             throw std::runtime_error(assigned.error().message);
         newCacheNode = newNode;
@@ -2496,7 +2499,10 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     }
     case Arrays: {
         auto resolved = otherLayer->resolve<simfil::Array>(otherNode);
-        auto newNode = newArray(resolved->size(), true);
+        auto created = tryNewArray(resolved->size(), true);
+        if (!created)
+            throw std::length_error(created.error().message);
+        auto newNode = *created;
         if (auto assigned = newNode->setSchema(copiedSchema()); !assigned)
             throw std::runtime_error(assigned.error().message);
         newCacheNode = newNode;
@@ -2508,7 +2514,10 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case ColumnId::GeometryArrayView:
     case ColumnId::FeatureGeometryArrayView: {
         auto resolved = otherLayer->resolve<GeometryArrayView>(*otherNode);
-        auto newNode = newArray(resolved->size(), true);
+        auto created = tryNewArray(resolved->size(), true);
+        if (!created)
+            throw std::length_error(created.error().message);
+        auto newNode = *created;
         newCacheNode = newNode;
         for (auto value : *resolved) {
             newNode->append(cloneNode(context, cache, otherLayer, value));
@@ -2593,7 +2602,10 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     }
     case ColumnId::FeatureRelationsView: {
         auto resolved = otherLayer->resolve<RelationArrayView>(*otherNode);
-        auto newNode = newArray(resolved->size(), true);
+        auto created = tryNewArray(resolved->size(), true);
+        if (!created)
+            throw std::length_error(created.error().message);
+        auto newNode = *created;
         newCacheNode = newNode;
         for (auto value : *resolved) {
             newNode->append(cloneNode(context, cache, otherLayer, value));
