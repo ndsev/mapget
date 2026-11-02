@@ -995,9 +995,10 @@ class NativeMcpConfigTest(unittest.TestCase):
             process.kill()
             process.wait()
 
-    def http(self, path, headers=None, method="GET", body=None):
+    def http(self, path, headers=None, method="GET", body=None, source_address=None):
         """Return HTTP and parsed JSON where available; config writes return plain text."""
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6,
+                                                source_address=source_address)
         try:
             connection.request(method, path, body, headers or {})
             response = connection.getresponse()
@@ -1046,6 +1047,25 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(self.http("/mcp/info")[0], 200)
         self.assertEqual(self.http("/mcp/info", {"Host": f"localhost:{self.port}"})[0], 403)
         self.assertEqual(self.http("/mcp/info", {"Origin": f"http://localhost:{self.port}"})[0], 403)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Uses Linux's 127/8 source addresses")
+    def test_explicit_local_peer_and_published_endpoint(self):
+        """Container peers do not bypass Host, Origin, or forwarding-header checks."""
+        self.settings.update({"host": "0.0.0.0", "mcp-local-peer-addresses": ["127.0.0.2"],
+                              "mcp-endpoint": "http://localhost:18099/mcp"})
+        self.start()
+        headers = {"Host": "localhost:18099", "Origin": "http://localhost:18099"}
+        peer = ("127.0.0.2", 0)
+        status, info = self.http("/mcp/info", headers, source_address=peer)
+        self.assertEqual(status, 200)
+        self.assertEqual(info["endpoint"], "http://localhost:18099/mcp")
+        self.assertEqual(self.http("/mcp/info", headers, source_address=("127.0.0.3", 0))[0], 403)
+        for change in ({"Host": "evil.example"}, {"Origin": "https://evil.example"},
+                       {"Forwarded": "for=127.0.0.1"}, {"X-Forwarded-For": "127.0.0.1"},
+                       {"Host": f"127.0.0.1:{self.port}"}):
+            with self.subTest(change=change):
+                self.assertEqual(self.http("/mcp/info", {**headers, **change},
+                                           source_address=peer)[0], 403)
 
     def help_query(self, query):
         """Read an MCP result through a real initialized-era SSE response."""

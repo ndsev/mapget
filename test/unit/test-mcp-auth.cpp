@@ -236,6 +236,67 @@ TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actio
     CHECK_THROWS_AS(app.parse("--mcp-sessions not-an-integer"), CLI::ParseError);
 }
 
+TEST_CASE("MCP container access is explicit and uses the published port", "[mcp-auth]")
+{
+    using mapget::McpConfig;
+    McpConfig config;
+    config.mode = McpConfig::Mode::Local;
+    config.endpoint = "http://localhost:18099/mcp";
+    CHECK_THROWS(config.resolveDefaults("0.0.0.0", 8089, {}));
+    config.localPeerAddresses = {"172.17.0.1"};
+    config.resolveDefaults("0.0.0.0", 8089, {});
+    CHECK_NOTHROW(config.validate());
+    CHECK(
+        config.allowedHosts ==
+        std::vector<std::string>{"localhost:18099", "127.0.0.1:18099", "[::1]:18099"});
+    CHECK(config.allowedOrigins.front() == "http://localhost:18099");
+
+    for (auto const& [input, expected] :
+         {std::pair{"http://localhost:80/mcp", "http://localhost/mcp"},
+          std::pair{"https://localhost:443/mcp", "https://localhost/mcp"},
+          std::pair{"http://localhost:08099/mcp", "http://localhost:8099/mcp"}})
+    {
+        McpConfig canonical;
+        canonical.mode = McpConfig::Mode::Local;
+        canonical.endpoint = input;
+        canonical.resolveDefaults("127.0.0.1", 8089, {});
+        CHECK_NOTHROW(canonical.validate());
+        CHECK(canonical.endpoint == expected);
+        CHECK(
+            canonical.allowedOrigins.front() ==
+            std::string(expected).substr(0, std::string(expected).size() - 4));
+    }
+
+    McpConfig noEndpoint;
+    noEndpoint.mode = McpConfig::Mode::Local;
+    noEndpoint.localPeerAddresses = {"172.17.0.1"};
+    CHECK_THROWS(noEndpoint.resolveDefaults("0.0.0.0", 8089, {}));
+    for (auto const* address : {"", "*", "0.0.0.0", "::", "172.17.0.0/16", "gateway", "999.1.1.1"})
+    {
+        config.localPeerAddresses = {address};
+        CHECK_THROWS(config.validate());
+    }
+    config.localPeerAddresses = {"fd00::1"};
+    CHECK_NOTHROW(config.validate());
+    config.localPeerAddresses.assign(33, "172.17.0.1");
+    CHECK_THROWS(config.validate());
+    for (auto const* endpoint :
+         {"http://remote.example/mcp", "http://localhost:0/mcp", "http://localhost:65536/mcp"})
+    {
+        config.endpoint = endpoint;
+        CHECK_THROWS(config.resolveDefaults("127.0.0.1", 8089, {}));
+    }
+    auto oauth = McpTestIssuer::configuration();
+    oauth.localPeerAddresses = {"172.17.0.1"};
+    CHECK_THROWS(oauth.validate());
+
+    CLI::App app;
+    McpConfig options;
+    options.addOptions(app);
+    app.parse("--mcp-local-peer-addresses 172.17.0.1 fd00::1");
+    CHECK(options.localPeerAddresses == std::vector<std::string>{"172.17.0.1", "fd00::1"});
+}
+
 TEST_CASE(
     "MCP HTTP authentication schemes are case insensitive, tokens are not",
     "[mcp-auth][mcp-actions]")

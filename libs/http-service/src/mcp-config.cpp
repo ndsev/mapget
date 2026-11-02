@@ -1,5 +1,6 @@
 #include "mapget/http-service/mcp-config.h"
 
+#include <trantor/net/InetAddress.h>
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
@@ -51,6 +52,11 @@ void McpConfig::addOptions(CLI::App& serve)
         "--mcp-allowed-origins",
         allowedOrigins,
         "Allowed browser origins; local mode defaults to loopback HTTP origins.");
+    option(
+        "--mcp-local-peer-addresses",
+        localPeerAddresses,
+        "Additional exact socket-peer IPs for local MCP through a container bridge. Requires a "
+        "loopback-published host port and explicit --mcp-endpoint for non-loopback listeners.");
     option(
         "--mcp-issuer",
         issuer,
@@ -191,19 +197,37 @@ void McpConfig::resolveDefaults(
     if (mode != Mode::Local)
         return;
 
-    // Reject broad listeners at startup, not merely when the first MCP request arrives.
-    if (host != "127.0.0.1" && host != "::1")
-        throw std::invalid_argument("Local MCP requires --host 127.0.0.1 or --host ::1.");
+    // Port publishing terminates at the container interface, not its loopback. Only an
+    // operator-supplied peer allowlist plus public endpoint opts out of the strict default.
+    if (host != "127.0.0.1" && host != "::1" && (localPeerAddresses.empty() || endpoint.empty()))
+        throw std::invalid_argument(
+            "Local MCP requires --host 127.0.0.1 or --host ::1; container listeners additionally "
+            "require --mcp-local-peer-addresses and a loopback --mcp-endpoint.");
     if (port < 1 || port > 65535)
         throw std::invalid_argument("Local MCP requires an explicit --port in 1..65535.");
-    auto const suffix = port == 80 ? std::string{} : ":" + std::to_string(port);
     if (endpoint.empty())
-        endpoint = "http://" + (host == "::1" ? std::string("[::1]") : host) + suffix + "/mcp";
+        endpoint = "http://" + (host == "::1" ? std::string("[::1]") : host) +
+            (port == 80 ? std::string{} : ":" + std::to_string(port)) + "/mcp";
+    // Derive browser allowlists from the public endpoint, not an internal container port.
+    static std::regex const
+        localEndpoint(R"(^(https?)://(localhost|127\.0\.0\.1|\[::1\])(:([0-9]{1,5}))?/mcp$)");
+    std::smatch match;
+    if (!std::regex_match(endpoint, match, localEndpoint) ||
+        (match[4].matched && (std::stoi(match[4]) < 1 || std::stoi(match[4]) > 65535)))
+        throw std::invalid_argument("Local MCP endpoint must use a loopback host and valid port.");
+    auto const scheme = match[1].str();
+    auto const defaultPort = scheme == "https" ? 443 : 80;
+    auto const publicPort = match[4].matched ? std::stoi(match[4]) : defaultPort;
+    auto const suffix = publicPort == defaultPort ?
+        std::string{} :
+        ":" + std::to_string(publicPort);
+    // Browsers canonicalize default ports and leading zeroes before sending Host/Origin.
+    endpoint = scheme + "://" + match[2].str() + suffix + "/mcp";
     if (allowedHosts.empty())
         allowedHosts = {"localhost" + suffix, "127.0.0.1" + suffix, "[::1]" + suffix};
     if (allowedOrigins.empty()) {
         for (auto const& name : {"localhost", "127.0.0.1", "[::1]"})
-            allowedOrigins.push_back(std::string("http://") + name + suffix);
+            allowedOrigins.push_back(scheme + "://" + name + suffix);
     }
 }
 
@@ -214,6 +238,16 @@ void McpConfig::validate() const
         return;
     if (mode != Mode::Local && mode != Mode::OAuth)
         throw std::invalid_argument("MCP mode must be off, local or oauth.");
+    if (localPeerAddresses.size() > 32 || (mode != Mode::Local && !localPeerAddresses.empty()))
+        throw std::invalid_argument("At most 32 local MCP peers are allowed, in local mode only.");
+    for (auto const& address : localPeerAddresses) {
+        trantor::InetAddress peer(address, 0, address.find(':') != std::string::npos);
+        if (peer.isUnspecified() || address == "0.0.0.0" || address == "::" ||
+            peer.toIp() != address)
+            throw std::invalid_argument(
+                "Local MCP peers must be exact canonical IP addresses, not wildcards, names or "
+                "CIDRs.");
+    }
     static std::regex const
         originPattern(R"(^https?://(\[[a-fA-F0-9:]+\]|[a-zA-Z0-9.-]+)(:[0-9]{1,5})?$)");
     if (!endpoint.ends_with("/mcp") ||

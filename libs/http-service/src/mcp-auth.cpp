@@ -169,7 +169,13 @@ bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bo
         return false;
     }
     if (config_.mode == McpConfig::Mode::Local) {
-        if (!loopback(request->peerAddr().toIp()))
+        auto const peer = request->peerAddr().toIp();
+        if (!loopback(peer) &&
+            std::none_of(
+                config_.localPeerAddresses.begin(),
+                config_.localPeerAddresses.end(),
+                [&peer](auto const& allowed)
+                { return peer == allowed || peer == "::ffff:" + allowed; }))
             return false;
         for (auto const& [name, value] : request->headers()) {
             if (name == "forwarded" || name.starts_with("x-forwarded-"))
