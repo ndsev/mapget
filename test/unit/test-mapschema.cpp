@@ -1497,6 +1497,60 @@ TEST_CASE("Nested network/schema decoding shares workers without admission deadl
         [] { return MapSchema::getOrBuild("recursive-test", [] { return simpleSchema(); }); }));
 }
 
+TEST_CASE("Fresh schema workers retain nesting state through failure and retry", "[mapschema]")
+{
+    auto schema = simpleSchema();
+    auto caller = std::this_thread::get_id();
+    std::thread::id worker, nested, retried;
+    bool failed = false, recursionRejected = false;
+    auto result = MapSchema::getOrBuild(
+        "mapschema-test-tls-outer",
+        [&]
+        {
+            worker = std::this_thread::get_id();
+            try {
+                MapSchema::getOrBuild(
+                    "mapschema-test-tls-inner",
+                    [&]() -> MapSchema::ConstPtr
+                    {
+                        nested = std::this_thread::get_id();
+                        throw std::runtime_error("nested builder failed");
+                    });
+            }
+            catch (std::runtime_error const& error) {
+                failed = std::string_view(error.what()) == "nested builder failed";
+            }
+            // The failed nested key must have been removed on this same worker.
+            auto recovered = MapSchema::getOrBuild(
+                "mapschema-test-tls-inner",
+                [&]
+                {
+                    retried = std::this_thread::get_id();
+                    return schema;
+                });
+            try {
+                MapSchema::getOrBuild(
+                    "mapschema-test-tls-outer",
+                    [schema] { return schema; },
+                    [deadline = std::chrono::steady_clock::now() + 2s]
+                    { return std::chrono::steady_clock::now() >= deadline; });
+            }
+            catch (std::logic_error const&) {
+                recursionRejected = true;
+            }
+            // Successful nested completion must also pop its key before a cache hit.
+            return MapSchema::getOrBuild(
+                "mapschema-test-tls-inner",
+                [recovered] { return recovered; });
+        });
+    CHECK(result == schema);
+    CHECK(worker != caller);
+    CHECK(nested == worker);
+    CHECK(retried == worker);
+    CHECK(failed);
+    CHECK(recursionRejected);
+}
+
 TEST_CASE(
     "A known forward inventory does not hide another produced owner's unknowns",
     "[mapschema]")

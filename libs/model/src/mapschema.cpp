@@ -191,6 +191,14 @@ struct MapSchema::Impl
         std::map<std::string, std::shared_future<ConstPtr>, std::less<>> running;
     };
 
+    static std::vector<std::string>& activeBuildKeys()
+    {
+        // Every worker must execute the TLS declaration before using a dynamically
+        // initialized vector; direct lambda access can precede its constructor.
+        static thread_local std::vector<std::string> keys;
+        return keys;
+    }
+
     /** Only definite-length, bounded CBOR is emitted by our annotation codec. */
     class AnnotationReader : public nlohmann::detail::json_sax_dom_parser<nlohmann::json>
     {
@@ -2379,7 +2387,7 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
     // Workers retain the cache owner so process-static teardown cannot free a
     // mutex beneath detached construction. Completed entries hold only weak owners.
     static auto cache = std::make_shared<Impl::BuildCache>();
-    static thread_local std::vector<std::string> activeKeys;
+    auto& activeKeys = Impl::activeBuildKeys();
     if (key.empty() || !builder)
         throw std::invalid_argument("Schema construction requires a key and builder.");
     if (std::ranges::find(activeKeys, key) != activeKeys.end())
@@ -2417,6 +2425,7 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
         cache->running.emplace(key, future);
         auto build = [cache = cache, key, promise, build = std::move(builder)]
         {
+            auto& activeKeys = Impl::activeBuildKeys();
             activeKeys.push_back(key);
             auto leave = [](auto* keys)
             {
