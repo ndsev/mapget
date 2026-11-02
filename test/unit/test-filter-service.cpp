@@ -1328,8 +1328,8 @@ TEST_CASE(
     REQUIRE(westernResult->timestamp() == expectedTimestamp);
     REQUIRE(westernResult->ttl() == std::chrono::milliseconds{1250});
     REQUIRE(easternResult->timestamp() == expectedTimestamp);
-    // Empty halo sources are capped below their explicit ten-second lifetime.
-    REQUIRE(easternResult->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
+    // A producer's shorter lifetime still bounds empty halo dependencies.
+    REQUIRE(easternResult->ttl() == std::chrono::seconds{10});
     REQUIRE(
         westernResult->at(0)->groupEntryCount() ==
         0);

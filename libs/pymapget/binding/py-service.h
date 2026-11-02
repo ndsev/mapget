@@ -55,7 +55,7 @@ void bindHttpService(py::module_& m)
                 and must be positive. Shorter positive tile-specific TTLs win.
 
                 ``empty_tile_ttl_ms`` similarly caps successful source layers with
-                no roots (default 5000 ms, positive). Both limits cover tile and
+                no roots (default 3600000 ms, positive). Both limits cover tile and
                 object payloads, override datasource/service TTL defaults, and
                 use ordinary cache expiry. Errors use the error limit even when
                 empty. Empty filter/inspection results inherit source lifetimes;

@@ -729,12 +729,13 @@ TEST_CASE("Empty cached values recover through ordinary expiry", "[Service][TTL]
     };
     auto first = fetch();
     REQUIRE(first->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
+    REQUIRE(first->ttl() == 1h);
     source->empty = false;
     REQUIRE(fetch()->timestamp() == first->timestamp());
     REQUIRE(source->fills == 1);
     REQUIRE(source->expiredKeys.empty());
 
-    first->setTimestamp(std::chrono::system_clock::now() - 6s);
+    first->setTimestamp(std::chrono::system_clock::now() - Service::DEFAULT_EMPTY_TILE_TTL - 1s);
     cache->putTileLayer(first);
     auto recovered = fetch();
     REQUIRE(recovered->ttl() == 60s);

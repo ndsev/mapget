@@ -519,8 +519,10 @@ public:
     /** Default upper bound for failed tile lifetimes, independent of successful tile TTLs. */
     static constexpr auto DEFAULT_ERROR_TILE_TTL = std::chrono::seconds{5};
 
-    /** Default upper bound for successful empty source tile/object lifetimes. */
-    static constexpr auto DEFAULT_EMPTY_TILE_TTL = std::chrono::seconds{5};
+    /**
+     * Recheck successful empty source tiles/objects hourly unless their producer requests sooner.
+     */
+    static constexpr auto DEFAULT_EMPTY_TILE_TTL = std::chrono::seconds{3600};
 
     /**
      * Construct a service with a shared Cache instance. Note: The Cache must not

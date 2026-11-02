@@ -118,14 +118,14 @@ and to feature and SourceData layers.
 | `mapget.serve.ttl` | `--ttl` | `0` | Nonnegative; `0` means no expiry | Fallback for successful nonempty source payloads |
 | `sources[].ttl` | None | Inherit `mapget.serve.ttl` | Nonnegative; `0` means no expiry | Per-datasource override of the nonempty fallback |
 | `mapget.serve.error-tile-ttl` | `--error-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a payload carrying a fatal error |
-| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a successful source layer with no root nodes (no features or SourceData roots) |
+| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `3600` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a successful source layer with no root nodes (no features or SourceData roots) |
 
 ```yaml
 mapget:
   serve:
-    ttl: 86400        # Nonempty fallback: one day; 0 disables expiry.
-    error-tile-ttl: 5 # Retry failed payloads after at most five seconds.
-    empty-tile-ttl: 5 # Recheck missing/empty payloads after at most five seconds.
+    ttl: 86400          # Nonempty fallback: one day; 0 disables expiry.
+    error-tile-ttl: 5   # Retry failed payloads after at most five seconds.
+    empty-tile-ttl: 3600 # Recheck missing/empty payloads after at most one hour.
 sources:
   - type: GeoJsonFolder
     folder: /maps/my-geojson-tiles
@@ -164,7 +164,7 @@ independent negative-cache TTL.
 
 For embedded C++, use `HttpServiceConfig::{defaultTtl,errorTileTtl,emptyTileTtl}`
 or the `Service` constructor's corresponding arguments, in **milliseconds**.
-Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=5000)`; both
+Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=3600000)`; both
 arguments must be positive. Transport payloads also carry TTLs in milliseconds,
 not the whole seconds used by YAML/CLI configuration.
 
