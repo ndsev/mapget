@@ -788,7 +788,7 @@ void MapSchema::addNamedValue(SchemaId id, simfil::Schema::NamedValue const& val
     auto& values = schema_->builder->schemas_[id].annotations_["x-mapget"]["namedValues"];
     if (!values.is_null())
         for (auto const& old : values)
-            if (old.at("name") == value.name) {
+            if (old.at("name") == json.at("name")) {
                 if (old != json)
                     throw std::invalid_argument("Conflicting named-value declaration.");
                 return;

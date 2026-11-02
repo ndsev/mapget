@@ -857,7 +857,7 @@ TEST_CASE("Only concrete raw mask domains carry a bit width", "[mapschema]")
     for (auto [id, width] : {std::pair{number, 8u}, std::pair{mask, 0u}, std::pair{mask, 65u}}) {
         auto invalid = mutateDomains(
             *graph,
-            [&](auto& payload, size_t start)
+            [id = id, width = width](auto& payload, size_t start)
             {
                 uint32_t flags = 0;
                 auto offset = start + size_t(id) * 104 + sizeof(uint32_t);
