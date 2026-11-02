@@ -368,7 +368,7 @@ TEST_CASE("Remote datasource initialization resolves schema before exposing meta
     REQUIRE_NOTHROW(info.validateSchema());
     REQUIRE(info.getLayer("WayLayer")->layerSchema());
     auto json = info.toJson();
-    CHECK(json.at("schemaId") == info.mapSchema_->schemaId());
+    CHECK(json.at("schemaId").get<std::string>() == info.mapSchema_->schemaId());
     for (auto const& layer : json.at("layers")) {
         CHECK_FALSE(layer.contains("featureModelSchema"));
         CHECK_FALSE(layer.contains("featureTypes"));

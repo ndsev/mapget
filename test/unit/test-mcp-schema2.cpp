@@ -214,7 +214,7 @@ TEST_CASE(
     REQUIRE(result["complete"] == true);
     REQUIRE(result["items"].size() == 1);
     auto item = result["items"][0];
-    CHECK(item["schemaId"] == before->schemaId());
+    CHECK(item["schemaId"].get<std::string>() == before->schemaId());
     CHECK(item["mapFormat"] == before->format().toJson());
     REQUIRE(item["layers"].size() == 2);
     auto road = item["layers"][1];  // Canonical layer IDs are sorted: Raw, Road.
@@ -240,7 +240,7 @@ TEST_CASE(
     CHECK(fixture.source->fills == 0);
     CHECK(fixture.source->metadata.mapSchema_ == before);
     auto compact = fixture.call("mapget_list_sources").at("result")["items"][0];
-    CHECK(compact["schemaId"] == before->schemaId());
+    CHECK(compact["schemaId"].get<std::string>() == before->schemaId());
     CHECK(compact["layers"][0]["featureTypes"][0].contains("uniqueIdCompositions") == false);
 }
 
