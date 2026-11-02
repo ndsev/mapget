@@ -205,11 +205,13 @@ void McpServer::setup(drogon::HttpAppFramework& app)
         "/.well-known/oauth-protected-resource",
         decltype(handler){handler},
         {drogon::Get, drogon::Options});
-    if (auth_.settings().mode == McpConfig::Mode::Local) {
+    if (auth_.settings().mode == McpConfig::Mode::Local &&
+        auth_.settings().localPeerAddresses.empty()) {
         app.registerBeginningAdvice(
             [&app]
             {
-                // An embedding application has the same local-only obligation as the serve CLI.
+                // Embedders retain the same loopback default as the CLI. A validated explicit
+                // peer allowlist opts into the container listener contract instead.
                 for (auto const& listener : app.getListeners()) {
                     auto address = listener.toIp();
                     if (address != "127.0.0.1" && address != "::1") {
