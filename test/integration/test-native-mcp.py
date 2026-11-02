@@ -965,19 +965,26 @@ class NativeMcpConfigTest(unittest.TestCase):
         return [str(MAPGET_BINARY), "--config", str(self.config_path), "serve", *overrides]
 
     def start(self, *overrides):
-        """Start a bounded isolated process and wait for its ordinary health endpoint."""
+        """Wait for configured sources, not just the listener that precedes config loading."""
         process = subprocess.Popen(self.command(*overrides), cwd=self.directory,
                                    stdout=self.log, stderr=subprocess.STDOUT)
         self.addCleanup(self.stop, process)
+        expected_sources = sorted(source["mapId"] for source in self.sources if source.get("enabled", True))
         deadline = time.monotonic() + 20
         while process.poll() is None and time.monotonic() < deadline:
             try:
-                if self.http("/status-data")[0] == 200:
-                    return
+                status, body = self.http("/status-data")
+                if status == 200:
+                    service = body["service"]
+                    # Unlike /sources, these ready registrations include supplier-gated maps.
+                    if (service["datasource-config"]["configured"] == len(self.sources)
+                            and sorted(source["name"] for source in service["datasources"]) == expected_sources):
+                        return
             except OSError:
-                time.sleep(0.05)
+                pass
+            time.sleep(0.05)
         self.log.seek(0)
-        self.fail("MCP config service did not start: " + self.log.read())
+        self.fail("MCP config service sources did not become ready: " + self.log.read())
 
     def stop(self, process):
         """Do not leave a config-watching child alive after a failed assertion."""
