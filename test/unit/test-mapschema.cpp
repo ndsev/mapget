@@ -413,6 +413,78 @@ TEST_CASE("MapSchema binary roundtrip validates identity and pins exact definiti
     CHECK(restored->layer("Road")->mapSchema() == restored);
 }
 
+TEST_CASE(
+    "Union members retain direct runtime domains across schema transport",
+    "[mapschema][schema-lookup]")
+{
+    using Kind = simfil::Schema::Kind;
+    using Composition = simfil::Schema::Composition;
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Members", LayerType::SourceData);
+    auto choice = layer->addSchema(Kind::OneOf);
+    layer->setComposition(choice, Composition::OneOf);
+    layer->setRootSchema(choice);
+    auto speed = layer->addSchema(Kind::Int);
+    auto count = layer->addSchema(Kind::Int);
+    layer->addNamedValue(speed, {.name = "UNLIMITED", .value = int64_t{255}});
+    for (auto [name, domain] : {std::pair{"speed", speed}, {"count", count}}) {
+        auto branch = layer->addSchema(Kind::Object);
+        layer->addFieldSchema(branch, name, domain);
+        layer->addAlternative(choice, branch);
+    }
+    auto array = layer->addSchema(Kind::Array);
+    layer->addElementSchema(array, speed);
+    auto emptyMember = layer->addSchema(Kind::Object);
+    layer->addFieldSchema(emptyMember, "", count);
+    graph->finalize();
+    auto encoded = bytes(*graph);
+    auto restored = MapSchema::read(encoded);
+    for (auto const& owner : {std::shared_ptr<MapSchema const>(graph), restored}) {
+        auto definition = owner->domain(choice);
+        REQUIRE(definition);
+        CHECK(definition->composition() == Composition::OneOf);
+        CHECK(definition->alternatives().size() == 2);
+        CHECK(definition->directFields().empty());
+        CHECK(definition->fieldSchema(owner->strings()->get("speed")) == speed);
+        CHECK(definition->fieldSchema(owner->strings()->get("count")) == count);
+        CHECK(owner->domain(array)->itemSchema() == speed);
+
+        // Runtime and schema dictionaries deliberately assign different IDs.
+        auto strings = std::make_shared<simfil::StringPool>();
+        REQUIRE(strings->emplace("runtime-padding"));
+        auto model = std::make_shared<simfil::ModelPool>(strings);
+        model->setSchemaBinding(owner->binding());
+        auto object = model->newObject();
+        REQUIRE(object->setSchema(choice));
+        REQUIRE(object->addField("speed", int64_t{255}));
+        auto field = strings->get("speed");
+        auto child = object->get(field);
+        REQUIRE(child);
+        auto value = simfil::Value::field(*object, *child, field);
+        CHECK(value.schemaReference().id == speed);
+        REQUIRE(value.namedValue("UNLIMITED"));
+        CHECK(value.namedValue("UNLIMITED")->as<simfil::ValueType::Int>() == 255);
+        auto items = model->newArray();
+        REQUIRE(items->setSchema(array));
+        items->append(int64_t{255});
+        CHECK(simfil::Value::at(*items, *items->at(0), 0).schemaReference().id == speed);
+
+        auto completionStrings = std::make_shared<StringPool>("MemberLookup");
+        REQUIRE(completionStrings->emplace("different-padding"));
+        auto env = makeEnvironment(completionStrings);
+        installCompletionLayerSchema(*env, owner->layer("Members"), completionStrings);
+        CHECK(env->querySchema(choice)->fieldSchema(completionStrings->get("speed")) == speed);
+        CHECK(env->querySchema(array)->itemSchema() == speed);
+        REQUIRE(completionStrings->emplace("not-in-graph"));
+        CHECK(env->querySchema(emptyMember)->fieldSchema(completionStrings->get("")) == count);
+        CHECK(
+            env->querySchema(emptyMember)->fieldSchema(completionStrings->get("not-in-graph")) ==
+            simfil::NoSchemaId);
+    }
+    CHECK(bytes(*restored) == encoded);
+    CHECK(restored->layer("Members")->toJsonSchema() == layer->toJsonSchema());
+}
+
 TEST_CASE("MapSchema preflights inner dictionary and model lengths before allocation", "[mapschema]")
 {
     auto source = simpleSchema();
@@ -1140,6 +1212,12 @@ TEST_CASE("Only owned attribute query roots rewrite type-code symbols", "[mapsch
     CHECK(layer->scalarFieldPathsForAttribute(feature, "").empty());
     auto query = layer->attributeQuerySchema("Road", attribute);
     REQUIRE(query);
+    auto limit = layer->childSchema(attribute, "limit");
+    // Point lookup includes both inherited payload fields and explicit context
+    // fields; their recursive enumeration policy is a separate concern.
+    CHECK(lookup(query)->fieldSchema(strings->get("limit")) == limit);
+    CHECK(lookup(query)->fieldSchema(strings->get("$feature")) == feature);
+    CHECK(graph->domain(query)->fieldSchema(graph->strings()->get("limit")) == limit);
     auto paths = lookup(query)->symbolEqualityPaths(code, lookup);
     REQUIRE(paths.size() == 1);
     REQUIRE(paths[0].size() == 1);

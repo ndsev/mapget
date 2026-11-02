@@ -506,6 +506,28 @@ public:
         return name ? registry_->fieldRequired(id_, *name) : std::nullopt;
     }
 
+    /** Translate only the requested name; the immutable graph owns member lookup. */
+    auto fieldSchema(simfil::StringId field) const -> simfil::SchemaId override
+    {
+        auto name = strings_->resolve(field);
+        auto owner = registry_->mapSchema();
+        auto domain = owner->domain(id_);
+        if (!name || !domain)
+            return simfil::NoSchemaId;
+        auto schemaField = owner->strings()->get(*name);
+        // An absent name must not resolve to an explicitly declared empty key.
+        if (schemaField == simfil::StringPool::Empty && !name->empty())
+            return simfil::NoSchemaId;
+        return domain->fieldSchema(schemaField);
+    }
+
+    /** Reuse the graph's prepared element domain without materializing alternatives. */
+    auto itemSchema() const -> simfil::SchemaId override
+    {
+        auto domain = registry_->mapSchema()->domain(id_);
+        return domain ? domain->itemSchema() : simfil::NoSchemaId;
+    }
+
     /** Match Feature::get's attributes alias while keeping field enumeration canonical. */
     auto canonicalField(simfil::StringId field) const -> simfil::StringId override
     {

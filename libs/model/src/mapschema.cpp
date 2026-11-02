@@ -463,6 +463,26 @@ struct MapSchema::Impl::Domain final : simfil::Schema
                 return f.required ? std::optional<bool>(f.required == 2) : std::nullopt;
         return data().base ? graph.views[data().base]->fieldRequired(field) : std::nullopt;
     }
+    /** Read packed member edges directly; combiners use their finalized member index. */
+    SchemaId fieldSchema(StringId field) const override
+    {
+        if (composition() != Composition::None || !alternatives().empty())
+            return Schema::fieldSchema(field);
+        field = canonicalField(field);
+        for (auto const& member : data().fields.in(graph.fields))
+            if (member.name == field)
+                return uniqueSchema(member.children.in(graph.edges));
+        return data().base ? graph.views[data().base]->fieldSchema(field) : simfil::NoSchemaId;
+    }
+    /** Read packed element edges without collecting possible domains at runtime. */
+    SchemaId itemSchema() const override
+    {
+        if (composition() != Composition::None || !alternatives().empty())
+            return Schema::itemSchema();
+        return uniqueSchema(data().elements.in(graph.edges));
+    }
+    /** Include the derived combiner index in graph memory accounting. */
+    auto memberIndexMemoryUsage() const { return vectorMemoryUsage(fieldSchemas_); }
     void forEachDirectField(std::function<void(StringId, std::span<SchemaId const>)> const& fn)
         const override
     {
@@ -1747,6 +1767,13 @@ void MapSchema::Impl::index()
         view.names[0] = nameSet(std::move(fields), false);
         view.names[2] = nameSet(std::move(symbols), false);
     }
+    // Named union members have ordinary field domains. Prepare their effective
+    // lookup once without changing OneOf/AnyOf descriptors or serialized edges.
+    for (size_t id = 1; id < domains.size(); ++id)
+        if (views[id]->composition() != Composition::None || !views[id]->alternatives().empty())
+            views[id]->finalize(
+                [&](SchemaId child) -> simfil::Schema*
+                { return valid(child) ? views[child].get() : nullptr; });
     // Resolve forward contracts once for each produced layer. Referenced-only
     // identity types do not make that layer a source of incoming relations.
     for (auto& layer : layers) {
@@ -3465,6 +3492,7 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
          schema_->views.capacity() * (sizeof(Impl::Domain) + sizeof(void*))});
     for (auto const& view : schema_->views)
         if (view) {
+            result.add("member-domain-index", view->memberIndexMemoryUsage());
             result.add("enum-views", vectorMemoryUsage(view->values));
             result.add("numeric-views", vectorMemoryUsage(view->ranges));
         }
