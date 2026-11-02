@@ -311,7 +311,12 @@ std::string_view FeatureId::typeId() const
     if (auto s = model().strings()->resolve(data_.typeId_)) {
         return *s;
     }
-    return "err-unresolved-typename";
+    raiseFmt(
+        "Feature type string ID {} is missing from dictionary '{}' for map '{}' layer '{}'.",
+        data_.typeId_,
+        model().stringPoolId(),
+        model().mapId(),
+        model().layerInfo()->layerId_);
 }
 
 std::string FeatureId::mapId() const

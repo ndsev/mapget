@@ -16,6 +16,38 @@
 
 using namespace mapget;
 
+TEST_CASE("Dictionary cache retirement preserves retained model owners", "[model][stream]")
+{
+    TileLayerStream::StringPoolCache cache;
+    auto keep = cache.getStringPool("Keep");
+    auto retire = cache.getStringPool("Retire");
+    REQUIRE(keep->emplace("kept"));
+    REQUIRE(retire->emplace("old"));
+    auto const offset = cache.stringPoolOffsets().at("Keep");
+    auto info = LayerInfo::fromJson(R"({
+        "layerId": "Features", "type": "Features", "featureTypes": [{
+            "name": "Retained", "uniqueIdCompositions": [[{"partId": "id", "datatype": "U32"}]]
+        }]
+    })"_json);
+    auto tile =
+        std::make_shared<PartitionFeatureLayer>(TileId{}, "Retire", "RetentionMap", info, retire);
+    tile->newFeature("Retained", {{"id", 7}});
+    auto const before = tile->toJson();
+
+    cache.retainStringPools({"Keep"});
+
+    REQUIRE(cache.getStringPool("Keep") == keep);
+    REQUIRE(cache.stringPoolOffsets().at("Keep") == offset);
+    REQUIRE_FALSE(cache.stringPoolOffsets().contains("Retire"));
+    REQUIRE(retire->get("old"));
+    auto replacement = cache.getStringPool("Retire");
+    REQUIRE(replacement != retire);
+    REQUIRE_FALSE(replacement->get("old"));
+    retire.reset();
+    REQUIRE(tile->at(0)->id()->typeId() == "Retained");
+    REQUIRE(tile->toJson() == before);
+}
+
 TEST_CASE("Static field names resolve to their procedural field IDs", "[model][schema2]")
 {
     StringPool strings("StaticVocabulary");

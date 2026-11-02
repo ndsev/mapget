@@ -5,8 +5,9 @@
 #include "incoming-relations.h"
 
 #include <map>
-#include <span>
+#include <set>
 #include <shared_mutex>
+#include <span>
 #include <vector>
 
 namespace mapget
@@ -274,6 +275,12 @@ public:
          * used by a mapget http client to set the `stringPoolOffsets` info.
          */
         [[nodiscard]] virtual StringPoolOffsetMap stringPoolOffsets() const;
+
+        /**
+         * Release cache ownership of obsolete dictionaries after a catalog edit.
+         * Decoded layers retain their shared dictionaries until their own release.
+         */
+        void retainStringPools(std::set<std::string> const& stringPoolIds);
 
     protected:
         mutable std::shared_mutex stringPoolCacheMutex_;

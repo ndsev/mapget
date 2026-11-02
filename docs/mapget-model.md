@@ -175,6 +175,12 @@ copies retain this owner rather than copying JSON or rebuilding each layer.
 The partition stream carries the exact schema artifact identity. A mismatching
 reader must reject and refetch stale data, not reinterpret numeric domain IDs.
 Already loaded snapshots retain their original graph across catalog replacement.
+Stream consumers must likewise preserve the matching string dictionaries for
+retained models and serialized subsets. `StringPoolCache::retainStringPools`
+releases cache ownership of obsolete namespaces without clearing dictionaries
+still owned by decoded models. A feature identity with an unresolved type ID
+reports the numeric ID, dictionary, map and layer, rather than substituting a
+placeholder type name that produces a misleading schema error.
 This is a coordinated binary protocol cutover; legacy metadata compatibility does
 not mean old binary payload compatibility.
 

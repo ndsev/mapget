@@ -350,4 +350,11 @@ TileLayerStream::StringPoolOffsetMap TileLayerStream::StringPoolCache::stringPoo
     return result;
 }
 
+void TileLayerStream::StringPoolCache::retainStringPools(std::set<std::string> const& stringPoolIds)
+{
+    std::unique_lock lock(stringPoolCacheMutex_);
+    std::erase_if(
+        stringPoolPerStringPoolId_,
+        [&](auto const& entry) { return !stringPoolIds.contains(entry.first); });
+}
 }
