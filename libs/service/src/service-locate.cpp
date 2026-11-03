@@ -127,12 +127,12 @@ std::vector<LocateResponse> LocateRequestExecution::run()
             });
         child->onDone_ = [this](RequestStatus)
         {
-            {
-                std::lock_guard lock(mutex_);
-                if (pending_ > 0) {
-                    --pending_;
-                }
+            std::lock_guard lock(mutex_);
+            if (pending_ > 0) {
+                --pending_;
             }
+            // The waiter owns this stack object. Notify before unlocking so it
+            // cannot destroy the condition variable while this callback uses it.
             cv_.notify_all();
         };
         // Candidate selectors and loaded models must belong to the same registration.

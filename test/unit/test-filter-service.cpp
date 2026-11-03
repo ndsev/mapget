@@ -1934,6 +1934,24 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Repeated locate completion releases stack state after the final callback",
+    "[Service][locate][partial-id]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    service.add(source);
+    LocateRequest request{"FilterMap", "Road", {{"roadId", int64_t{42}}}};
+    request.layerId_ = "Road";
+    request.partition_ = firstTile();
+    // Exercise both the first worker delivery and warm-cache completion; each
+    // synchronous locate destroys its execution state as soon as it returns.
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        REQUIRE(service.locate(request).size() == 1);
+    }
+    CHECK(source->queries.size() == 100);
+}
+
+TEST_CASE(
     "Complete secondary locate IDs still use schema ordering while malformed canonical IDs fail",
     "[Service][locate][partial-id]")
 {
