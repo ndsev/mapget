@@ -583,7 +583,7 @@ model_ptr<FeatureId> PartitionFeatureModelLayerBase::newFeatureId(
         auto parts = newObject(featureIdParts.size(), true);
         for (auto const& [name, value] : featureIdParts)
             std::visit(
-                [&](auto const& scalar)
+                [&parts, name = name](auto const& scalar)
                 {
                     if (auto added = parts->addField(name, scalar); !added)
                         raise(added.error().message);
