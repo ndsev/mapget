@@ -10,10 +10,9 @@ namespace mapget
 {
 
 /**
- * Canonical feature identifier tied to a layer's configured id compositions.
- *
- * The string form is dot-separated and may elide a shared tile prefix when the
- * backing storage uses `useCommonTilePrefix_`.
+ * Local schema-backed identity or self-describing reference into another map.
+ * Local storage may elide a shared tile prefix; its string form includes it.
+ * Foreign references retain named parts without importing the target schema.
  */
 class FeatureId : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -24,7 +23,7 @@ class FeatureId : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureM
     friend class bitsery::Access;
 
 public:
-    /** Convert the FeatureId to a string like `<type-id>.<part-value-0>...<part-value-n>` */
+    /** Format a local canonical ID; foreign references require structural toJson() instead. */
     [[nodiscard]] std::string toString() const;
 
     /** Get the feature ID's type id. */
@@ -102,6 +101,16 @@ bool parseFeatureIdString(
     LayerInfo const& layerInfo,
     ParsedFeatureId& result,
     std::string* error = nullptr);
+
+/** Read self-describing named integer/string parts without a feature schema. */
+KeyValuePairs parseFeatureIdPartsJson(nlohmann::json const& parts);
+
+/** Order and validate named parts against a target layer's ID compositions. */
+bool normalizeFeatureIdParts(
+    std::string_view typeId,
+    KeyValuePairs const& parts,
+    LayerInfo const& layerInfo,
+    ParsedFeatureId& result);
 
 /** Format typed parts into the same canonical string emitted by FeatureId::toString(). */
 std::string formatFeatureIdString(

@@ -51,6 +51,7 @@ add_library(mapget-model STATIC
   src/geojson-import.cpp
   src/json-compare.cpp
   src/layerschema.cpp
+  src/layerschema-search.cpp
   src/mapschema.cpp
   src/info.cpp
   src/feature.cpp

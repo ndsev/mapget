@@ -88,10 +88,15 @@ bool relationTargetsFeature(Relation const& relation, Feature const& target)
     auto reference = relation.target();
     if (!reference || reference->mapId() != target.model().mapId() ||
         reference->typeId() != target.id()->typeId()) return false;
-    auto composition = target.model().layerInfo()->matchingFeatureIdCompositionIndex(
-        reference->typeId(), reference->keyValuePairs(), false);
-    if (!composition || *composition != 0) return false;
-    auto found = target.model().find(reference->typeId(), reference->keyValuePairs());
+    ParsedFeatureId normalized;
+    if (!normalizeFeatureIdParts(
+            reference->typeId(),
+            castToKeyValue(reference->keyValuePairs()),
+            *target.model().layerInfo(),
+            normalized) ||
+        normalized.idCompositionIndex_ != 0)
+        return false;
+    auto found = target.model().find(normalized.typeId_, normalized.keyValuePairs_);
     return found && found->id()->toString() == target.id()->toString();
 }
 

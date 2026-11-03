@@ -282,17 +282,22 @@ TEST_CASE("PartitionFeatureLayer strict GeoJSON import roundtrips mapget JSON", 
     auto originalJson = tile->toJson();
     REQUIRE(originalJson["features"][0]["id"] == "Road.77.DE%2EBY%25.7");
     REQUIRE(originalJson["features"][0]["geometry"]["type"] == "GeometryCollection");
-    REQUIRE(originalJson["features"][0]["relations"][0]["target"] == nlohmann::json{
-        {"id", "Road.77.DE%2EBY%25.9"},
-        {"mapId", "ValidationMap"},
-    });
+    REQUIRE(
+        originalJson["features"][0]["relations"][0]["target"] ==
+        nlohmann::json{
+            {"typeId", "Road"},
+            {"id", {{"tileId", 77}, {"regionId", "DE.BY%"}, {"roadId", 9}}},
+            {"mapId", "ValidationMap"},
+        });
     REQUIRE(
         originalJson["features"][0]["properties"]["relationRefs"]["primary"] ==
         nlohmann::json{{"$mapgetRelation", 0}});
     REQUIRE(
-        originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]["featureId"] ==
+        originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]
+                    ["featureId"] ==
         nlohmann::json{
-            {"id", "Road.77.DE%2EBY%25.11"},
+            {"typeId", "Road"},
+            {"id", {{"tileId", 77}, {"regionId", "DE.BY%"}, {"roadId", 11}}},
             {"mapId", "ValidationMap"},
         });
 

@@ -2464,7 +2464,10 @@ FeatureLayerFilterRequest::completeRelations(
                         }
                         auto reverseTarget = reverse->target();
                         if (!reverseTarget ||
-                            reverseTarget->toString() != descriptor->source_->id()->toString()) {
+                            reverseTarget->mapId() != descriptor->source_->model().mapId() ||
+                            reverseTarget->externalMapId() ||
+                            reverseTarget->toString() != descriptor->source_->id()->toString())
+                        {
                             continue;
                         }
                         auto candidateId = fmt::format("{}#{}", targetIdentity, ordinal);
@@ -2940,6 +2943,13 @@ PartitionFeatureLayer::find(
                         return tl::unexpected(simfil::Error{
                             simfil::Error::InvalidArguments,
                             "A feature-ID expression returned an object that is not a FeatureId.",
+                        });
+                    }
+                    if (featureId->externalMapId()) {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InvalidArguments,
+                            "A feature-ID selector cannot resolve a foreign reference in the "
+                            "current layer.",
                         });
                     }
                     canonicalId = featureId->toString();

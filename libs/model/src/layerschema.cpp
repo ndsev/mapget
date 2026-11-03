@@ -505,6 +505,12 @@ public:
         auto name = strings_->resolve(canonicalField(field));
         return name ? registry_->fieldRequired(id_, *name) : std::nullopt;
     }
+    /** Preserve edge roles while translating between completion and schema dictionaries. */
+    auto fieldRole(simfil::StringId field) const -> FieldRole override
+    {
+        auto name = strings_->resolve(canonicalField(field));
+        return name ? registry_->fieldRole(id_, *name) : FieldRole::Data;
+    }
 
     /** Translate only the requested name; the immutable graph owns member lookup. */
     auto fieldSchema(simfil::StringId field) const -> simfil::SchemaId override

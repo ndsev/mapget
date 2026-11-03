@@ -71,38 +71,37 @@ inline void bindSchema(pybind11::module_& m)
         Read-only descriptive source-format tuple, not a schema cache key.
 
         name and version are opaque strings; an empty string means unspecified.
-        subsystems maps direct content-module names to exact versions, not all
-        transitive decoder dependencies. Equal formats need not have equal schemas.
+        subsystems is a canonical list of {name, version} pairs for direct content
+        modules, not transitive decoder dependencies. A module may have multiple
+        versions. Equal formats need not have equal schemas.
     )pbdoc")
         .def(
             py::init(
-                [](std::string name,
-                   std::string version,
-                   std::map<std::string, std::string, std::less<>> subsystems)
+                [](std::string name, std::string version, py::object subsystems)
                 {
+                    auto pairs = nlohmann::json::parse(
+                        py::module_::import("json").attr("dumps")(subsystems).cast<std::string>());
                     return MapFormat::fromJson(
-                        {{"name", name}, {"version", version}, {"subsystems", subsystems}});
+                        {{"name", name}, {"version", version}, {"subsystems", std::move(pairs)}});
                 }),
             py::arg("name") = "",
             py::arg("version") = "",
-            py::arg("subsystems") = std::map<std::string, std::string, std::less<>>{},
-            "Create a format value. This does not select, fetch or construct a schema.")
+            py::arg("subsystems") = py::tuple(),
+            "Create a format from {name, version} entries (legacy name/version dictionaries are "
+            "also accepted). Does not select, fetch or construct a schema.")
         .def_readonly("name", &MapFormat::name_, "Source-format family, or an empty string.")
         .def_readonly("version", &MapFormat::version_, "Exact base version, or an empty string.")
-        .def_readonly(
+        .def_property_readonly(
             "subsystems",
-            &MapFormat::subsystems_,
-            "A detached dictionary of direct subsystem names and versions.")
+            [](MapFormat const& self) {
+                return py::module_::import("json")
+                    .attr("loads")(self.toJson().at("subsystems").dump());
+            },
+            "Detached, sorted {name, version} entries; distinct versions of one name are retained.")
         .def(
             "to_dict",
             [](MapFormat const& self)
-            {
-                py::dict result;
-                result["name"] = self.name_;
-                result["version"] = self.version_;
-                result["subsystems"] = py::cast(self.subsystems_);
-                return result;
-            },
+            { return py::module_::import("json").attr("loads")(self.toJson().dump()); },
             "Return a detached canonical mapFormat dictionary.")
         .def(
             "__eq__",

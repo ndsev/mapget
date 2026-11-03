@@ -170,12 +170,20 @@ class Schema2PythonTest(unittest.TestCase):
     def test_format_is_descriptive_and_detached(self) -> None:
         value = mapget.MapFormat("fixture", "2", {"roads": "1"})
         self.assertEqual(value.to_dict(), {
-            "name": "fixture", "version": "2", "subsystems": {"roads": "1"}
+            "name": "fixture", "version": "2", "subsystems": [{"name": "roads", "version": "1"}]
         })
         self.assertEqual(value, mapget.MapFormat("fixture", "2", {"roads": "1"}))
         self.assertNotEqual(value, mapget.MapFormat("fixture", "2", {"roads": "2"}))
-        value.subsystems["roads"] = "mutation of detached dict"
-        self.assertEqual(value.subsystems, {"roads": "1"})
+        value.subsystems[0]["version"] = "mutation of detached entry"
+        self.assertEqual(value.subsystems, [{"name": "roads", "version": "1"}])
+        multiple = mapget.MapFormat("fixture", "2", [
+            {"name": "roads", "version": "2"}, {"name": "roads", "version": "1"},
+            {"name": "roads", "version": "2"},
+        ])
+        self.assertEqual(multiple.subsystems, [
+            {"name": "roads", "version": "1"}, {"name": "roads", "version": "2"},
+        ])
+        self.assertEqual(multiple, mapget.MapFormat(**multiple.to_dict()))
         with self.assertRaises(AttributeError):
             value.version = "3"
         with self.assertRaises((ValueError, RuntimeError)):

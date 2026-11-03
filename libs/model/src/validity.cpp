@@ -608,13 +608,7 @@ Validity::Validity(
             });
         fields_.emplace_back(
             StringPool::FromStr,
-            [](Validity const& self)
-            {
-                auto fromFeatureId = self.transitionFromFeatureId();
-                return model_ptr<simfil::ValueNode>::make(
-                    fromFeatureId ? fromFeatureId->toString() : std::string{},
-                    self.model_);
-            });
+            [](Validity const& self) { return ModelNode::Ptr(self.transitionFromFeatureId()); });
         fields_.emplace_back(
             StringPool::FromConnectedEndStr,
             [](Validity const& self)
@@ -625,13 +619,7 @@ Validity::Validity(
             });
         fields_.emplace_back(
             StringPool::ToStr,
-            [](Validity const& self)
-            {
-                auto toFeatureId = self.transitionToFeatureId();
-                return model_ptr<simfil::ValueNode>::make(
-                    toFeatureId ? toFeatureId->toString() : std::string{},
-                    self.model_);
-            });
+            [](Validity const& self) { return ModelNode::Ptr(self.transitionToFeatureId()); });
         fields_.emplace_back(
             StringPool::ToConnectedEndStr,
             [](Validity const& self)
@@ -1067,7 +1055,9 @@ SelfContainedGeometry Validity::computeGeometry(
             if (error) {
                 *error = fmt::format(
                     "Transition source geometry is unavailable for feature {}.",
-                    fromFeatureId->toString());
+                    fromFeatureId->externalMapId() ?
+                        fromFeatureId->toJson().dump() :
+                        fromFeatureId->toString());
             }
             return {};
         }
@@ -1075,7 +1065,9 @@ SelfContainedGeometry Validity::computeGeometry(
             if (error) {
                 *error = fmt::format(
                     "Transition target geometry is unavailable for feature {}.",
-                    toFeatureId->toString());
+                    toFeatureId->externalMapId() ?
+                        toFeatureId->toJson().dump() :
+                        toFeatureId->toString());
             }
             return {};
         }
@@ -1154,6 +1146,11 @@ SelfContainedGeometry Validity::computeGeometry(
     // If this validity references some feature directly,
     // use the geometry collection of that feature.
     if (auto featureIdNode = featureId()) {
+        if (featureIdNode->mapId() != model().mapId()) {
+            if (error)
+                *error = "Foreign validity geometry requires target-map resolution.";
+            return {};
+        }
         auto feature = model().find(featureIdNode->typeId(), featureIdNode->keyValuePairs());
         if (feature) {
             geometryCollection = feature->geomOrNull();

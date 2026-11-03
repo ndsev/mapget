@@ -171,18 +171,6 @@ public:
     newFeature(std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
 
     /**
-     * Create a new feature id. Use this function to create a reference to another
-     * feature. The created feature id will not use the common feature id prefix from
-     * this tile feature layer, since the reference may be to a feature stored in a
-     * different tile or map. When `externalMapId` is set to another map, the detached
-     * reference keeps that map id for binary serialization and JSON export.
-     */
-    model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt) override;
-
-    /**
      * Create a new relation. Use this function to create a named reference to another
      * feature, which may also have optional source/target validity geometry.
      * Relations must be stored in the feature's special relations-list.
@@ -320,6 +308,12 @@ public:
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
     [[nodiscard]] simfil::model_ptr<LayerSchema> layerSchema() const;
+
+    /** Translate a fresh, exclusively owned native model into a composed schema.
+     * Keeps payload addresses/identities intact; invalidates compiled query state.
+     * Metadata must describe the same layer and a composition containing this graph.
+     */
+    void rebindSchema(std::shared_ptr<LayerInfo> const& info);
 
     /** Return a schema entry by schema key, or by feature type name as a convenience. */
     [[nodiscard]] LayerSchema::Entry const* getSchema(std::string_view typeName) const;
@@ -479,6 +473,9 @@ protected:
         CloneCache& clonedModelNodes,
         PartitionFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
+
+    /** Translate a copied producer domain into this layer's composed graph. */
+    simfil::SchemaReference remapSchemaReference(simfil::SchemaReference const& reference) const;
 
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;

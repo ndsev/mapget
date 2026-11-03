@@ -152,11 +152,15 @@ public:
         AttrPointIndexRangeView,
     }; };
 
-    /** Create a feature id in the concrete layer's shared FeatureId storage. */
-    virtual model_ptr<FeatureId> newFeatureId(
+    /**
+     * Create a detached ID without a tile prefix. Local references must match this
+     * layer's schema; an explicit foreign map stores bounded, unique named parts
+     * without importing that map's identity declarations.
+     */
+    model_ptr<FeatureId> newFeatureId(
         std::string_view const& typeId,
         KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt) = 0;
+        std::optional<std::string_view> externalMapId = std::nullopt);
 
     /** Create a geometry collection in the concrete layer's shared geometry storage. */
     virtual model_ptr<GeometryCollection> newGeometryCollection(

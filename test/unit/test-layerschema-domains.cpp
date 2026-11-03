@@ -596,7 +596,10 @@ TEST_CASE("Many attribute query roots retain the shared feature schema", "[schem
         auto root = schema->attributeQuerySchema("Carrier", attribute);
         REQUIRE(root != simfil::NoSchemaId);
         REQUIRE(schema->childSchema(root, "$feature") == feature);
-        REQUIRE(schema->canHaveField(root, "attribute399"));
+        // $feature is an explicit context edge, not an implicit wildcard subtree.
+        // Incomplete payload metadata must still leave absence proofs conservative.
+        REQUIRE(schema->canHaveField(root, "attribute399") == partial);
+        REQUIRE(schema->canHaveField(schema->childSchema(root, "$feature"), "attribute399"));
         REQUIRE(schema->canHaveField(root, "value"));
         REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
         REQUIRE(schema->reachabilityComplete(root) == !partial);

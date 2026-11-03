@@ -690,50 +690,6 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
     return result;
 }
 
-model_ptr<FeatureId> PartitionFeatureLayer::newFeatureId(
-    const std::string_view& typeId,
-    const KeyValueViewPairs& featureIdParts,
-    std::optional<std::string_view> externalMapId)
-{
-    if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
-        raise(fmt::format(
-            "Could not find a matching ID composition of type {} with parts {}.",
-            typeId,
-            idPartsToString(featureIdParts)));
-    }
-
-    auto featureIdIndex = featureIds_.size();
-    auto typeIdStringId = strings()->emplace(typeId);
-    if (!typeIdStringId)
-        raise(typeIdStringId.error().message);
-    auto const idCompositionIndex =
-        *layerInfo_->matchingFeatureIdCompositionIndex(typeId, featureIdParts, false);
-    auto const& composition =
-        layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[idCompositionIndex];
-    simfil::StringId externalMapIdStringId = simfil::StringPool::Empty;
-    if (externalMapId && *externalMapId != mapId()) {
-        auto storedMapId = strings()->emplace(*externalMapId);
-        if (!storedMapId) {
-            raise(storedMapId.error().message);
-        }
-        // Local references omit the redundant map payload so legacy JSON stays compact.
-        externalMapIdStringId = *storedMapId;
-    }
-    checkModelNodeIndex(featureIds_.size());
-    featureIds_.emplace_back(FeatureId::Data{
-        false,
-        idCompositionIndex,
-        *typeIdStringId,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts),
-        externalMapIdStringId,
-    });
-    return FeatureId(
-        featureIds_.back(),
-        shared_from_this(),
-        {ColumnId::ExternalFeatureIds, static_cast<uint32_t>(featureIdIndex)},
-        mpKey_);
-}
-
 model_ptr<Relation>
 PartitionFeatureLayer::newRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
@@ -1215,7 +1171,8 @@ model_ptr<FeatureId> PartitionFeatureLayer::resolveFeatureIdNode(ModelNode const
                 true,
                 0,
                 featureData.typeId_.typeId_,
-                featureData.idPartValues_,
+                {simfil::ModelPool::ColumnId::Arrays,
+                 static_cast<uint32_t>(featureData.idPartValues_)},
                 simfil::StringPool::Empty},
             shared_from_this(),
             node.addr(),
@@ -1802,6 +1759,50 @@ std::vector<std::string> PartitionFeatureLayer::checkForErrors() const
 simfil::model_ptr<LayerSchema> PartitionFeatureLayer::layerSchema() const
 {
     return impl_->layerSchema_;
+}
+
+void PartitionFeatureLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
+{
+    if (!info || !info->schemaOwner() || info->layerId_ != layerInfo_->layerId_ ||
+        info->type_ != layerInfo_->type_ || info->partitionKind_ != layerInfo_->partitionKind_)
+        throw std::invalid_argument(
+            "Schema composition cannot change a partition's layer identity.");
+    if (info->schemaOwner()->schemaId() == schemaId()) {
+        setLayerInfo(info);
+        return;
+    }
+    if (!hasDirectSchemaBinding(schemaId()))
+        throw std::invalid_argument("Native feature model does not match its schema header.");
+    auto owner = info->schemaOwner();
+    (void)owner->schemaRemap(schemaId());
+    std::vector<simfil::SchemaId> featureDomains;
+    featureDomains.reserve(impl_->features_.size());
+    for (auto const& feature : impl_->features_) {
+        auto id = owner->remapSchema(schemaId(), feature.typeId_.schemaId_);
+        if (id != simfil::NoSchemaId && !owner->domain(id)->hasAffinity(simfil::ValueType::Object))
+            throw std::invalid_argument("Composed feature domain must remain an object.");
+        featureDomains.push_back(id);
+    }
+    auto layerSchema = info->layerSchema();
+    auto environment = Impl::makeSchemaAwareEnvironment(strings(), layerSchema);
+    auto binding = owner->binding();
+    // All throwing validation/allocation precedes committing the custom feature
+    // column. The common remapper handles object/array/scalar domains transactionally.
+    remapSchemas(
+        binding,
+        [owner, binding](simfil::SchemaReference const& reference)
+        {
+            return simfil::SchemaReference{
+                binding,
+                owner->remapSchema(reference.binding->identity(), reference.id)};
+        });
+    for (size_t i = 0; i < featureDomains.size(); ++i)
+        impl_->features_.at(i).typeId_.schemaId_ = featureDomains[i];
+    layerInfo_ = info;
+    setSchemaResolver({});
+    impl_->layerSchema_ = std::move(layerSchema);
+    impl_->expressionEnvironment_ = std::move(environment);
+    impl_->expressionCache_.clear();
 }
 
 LayerSchema::Entry const* PartitionFeatureLayer::getSchema(std::string_view typeName) const
@@ -2443,6 +2444,15 @@ ModelNode::Ptr PartitionFeatureLayer::clone(
     return cloneNode({}, cache, otherLayer, otherNode);
 }
 
+simfil::SchemaReference
+PartitionFeatureLayer::remapSchemaReference(simfil::SchemaReference const& reference) const
+{
+    if (!reference)
+        return {};
+    auto const& owner = layerInfo_->schemaOwner();
+    return {owner->binding(), owner->remapSchema(reference.binding->identity(), reference.id)};
+}
+
 ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     CloneContext const& context,
     CloneCache& cache,
@@ -2467,6 +2477,7 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         auto reference = otherNode->schemaReference();
         if (!reference)
             return simfil::NoSchemaId;
+        reference = remapSchemaReference(reference);
         auto domain = importSchema(reference);
         if (!domain)
             throw std::runtime_error(domain.error().message);
@@ -2590,7 +2601,12 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case Bitmask: {
         // Persistent scalar columns belong to the source pool. The common copier
         // preserves exact domains and copies bytes instead of reusing foreign indices.
-        auto copied = copyNode(*otherNode);
+        auto copied = copyNode(
+            *otherNode,
+            {.schemaRemap = [this](auto const& reference)
+             {
+                 return remapSchemaReference(reference);
+             }});
         if (!copied)
             throw std::runtime_error(copied.error().message);
         newCacheNode = *copied;
@@ -2917,7 +2933,7 @@ void PartitionFeatureLayer::clone(
                 idParts.begin()+idPrefix->size(), idParts.end());
         }
         cloneTarget = newFeature(type, idParts);
-        auto domain = importSchema(otherFeature.schemaReference());
+        auto domain = importSchema(remapSchemaReference(otherFeature.schemaReference()));
         if (!domain)
             throw std::runtime_error(domain.error().message);
         cloneTarget->setSchema(*domain);
@@ -2946,7 +2962,7 @@ void PartitionFeatureLayer::clone(
     if (auto attrs = otherFeature.attributesOrNull()) {
         auto baseAttrs = cloneTarget->attributes();
         if (auto reference = attrs->schemaReference()) {
-            auto imported = importSchema(reference);
+            auto imported = importSchema(remapSchemaReference(reference));
             if (!imported)
                 throw std::runtime_error(imported.error().message);
             auto domain = checkedContainerSchema(

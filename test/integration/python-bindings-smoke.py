@@ -174,6 +174,19 @@ def main() -> int:
         indexed_attr.add_field("value", True)
 
         target = tile.new_feature_id("Way", [("wayId", 2)])
+        foreign = tile.new_feature_id("ForeignRoad", [("key", 9223372036854775807),
+                                                      ("text", "001")], "OtherMap")
+        assert foreign.type_id() == "ForeignRoad"
+        assert foreign.map_id() == "OtherMap"
+        assert foreign.to_dict() == {"mapId": "OtherMap", "typeId": "ForeignRoad",
+                                     "id": {"key": 9223372036854775807, "text": "001"}}
+        assert dict(foreign.key_value_pairs()) == {"key": 9223372036854775807, "text": "001"}
+        try:
+            foreign.to_string()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Foreign references must not invent a canonical string")
         relation = feature.add_relation("next", target)
         relation.source_validity().new_complete()
 

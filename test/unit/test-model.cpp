@@ -378,13 +378,16 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("Detached feature IDs preserve optional external map IDs")
     {
         REQUIRE(featureForId1->toJson() == nlohmann::json("Way.42.84.0123456789abcdef"));
-        REQUIRE(externalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE_THROWS(externalFeatureId->toString());
         REQUIRE(externalFeatureId->mapId() == "ValidationMap");
         REQUIRE(externalFeatureId->externalMapId() == std::optional<std::string_view>{"ValidationMap"});
-        REQUIRE(externalFeatureId->toJson() == nlohmann::json{
-            {"id", "Way.7.11.fedcba9876543210"},
-            {"mapId", "ValidationMap"},
-        });
+        REQUIRE(
+            externalFeatureId->toJson() ==
+            nlohmann::json{
+                {"typeId", "Way"},
+                {"id", {{"wayIdU32", 7}, {"wayIdU64", 11}, {"wayIdUUID128", "fedcba9876543210"}}},
+                {"mapId", "ValidationMap"},
+            });
     }
 
     SECTION("Evaluate simfil filter")
@@ -487,7 +490,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto deserializedExternalFeatureId = deserializedTile->resolve<FeatureId>(
             simfil::ModelNodeAddress{PartitionFeatureLayer::ColumnId::ExternalFeatureIds, 2});
         REQUIRE(deserializedExternalFeatureId);
-        REQUIRE(deserializedExternalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(deserializedExternalFeatureId->toJson() == externalFeatureId->toJson());
         REQUIRE(deserializedExternalFeatureId->mapId() == "ValidationMap");
         REQUIRE(
             deserializedExternalFeatureId->externalMapId() ==
@@ -1172,10 +1175,13 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
     auto const targetNode = relationNode.get(StringPool::TargetStr);
     REQUIRE(targetNode);
-    REQUIRE(targetNode->toJson() == nlohmann::json{
-        {"id", "Way.2"},
-        {"mapId", "ValidationMap"},
-    });
+    REQUIRE(
+        targetNode->toJson() ==
+        nlohmann::json{
+            {"typeId", "Way"},
+            {"id", {{"wayId", 2}}},
+            {"mapId", "ValidationMap"},
+        });
     auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
     REQUIRE(sourceValidityNode);
     REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
@@ -1218,13 +1224,17 @@ TEST_CASE("Feature-id validities expose external map references", "[test.feature
     auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
     auto const validityNode = attrNode.get(StringPool::ValidityStr);
     REQUIRE(validityNode);
-    REQUIRE(validityNode->toJson() == nlohmann::json{
-        {"direction", "POSITIVE"},
-        {"featureId", {
-            {"id", "Way.2"},
-            {"mapId", "ValidationMap"},
-        }},
-    });
+    REQUIRE(
+        validityNode->toJson() ==
+        nlohmann::json{
+            {"direction", "POSITIVE"},
+            {"featureId",
+             {
+                 {"typeId", "Way"},
+                 {"id", {{"wayId", 2}}},
+                 {"mapId", "ValidationMap"},
+             }},
+        });
 }
 
 TEST_CASE("Simple validities upgrade only their owning collection slot", "[test.featurelayer.validity]")

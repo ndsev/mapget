@@ -22,20 +22,35 @@ MapFormat MapFormat::fromJson(nlohmann::json const& json)
     if (!json.is_object())
         throw std::invalid_argument("mapFormat must be an object.");
     if (json.contains("profiles"))
-        throw std::invalid_argument(
-            "mapFormat uses a flat subsystem name/version map, not profiles.");
+        throw std::invalid_argument("mapFormat uses subsystem name/version pairs, not profiles.");
     MapFormat result;
     result.name_ = json.value("name", std::string{});
     result.version_ = json.value("version", std::string{});
     if (auto it = json.find("subsystems"); it != json.end()) {
-        if (!it->is_object())
-            throw std::invalid_argument("mapFormat.subsystems must contain name/version pairs.");
-        for (auto const& [name, version] : it->items()) {
-            if (name.empty() || !version.is_string())
-                throw std::invalid_argument(
-                    "Map subsystem names must be nonempty and versions must be strings.");
-            result.subsystems_.emplace(name, version.get<std::string>());
+        // Accept the earlier single-version dictionary only as an ingestion form.
+        // Canonical output preserves all distinct versions instead of overwriting by name.
+        if (it->is_object()) {
+            for (auto const& [name, version] : it->items()) {
+                if (name.empty() || !version.is_string())
+                    throw std::invalid_argument(
+                        "Map subsystem names must be nonempty and versions must be strings.");
+                result.subsystems_.emplace(name, version.get<std::string>());
+            }
         }
+        else if (it->is_array()) {
+            for (auto const& entry : *it) {
+                if (!entry.is_object() || entry.size() != 2 || !entry.contains("name") ||
+                    !entry.contains("version") || !entry["name"].is_string() ||
+                    !entry["version"].is_string() ||
+                    entry["name"].get_ref<std::string const&>().empty())
+                    throw std::invalid_argument(
+                        "Each map subsystem must contain a nonempty name and a string version.");
+                result.subsystems_
+                    .emplace(entry["name"].get<std::string>(), entry["version"].get<std::string>());
+            }
+        }
+        else
+            throw std::invalid_argument("mapFormat.subsystems must contain name/version pairs.");
     }
     if (result.name_.empty() && (!result.version_.empty() || !result.subsystems_.empty()))
         throw std::invalid_argument("A versioned map format requires a name.");
@@ -44,7 +59,10 @@ MapFormat MapFormat::fromJson(nlohmann::json const& json)
 
 nlohmann::json MapFormat::toJson() const
 {
-    return {{"name", name_}, {"version", version_}, {"subsystems", subsystems_}};
+    auto subsystems = nlohmann::json::array();
+    for (auto const& [name, version] : subsystems_)
+        subsystems.push_back({{"name", name}, {"version", version}});
+    return {{"name", name_}, {"version", version_}, {"subsystems", std::move(subsystems)}};
 }
 
 namespace {

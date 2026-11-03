@@ -141,8 +141,11 @@ public:
      * - Version 6.0:
      *   + Exact MapSchema identities in partition headers, separate binary schema artifacts.
      *   + Schema-bound ModelPool values, persistent bitmasks and qualified scalar projections.
+     * - Version 6.1:
+     *   + FeatureId parts use tagged array/object addresses; foreign references retain named parts.
+     *   + Shared SchemaPool graphs distinguish contextual edges and composed domain remappings.
      */
-    static constexpr Version CurrentProtocolVersion{6, 0, 0};
+    static constexpr Version CurrentProtocolVersion{6, 1, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/model/layerschema.h"
+#include "simfil/model/schema-pool.h"
 
 namespace simfil
 {
@@ -14,7 +15,7 @@ namespace mapget
  * Layers are views, never independent owning graphs. The schema dictionary is private
  * to this artifact and must not be substituted for a datasource's streamed dictionary.
  */
-class MapSchema : public simfil::ModelPool
+class MapSchema : public simfil::SchemaPool
 {
 public:
     using Ptr = std::shared_ptr<MapSchema>;
@@ -45,6 +46,20 @@ public:
     [[nodiscard]] MapFormat const& format() const;
     [[nodiscard]] std::string_view schemaId() const;
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
+    /** Return the frozen counts, 16-bit capacities and retained-memory lower bound.
+     * The summary is assembled once; status polling never traverses the graph. */
+    [[nodiscard]] nlohmann::json statistics() const;
+    /** Ordered direct artifact lineage, independent of live datasource registrations. */
+    [[nodiscard]] nlohmann::json constituents() const;
+    /** Compose compatible immutable contributions into a new effective artifact.
+     * Native-to-effective ID translations belong to construction/ingestion only. */
+    [[nodiscard]] static ConstPtr compose(MapFormat format, std::span<ConstPtr const> inputs);
+    /** Translate one contributor domain; this artifact's own valid IDs are unchanged. */
+    [[nodiscard]] simfil::SchemaId
+    remapSchema(std::string_view sourceIdentity, simfil::SchemaId id) const;
+    /** Borrow a construction-only source-ID table. Decoded artifacts do not retain these tables. */
+    [[nodiscard]] std::span<simfil::SchemaId const>
+    schemaRemap(std::string_view sourceIdentity) const;
 
     /** Canonical binary envelope, dictionary, domain columns and ModelPool payload. */
     tl::expected<void, simfil::Error> write(std::ostream& output) override;
@@ -99,6 +114,8 @@ public:
     void setOpen(simfil::SchemaId id, bool open);
     void setNullable(simfil::SchemaId id, std::optional<bool> nullable);
     void setFieldRequired(simfil::SchemaId id, std::string field, std::optional<bool> required);
+    /** Mark a declared edge as enumerable data or explicit-lookup-only context. */
+    void setFieldRole(simfil::SchemaId id, std::string field, simfil::Schema::FieldRole role);
     void setZserioType(simfil::SchemaId id, std::string name);
     void setAttributeMetadata(
         simfil::SchemaId id,

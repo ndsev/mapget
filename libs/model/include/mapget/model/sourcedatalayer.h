@@ -65,6 +65,11 @@ public:
      */
     simfil::Environment& evaluationEnvironment();
 
+    /** Translate a fresh, exclusively owned native model into a composed schema.
+     * Source addresses, compound nodes and payload storage remain unchanged.
+     */
+    void rebindSchema(std::shared_ptr<LayerInfo> const& info);
+
     /**
      * Serialize the layer.
      */

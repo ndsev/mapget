@@ -7,6 +7,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -39,8 +40,8 @@ struct MapFormat
     std::string name_;
     /** Exact opaque base-format version; may be unspecified for modular formats. */
     std::string version_;
-    /** Direct content-module/FTX versions; sorted keys make pair ordering immaterial. */
-    std::map<std::string, std::string, std::less<>> subsystems_;
+    /** Direct module/FTX pairs; one name may occur at several versions in a composed format. */
+    std::set<std::pair<std::string, std::string>> subsystems_;
 
     bool operator==(MapFormat const&) const = default;
     [[nodiscard]] static MapFormat fromJson(nlohmann::json const& json);

@@ -105,6 +105,7 @@ struct BuildContext
 {
     std::string featureType_;
     std::string attributeLayerName_;
+    std::string attributeName_;
 };
 
 /** Return the first JSON Schema combiner present on the object. */
@@ -182,6 +183,8 @@ contextMemoKey(std::string_view pointer, std::optional<Kind> kind, BuildContext 
     appendSized(result, context.featureType_);
     result += '|';
     appendSized(result, context.attributeLayerName_);
+    result += '|';
+    appendSized(result, context.attributeName_);
     return result;
 }
 
@@ -450,6 +453,7 @@ struct SchemaBuilder
         std::vector<simfil::ScalarValueType> enumValues_;
         nlohmann::json annotations_;
         std::set<std::string, std::less<>> multimapFields_;
+        std::set<std::string, std::less<>> contextFields_;
         std::map<std::string, bool, std::less<>> required_;
         std::optional<bool> nullable_;
         bool open_ = false;
@@ -531,6 +535,7 @@ struct SchemaBuilder
                   "attributeType",
                   "attributeTypeCode",
                   "requiredFields",
+                  "contextFields",
                   "nullable",
                   "keys",
                   "attributeOwners",
@@ -722,6 +727,10 @@ struct SchemaBuilder
         if (metadata) {
             if (auto kind = jsonKind(metadata))
                 domain.kind_ = *kind;
+            else if (metaType == "Attribute" && domain.composition_ != Composition::None)
+                domain.kind_ = simfil::Schema::makeKind(
+                    simfil::Schema::kindNameId(LayerSchema::AttributeKind),
+                    simfil::Schema::affinities(domain.kind_));
             if (auto it = metadata->find("bitmaskValues"); it != metadata->end()) {
                 addEnumSymbols(id, it->get<std::vector<std::string>>());
             }
@@ -757,6 +766,9 @@ struct SchemaBuilder
             }
             if (auto it = metadata->find("requiredFields"); it != metadata->end()) {
                 domain.required_ = it->get<decltype(domain.required_)>();
+            }
+            if (auto it = metadata->find("contextFields"); it != metadata->end()) {
+                domain.contextFields_ = it->get<decltype(domain.contextFields_)>();
             }
             if (auto it = metadata->find("keys"); it != metadata->end()) {
                 for (auto const& alias : *it) {
@@ -1000,6 +1012,8 @@ struct SchemaBuilder
                  {"requiredFields", domain.required_},
                  {"nullable",
                   domain.nullable_ ? nlohmann::json(*domain.nullable_) : nlohmann::json(nullptr)}});
+            if (!domain.contextFields_.empty())
+                meta["contextFields"] = domain.contextFields_;
             // An explicit empty alias list prevents a different layer's same-named
             // descriptive schemaKey from claiming the selected layer's lookup key.
             meta["keys"] = nlohmann::json::array();
@@ -1289,6 +1303,8 @@ struct SchemaBuilder
         }
         if (hasAffinity(schema.kind_, simfil::ValueType::Object)) {
             for (auto const& fieldName : schema.directFields_) {
+                if (schema.contextFields_.contains(fieldName))
+                    continue;
                 if (isRoot && skipRootAttributeMetadataFields &&
                     isAttributeScalarShorthandMetadataField(fieldName))
                 {
@@ -1385,6 +1401,8 @@ struct SchemaBuilder
         }
         if (hasAffinity(schema.kind_, simfil::ValueType::Object)) {
             for (auto const& fieldName : schema.directFields_) {
+                if (schema.contextFields_.contains(fieldName))
+                    continue;
                 if (schema.entry_.metaType_ == "Feature" && fieldName == "attributes") {
                     // Do not let the feature-root alias duplicate canonical
                     // `properties...` paths generated for shorthand rewrites.
@@ -1534,6 +1552,41 @@ private:
         return {build(schema, pointer, context, std::nullopt)};
     }
 
+    /** Give a shared physical Attribute a lightweight named owner, retaining shared payloads. */
+    simfil::SchemaId contextualAttribute(simfil::SchemaId source, BuildContext const& context)
+    {
+        auto copy = registry_.schemas_.at(source);
+        if (!reservedIds_.empty() || copy.entry_.metaType_ != "Attribute" ||
+            !copy.attributeTypeCode_.empty() || context.featureType_.empty() ||
+            context.attributeLayerName_.empty() || context.attributeName_.empty())
+            return source;
+        auto pointer = std::string_view(copy.entry_.jsonPointer_);
+        if (pointer.starts_with(pointerPrefix_))
+            pointer.remove_prefix(pointerPrefix_.size());
+        auto key = LayerSchema::attributeKey(
+            context.featureType_,
+            context.attributeLayerName_,
+            context.attributeName_,
+            pointer.empty() ? "#" : pointer);
+        if (auto found = registry_.idsByKey_.find(key); found != registry_.idsByKey_.end())
+            return found->second;
+        // Only this Attribute root is contextual. Its payload edges continue
+        // referencing the shared physical domains, and the generic pointer alias
+        // remains bound to the unqualified root for unknown runtime names.
+        auto id = registry_.allocate(copy.kind_, key, {}, "Attribute");
+        copy.id_ = id;
+        copy.entry_.id_ = id;
+        copy.entry_.key_ = std::move(key);
+        copy.attributeTypeCode_ = context.attributeName_;
+        copy.attributeOwners_.clear();
+        registry_.entriesById_[id] = copy.entry_;
+        registry_.schemas_[id] = std::move(copy);
+        registry_.registerAttributeOwner(
+            id,
+            {context.featureType_, context.attributeLayerName_, context.attributeName_, id});
+        return id;
+    }
+
     /** Compile domains without flattening logical alternatives into a selected branch. */
     simfil::SchemaId build(
         nlohmann::json const& schema,
@@ -1555,6 +1608,9 @@ private:
         if (auto feature = metadataString(metadata, "featureType"); !feature.empty()) {
             context.featureType_ = std::move(feature);
         }
+        if (metaType == "Attribute")
+            if (auto name = metadataString(metadata, "attributeTypeCode"); !name.empty())
+                context.attributeName_ = std::move(name);
         auto key = reservedIds_.empty() ?
             annotatedKey(schema, pointer, context) :
             metadataString(metadata, "schemaKey");
@@ -1611,7 +1667,7 @@ private:
                     if (auto found = registry_.idsByKey_.find(ref);
                         found != registry_.idsByKey_.end())
                     {
-                        return found->second;
+                        return contextualAttribute(found->second, context);
                     }
                 }
                 // Pure reference cycles have no concrete domain to expand.
@@ -1620,11 +1676,14 @@ private:
                     memo_[memoKey] = id;
                     return id;
                 }
+                auto physicalContext = context;
+                physicalContext.attributeName_.clear();
                 auto id = build(
                     resolveLocalRef(root_, ref),
                     pointerPrefix_ + refToPointer(ref),
-                    context,
+                    physicalContext,
                     preferredKind);
+                id = contextualAttribute(id, context);
                 activeRefs_.erase(memoKey);
                 memo_[memoKey] = id;
                 registry_.registerKey(key, id);
@@ -1771,6 +1830,10 @@ private:
             if (metaType == "AttributeLayerMap") {
                 childContext.attributeLayerName_ = fieldName;
             }
+            if (metaType == "AttributeContainer")
+                childContext.attributeName_ = fieldName;
+            else if (metaType == "Attribute")
+                childContext.attributeName_.clear();
 
             auto const childPointer = pointer + "/properties/" + pointerToken(fieldName);
             for (auto childId : buildEdges(childSchemaJson, childPointer, childContext)) {

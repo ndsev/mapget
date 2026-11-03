@@ -17,6 +17,7 @@
 #include "mapget/model/memory.h"
 #include "mapget/model/stringpool.h"
 #include "simfil/error.h"
+#include "simfil/evaluation.h"
 #include "simfil/model/model.h"
 #include "simfil/model/schema.h"
 
@@ -158,6 +159,14 @@ public:
     [[nodiscard]] bool producesFeatureType(std::string_view name) const;
     [[nodiscard]] FeatureTypeInfo const*
     getTypeInfo(std::string_view name, bool throwIfMissing = true) const;
+    /** Project native identity and forward relations without expanding domains.
+     * Optional reserve runs per visited entry, before copying text/containers, with a conservative
+     * JSON byte allowance. It may throw to enforce caller work/time/size limits; zero bytes still
+     * indicate traversal work. Borrowed declarations never require a whole-inventory copy.
+     */
+    [[nodiscard]] nlohmann::json
+    featureTypeContract(std::string_view name, std::function<void(size_t)> const& reserve = {})
+        const;
     void setRootSchema(simfil::SchemaId root);
     [[nodiscard]] simfil::SchemaId rootSchema() const;
 
@@ -231,6 +240,8 @@ public:
     /** Record required/optional presence on the parent-field edge. */
     void
     setFieldRequired(simfil::SchemaId schemaId, std::string field, std::optional<bool> required);
+    /** Classify a declared edge independently of its name and target domain. */
+    void setFieldRole(simfil::SchemaId schemaId, std::string field, simfil::Schema::FieldRole role);
 
     /** Attach zserio type metadata used by completion/result-coloring consumers. */
     void setZserioType(simfil::SchemaId schemaId, std::string zserioType);
@@ -312,6 +323,9 @@ public:
     /** Return known presence requirements for one direct field. */
     [[nodiscard]] std::optional<bool>
     fieldRequired(simfil::SchemaId schemaId, std::string_view field) const;
+    /** Context edges support explicit access but are not recursively enumerated. */
+    [[nodiscard]] simfil::Schema::FieldRole
+    fieldRole(simfil::SchemaId schemaId, std::string_view field) const;
     /** A finalized absence proof; incomplete/open graphs must not prune data. */
     [[nodiscard]] bool reachabilityComplete(simfil::SchemaId schemaId) const;
 
@@ -382,6 +396,24 @@ public:
         simfil::SchemaId rootSchema,
         std::span<const std::string> fieldPath) const;
 
+    /** Find declared fields, type names and symbols below selected roots, without expanding data.
+     * Requires a finalized owner and a nonempty search term of at most 128 bytes.
+     * Optional featureTypes must name the produced feature owning each root; otherwise paths
+     * are relative to root IDs. Results rank distinct domains and retain representative contexts,
+     * not every possible path through a shared graph. Lookup-only context edges are not followed.
+     * Caller limits cover work, time, cancellation, result count and serialization stack depth;
+     * maxBytes bounds retained candidate/output text before copying. The JSON result contains
+     * items, complete/reason, discovery statistics and bounded rootMatches for caller navigation.
+     * summary reports consumed work; no datasource authority or transport policy lives here.
+     */
+    [[nodiscard]] nlohmann::json find(
+        std::string_view text,
+        std::span<simfil::SchemaId const> roots,
+        std::span<std::string const> featureTypes,
+        simfil::EvaluationOptions const& limits,
+        size_t maxBytes,
+        simfil::EvaluationSummary* summary = nullptr) const;
+
     /** Return scalar value paths addressed by an attribute type-code shorthand. */
     [[nodiscard]] std::vector<NamedSchemaPath>
     scalarFieldPathsForAttribute(simfil::SchemaId rootSchema, std::string_view attributeTypeCode)
@@ -407,6 +439,7 @@ public:
 
 private:
     friend class MapSchema;
+    class Search;
     MapSchema& mutableOwner();
 };
 

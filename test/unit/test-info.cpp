@@ -990,8 +990,46 @@ TEST_CASE("MapFormat is a flat order-independent identity", "[DataSourceInfo][sc
          {"name", "NDS.Live"}});
     CHECK(first == second);
     CHECK(first.toJson() == second.toJson());
+    CHECK(
+        first.toJson().at("subsystems") ==
+        nlohmann::json::array(
+            {{{"name", "lane"}, {"version", "2024.07"}},
+             {{"name", "road"}, {"version", "2024.05"}}}));
     REQUIRE_THROWS(MapFormat::fromJson({{"version", "2024.05"}}));
     REQUIRE_THROWS(MapFormat::fromJson({{"name", "NDS.Live"}, {"subsystems", {{"lane", 202407}}}}));
+}
+
+TEST_CASE(
+    "MapFormat retains multiple subsystem versions without order or duplicates",
+    "[DataSourceInfo][schema2]")
+{
+    auto value = MapFormat::fromJson(
+        {{"name", "NDS.Live"},
+         {"version", "2024.05"},
+         {"subsystems",
+          nlohmann::json::array(
+              {{{"name", "road"}, {"version", "2024.07"}},
+               {{"name", "road"}, {"version", "2024.05"}},
+               {{"name", "road"}, {"version", "2024.07"}}})}});
+    REQUIRE(value.subsystems_.size() == 2);
+    CHECK(value.subsystems_.contains({"road", "2024.05"}));
+    CHECK(value.subsystems_.contains({"road", "2024.07"}));
+    CHECK(MapFormat::fromJson(value.toJson()) == value);
+    CHECK(value.toJson().at("subsystems").front().at("version") == "2024.05");
+    CHECK((value != MapFormat{"NDS.Live", "2024.05", {{"road", "2024.07"}}}));
+    for (auto const& entry : nlohmann::json::array(
+             {nullptr,
+              "road",
+              {{"name", "road"}},
+              {{"name", ""}, {"version", "1"}},
+              {{"name", "road"}, {"version", 1}},
+              {{"name", "road"}, {"version", "1"}, {"profile", "extra"}}}))
+    {
+        CHECK_THROWS(MapFormat::fromJson(
+            {{"name", "fixture"}, {"subsystems", nlohmann::json::array({entry})}}));
+    }
+    CHECK_THROWS(MapFormat::fromJson(
+        {{"subsystems", nlohmann::json::array({{{"name", "road"}, {"version", "1"}}})}}));
 }
 
 TEST_CASE(

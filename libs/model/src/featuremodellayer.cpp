@@ -541,6 +541,78 @@ void PartitionFeatureModelLayerBase::setPolygonRingStarts(
     polygonRingStartRefs_.at(storageIndex) = ringStartArray;
 }
 
+model_ptr<FeatureId> PartitionFeatureModelLayerBase::newFeatureId(
+    std::string_view const& typeId,
+    KeyValueViewPairs const& featureIdParts,
+    std::optional<std::string_view> externalMapId)
+{
+    FeatureIdData data;
+    bool const foreign = externalMapId && *externalMapId != mapId();
+    if (foreign) {
+        // A foreign composition is opaque to this map, but is not arbitrary JSON.
+        if (typeId.empty() || typeId.size() > 1024 || externalMapId->empty() ||
+            externalMapId->size() > 1024 || featureIdParts.empty() || featureIdParts.size() > 255)
+            raise(
+                "Foreign feature references require bounded non-empty names and 1..255 ID parts.");
+        validateIdentifierName("feature type name", typeId, ".");
+        validateIdentifierName("map id", *externalMapId, {}, "/");
+        std::set<std::string_view> names;
+        for (auto const& [name, value] : featureIdParts) {
+            if (name.empty() || name.size() > 1024 || !names.insert(name).second)
+                raise("Foreign feature ID parts require bounded, non-empty, unique names.");
+            validateIdentifierName("id-part label", name, ".");
+        }
+    }
+    else {
+        auto const composition =
+            layerInfo_->matchingFeatureIdCompositionIndex(typeId, featureIdParts, false);
+        if (!composition)
+            raiseFmt("Could not find a matching ID composition of type {}.", typeId);
+        data.idCompositionIndex_ = *composition;
+    }
+
+    auto type = strings()->emplace(typeId);
+    if (!type)
+        raise(type.error().message);
+    data.typeId_ = *type;
+    if (foreign) {
+        auto map = strings()->emplace(*externalMapId);
+        if (!map)
+            raise(map.error().message);
+        data.extMapId_ = *map;
+        auto parts = newObject(featureIdParts.size(), true);
+        for (auto const& [name, value] : featureIdParts)
+            std::visit(
+                [&](auto const& scalar)
+                {
+                    if (auto added = parts->addField(name, scalar); !added)
+                        raise(added.error().message);
+                },
+                value);
+        data.idParts_ = parts->addr();
+    }
+    else {
+        auto const& composition =
+            layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[data.idCompositionIndex_];
+        auto parts = newArray(std::max<size_t>(1, composition.size()), true);
+        auto part = featureIdParts.begin();
+        for (auto const& definition : composition) {
+            if (part != featureIdParts.end() && part->first == definition.idPartLabel_) {
+                parts->append(
+                    std::visit([&](auto const& value) { return newValue(value); }, part->second));
+                ++part;
+            }
+            else {
+                // Preserve omitted optional slots in the schema-backed layout.
+                parts->append(resolve<simfil::ModelNode>({simfil::Model::Null, 1}, {}));
+            }
+        }
+        data.idParts_ = parts->addr();
+    }
+    auto const address = appendFeatureId(data);
+    return FeatureId(featureIds_.at(address.index()), shared_from_this(), address, mpKey_);
+}
+
 simfil::ModelNodeAddress PartitionFeatureModelLayerBase::appendFeatureId(FeatureIdData data)
 {
     if (!simfil::ModelNodeAddress::checkIndex(featureIds_.size()))

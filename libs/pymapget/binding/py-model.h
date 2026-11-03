@@ -767,7 +767,8 @@ struct BoundFeatureId : public BoundModelNode
             .def(
                 "to_string",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->toString(); },
-                "Convert the FeatureId to a string.")
+                "Convert a local FeatureId to its canonical string. Foreign references require "
+                "to_dict().")
             .def(
                 "type_id",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->typeId(); },
@@ -782,7 +783,8 @@ struct BoundFeatureId : public BoundModelNode
                 "Get the explicitly stored external map ID, or None for local references.")
             .def(
                 "key_value_pairs",
-                [](BoundFeatureId& self) {
+                [](BoundFeatureId& self)
+                {
                     KeyValuePairVec result;
                     for (auto const& [key, value] : self.modelNodePtr_->keyValuePairs()) {
                         std::visit(

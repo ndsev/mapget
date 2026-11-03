@@ -161,6 +161,38 @@ simfil::Environment& PartitionSourceDataLayer::evaluationEnvironment()
     return *impl_->expressionEnvironment_;
 }
 
+void PartitionSourceDataLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
+{
+    if (!info || !info->schemaOwner() || info->layerId_ != layerInfo_->layerId_ ||
+        info->type_ != layerInfo_->type_ || info->partitionKind_ != layerInfo_->partitionKind_)
+        throw std::invalid_argument(
+            "Schema composition cannot change a partition's layer identity.");
+    if (info->schemaOwner()->schemaId() == schemaId()) {
+        setLayerInfo(info);
+        return;
+    }
+    if (!hasDirectSchemaBinding(schemaId()))
+        throw std::invalid_argument("Native source-data model does not match its schema header.");
+    auto owner = info->schemaOwner();
+    (void)owner->schemaRemap(schemaId());
+    auto environment = makeEnvironment(strings());
+    installLayerSchema(*environment, info->layerSchema(), strings());
+    // Compound schemas are stored on their backing ModelPool objects, not in
+    // source-address records, so the common translation covers them completely.
+    auto binding = owner->binding();
+    remapSchemas(
+        binding,
+        [owner, binding](simfil::SchemaReference const& reference)
+        {
+            return simfil::SchemaReference{
+                binding,
+                owner->remapSchema(reference.binding->identity(), reference.id)};
+        });
+    layerInfo_ = info;
+    setSchemaResolver({});
+    impl_->expressionEnvironment_ = std::move(environment);
+}
+
 model_ptr<SourceDataCompoundNode> PartitionSourceDataLayer::newCompound(size_t initialSize)
 {
     auto index = impl_->compounds_.size();

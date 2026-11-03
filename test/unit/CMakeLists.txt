@@ -10,6 +10,7 @@ add_executable(test.mapget
   test-mcp-native.cpp
   test-mcp-help.cpp
   test-feature-id-index.cpp
+  test-foreign-feature-id.cpp
   test-model-geometry.cpp
   test-pointcloud-sampler.cpp
   test-incoming-relations.cpp
@@ -20,6 +21,7 @@ add_executable(test.mapget
   test-simfil-geometry.cpp
   test-info.cpp
   test-mapschema.cpp
+  test-mapschema-compose.cpp
   test-http-schema.cpp
   test-mcp-schema2.cpp
   test-layerschema-domains.cpp

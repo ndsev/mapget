@@ -99,7 +99,7 @@ keywords: [Python, LayerSchema, FeatureTypeInfo, IdPart, MapFormat, Bitmask, Sch
 
 | Object | Read-Only API |
 | --- | --- |
-| `MapFormat` | `name`, `version`, `subsystems`, `to_dict()`, tuple equality. `MapFormat(name="", version="", subsystems={})` constructs a descriptive value, not a schema. |
+| `MapFormat` | `name`, `version`, `subsystems`, `to_dict()`, tuple equality. `MapFormat(name="", version="", subsystems=())` constructs a descriptive value, not a schema. |
 | `MapSchema` | `schema_id`, `format`, `layer_names`, `domain_count`, `layer(layer_id)`, plus the binary/import operations above. |
 | `LayerSchema` | `name`, `type`, `map_schema`, `root_schema`, `feature_types`, `produced_feature_types`, `get_type_info(name)`, `feature_schema(feature_type)`, `to_json_schema()`. |
 | `FeatureTypeInfo` | `name`, `unique_id_compositions`: ordered tuples of owner-retaining `IdPart` views. The first composition is primary; subsequent compositions are reference alternatives. |
@@ -108,7 +108,10 @@ keywords: [Python, LayerSchema, FeatureTypeInfo, IdPart, MapFormat, Bitmask, Sch
 | `SchemaReference` | `schema_id`, `domain`, boolean validity. The reference retains its graph. Empty references have no interpretation. |
 | `Bitmask` | `bits` as an exact Python integer, `domain` as a `SchemaReference`, `to_dict()` using simfil's lossless tag. |
 
-`MapFormat.subsystems` is a detached dictionary of direct content-module versions. Empty format
+`MapFormat.subsystems` is a detached list of `{name, version}` pairs for direct content modules.
+Pairs are sorted and deduplicated, but distinct versions of the same name are retained.
+The constructor also accepts a legacy `{name: version}` dictionary as single-version input.
+Empty format
 name/version strings mean unspecified metadata. Equal format tuples do not establish equal
 projected schemas. `MapSchema.schema_id` is the exact cache/binding token, independent of the
 datasource string dictionary. `domain_count` is a count, not a maximum valid domain ID.

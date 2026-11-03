@@ -656,10 +656,6 @@ public:
         std::span<model_ptr<FeatureId> const> memberFeatureIds,
         std::span<ProjectedValueError const> valueErrors = {});
 
-    model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt) override;
     model_ptr<GeometryCollection> newGeometryCollection(
         size_t initialCapacity = 2,
         bool fixedSize = false) override;

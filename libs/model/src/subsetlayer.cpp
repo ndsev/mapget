@@ -59,40 +59,6 @@ struct IssueWire
     uint64_t occurrenceCount_ = 1;
 };
 
-simfil::ArrayIndex idPartValuesToArrayIndex(
-    PartitionSubsetLayer& layer,
-    std::vector<IdPart> const& composition,
-    KeyValueViewPairs const& idParts)
-{
-    auto values = layer.newArray(std::max<size_t>(1, composition.size()), true);
-    auto part = idParts.begin();
-    for (auto const& definition : composition) {
-        if (part != idParts.end() && definition.idPartLabel_ == part->first) {
-            values->append(std::visit(
-                [&](auto&& value) -> simfil::ModelNode::Ptr {
-                    return layer.newValue(value);
-                },
-                part->second));
-            ++part;
-            continue;
-        }
-        if (!definition.isOptional_) {
-            raiseFmt(
-                "Missing non-optional ID part '{}' while materializing a subset feature ID.",
-                definition.idPartLabel_);
-        }
-        values->append(layer.resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{}));
-    }
-    if (part != idParts.end()) {
-        raiseFmt(
-            "Unexpected trailing ID part '{}' while materializing a subset feature ID.",
-            part->first);
-    }
-    return static_cast<simfil::ArrayIndex>(values->addr().index());
-}
-
 nlohmann::json arrayToJson(model_ptr<Array> const& array)
 {
     auto result = nlohmann::json::array();
@@ -320,7 +286,7 @@ nlohmann::json FeatureEntry::toJson() const
 {
     return {
         {"type", "FeatureEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
         {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
@@ -509,7 +475,7 @@ nlohmann::json AttributeValidityEntry::toJson() const
 {
     auto result = nlohmann::json::object({
         {"type", "AttributeValidityEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"hostValues", arrayToJson(hostValues())},
         {"values", arrayToJson(values())},
@@ -526,8 +492,8 @@ nlohmann::json AttributeValidityEntry::toJson() const
         auto const from = transitionFromFeatureId();
         auto const to = transitionToFeatureId();
         result["geometryDescriptionType"] = "feature-transition";
-        result["transitionFromFeatureId"] = from ? from->toString() : "";
-        result["transitionToFeatureId"] = to ? to->toString() : "";
+        result["transitionFromFeatureId"] = from ? from->toJson() : nlohmann::json("");
+        result["transitionToFeatureId"] = to ? to->toJson() : nlohmann::json("");
         result["transitionFromConnectedEnd"] =
             transitionFromConnectedEnd() == ValidityData::End ? "end" : "start";
         result["transitionToConnectedEnd"] =
@@ -801,7 +767,7 @@ nlohmann::json GroupEntry::toJson() const
         {"type", "GroupEntry"},
         {"groupKey", groupKey() ? groupKey()->toJson() : nlohmann::json()},
         {"representativeFeatureId",
-            representativeFeatureId() ? representativeFeatureId()->toString() : ""},
+         representativeFeatureId() ? representativeFeatureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
         {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
@@ -1981,9 +1947,7 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
     std::stable_sort(
         sortedMembers.begin(),
         sortedMembers.end(),
-        [](auto const& left, auto const& right) {
-            return left->toString() < right->toString();
-        });
+        [](auto const& left, auto const& right) { return left->toJson() < right->toJson(); });
     auto members = newArray(std::max<size_t>(1, sortedMembers.size()), true);
     for (auto const& member : sortedMembers) {
         members->append(member);
@@ -2004,50 +1968,6 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
         &groupEntries_.back(),
         shared_from_this(),
         {ColumnId::GroupEntries, index},
-        mpKey_);
-}
-
-model_ptr<FeatureId> PartitionSubsetLayer::newFeatureId(
-    std::string_view const& typeId,
-    KeyValueViewPairs const& featureIdParts,
-    std::optional<std::string_view> externalMapId)
-{
-    if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
-        raiseFmt(
-            "Could not find a matching ID composition of type {} for subset result.",
-            typeId);
-    }
-    auto typeIdString = strings()->emplace(typeId);
-    if (!typeIdString) {
-        raise(typeIdString.error().message);
-    }
-    auto const compositionIndex =
-        *layerInfo_->matchingFeatureIdCompositionIndex(
-            typeId,
-            featureIdParts,
-            false);
-    auto const& composition =
-        layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[compositionIndex];
-
-    simfil::StringId externalMapIdString = simfil::StringPool::Empty;
-    if (externalMapId && *externalMapId != mapId()) {
-        auto storedMapId = strings()->emplace(*externalMapId);
-        if (!storedMapId) {
-            raise(storedMapId.error().message);
-        }
-        externalMapIdString = *storedMapId;
-    }
-    auto const address = appendFeatureId(FeatureId::Data{
-        false,
-        compositionIndex,
-        *typeIdString,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts),
-        externalMapIdString,
-    });
-    return FeatureId(
-        featureIds_.at(address.index()),
-        shared_from_this(),
-        address,
         mpKey_);
 }
 
