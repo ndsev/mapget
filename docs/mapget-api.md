@@ -335,6 +335,19 @@ are explicitly marked; an empty partial response does not establish absence.
 Use a narrower root or search term rather than treating partial results as a
 complete inventory. The `find` term is limited to 128 bytes.
 
+The status page's **Schemas** tab uses these endpoints. The overview includes
+subsystem name/version pairs and can be filtered by format, module, version or
+consumer. **Explore** opens a focused view with a Back button and a bookmarkable
+`#schemas/<artifact>[/<layer>/<root>]` fragment, hiding the overview and monitoring
+graph while exploring. A searchable layer/type navigator
+selects one root at a time. **Find in root** runs the shared descendant search;
+**Filter immediate members** only filters that expanded node's visible children
+and does not fetch descendants. Descriptors, identifier compositions, relations,
+units and named values appear as structured facts/tables, not JSON blocks.
+Ordinary polling never traverses every schema domain or loads map partitions.
+Domain IDs must always be interpreted within the exact artifact returned by the
+inventory.
+
 Both endpoints check datasource authorization. Removed, inaccessible or stale
 artifacts return 404; malformed selectors return 400. An inventory changing during
 collection returns 409; retry the snapshot rather than combining generations.

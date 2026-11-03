@@ -48,6 +48,9 @@ status explorer's REST endpoint use that same implementation; the MCP adapter
 alone adds tool-specific follow-up arguments. Keep authorization, exact-artifact
 selection and post-encoding owner rechecks in each transport. Do not duplicate
 graph traversal in the browser or turn status polling into schema enumeration.
+The optional `test/status-page` Playwright suite exercises the embedded status
+HTML independently of erdblick; native schema/search tests cover the API and
+MCP/REST parity.
 
 The [model contract](mapget-model.md#feature-model-schema) documents graph,
 scalar provenance and incoming relation semantics. The [HTTP API](mapget-api.md)

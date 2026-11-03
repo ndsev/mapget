@@ -6,7 +6,8 @@ namespace mapget::detail
 std::string_view statusPageHtml()
 {
     // Keep each adjacent literal below MSVC's 16,380-byte per-literal limit.
-    static constexpr std::string_view page = R"STATUS(<!doctype html>
+    static constexpr std::string_view page =
+        R"STATUS(<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -83,9 +84,9 @@ body {
     font: 14px/1.42 "IBM Plex Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-button, select { font: inherit; }
+button, select, input { font: inherit; }
 button { cursor: pointer; }
-button:focus-visible, select:focus-visible, summary:focus-visible {
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible {
     outline: 2px solid var(--focus);
     outline-offset: 2px;
 }
@@ -131,7 +132,7 @@ h3 { font-size: 0.9rem; }
     font-weight: 650;
 }
 
-select, .button {
+select, input[type="search"], .button {
     min-height: 36px;
     border: 1px solid var(--line);
     border-radius: 0;
@@ -314,6 +315,45 @@ th {
     white-space: nowrap;
 }
 .number { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#schemaInventory td:first-child { min-width: 10rem; }
+#schemaInventory td:nth-child(2), #schemaInventory td:nth-child(3) { min-width: 13rem; }
+.schema-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.schema-artifact { display: block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schema-versions { margin: 0; padding: 0; list-style: none; }
+.schema-versions li { overflow-wrap: anywhere; }
+.schema-versions span { color: var(--muted); }
+.schema-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.schema-toolbar input { min-width: 0; flex: 1; }
+.schema-workspace { display: grid; grid-template-columns: minmax(220px, 26%) minmax(0, 1fr); gap: 14px; align-items: start; }
+.schema-navigation { position: sticky; top: 76px; max-height: min(72vh, calc(100vh - 90px)); overflow: auto; }
+.schema-navigation input { width: 100%; margin: 10px 0; }
+.schema-navigation h3 { margin: 16px 0 6px; overflow-wrap: anywhere; }
+.schema-root { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; width: 100%; text-align: left; margin-top: 5px; overflow-wrap: anywhere; }
+.schema-root[aria-current="true"] { color: var(--inverse-ink); background: var(--inverse); }
+.schema-root small { white-space: nowrap; font-weight: normal; }
+.schema-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 10px; }
+.schema-heading h2 { overflow-wrap: anywhere; }
+.schema-properties { margin: 12px 0; font-size: 0.82rem; }
+.schema-properties > div { display: grid; grid-template-columns: minmax(100px, 25%) minmax(0, 1fr); gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
+.schema-properties dt { color: var(--muted); }
+.schema-properties dd { margin: 0; overflow-wrap: anywhere; }
+.schema-properties .schema-properties { margin: 0; }
+.schema-properties dd > ul { margin: 0; padding-left: 18px; }
+.schema-properties th, .schema-properties td { overflow-wrap: anywhere; }
+.schema-properties .table-wrap { margin: 6px 0; }
+.schema-path { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; margin: 6px 0; }
+.schema-branch { margin-top: 10px; }
+.schema-branch > summary { overflow-wrap: anywhere; }
+.schema-kind { font-weight: normal; font-size: 0.8rem; margin-left: 12px; }
+.schema-content { padding: 0 0 4px 12px; border-left: 1px solid var(--line-soft); }
+.schema-content > details { margin: 12px 0; }
+.schema-branch-filter { display: block; margin: 14px 0 8px; }
+.schema-branch-filter input { width: 100%; margin-top: 4px; }
+.schema-message { margin: 10px 0; color: var(--muted); font-size: 0.82rem; }
+.schema-error { color: var(--bad); }
+#schemaDetails, #schemaRootTitle { scroll-margin-top: 78px; }
+#schemaRootTitle { min-width: 0; overflow-wrap: anywhere; }
+#schemaMetadata { margin-bottom: 14px; }
 .muted { color: var(--muted); }
 .explanation { margin: 12px 0 0; color: var(--muted); font-size: 0.8rem; }
 
@@ -381,7 +421,8 @@ th {
 
 details { padding: 0; }
 details + details { margin-top: 10px; }
-summary {
+)STATUS"
+        R"STATUS(summary {
     display: block;
     border: 1px solid var(--line);
     padding: 8px 10px;
@@ -423,6 +464,11 @@ pre {
     .history-controls { width: 100%; justify-content: flex-start; }
     .refresh-meta { text-align: left; }
     .grid-two { grid-template-columns: 1fr; }
+    .schema-workspace { grid-template-columns: 1fr; }
+    .schema-toolbar input { flex-basis: 100%; }
+    .schema-navigation { position: static; max-height: 260px; }
+    .schema-properties > div { grid-template-columns: 1fr; gap: 3px; }
+    .schema-content { padding-left: 5px; }
     .metric-grid { grid-template-columns: repeat(2, minmax(135px, 1fr)); }
     .panel { padding: 13px; }
 }
@@ -438,7 +484,7 @@ pre {
 }
 </style>
 )STATUS"
-R"STATUS(</head>
+        R"STATUS(</head>
 <body>
 <div class="shell">
     <header class="masthead">
@@ -473,6 +519,7 @@ R"STATUS(</head>
         <button class="tab" role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false" data-tab="memory" tabindex="-1">Memory</button>
         <button class="tab" role="tab" id="tab-traffic" aria-controls="panel-traffic" aria-selected="false" data-tab="traffic" tabindex="-1">Traffic</button>
         <button class="tab" role="tab" id="tab-cache" aria-controls="panel-cache" aria-selected="false" data-tab="cache" tabindex="-1">Cache Report</button>
+        <button class="tab" role="tab" id="tab-schemas" aria-controls="panel-schemas" aria-selected="false" data-tab="schemas" tabindex="-1">Schemas</button>
         <button class="tab" role="tab" id="tab-diagnostics" aria-controls="panel-diagnostics" aria-selected="false" data-tab="diagnostics" tabindex="-1">Diagnostics</button>
     </nav>
 
@@ -599,7 +646,8 @@ R"STATUS(</head>
                     <section class="panel"><div class="panel-head"><h2>Feature Layer Bytes</h2></div><div class="table-wrap"><table id="featureLayerBreakdown"><thead><tr><th>Type</th><th class="number">Bytes</th><th class="number">Readable</th><th class="number">Share</th></tr></thead><tbody></tbody></table></div></section>
                     <section class="panel"><div class="panel-head"><h2>Model Pool Bytes</h2></div><div class="table-wrap"><table id="modelPoolBreakdown"><thead><tr><th>Type</th><th class="number">Bytes</th><th class="number">Readable</th><th class="number">Share</th></tr></thead><tbody></tbody></table></div></section>
                 </div>
-                <section class="panel"><div class="panel-head"><h2>Array Arena Singleton Usage</h2></div><div class="table-wrap"><table id="arrayArenaSingletonsTable"><thead><tr><th>Arena</th><th class="number">Handles</th><th class="number">Occupied</th><th class="number">Empty</th><th class="number">Singleton</th><th class="number">Regular equivalent</th><th class="number">Saved</th><th class="number">Saved share</th></tr></thead><tbody></tbody></table></div></section>
+)STATUS"
+        R"STATUS(                <section class="panel"><div class="panel-head"><h2>Array Arena Singleton Usage</h2></div><div class="table-wrap"><table id="arrayArenaSingletonsTable"><thead><tr><th>Arena</th><th class="number">Handles</th><th class="number">Occupied</th><th class="number">Empty</th><th class="number">Singleton</th><th class="number">Regular equivalent</th><th class="number">Saved</th><th class="number">Saved share</th></tr></thead><tbody></tbody></table></div></section>
                 <div class="grid-two">
                     <section class="panel"><div class="panel-head"><h2>Tile Size Summary</h2></div><div class="table-wrap"><table id="tileSizeSummary"><thead><tr><th>Metric</th><th class="number">Value</th></tr></thead><tbody></tbody></table></div></section>
                     <section class="panel"><div class="panel-head"><h2>Tile Size Distribution</h2></div><div class="table-wrap"><table id="tileSizeHistogram"><thead><tr><th>Bin</th><th class="number">Count</th><th class="number">Share</th></tr></thead><tbody></tbody></table></div></section>
@@ -608,6 +656,38 @@ R"STATUS(</head>
             </div>
         </section>
 
+)STATUS"
+        R"STATUS(        <section id="panel-schemas" class="tab-panel" role="tabpanel" aria-labelledby="tab-schemas" data-panel="schemas" hidden>
+            <div id="schemaStatus" class="schema-message" role="status" aria-live="polite">Open this tab to load the inventory.</div>
+            <div id="schemaOverview">
+                <div class="section-head"><div><h2>Loaded Schemas</h2><p>Shared native contracts. Explore an artifact without loading map partitions.</p></div></div>
+                <section class="panel">
+                    <label class="schema-toolbar">Filter inventory <input id="schemaInventoryFilter" type="search" placeholder="Format, subsystem, map or version"></label>
+                    <div class="table-wrap"><table id="schemaInventory"><thead><tr><th>Format / version</th><th>Subsystem versions</th><th>Consumers</th><th>Artifact</th><th class="number">Domains</th><th class="number">Names</th><th class="number">Retained capacity</th></tr></thead><tbody></tbody></table></div>
+                    <p class="panel-subtitle">Retained capacity is not RSS or serialized size. Current shared graphs are counted once; retired pinned graphs are accounted in Memory. Temporary codec allocations remain unmeasured.</p>
+                </section>
+            </div>
+            <div id="schemaDetails" hidden>
+                <div class="schema-heading"><button id="schemaBack" class="button" type="button">Back to schemas</button><h2 id="schemaTitle" tabindex="-1">Schema</h2></div>
+                <details id="schemaMetadata"><summary>Artifact, versions, consumers and memory</summary><div id="schemaSummary" class="panel"></div></details>
+                <div class="schema-workspace">
+                    <nav class="panel schema-navigation" aria-label="Schema layers and types">
+                        <h3>Layers &amp; types</h3>
+                        <label class="schema-branch-filter">Filter layers or feature types<input id="schemaRootFilter" type="search" placeholder="e.g. Road or SourceData"></label>
+                        <div id="schemaRoots"></div>
+                    </nav>
+                    <section class="panel" aria-labelledby="schemaRootTitle">
+                        <div class="panel-head"><h3 id="schemaRootTitle" tabindex="-1">Select a root</h3></div>
+                        <form id="schemaSearch" class="schema-toolbar" role="search" aria-label="Search selected schema root">
+                            <label for="schemaFind">Find in root</label><input id="schemaFind" type="search" maxlength="128" placeholder="Field, type or enum name" disabled>
+                            <button id="schemaFindSubmit" class="button" type="submit" disabled>Find</button><button id="schemaFindClear" class="button" type="button" hidden>Show root</button>
+                        </form>
+                        <p id="schemaSearchStatus" class="schema-message" role="status" aria-live="polite">Descendant search shares the MCP schema finder. Context-only links are not searched.</p>
+                        <div id="schemaTree" aria-label="Schema domains"></div>
+                    </section>
+                </div>
+            </div>
+        </section>
         <section id="panel-diagnostics" class="tab-panel" role="tabpanel" aria-labelledby="tab-diagnostics" data-panel="diagnostics" hidden>
             <div class="section-head"><div><h2>Diagnostics</h2><p>Raw snapshots for support and machine-assisted investigation.</p></div><div class="raw-actions"><button id="copyStatusPayload" class="button button-quiet" type="button">Copy snapshot</button><button id="downloadStatusPayload" class="button" type="button">Download JSON</button></div></div>
             <section class="panel">
@@ -620,7 +700,7 @@ R"STATUS(</head>
 </div>
 
 )STATUS"
-R"STATUS(<script>
+        R"STATUS(<script>
 /** Resolve one dashboard element by ID. */
 const byId = (id) => document.getElementById(id);
 /** Resolve one dashboard element by selector. */
@@ -651,6 +731,7 @@ const state = {
     payload: null,
     cacheReport: null,
     historyGraph: null,
+    schemaExplorer: null,
     textCache: new Map(),
 };
 
@@ -718,7 +799,7 @@ function setMetric(valueId, noteId, value, note) {
 }
 
 )STATUS"
-R"STATUS(/** Client-owned rolling history for lightweight numeric status metrics. */
+        R"STATUS(/** Client-owned rolling history for lightweight numeric status metrics. */
 class StatusHistoryGraph {
     constructor() {
         this.history = [];
@@ -916,7 +997,7 @@ class StatusHistoryGraph {
     }
 
 )STATUS"
-R"STATUS(    /** Sample numeric values only; full status payloads are never retained. */
+        R"STATUS(    /** Sample numeric values only; full status payloads are never retained. */
     append(payload) {
         const previousTimestamp = this.history.at(-1)?.timestamp || 0;
         const reportedTimestamp = Number(payload.timestampMs);
@@ -1170,7 +1251,7 @@ function appendMemoryRow(body, label, help, current, peak = null) {
 }
 
 )STATUS"
-R"STATUS(/** Render process, allocator, datasource, and active-filter memory ownership. */
+        R"STATUS(/** Render process, allocator, datasource, and active-filter memory ownership. */
 function renderMemory(memory) {
     const body = qs("#memoryOverviewTable tbody");
     if (body) {
@@ -1331,7 +1412,8 @@ function renderCacheReport(report) {
     renderBreakdown("#featureLayerBreakdown tbody", tree["feature-layer"], totalBytes);
     renderBreakdown("#modelPoolBreakdown tbody", tree["model-pool"], totalBytes);
 
-    const singletonRows = Object.entries(tree["array-arena-singletons"] || {}).map(([name, statsRaw]) => {
+)STATUS"
+        R"STATUS(    const singletonRows = Object.entries(tree["array-arena-singletons"] || {}).map(([name, statsRaw]) => {
         const stats = statsRaw || {};
         const regular = Number(stats["hypothetical-regular-bytes"] || 0);
         const saved = Number(stats["estimated-saved-bytes"] || 0);
@@ -1375,7 +1457,471 @@ function updateCacheReportStaleness(currentCache) {
 }
 
 )STATUS"
-R"STATUS(/** Render raw support snapshots behind collapsed details. */
+        R"STATUS(/** Focused schema navigation; only explicitly opened domains or submitted searches do graph work. */
+class SchemaExplorer {
+    constructor() {
+        this.refreshing = false;
+        this.selection = null;
+        this.root = null;
+        this.generation = 0;
+        this.inventory = [];
+        this.inventoryKey = "";
+        this.controllers = new Set();
+        this.domains = new Map();
+        byId("schemaInventoryFilter").addEventListener("input", () => this.renderInventory());
+        byId("schemaRootFilter").addEventListener("input", () => this.renderRoots());
+        byId("schemaBack").addEventListener("click", () => { location.hash = "schemas"; });
+        byId("schemaSearch").addEventListener("submit", event => {
+            event.preventDefault();
+            this.search();
+        });
+        byId("schemaFindClear").addEventListener("click", () => this.showRoot());
+    }
+
+    /** Create text-only UI: schema names/descriptions are untrusted, never HTML. */
+    element(tag, text = "", className = "") {
+        const element = document.createElement(tag);
+        element.textContent = text;
+        if (className) element.className = className;
+        return element;
+    }
+
+    /** Match inventory/navigation terms without walking any schema domains. */
+    matches(text, query) {
+        const haystack = text.toLocaleLowerCase();
+        return query.toLocaleLowerCase().trim().split(/\s+/).every(term => haystack.includes(term));
+    }
+
+    /** Render paired module versions without collapsing repeated module names. */
+    versions(format) {
+        const list = this.element("ul", "", "schema-versions");
+        for (const module of format.subsystems || []) {
+            const row = this.element("li");
+            row.append(this.element("span", `${module.name} `), document.createTextNode(module.version));
+            list.appendChild(row);
+        }
+        if (!list.childElementCount) list.appendChild(this.element("li", "None declared", "muted"));
+        return list;
+    }
+
+    /** Poll authorized inventory, retaining expanded nodes unless their artifact disappears. */
+    async refresh() {
+        if (this.refreshing || byId("panel-schemas").hidden) return;
+        this.refreshing = true;
+        try {
+            const response = await fetch("schemas", {cache: "no-store", credentials: "same-origin"});
+            if (!response.ok) throw new Error(`Schema inventory: HTTP ${response.status}`);
+            const payload = await response.json();
+            const key = JSON.stringify(payload.schemas);
+            if (key !== this.inventoryKey) {
+                this.inventory = payload.schemas;
+                this.inventoryKey = key;
+                this.renderInventory();
+                const selected = this.inventory.find(item => item.mapSchemaId === this.selection);
+                if (selected) this.renderMetadata(selected);
+                else if (this.selection) this.resetSelection();
+            }
+            setText("schemaStatus", `${this.inventory.length} authorized artifact(s). No map partitions are loaded.`);
+            this.navigate();
+        } catch (error) {
+            setText("schemaStatus", String(error));
+        } finally {
+            this.refreshing = false;
+        }
+    }
+
+    /** Keep Explore and subsystem versions ahead of diagnostic identity/capacity columns. */
+    renderInventory() {
+        const body = qs("#schemaInventory tbody");
+        body.replaceChildren();
+        for (const item of this.inventory) {
+            const format = item.mapFormat;
+            const consumers = item.consumers.map(c => `${c.mapId} (${c.sourceId})`).join(", ");
+            const versions = (format.subsystems || []).map(s => `${s.name} ${s.version}`).join(" ");
+            if (!this.matches(`${format.name} ${format.version} ${versions} ${consumers} ${item.mapSchemaId}`,
+                byId("schemaInventoryFilter").value)) continue;
+            const row = this.element("tr");
+            const cell = this.element("td");
+            const choice = this.element("div", "", "schema-choice");
+            const button = this.element("button", "Explore", "button");
+            button.type = "button";
+            button.addEventListener("click", () => {
+                location.hash = `schemas/${encodeURIComponent(item.mapSchemaId)}`;
+            });
+            choice.append(this.element("span", `${format.name || "Legacy"} ${format.version || ""}`), button);
+            cell.appendChild(choice);
+            const modules = this.element("td");
+            modules.appendChild(this.versions(format));
+            const maps = this.element("td", consumers);
+            maps.style.overflowWrap = "anywhere";
+            const artifactCell = this.element("td");
+            const artifact = this.element("code", item.mapSchemaId, "schema-artifact");
+            artifact.title = item.mapSchemaId;
+            artifactCell.appendChild(artifact);
+            row.append(cell, modules, maps, artifactCell);
+            const counts = item.statistics.counts;
+            for (const text of [formatInt(counts.domains), formatInt(counts.internedNames), formatBytes(item.retainedBytes)])
+                row.appendChild(this.element("td", text, "number"));
+            body.appendChild(row);
+        }
+        if (!body.childElementCount) {
+            const row = this.element("tr");
+            const cell = this.element("td", "No schemas match this inventory filter.", "empty-state");
+            cell.colSpan = 7;
+            row.appendChild(cell);
+            body.appendChild(row);
+        }
+    }
+
+    /** Stop old searches/expansions; a late completion must never populate a new root. */
+    cancelPending() {
+        ++this.generation;
+        for (const controller of this.controllers) controller.abort();
+        this.controllers.clear();
+        this.domains.clear();
+        byId("schemaFindSubmit").disabled = !this.root;
+    }
+
+    /** Discard artifact-local IDs and their UI when returning to inventory or losing access. */
+    resetSelection() {
+        this.root = null;
+        this.cancelPending();
+        this.selection = null;
+        byId("schemaTree").replaceChildren();
+        byId("schemaRoots").replaceChildren();
+        byId("schemaSummary").replaceChildren();
+        byId("schemaDetails").hidden = true;
+        byId("schemaOverview").hidden = false;
+        qs(".history-graph").hidden = false;
+    }
+
+    /** Restore a bookmark/browser-history entry only through the current authorized inventory. */
+    navigate() {
+        if (byId("panel-schemas").hidden) return;
+        let route;
+        try { route = location.hash.slice(1).split("/").map(decodeURIComponent); }
+        catch { route = ["schemas"]; }
+        if (route[0] !== "schemas" || !route[1]) {
+            const selected = this.selection;
+            this.resetSelection();
+            if (selected) byId("schemaInventoryFilter").focus({preventScroll: true});
+            return;
+        }
+        if (!this.inventoryKey) {
+            setText("schemaStatus", "Loading the authorized schema inventory...");
+            return;
+        }
+        const item = this.inventory.find(candidate => candidate.mapSchemaId === route[1]);
+        if (!item) {
+            this.resetSelection();
+            setText("schemaStatus", "This artifact is no longer available. Choose a schema from the current inventory.");
+            return;
+        }
+        if (this.selection !== item.mapSchemaId) this.select(item);
+        if (route[2] && route[3]) {
+            const root = this.roots().find(r => r.layerId === route[2] && String(r.schemaId) === route[3]);
+            if (root && (this.root?.layerId !== root.layerId || this.root?.schemaId !== root.schemaId)) {
+                this.selectRoot(root);
+                byId("schemaRootTitle").scrollIntoView({block: "start"});
+                byId("schemaRootTitle").focus({preventScroll: true});
+            }
+        }
+    }
+
+    /** Replace the overview, rather than appending a tree below a potentially huge table. */
+    select(item) {
+        this.resetSelection();
+        this.selection = item.mapSchemaId;
+        byId("schemaOverview").hidden = true;
+        byId("schemaDetails").hidden = false;
+        // Keep the focused schema page under the tabs, not below the monitoring graph.
+        qs(".history-graph").hidden = true;
+        byId("schemaMetadata").open = false;
+        byId("schemaRootFilter").value = "";
+        setText("schemaTitle", `${item.mapFormat.name || "Legacy"} ${item.mapFormat.version || ""}`);
+        this.renderMetadata(item);
+        const roots = this.roots();
+        this.selectRoot(roots[0] || null);
+        byId("schemaDetails").scrollIntoView({block: "start"});
+        byId("schemaTitle").focus({preventScroll: true});
+    }
+
+    /** Keep the navigation inventory cheap: roots come from /schemas, not descriptor requests. */
+    roots() {
+        const item = this.inventory.find(candidate => candidate.mapSchemaId === this.selection);
+        // Feature roots are the useful entry point; large SourceData inventories remain searchable.
+        const layers = [...(item?.layers || [])].sort((a, b) => Number(b.type === "Features") - Number(a.type === "Features"));
+        return layers.flatMap(layer => {
+            const roots = layer.featureTypes.length ? layer.featureTypes : [{name: "Root", schemaId: layer.schemaId}];
+            return roots.filter(root => root.schemaId).map(root => ({...root, layerId: layer.layerId, type: layer.type}));
+        });
+    }
+
+    /** Filter layer/type names locally; preserve the selected root when its menu row is filtered. */
+    renderRoots() {
+        const list = byId("schemaRoots");
+        list.replaceChildren();
+        let layer;
+        for (const root of this.roots()) {
+            if (!this.matches(`${root.layerId} ${root.name} ${root.type}`, byId("schemaRootFilter").value)) continue;
+            if (root.layerId !== layer) {
+                list.appendChild(this.element("h3", root.layerId));
+                layer = root.layerId;
+            }
+            const button = this.element("button", "", "button schema-root");
+            button.type = "button";
+            button.setAttribute("aria-current", String(this.root?.layerId === root.layerId && this.root?.schemaId === root.schemaId));
+            button.append(this.element("span", root.name), this.element("small", root.type));
+            button.addEventListener("click", () => {
+                const hash = `schemas/${encodeURIComponent(this.selection)}/${encodeURIComponent(root.layerId)}/${root.schemaId}`;
+                if (location.hash === `#${hash}`) this.selectRoot(root);
+                else location.hash = hash;
+            });
+            list.appendChild(button);
+        }
+        if (!list.childElementCount) list.appendChild(this.element("p", "No layers or types match.", "schema-message"));
+    }
+
+    /** Start one feature/SourceData root, never all roots of a large format. */
+    selectRoot(root) {
+        this.root = root;
+        this.renderRoots();
+        setText("schemaRootTitle", root ? `${root.layerId} / ${root.name}` : "No declared roots");
+        byId("schemaFind").disabled = !root;
+        this.showRoot();
+    }
+
+    /** Clear a search and restore the selected root's lazy tree. */
+    showRoot() {
+        this.cancelPending();
+        byId("schemaFind").value = "";
+        byId("schemaFindClear").hidden = true;
+        setText("schemaSearchStatus", "Find searches descendant field, type and enum names, ignoring case, spaces, underscores and hyphens. Context-only links are excluded.");
+        const tree = byId("schemaTree");
+        tree.replaceChildren();
+        if (this.root) tree.appendChild(this.domain(this.root.name, this.root.schemaId, new Set(), true));
+    }
+
+    /** Fetch under the current view generation; repeated references share only this view's request. */
+    async request(parameters) {
+        const controller = new AbortController();
+        this.controllers.add(controller);
+        try {
+            const params = new URLSearchParams({mapSchemaId: this.selection, ...parameters});
+            const response = await fetch(`schema/inspect?${params}`, {
+                cache: "no-store", credentials: "same-origin", signal: controller.signal
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            return await response.json();
+        } finally {
+            this.controllers.delete(controller);
+        }
+    }
+
+    /** Use the same bounded, ranked finder as MCP; no eager browser-side graph crawl. */
+    async search() {
+        const find = byId("schemaFind").value.trim();
+        if (!this.root || !find) { this.showRoot(); return; }
+        this.cancelPending();
+        const generation = this.generation;
+        byId("schemaFindSubmit").disabled = true;
+        byId("schemaFindClear").hidden = false;
+        byId("schemaTree").replaceChildren();
+        setText("schemaSearchStatus", `Searching ${this.root.layerId} / ${this.root.name}...`);
+        try {
+            const result = await this.request({layerId: this.root.layerId, schemaId: this.root.schemaId, find});
+            if (generation !== this.generation) return;
+            const count = result.items.length;
+            const partial = result.complete === false ? ` Partial results (${result.reason || "budget reached"}); refine the term or search within a narrower root.` : "";
+            setText("schemaSearchStatus", `${count} matching domain(s). Paths are representative, not an exhaustive list of occurrences.${partial}`);
+            for (const item of result.items) {
+                const context = item.contexts?.[0];
+                const label = context?.fieldName || item.typename || `Domain #${item.schemaId}`;
+                const block = this.element("section", "", "schema-search-result");
+                for (const context of item.contexts || [])
+                    block.appendChild(this.element("p", (context.path || []).join(" / ") || this.root.name, "schema-path"));
+                const symbols = [...(item.enum?.matchingSymbols || []), ...(item.namedValues?.matchingNames || [])];
+                if (symbols.length) block.appendChild(this.element("p", `Matching symbols: ${symbols.join(", ")}`, "schema-path"));
+                block.appendChild(this.domain(label, item.schemaId, new Set(), false, item.kind));
+                byId("schemaTree").appendChild(block);
+            }
+)STATUS"
+        R"STATUS(            if (!count) byId("schemaTree").appendChild(this.element("p",
+                result.complete === false ? "No matches in the inspected portion. This is not proof of absence." : "No matching declarations in this root.", "empty-state"));
+        } catch (error) {
+            if (generation === this.generation) setText("schemaSearchStatus", `Search failed: ${error}. You can retry.`);
+        } finally {
+            if (generation === this.generation) byId("schemaFindSubmit").disabled = false;
+        }
+    }
+
+    /** Show exact artifact identity and statistics as structured facts, not a JSON dump. */
+    renderMetadata(item) {
+        const box = byId("schemaSummary");
+        box.replaceChildren(this.properties({artifact: item.mapSchemaId, format: item.mapFormat.name,
+            version: item.mapFormat.version || "Defined by subsystems", retainedCapacity: formatBytes(item.retainedBytes)}));
+        box.appendChild(this.versions(item.mapFormat));
+        box.appendChild(this.disclosure("Consuming maps", this.value(item.consumers)));
+        box.appendChild(this.disclosure("Counts and retained capacity", this.properties(item.statistics)));
+    }
+
+    /** A concise metadata section stays closed until its detail is relevant. */
+    disclosure(title, content) {
+        const section = this.element("details");
+        section.append(this.element("summary", title), content);
+        return section;
+    }
+
+    /** Display protocol keys as readable labels without changing field/type identifiers. */
+    label(key) {
+        const labels = {typename: "Type name", open: "Additional fields allowed", nullable: "Allows null"};
+        if (labels[key]) return labels[key];
+        return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ").replace(/^./, c => c.toUpperCase());
+    }
+
+    /** Render a property record with bounded wrapping instead of an opaque serialized block. */
+    properties(record) {
+        const list = this.element("dl", "", "schema-properties");
+        for (const [key, value] of Object.entries(record)) {
+            const row = this.element("div");
+            const term = this.element("dt", this.label(key));
+            term.title = key;
+            const description = this.element("dd");
+            description.appendChild(this.value(value));
+            row.append(term, description);
+            list.appendChild(row);
+        }
+        return list;
+    }
+
+    /** Preserve exact integer wrappers; arrays of records become tables, not JSON inside the tree. */
+    value(value) {
+        if (value === null || value === undefined) return this.element("span", "Unknown", "muted");
+        if (typeof value !== "object") return this.element("span", typeof value === "boolean" ? (value ? "Yes" : "No") : String(value));
+        if (["int64", "uint64"].includes(value.$mapget)) return this.element("code", value.value);
+        if (!Array.isArray(value)) return this.properties(value);
+        if (!value.length) return this.element("span", "None declared", "muted");
+        if (value.every(item => item && typeof item === "object" && !Array.isArray(item) && !item.$mapget)) {
+            const keys = [...new Set(value.flatMap(item => Object.keys(item)))];
+            const wrapper = this.element("div", "", "table-wrap");
+            const table = this.element("table");
+            const head = this.element("thead"), headings = this.element("tr"), body = this.element("tbody");
+            for (const key of keys) headings.appendChild(this.element("th", this.label(key)));
+            head.appendChild(headings);
+            for (const item of value) {
+                const row = this.element("tr");
+                for (const key of keys) {
+                    const cell = this.element("td");
+                    cell.appendChild(this.value(item[key]));
+                    row.appendChild(cell);
+                }
+                body.appendChild(row);
+            }
+            table.append(head, body);
+            wrapper.appendChild(table);
+            return wrapper;
+        }
+        const list = this.element("ol");
+        for (const item of value) {
+            const row = this.element("li");
+            row.appendChild(this.value(item));
+            list.appendChild(row);
+        }
+        return list;
+    }
+
+    /** Put scalar semantics and feature contracts ahead of the navigable child fields. */
+    renderDomain(content, node) {
+        const {"$ref": reference, namedValues, enum: literals, numericDomain, ...metadata} = node.descriptor;
+        content.appendChild(this.properties(metadata));
+        if (numericDomain) content.appendChild(this.disclosure("Numeric encoding and units", this.properties(numericDomain)));
+        if (namedValues?.length) content.appendChild(this.disclosure(`Named values (${namedValues.length})`, this.value(namedValues)));
+        if (literals?.length) content.appendChild(this.disclosure(`Enum values (${literals.length})`, this.value(literals)));
+        for (const type of node.featureTypes || []) {
+            content.appendChild(this.disclosure(`${type.name}: identifier compositions`, this.value(type.uniqueIdCompositions || [])));
+            content.appendChild(this.disclosure(`${type.name}: outgoing relations`, type.forwardRelationsKnown
+                ? this.value(type.forwardRelations || []) : this.element("p", "This provider has not declared its relation inventory.", "schema-message")));
+        }
+    }
+
+    /** Load one descriptor on expansion, preserving cycles, retries and selection generations. */
+    domain(label, id, ancestors, open = false, kind = "") {
+        const element = this.element("details", "", "schema-branch");
+        element.dataset.schemaId = id;
+        const summary = this.element("summary", label);
+        const badge = this.element("span", `${kind ? kind + " " : ""}#${id}`, "schema-kind");
+        summary.append(document.createTextNode(" "), badge);
+        element.appendChild(summary);
+        if (ancestors.has(id)) {
+            badge.textContent += " / recursive reference";
+            element.appendChild(this.element("p", "This domain already occurs above. Its shared definition is not expanded again on this path.", "schema-message"));
+            return element;
+        }
+        let loaded = false;
+        const content = this.element("div", "", "schema-content");
+        element.appendChild(content);
+        const generation = this.generation;
+        const expand = async () => {
+            if (!element.open || loaded || generation !== this.generation) return;
+            loaded = true;
+            content.textContent = "Loading domain...";
+            try {
+                if (!this.domains.has(id)) {
+                    const pending = this.request({schemaId: id});
+                    this.domains.set(id, pending);
+                    pending.catch(() => { if (generation === this.generation) this.domains.delete(id); });
+                }
+                const node = await this.domains.get(id);
+                if (generation !== this.generation) return;
+                content.replaceChildren();
+                badge.textContent = [node.descriptor.kind || "unknown",
+                    node.descriptor.typename !== label ? node.descriptor.typename : "", `#${id}`].filter(Boolean).join(" / ");
+                this.renderDomain(content, node);
+                const next = new Set(ancestors);
+                next.add(id);
+                const members = [];
+                for (const group of ["fields", "elements", "alternatives"]) {
+                    for (const [index, edge] of (node[group] || []).entries()) {
+                        const refs = Array.isArray(edge.$ref) ? edge.$ref : [edge.$ref];
+                        const field = group === "fields" ? edge.name : `${group === "elements" ? "Element type" : "Alternative"} ${index + 1}`;
+                        const flags = [edge.required === true ? "required" : edge.required === false ? "optional" : "", edge.role || ""].filter(Boolean);
+                        const name = flags.length ? `${field} (${flags.join(", ")})` : field;
+                        for (const ref of refs) members.push({name, element: Number.isInteger(ref) && ref > 0
+                            ? this.domain(name, ref, next) : this.element("p", `${name}: unspecified domain`, "schema-message")});
+                    }
+                }
+                if (members.length) {
+                    const filter = this.element("label", `Filter immediate members (${members.length})`, "schema-branch-filter panel-subtitle");
+                    const input = this.element("input");
+                    input.type = "search";
+                    input.placeholder = `Field name in ${label}`;
+                    input.setAttribute("aria-label", `Filter immediate members of ${label}`);
+                    const count = this.element("p", "", "schema-message");
+                    input.addEventListener("input", () => {
+                        for (const member of members) member.element.hidden = !this.matches(member.name, input.value);
+                        count.textContent = `${members.filter(member => !member.element.hidden).length} of ${members.length} immediate members`;
+                    });
+                    filter.appendChild(input);
+                    content.append(filter, count, ...members.map(member => member.element));
+                }
+            } catch (error) {
+                if (generation !== this.generation) return;
+                content.replaceChildren(this.element("p", `Unable to load domain: ${error}`, "schema-message schema-error"));
+                const retry = this.element("button", "Retry", "button");
+                retry.type = "button";
+                retry.addEventListener("click", expand);
+                content.appendChild(retry);
+                loaded = false;
+            }
+        };
+        element.addEventListener("toggle", expand);
+        element.open = open;
+        return element;
+    }
+}
+
+)STATUS"
+        R"STATUS(/** Render raw support snapshots behind collapsed details. */
 function renderDiagnostics(payload) {
     setPreJson("serviceStats", payload.service || {});
     setPreJson("cacheStats", payload.cache || {});
@@ -1384,6 +1930,7 @@ function renderDiagnostics(payload) {
 
 /** Apply one live status snapshot to every lightweight dashboard panel. */
 function renderPayload(payload) {
+    state.schemaExplorer?.refresh();
     state.payload = payload;
     renderHealth(payload);
     renderOverview(payload);
@@ -1465,15 +2012,21 @@ function resetTimer() {
 /** Activate one accessible tab and preserve it in the URL fragment. */
 function activateTab(name, updateHash = true) {
     const tabs = Array.from(document.querySelectorAll("[data-tab]"));
-    const valid = tabs.some((tab) => tab.dataset.tab === name) ? name : "overview";
+    const tabName = name.startsWith("schemas/") ? "schemas" : name;
+    const valid = tabs.some((tab) => tab.dataset.tab === tabName) ? tabName : "overview";
     for (const tab of tabs) {
         const active = tab.dataset.tab === valid;
         tab.setAttribute("aria-selected", active ? "true" : "false");
         tab.tabIndex = active ? 0 : -1;
     }
     for (const panel of document.querySelectorAll("[data-panel]")) panel.hidden = panel.dataset.panel !== valid;
+    qs(".history-graph").hidden = valid === "schemas" && Boolean(state.schemaExplorer?.selection);
     state.historyGraph?.activateTab(valid);
     if (updateHash && location.hash !== `#${valid}`) history.replaceState(null, "", `#${valid}`);
+    if (valid === "schemas") {
+        state.schemaExplorer?.navigate();
+        state.schemaExplorer?.refresh();
+    }
 }
 
 /** Copy diagnostics with a fallback for non-secure browser contexts. */
@@ -1542,6 +2095,7 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("hashchange", () => activateTab(location.hash.slice(1), false));
 
 state.historyGraph = new StatusHistoryGraph();
+state.schemaExplorer = new SchemaExplorer();
 activateTab(location.hash.slice(1) || "overview", false);
 resetTimer();
 refreshStatus(true);
