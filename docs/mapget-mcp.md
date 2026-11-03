@@ -301,7 +301,7 @@ satisfy header alternatives only; they cannot bypass a claim requirement.
 Browser MCP calls use the same explicitly configured `auth-claims-header` and
 `auth-trusted-proxy-addresses` as ordinary HTTP/WebSocket datasource access.
 The authenticating proxy must strip that incoming header and export a verified
-JSON claims object. Those settings are independent of the four MCP identity/
+unpadded base64url-encoded UTF-8 JSON claims object. Those settings are independent of the four MCP identity/
 permission headers. Missing, malformed or untrusted claims deny restricted
 sources. Local MCP mode has no verified claims and cannot satisfy `auth-claims`.
 See [datasource authorization](mapget-config.md#restricting-access-with-auth-claims).

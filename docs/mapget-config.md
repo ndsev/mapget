@@ -141,7 +141,7 @@ or user-info claim alone is not enough. Local MCP has no verified identity and
 cannot satisfy an `auth-claims` restriction.
 
 For ordinary browser requests, configure an authenticating reverse proxy to
-export its verified claims as one JSON object:
+export its verified claims as one UTF-8 JSON object, encoded with unpadded base64url:
 
 ```yaml
 mapget:
@@ -154,8 +154,11 @@ Both options are required together and take effect on restart. Peer addresses
 are exact canonical IP addresses, not CIDRs or forwarded addresses. The proxy
 must remove client-supplied `X-MapViewer-Claims` and replace it only after
 authentication. Mapget accepts the header only from a configured socket peer;
-`X-Forwarded-For` does not establish trust. The header must be a JSON object of
-at most 16 KiB and depth 16, without duplicate keys. Missing, malformed or
+`X-Forwarded-For` does not establish trust. The decoded header must be a JSON object of
+at most 16 KiB and depth 16, without duplicate keys. Only the base64url alphabet
+(`A-Z`, `a-z`, `0-9`, `-`, `_`) is accepted, without padding; raw JSON and complete
+JWTs are not accepted. Encoding keeps non-ASCII claims intact across HTTP proxies.
+Missing, malformed or
 untrusted headers supply no verified claims. No bearer token or private signing
 key needs to be forwarded from the browser.
 

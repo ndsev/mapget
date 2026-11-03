@@ -116,7 +116,7 @@ TEST_CASE("Proxy claim trust is explicit and bounded", "[datasource-auth]")
         CHECK_THROWS(settings.validate());
     }
     auto request = drogon::HttpRequest::newHttpRequest();
-    request->addHeader("x-verified-claims", R"({"groups":["SMS_users"]})");
+    request->addHeader("x-verified-claims", "eyJncm91cHMiOlsiU01TX3VzZXJzIl19");
     request->addHeader("x-forwarded-for", "127.0.0.1");
     CHECK_FALSE(disabled.authorization(request).claims);
     settings = {{"127.0.0.1"}, "x-verified-claims"};

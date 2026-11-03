@@ -1275,6 +1275,11 @@ class NativeMcpConfigTest(unittest.TestCase):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         self.assertEqual(self.http("/mcp/browser", headers, "POST", body)[0], 403)
 
+    @staticmethod
+    def encoded_claims(value):
+        """Use the proxy's single unpadded base64url transport, including malformed JSON fixtures."""
+        return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
     def claims_settings(self):
         """One source needs both its supplier header and a verified group membership."""
         self.oauth_settings()
@@ -1287,7 +1292,8 @@ class NativeMcpConfigTest(unittest.TestCase):
                              {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
                              {"name": "Intersections", "featureType": "DevSrc-Intersection",
                               "geometry": {"type": "point"}}]}]
-        return {"X-Supplier": "here", "test-claims": '{"groups":["SMS_users"]}',
+        return {"X-Supplier": "here", "test-claims": self.encoded_claims(
+                    '{"groups":["SMS_users"],"family_name":"M\u00fcller"}'),
                 "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
                 "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
                 "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
@@ -1315,8 +1321,8 @@ class NativeMcpConfigTest(unittest.TestCase):
                      "partitions": [{"kind": "tile", "id": tile_id}], "query": "id"}
         warm = call("mapget_extract_features", selection, headers)
         self.assertFalse(warm.get("isError", False), warm)
-        for changes in ({"test-claims": ""}, {"test-claims": '{"groups":["other"]}'},
-                        {"test-claims": '{"groups":["SMS_users_extra"]}'}):
+        for changes in ({"test-claims": ""}, {"test-claims": self.encoded_claims('{"groups":["other"]}')},
+                        {"test-claims": self.encoded_claims('{"groups":["SMS_users_extra"]}')}):
             denied = dict(headers, **changes)
             self.assertEqual(call("mapget_list_sources", {}, denied)["structuredContent"]["items"], [])
             self.assertTrue(call("mapget_extract_features", selection, denied)["isError"])
@@ -1345,16 +1351,18 @@ class NativeMcpConfigTest(unittest.TestCase):
                        '{"groups":[],"groups":["SMS_users"]}',
                        '{"groups":["SMS_users"],"nested":' + '[' * 20 + '0' + ']' * 20 + '}',
                        '{"groups":["SMS_users"],"padding":"' + 'x' * 17000 + '"}'):
-            denied = dict(raw_headers, **{"test-claims": claims})
+            denied = dict(raw_headers, **{"test-claims": self.encoded_claims(claims)})
             self.assertEqual(self.http("/sources", denied)[1], [])
             self.assertEqual(self.http("/schemas", denied)[1]["schemas"], [])
             self.assertEqual(self.http("/schema?sourceId=" + source["sourceId"] +
                                        "&schemaId=" + source["schemaId"], denied)[0], 404)
             self.assertEqual(self.http("/tiles", denied, "POST", body)[0], 403)
+        for malformed in ('{"groups":["SMS_users"]}', headers["test-claims"] + "=",
+                          "header." + headers["test-claims"] + ".signature", "A", "/+", "_w"):
+            denied = dict(raw_headers, **{"test-claims": malformed})
+            self.assertEqual(self.http("/sources", denied)[1], [])
+            self.assertEqual(self.http("/tiles", denied, "POST", body)[0], 403)
         self.assertEqual(self.http("/sources", dict(headers, **{"X-Supplier": "other"}))[1], [])
-        self.assertEqual(self.http("/sources", dict(headers, **{"X-Forwarded-For": "127.0.0.1"}),
-                                   source_address=("127.0.0.2", 0))[1], [])
-
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
         self.addCleanup(connection.close)
         connection.request("GET", "/sources", headers=headers)
@@ -1382,6 +1390,18 @@ class NativeMcpConfigTest(unittest.TestCase):
                     self.assertEqual(status["requests"][0]["statusText"], expected, status)
                     break
             viewer.close()
+
+    def test_datasource_proxy_claims_reject_untrusted_socket_peer(self):
+        """Forwarded addresses cannot grant proxy trust to the actual loopback peer."""
+        headers = self.claims_settings()
+        # macOS does not assign all of 127/8 to loopback. Make the ordinary peer
+        # untrusted instead of requiring an extra local source address to bind.
+        self.settings["auth-trusted-proxy-addresses"] = ["127.0.0.2"]
+        self.start()
+        spoofed = dict(headers, **{"X-Forwarded-For": "127.0.0.2",
+                                  "Forwarded": "for=127.0.0.2"})
+        self.assertEqual(self.http("/sources", spoofed)[1], [])
+        self.assertEqual(self.http("/schemas", spoofed)[1]["schemas"], [])
 
     def test_datasource_claims_cannot_be_asserted_without_proxy_configuration(self):
         """The claims-looking header is inert unless the operator enabled that trust boundary."""

@@ -15,7 +15,7 @@ class App;
 namespace mapget
 {
 
-/** Explicit trust boundary for JSON claims exported by an authenticating reverse proxy.
+/** Explicit trust boundary for base64url JSON claims exported by an authenticating reverse proxy.
  * Independent of MCP permissions: an ordinary browser may access a source without MCP roles.
  */
 struct ProxyAuthentication
