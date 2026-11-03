@@ -134,7 +134,7 @@ class ViewerConnection:
             assert opcode == 2
             major, minor, patch, message_type, length = struct.unpack_from("<HHHBI", payload)
             # Native TileLayerStream version; independent of the MCP specification revision.
-            assert (major, minor) == (6, 0), (major, minor, patch)
+            assert (major, minor) == (6, 1), (major, minor, patch)
             assert len(payload) == 11 + length
             if message_type == kind:
                 return json.loads(payload[11:])
@@ -308,7 +308,7 @@ class NativeMcpTest(unittest.TestCase):
             self.assertEqual(result["cacheScope"], "private")
             self.assertEqual(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "mapget")
             if method == "tools/list":
-                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 13)
+                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 14)
             else:
                 self.assertEqual(result["supportedVersions"], ["2026-07-28", "2025-11-25", "2025-06-18"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
@@ -656,7 +656,8 @@ class NativeMcpTest(unittest.TestCase):
         """A native-only server needs neither a webapp nor a generated browser catalog."""
         _, response = self.begin_rpc("tools/list")
         names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
-        self.assertEqual(len(names), 13)
+        self.assertEqual(len(names), 14)
+        self.assertIn("mapget_list_schemas", names)
         self.assertIn("mapget_docs", names)
         self.assertIn("mapget_extract_source_data", names)
         self.assertIn("mapget_get_coverage", names)
@@ -873,7 +874,7 @@ class NativeMcpTest(unittest.TestCase):
             self.assertNotIn("resultType", tools)
             self.assertNotIn("ttlMs", tools)
             self.assertNotIn("cacheScope", tools)
-            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 13)
+            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 14)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
                 protocol=protocol)
@@ -1273,6 +1274,123 @@ class NativeMcpConfigTest(unittest.TestCase):
                    "X-Supplier": "shared", "X-Forwarded-For": "127.0.0.2"}
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         self.assertEqual(self.http("/mcp/browser", headers, "POST", body)[0], 403)
+
+    def claims_settings(self):
+        """One source needs both its supplier header and a verified group membership."""
+        self.oauth_settings()
+        self.settings.update({"auth-trusted-proxy-addresses": ["127.0.0.1"],
+                              "auth-claims-header": "test-claims",
+                              "mcp-datasource-headers": ["x-supplier=mcp"]})
+        self.sources = [{"type": "GridDataSource", "mapId": "Restricted",
+                         "auth-header": {"X-Supplier": "^(here|mcp)$"},
+                         "auth-claims": {"/groups": "SMS_users"}, "layers": [
+                             {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
+                             {"name": "Intersections", "featureType": "DevSrc-Intersection",
+                              "geometry": {"type": "point"}}]}]
+        return {"X-Supplier": "here", "test-claims": '{"groups":["SMS_users"]}',
+                "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
+                "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
+                "test-expiry": str(int(time.time()) + 600), "test-permissions": "viewer-read"}
+
+    def test_webmcp_datasource_claims_and_tool_permissions(self):
+        """Static header grants never bypass source claims; group membership never grants MCP roles."""
+        headers = self.claims_settings()
+        self.start()
+
+        def call(name, arguments, authority):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": name, "arguments": arguments}})
+            status, reply = self.http("/mcp/browser", authority, "POST", body)
+            self.assertEqual(status, 200, reply)
+            if isinstance(reply, str):
+                reply = json.loads(next(line[6:] for line in reply.splitlines() if line.startswith("data: ")))
+            return reply["result"]
+
+        result = call("mapget_list_sources", {}, headers)
+        self.assertEqual({s["mapId"] for s in result["structuredContent"]["items"]}, {"Restricted"})
+        tile = call("mapget_convert_tile_id", {"longitude": 11.5, "latitude": 48.1, "level": 13}, headers)
+        tile_id = tile["structuredContent"]["items"][0]["tileId"]
+        selection = {"mapId": "Restricted", "layerId": "Road", "limit": 1,
+                     "partitions": [{"kind": "tile", "id": tile_id}], "query": "id"}
+        warm = call("mapget_extract_features", selection, headers)
+        self.assertFalse(warm.get("isError", False), warm)
+        for changes in ({"test-claims": ""}, {"test-claims": '{"groups":["other"]}'},
+                        {"test-claims": '{"groups":["SMS_users_extra"]}'}):
+            denied = dict(headers, **changes)
+            self.assertEqual(call("mapget_list_sources", {}, denied)["structuredContent"]["items"], [])
+            self.assertTrue(call("mapget_extract_features", selection, denied)["isError"])
+        denied = dict(headers, **{"test-permissions": "viewer-control"})
+        self.assertTrue(call("mapget_list_sources", {}, denied)["isError"])
+        # Incoming supplier headers must not override the explicitly configured MCP marker.
+        self.assertEqual(len(call("mapget_list_sources", {}, dict(headers, **{"X-Supplier": "attacker"}))
+                             ["structuredContent"]["items"]), 1)
+
+    def test_datasource_proxy_claims_on_rest_and_websocket(self):
+        """REST and WebSocket admission share the exact claims/header check, including warm caches."""
+        headers = self.claims_settings()
+        self.start()
+        source = self.http("/sources", headers)[1][0]
+        self.assertEqual(source["mapId"], "Restricted")
+        self.assertEqual(len(self.http("/schemas", headers)[1]["schemas"]), 1)
+        # Use a small level-13 tile, not a hemisphere-sized procedural GridDataSource workload.
+        request = {"mapId": "Restricted", "layerId": "Road", "tileIds": [536870912]}
+        body = json.dumps({"requests": [request], "responseType": "json"})
+        raw_headers = dict(headers, Accept="application/jsonl")
+        status, response = self.http("/tiles", raw_headers, "POST", body)
+        self.assertEqual(status, 200, response)
+
+        for claims in ("", "null", "[]", "not-json", '{"groups":["other"]}',
+                       '{"groups":"SMS_users_extra"}', '{"groups":"SMS_users,other"}',
+                       '{"groups":[],"groups":["SMS_users"]}',
+                       '{"groups":["SMS_users"],"nested":' + '[' * 20 + '0' + ']' * 20 + '}',
+                       '{"groups":["SMS_users"],"padding":"' + 'x' * 17000 + '"}'):
+            denied = dict(raw_headers, **{"test-claims": claims})
+            self.assertEqual(self.http("/sources", denied)[1], [])
+            self.assertEqual(self.http("/schemas", denied)[1]["schemas"], [])
+            self.assertEqual(self.http("/schema?sourceId=" + source["sourceId"] +
+                                       "&schemaId=" + source["schemaId"], denied)[0], 404)
+            self.assertEqual(self.http("/tiles", denied, "POST", body)[0], 403)
+        self.assertEqual(self.http("/sources", dict(headers, **{"X-Supplier": "other"}))[1], [])
+        self.assertEqual(self.http("/sources", dict(headers, **{"X-Forwarded-For": "127.0.0.1"}),
+                                   source_address=("127.0.0.2", 0))[1], [])
+
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/sources", headers=headers)
+        response = connection.getresponse()
+        etag = response.getheader("ETag")
+        self.assertEqual(response.getheader("Cache-Control"), "private, no-cache")
+        response.read()
+        connection.request("GET", "/sources", headers=dict(headers, **{"If-None-Match": etag}))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 304)
+        response.read()
+        connection.request("GET", "/sources", headers=dict(headers, **{
+            "If-None-Match": etag, "test-claims": ""}))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.read()), [])
+
+        for claims, expected in ((headers["test-claims"], "Success"), ("", "Unauthorized")):
+            viewer = ViewerConnection(self.port, headers=dict(headers, **{"test-claims": claims}))
+            self.addCleanup(viewer.close)
+            viewer.send({"requestId": 1, "requests": [request]})
+            while True:
+                status = viewer.receive(4)
+                if status["requestId"] == 1 and status["allDone"]:
+                    self.assertEqual(status["requests"][0]["statusText"], expected, status)
+                    break
+            viewer.close()
+
+    def test_datasource_claims_cannot_be_asserted_without_proxy_configuration(self):
+        """The claims-looking header is inert unless the operator enabled that trust boundary."""
+        headers = self.claims_settings()
+        del self.settings["auth-trusted-proxy-addresses"]
+        del self.settings["auth-claims-header"]
+        self.start()
+        self.assertEqual(self.http("/sources", headers)[1], [])
+        self.assertEqual(self.http("/schemas", headers)[1]["schemas"], [])
 
     def test_viewer_registration_outlives_handshake_credentials(self):
         """A live authenticated socket survives expiry; new handshakes and HTTP calls do not."""

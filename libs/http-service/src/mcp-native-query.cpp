@@ -4,6 +4,7 @@
 #include "mapget/model/attrlayer.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatareference.h"
 #include "mapget/service/locate.h"
@@ -554,17 +555,19 @@ Json McpNativeTools::Call::schemaOverview(
 
 void McpNativeTools::Call::querySchema()
 {
-    selectLayer();
+    if (!selectSchemaLayer())
+        return;
     auto schema = layer_->layerSchema();
     if (!schema) {
         fail("unavailable", "Layer has no bound schema.");
         return;
     }
-    environment();
-    auto model = std::make_shared<simfil::SchemaModel>(
-        env_->strings(),
-        env_->querySchemaCallback,
-        std::max(size_t{2}, remainingWork_));
+    auto reserveContract = [&](size_t bytes)
+    {
+        if (!step())
+            throw std::length_error("Schema contract work budget.");
+        charge(bytes);
+    };
     auto types = arguments.contains("featureType") ?
         std::vector<std::string>{arguments["featureType"]} :
         schema->featureTypes();
@@ -589,6 +592,22 @@ void McpNativeTools::Call::querySchema()
     }
     else {
         for (auto const& type : types) {
+            // Identity-only declarations can have a synthesized common-field domain,
+            // but that domain does not describe data produced by this layer.
+            if (arguments.contains("featureType") && schema->getTypeInfo(type, false) &&
+                !schema->producesFeatureType(type))
+            {
+                if (arguments.contains("query") || arguments.contains("find")) {
+                    fail("unknown_feature_type", "This featureType is an identity-only reference.");
+                    return;
+                }
+                append(
+                    {{"featureType", type},
+                     {"schemaId", nullptr},
+                     {"contract", boundedJson(schema->featureTypeContract(type, reserveContract))},
+                     {"values", Json::array()}});
+                return;
+            }
             auto id = schema->featureSchema(type);
             if (id == simfil::NoSchemaId) {
                 fail(
@@ -605,6 +624,11 @@ void McpNativeTools::Call::querySchema()
         findSchema(roots, types);
         return;
     }
+    environment();
+    auto model = std::make_shared<simfil::SchemaModel>(
+        env_->strings(),
+        env_->querySchemaCallback,
+        std::max(size_t{2}, remainingWork_));
     for (size_t i = 0; i < roots.size() && step(); ++i) {
         auto id = roots[i];
         auto root = model->root(id);
@@ -643,6 +667,8 @@ void McpNativeTools::Call::querySchema()
         if (model->exhausted())
             truncate("schema_node_limit");
         Json item{{"schemaId", id}, {"values", std::move(values)}};
+        if (arguments.contains("featureType") && !arguments.contains("query"))
+            item["contract"] = boundedJson(schema->featureTypeContract(types[i], reserveContract));
         if (!arguments.contains("schemaId") && layer_->type_ == LayerType::Features)
             item["featureType"] = types[i];
         else if (layer_->type_ != LayerType::Features)
@@ -656,281 +682,65 @@ void McpNativeTools::Call::findSchema(
     std::vector<simfil::SchemaId> const& roots,
     std::vector<std::string> const& types)
 {
-    auto const schema = layer_->layerSchema();
-    auto normalize = [](std::string_view value)
-    {
-        std::string result;
-        for (unsigned char c : value)
-            if (!std::isspace(c) && c != '_' && c != '-')
-                result.push_back(static_cast<char>(std::tolower(c)));
-        return result;
-    };
-    auto needle = normalize(arguments.at("find").get<std::string>());
-    if (needle.empty()) {
-        fail("invalid_arguments", "find requires a declared field, type or enum symbol name.");
+    auto schema = layer_->layerSchema();
+    simfil::EvaluationSummary summary;
+    auto found = schema->find(
+        arguments.at("find").get<std::string>(),
+        roots,
+        !arguments.contains("schemaId") && layer_->type_ == LayerType::Features ?
+            std::span<std::string const>(types) :
+            std::span<std::string const>{},
+        {.maxResults = limit_,
+         .maxWork = remainingWork_,
+         .deadline = deadline_,
+         .cancel = cancelled.get()},
+        remainingBytes_,
+        &summary);
+    remainingWork_ -= std::min(remainingWork_, summary.work);
+    if (!step(0)) {
+        discovery_ = std::move(found["discovery"]);
+        discovery_["returnedDomains"] = 0;
+        discovery_["omittedDomains"] = discovery_["matchedDomains"];
         return;
     }
-    auto match = [&](std::string_view name)
-    {
-        auto text = normalize(name);
-        return text == needle ? 2 : text.find(needle) != std::string::npos ? 1 : 0;
-    };
-    auto selection = Json{{"mapId", arguments.at("mapId")}, {"layerId", arguments.at("layerId")}};
-    if (arguments.contains("sourceId"))
-        selection["sourceId"] = arguments["sourceId"];
-    // Retain only the best bounded set, while counting distinct matching definitions and
-    // preserving representative owners. An exact enum symbol outranks incidental field text.
-    std::map<simfil::SchemaId, std::pair<int, Json>> best;
-    std::set<simfil::SchemaId> matchedDomains;
-    size_t reserve = std::min<size_t>(remainingWork_ / 4, 8000);
-    remainingWork_ -= reserve;
-    for (size_t i = 0; i < roots.size() && step(); ++i) {
-        std::set<simfil::SchemaId> visited, rootMatches;
-        std::vector<std::string> path;
-        std::vector<bool> elementSteps;
-        std::function<void(simfil::SchemaId, std::string_view)> walk;
-        walk = [&](simfil::SchemaId id, std::string_view field)
-        {
-            if (!step() || id == simfil::NoSchemaId)
-                return;
-            if (path.size() > SerializationNestingLimit) {
-                truncate("serialization_limit");
-                return;
-            }
-            auto fieldMatch = match(field), typeMatch = match(schema->typeName(id));
-            int rank = fieldMatch == 2 ? 1 :
-                typeMatch == 2         ? 2 :
-                fieldMatch             ? 3 :
-                typeMatch              ? 5 :
-                                         6;
-            auto symbols = schema->directEnumSymbols(id);
-            Json matched = Json::array();
-            size_t symbolMatches = 0;
-            for (auto const& symbol : symbols) {
-                if (!step())
-                    return;
-                auto score = match(symbol);
-                if (!score)
-                    continue;
-                rank = std::min(rank, score == 2 ? 0 : 4);
-                ++symbolMatches;
-                // Exact matches stay visible even after a full substring preview.
-                if (score == 2) {
-                    matched.insert(matched.begin(), symbol);
-                    if (matched.size() > 8)
-                        matched.erase(matched.end() - 1);
-                }
-                else if (matched.size() < 8)
-                    matched.push_back(symbol);
-            }
-            size_t namedCount = 0, namedMatches = 0;
-            auto named = Json::array();
-            try {
-                schema->forEachNamedValue(
-                    id,
-                    [&](simfil::Schema::NamedValue const& value)
-                    {
-                        if (!step())
-                            throw std::length_error("named value work");
-                        ++namedCount;
-                        auto score = match(value.name);
-                        if (!score)
-                            return;
-                        ++namedMatches;
-                        rank = std::min(rank, score == 2 ? 0 : 4);
-                        if (score == 2) {
-                            named.insert(named.begin(), value.name);
-                            if (named.size() > 8)
-                                named.erase(named.end() - 1);
-                        }
-                        else if (named.size() < 8)
-                            named.push_back(value.name);
-                    });
-            }
-            catch (std::length_error const&) {
-                return;
-            }
-            // Prefer the nearby owning field/assignment within each relevance class.
-            // Numeric SchemaId order is not a useful ranking for broad concepts.
-            rank = rank * 512 + static_cast<int>(path.size());
-            if (rank < 6 * 512) {
-                matchedDomains.insert(id);
-                rootMatches.insert(id);
-                auto found = best.find(id);
-                if (found == best.end() && best.size() >= limit_) {
-                    auto worst = std::max_element(
-                        best.begin(),
-                        best.end(),
-                        [](auto const& a, auto const& b) {
-                            return std::pair(a.second.first, a.first) <
-                                std::pair(b.second.first, b.first);
-                        });
-                    if (std::pair(rank, id) < std::pair(worst->second.first, worst->first))
-                        best.erase(worst);
-                }
-                if (found != best.end() || best.size() < limit_) {
-                    auto& entry = best[id];
-                    if (entry.second.is_null()) {
-                        entry.first = rank;
-                        auto expand = selection;
-                        expand["schemaId"] = id;
-                        entry.second = {
-                            {"schemaId", id},
-                            {"kind",
-                             env_->strings()
-                                 ->resolve(simfil::Schema::kindNameId(schema->kind(id)))
-                                 .value_or("unknown")},
-                            {"contexts", Json::array()},
-                            {"contextsOmitted", false},
-                            {"expandArguments", expand}};
-                        if (!schema->typeName(id).empty())
-                            entry.second["typename"] = schema->typeName(id);
-                        if (namedCount) {
-                            auto read = expand;
-                            read["query"] = "namedValues.*";
-                            read["limit"] = std::min<size_t>(1000, namedCount);
-                            entry.second["namedValues"] = {
-                                {"count", namedCount},
-                                {"matchingCount", namedMatches},
-                                {"matchingNames", named},
-                                {"valuesArguments", std::move(read)}};
-                        }
-                        if (!symbols.empty() || !schema->enumValues(id).empty()) {
-                            auto& domain = entry.second["enum"];
-                            domain = {
-                                {"symbolCount", symbols.size()},
-                                {"matchingSymbolCount", symbolMatches},
-                                {"matchingSymbols", matched},
-                                {"symbolsOmitted", symbols.size() > 8},
-                                {"preview", Json::array()}};
-                            for (size_t n = 0; n < std::min<size_t>(symbols.size(), 8); ++n)
-                                domain["preview"].push_back(symbols[n]);
-                            domain["literalCount"] = schema->enumValues(id).size();
-                            domain["valuesArguments"] = expand;
-                            domain["valuesArguments"]["query"] = "enum.*";
-                            domain["valuesArguments"]["limit"] = std::min<size_t>(
-                                1000,
-                                symbols.size() + schema->enumValues(id).size());
-                            domain["symbolSemantics"] = schema->kind(id) ==
-                                    LayerSchema::BitmaskKind ?
-                                "flags" :
-                                "string_literals";
-                        }
-                    }
-                    auto preferContext = rank < entry.first;
-                    entry.first = std::min(entry.first, rank);
-                    Json context{{"path", path}};
-                    if (!field.empty())
-                        context["fieldName"] = field;
-                    if (!arguments.contains("schemaId") && layer_->type_ == LayerType::Features) {
-                        context["featureType"] = types[i];
-                        auto owner = schema->ownerForPath(types[i], roots[i], path);
-                        // ownerForPath accepts named fields, not array wildcards. Keep the
-                        // enclosing assignment owner when the discovered value is inside an array.
-                        for (size_t end = path.size();
-                             owner.kind_ == LayerSchema::PathOwnerKind::Unknown && end;
-                             --end)
-                            owner = schema->ownerForPath(
-                                types[i],
-                                roots[i],
-                                std::span(path.data(), end - 1));
-                        if (owner.kind_ == LayerSchema::PathOwnerKind::Attribute)
-                            context["attributeContext"] = {
-                                {"featureType", owner.attribute_.featureType_},
-                                {"layer", owner.attribute_.attributeLayerName_},
-                                {"name", owner.attribute_.attributeName_},
-                                {"schemaId", owner.attribute_.attributeSchema_}};
-                        // String subscripts preserve field names; dot-string syntax is a literal.
-                        std::string query = "_";
-                        for (size_t segment = 0; segment < path.size(); ++segment)
-                            query += elementSteps[segment] ?
-                                ".*" :
-                                "[" + Json(path[segment]).dump() + "]";
-                        context["featureQuery"] = query;
-                    }
-                    else
-                        context["relativeToSchemaId"] = roots[i];
-                    auto& contexts = entry.second["contexts"];
-                    if (std::find(contexts.begin(), contexts.end(), context) == contexts.end()) {
-                        if (preferContext) {
-                            contexts.insert(contexts.begin(), context);
-                            if (contexts.size() > 2) {
-                                contexts.erase(contexts.end() - 1);
-                                entry.second["contextsOmitted"] = true;
-                            }
-                        }
-                        else if (contexts.size() < 2)
-                            contexts.push_back(context);
-                        else
-                            entry.second["contextsOmitted"] = true;
-                    }
-                }
-            }
-            if (!visited.insert(id).second)
-                return;
-            schema->forEachDirectField(
-                id,
-                [&](std::string_view name, auto children)
-                {
-                    if (!step())
-                        return;
-                    path.emplace_back(name);
-                    elementSteps.push_back(false);
-                    for (auto child : children)
-                        walk(child, name);
-                    path.pop_back();
-                    elementSteps.pop_back();
-                });
-            schema->forEachElementSchema(
-                id,
-                [&](simfil::SchemaId child)
-                {
-                    path.emplace_back("*");
-                    elementSteps.push_back(true);
-                    walk(child, {});
-                    path.pop_back();
-                    elementSteps.pop_back();
-                });
-            for (auto alternative : schema->alternatives(id))
-                walk(alternative, field);
-        };
-        walk(roots[i], {});
-        if (!rootMatches.empty() && narrowing_.size() < 8 && roots.size() > 1) {
-            auto next = selection;
-            next["find"] = arguments["find"];
-            if (arguments.contains("schemaId") || layer_->type_ != LayerType::Features)
-                next["schemaId"] = roots[i];
-            else
-                next["featureType"] = types[i];
-            narrowing_.push_back({{"arguments", next}, {"matchedDomains", rootMatches.size()}});
-        }
+    auto selection = Json{
+        {"layerId", arguments.at("layerId")},
+        {"mapSchemaId", layer_->schemaOwner()->schemaId()}};
+    for (auto const* key : {"mapId", "sourceId", "mapFormat"})
+        if (arguments.contains(key))
+            selection[key] = arguments[key];
+    // Only this transport adapter knows tool argument names or recommends follow-up calls.
+    for (auto const& root : found["rootMatches"]) {
+        auto next = selection;
+        next["find"] = arguments["find"];
+        if (root.contains("featureType"))
+            next["featureType"] = root["featureType"];
+        else
+            next["schemaId"] = root["schemaId"];
+        narrowing_.push_back({{"arguments", next}, {"matchedDomains", root["matchedDomains"]}});
     }
-    auto scanReason = std::exchange(incomplete_, {});
-    remainingWork_ += reserve;
-    std::vector<std::pair<int, Json>> ordered;
-    for (auto& [_, entry] : best)
-        ordered.push_back(std::move(entry));
-    std::stable_sort(
-        ordered.begin(),
-        ordered.end(),
-        [](auto const& a, auto const& b) { return a.first < b.first; });
-    for (auto& [_, item] : ordered) {
+    for (auto& item : found["items"]) {
         try {
-            if (item.contains("enum") && item["enum"]["literalCount"] != 0) {
-                auto model = std::make_shared<
-                    simfil::SchemaModel>(env_->strings(), env_->querySchemaCallback, 64);
-                auto values = model->root(item["schemaId"].get<simfil::SchemaId>())
-                                  ->get(simfil::StringPool::SchemaEnum);
-                auto start = item["enum"]["symbolCount"].get<size_t>();
-                item["enum"]["literalPreview"] = Json::array();
-                for (size_t n = start; values && n < std::min<size_t>(values->size(), start + 8);
-                     ++n)
-                    item["enum"]["literalPreview"]
-                        .push_back(valueJson(simfil::Value::field(values->at(n))));
-                item["enum"]["literalsOmitted"] = item["enum"]["literalCount"].get<size_t>() > 8;
+            auto expand = selection;
+            expand["schemaId"] = item["schemaId"];
+            item["expandArguments"] = expand;
+            if (item.contains("namedValues")) {
+                auto read = expand;
+                read["query"] = "namedValues.*";
+                read["limit"] = std::min<size_t>(1000, item["namedValues"]["count"].get<size_t>());
+                item["namedValues"]["valuesArguments"] = std::move(read);
+            }
+            if (item.contains("enum")) {
+                auto read = expand;
+                read["query"] = "enum.*";
+                read["limit"] = std::min<size_t>(
+                    1000,
+                    item["enum"]["symbolCount"].get<size_t>() +
+                        item["enum"]["literalCount"].get<size_t>());
+                item["enum"]["valuesArguments"] = std::move(read);
             }
             if (roots.size() == 1 && narrowing_.size() < 8) {
-                auto next = item["expandArguments"];
+                auto next = expand;
                 for (auto const& context : item["contexts"])
                     if (context.contains("attributeContext")) {
                         next["schemaId"] = context["attributeContext"]["schemaId"];
@@ -951,21 +761,20 @@ void McpNativeTools::Call::findSchema(
             break;
         }
     }
-    discovery_ = {
-        {"scanComplete", scanReason.empty()},
-        {"matchedDomains", matchedDomains.size()},
-        {"returnedDomains", items_.size()},
-        {"omittedDomains", matchedDomains.size() - items_.size()},
-        {"paths", "representative"}};
-    if (!scanReason.empty())
-        truncate(scanReason);
-    else if (matchedDomains.size() > items_.size())
-        truncate("matches_omitted");
+    discovery_ = std::move(found["discovery"]);
+    discovery_["returnedDomains"] = items_.size();
+    discovery_["omittedDomains"] = discovery_["matchedDomains"].get<size_t>() - items_.size();
+    if (!found["complete"].get<bool>())
+        truncate(
+            found["reason"] == "cancelled" ?
+                "cancelled_or_authority_expired" :
+                found["reason"].get<std::string>());
 }
 
 void McpNativeTools::Call::validateExpression()
 {
-    selectLayer();
+    if (!selectSchemaLayer())
+        return;
     environment();
     auto query = arguments.at("expression").get<std::string>();
     auto schema = layer_->layerSchema();
@@ -1013,7 +822,9 @@ void McpNativeTools::Call::validateExpression()
         auto id = schema ?
             (featureLayer ? schema->featureSchema(type) : schema->rootSchema()) :
             simfil::NoSchemaId;
-        if (arguments.contains("featureType") && schema && id == simfil::NoSchemaId) {
+        if (arguments.contains("featureType") && schema &&
+            (id == simfil::NoSchemaId || !schema->producesFeatureType(type)))
+        {
             fail(
                 "unknown_feature_type",
                 "The selected layer has no schema root for this featureType. "

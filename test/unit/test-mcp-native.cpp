@@ -306,7 +306,7 @@ TEST_CASE(
 {
     NativeFixture fixture;
     auto tools = fixture.tools->tools(fixture.principal);
-    CHECK(tools.size() == 11);
+    CHECK(tools.size() == 12);
     for (auto const& tool : tools) {
         INFO(tool["name"]);
         CHECK_FALSE(
@@ -359,7 +359,7 @@ TEST_CASE(
     setPostConfigEndpointEnabled(true);
     fixture.principal.configRead = fixture.principal.configWrite = fixture.principal.diagnostics =
         true;
-    CHECK(fixture.tools->tools(fixture.principal).size() == 14);
+    CHECK(fixture.tools->tools(fixture.principal).size() == 15);
     CHECK(fixture.call("mapget_get_config")["result"]["items"][0]["revision"] == "1");
     CHECK(
         fixture.call(
@@ -1209,6 +1209,41 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Native datasource claims supplement static header grants and survive cache reuse",
+    "[mcp-native][datasource-auth]")
+{
+    NativeFixture fixture;
+    fixture.source->requireAuthHeaderRegexMatchOption("x-supplier", std::regex("^mcp$"));
+    fixture.source->requireAuthClaim("/groups", "SMS_users");
+    test::McpTestIssuer issuer;
+    auto settings = test::McpTestIssuer::configuration();
+    settings.datasourceHeaders = {"x-supplier=mcp"};
+    detail::McpAuthentication auth(settings);
+    auth.installKeys(issuer.jwks);
+    bool insufficient = false;
+    auto claims = test::McpTestIssuer::claims();
+    claims["groups"] = {"SMS_users"};
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(fixture.call("mapget_list_sources")["result"]["items"].size() == 1);
+    REQUIRE(fixture.call("mapget_extract_features", NativeFixture::selection()).contains("result"));
+    auto fills = fixture.source->fills.load();
+    for (auto const& groups : NativeJson::array({nullptr, "SMS_users_suffix", NativeJson::array()})) {
+        claims["groups"] = groups;
+        fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+        REQUIRE(fixture.principal.read);
+        CHECK(fixture.call("mapget_list_sources")["result"]["items"].empty());
+        CHECK(fixture.call("mapget_extract_features", NativeFixture::selection()).contains("error"));
+        CHECK(fixture.source->fills == fills);
+    }
+    claims["groups"] = {"SMS_users"};
+    claims["access"]["roles"] = {"control"};
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(fixture.principal.control);
+    CHECK(fixture.call("mapget_list_sources").contains("error"));
+    CHECK(fixture.call("mapget_extract_features", NativeFixture::selection()).contains("error"));
+}
+
+TEST_CASE(
     "Native source authorization is rechecked and canceled queued calls retire",
     "[mcp-native]")
 {
@@ -1216,7 +1251,7 @@ TEST_CASE(
     fixture.source->requireAuthHeaderRegexMatchOption("x-user", std::regex("allowed"));
     CHECK(fixture.call("mapget_list_sources")["result"]["items"].empty());
     CHECK(fixture.call("mapget_extract_features", NativeFixture::selection()).contains("error"));
-    fixture.principal.datasourceHeaders["x-user"] = "allowed";
+    fixture.principal.datasourceAuthorization.headers["x-user"] = "allowed";
     CHECK(
         fixture.call("mapget_extract_features", NativeFixture::selection())["result"]["items"]
             .size() == 1);
@@ -1359,6 +1394,7 @@ TEST_CASE("Native imported schemas preserve aliases in recursive queries", "[mcp
           "**.attributes.numbers",
           "**.properties.numbers"})
     {
+        CAPTURE(query);
         auto args = NativeFixture::selection();
         args["query"] = query;
         auto reply = fixture.call("mapget_extract_features", args);
@@ -1834,11 +1870,41 @@ TEST_CASE("Native extraction cursors resume scans and reject altered authority",
     fixture.principal.subject = "someone-else";
     CHECK(fixture.call("mapget_extract_features", next)["error"]["code"] == "cursor_unavailable");
     fixture.principal.subject = "reader";
-    fixture.principal.datasourceHeaders["changed"] = "authority";
+    fixture.principal.datasourceAuthorization.headers["changed"] = "authority";
     CHECK(fixture.call("mapget_extract_features", next)["error"]["code"] == "cursor_unavailable");
-    fixture.principal.datasourceHeaders.clear();
+    fixture.principal.datasourceAuthorization.headers.clear();
     fixture.service.remove(source);
     CHECK(fixture.call("mapget_extract_features", next)["error"]["code"] == "cursor_stale");
+}
+
+TEST_CASE("Native cursors retain exact verified authority across calls", "[mcp-native][datasource-auth]")
+{
+    auto source = std::make_shared<NativeSource>();
+    source->additionalFeatures = 3;
+    source->requireAuthClaim("/groups", "SMS_users");
+    NativeFixture fixture(false, source);
+    test::McpTestIssuer issuer;
+    detail::McpAuthentication auth(test::McpTestIssuer::configuration());
+    auth.installKeys(issuer.jwks);
+    auto claims = test::McpTestIssuer::claims();
+    claims["groups"] = {"SMS_users"};
+    bool insufficient = false;
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    auto args = NativeFixture::selection();
+    args["limit"] = 1;
+    auto first = fixture.call("mapget_extract_features", args)["result"];
+    REQUIRE(first.contains("nextCursor"));
+    NativeJson next{{"cursor", first["nextCursor"]}};
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    CHECK(fixture.call("mapget_extract_features", next).contains("result"));
+    // Equal claims in a new allocation are accepted; changed token metadata is not.
+    claims["exp"] = claims["exp"].get<int64_t>() + 60;
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    REQUIRE(fixture.principal.read);
+    CHECK(fixture.call("mapget_extract_features", next)["error"]["code"] == "cursor_unavailable");
+    claims["groups"] = NativeJson::array();
+    fixture.principal = auth.bearer(issuer.token(claims), insufficient);
+    CHECK(fixture.call("mapget_extract_features", next)["error"]["code"] == "cursor_unavailable");
 }
 
 TEST_CASE("Native extraction cursors retain assignment and partition positions", "[mcp-native]")

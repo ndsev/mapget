@@ -75,6 +75,8 @@ private:
     nlohmann::json narrowing_ = nlohmann::json::array();
     std::shared_ptr<LayerInfo> layer_;
     DataSourceCatalogEntry source_;
+    /** Fence inventory/narrowing responses which have no single bound layer owner. */
+    std::optional<uint64_t> schemaCatalogRevision_;
     std::optional<size_t> nextOffset_;
     std::shared_ptr<Continuation> scan_ = std::make_shared<Continuation>();
     size_t initialProgress_ = 0;
@@ -118,11 +120,15 @@ private:
     void diagnostics(simfil::Diagnostics const& diagnostics, std::string const& expression);
     /** Choose one authorized primary datasource; ambiguous identities require sourceId. */
     void selectLayer();
+    /** Resolve a map, descriptive format or exact artifact; ambiguity returns narrowing choices. */
+    bool selectSchemaLayer();
     /** Build one private dictionary/environment; never mutate a cached model or its strings. */
     void environment(std::shared_ptr<simfil::StringPool> strings = {});
 
     /** Serialize compact authorized source metadata without invoking JSON Schema emission. */
     void listSources();
+    /** List authorized immutable artifacts once, independently of their consuming maps. */
+    void listSchemas();
     /** Search source-backed help with the same response, cancellation and allocation budgets. */
     void documentation();
     /** Return advertised coverage separately from source discovery, retaining sparse occupancy. */

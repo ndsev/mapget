@@ -25,10 +25,13 @@ public:
     /** Publish one finalized graph without any legacy inline schema fields. */
     explicit Schema2NativeSource(
         std::string map = "Schema2",
-        std::string typeName = "fixture.Speed")
+        std::string typeName = "fixture.Speed",
+        bool declareRelations = false,
+        std::string layerName = "Road",
+        size_t extraRawLayers = 0)
     {
         auto owner = std::make_shared<MapSchema>(MapFormat{"fixture", "2", {{"roads", "1"}}});
-        auto layer = owner->newLayer("Road", LayerType::Features);
+        auto layer = owner->newLayer(layerName, LayerType::Features);
         auto root = layer->addSchema(simfil::Schema::Kind::Object, LayerSchema::featureKey("Road"));
         properties = layer->addSchema(
             simfil::Schema::Kind::Object,
@@ -73,6 +76,11 @@ public:
         layer->addFieldSchema(properties, "flags", flags);
         layer->addFieldSchema(properties, "enabled", enabled);
         layer->addFieldSchema(properties, "payload", payload);
+        auto contextOnly = layer->addSchema(simfil::Schema::Kind::Int);
+        layer->setTypeName(contextOnly, "fixture.ContextOnly");
+        layer->addFieldSchema(properties, "$context", contextOnly);
+        layer->setFieldRole(properties, "$context", simfil::Schema::FieldRole::Context);
+        layer->addFieldSchema(properties, "$ordinary", enabled);
         layer->addFeatureType(
             FeatureTypeInfo::fromJson(Schema2Json::parse(R"({
             "name":"Road","uniqueIdCompositions":[[
@@ -88,10 +96,24 @@ public:
             simfil::NoSchemaId,
             false);
         layer->setRootSchema(root);
+        if (declareRelations)
+            layer->setJsonSchemaAnnotations(
+                root,
+                {{"x-mapget",
+                  {{"relationDeclarations",
+                    Schema2Json::array(
+                        {{{"ownerType", "Road"},
+                          {"name", "next"},
+                          {"targetTypes", {"Road"}},
+                          {"complete", true},
+                          {"locality", "same-container"}}})}}}});
         auto raw = owner->newLayer("Raw", LayerType::SourceData);
         raw->setRootSchema(properties);
         auto unavailable = owner->newLayer("NotAdvertised", LayerType::SourceData);
         unavailable->setRootSchema(properties);
+        for (size_t index = 0; index < extraRawLayers; ++index)
+            owner->newLayer("ExtraRaw" + std::to_string(index), LayerType::SourceData)
+                ->setRootSchema(properties);
         owner->finalize();
 
         metadata = DataSourceInfo::fromJson(
@@ -99,7 +121,7 @@ public:
              {"stringPoolId", "schema2-" + map},
              {"mapFormat", owner->format().toJson()},
              {"schemaId", owner->schemaId()},
-             {"layers", {{"Road", {{"type", "Features"}}}, {"Raw", {{"type", "SourceData"}}}}}},
+             {"layers", {{layerName, {{"type", "Features"}}}, {"Raw", {{"type", "SourceData"}}}}}},
             [owner](std::string_view) { return owner; });
     }
 
@@ -398,4 +420,215 @@ TEST_CASE("Schema2 MCP schema access cannot cross an unauthorized source", "[mcp
     CHECK(fixture.call("mapget_query_schema", {{"mapId", "Hidden"}, {"layerId", "Road"}})
               .contains("error"));
     CHECK(hidden->fills == 0);
+}
+
+TEST_CASE(
+    "Schema2 MCP selects exact formats and artifacts without tile IO",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    auto owner = fixture.source->metadata.mapSchema_;
+    auto inventory = fixture.call("mapget_list_schemas").at("result");
+    REQUIRE(inventory["items"].size() == 1);
+    CHECK(inventory["items"][0]["mapSchemaId"] == owner->schemaId());
+    CHECK(inventory["items"][0]["mapFormat"] == owner->format().toJson());
+    CHECK(inventory["items"][0]["consumers"].size() == 1);
+
+    Schema2Json args{{"mapFormat", owner->format().toJson()}, {"layerId", "Road"}};
+    auto result = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(result["complete"] == true);
+    CHECK(result["mapSchemaId"] == owner->schemaId());
+    args["expression"] = "attributes.speed > 10";
+    auto validation = fixture.call("mapget_validate_expression", args).at("result");
+    CHECK(validation["items"][0]["valid"] == true);
+
+    // Format selection sees schema roots, not only the chosen map's advertised data layers.
+    auto extra =
+        fixture
+            .call(
+                "mapget_query_schema",
+                {{"mapSchemaId", owner->schemaId()}, {"layerId", "NotAdvertised"}})
+            .at("result");
+    CHECK(extra["complete"] == true);
+    CHECK(fixture.call("mapget_query_schema", {{"mapId", "Schema2"}, {"layerId", "NotAdvertised"}})
+              .contains("error"));
+    CHECK(fixture.source->fills == 0);
+}
+
+TEST_CASE(
+    "Schema discovery skips lookup-only context but not dollar-named data",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    Schema2Json args{{"mapId", "Schema2"}, {"layerId", "Raw"}, {"find", "ContextOnly"}};
+    auto implicit = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(implicit["complete"] == true);
+    CHECK(implicit["items"].empty());
+    args["find"] = "$ordinary";
+    auto data = fixture.call("mapget_query_schema", args).at("result");
+    CHECK_FALSE(data["items"].empty());
+    args.erase("find");
+    args["query"] = "fields[\"$context\"].typename";
+    auto explicitLookup = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(explicitLookup["items"][0]["values"] == Schema2Json::array({"fixture.ContextOnly"}));
+    CHECK(fixture.source->fills == 0);
+}
+
+TEST_CASE("Schema2 format ambiguity requires an authorized exact artifact", "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    auto other = std::make_shared<Schema2NativeSource>("Other", "fixture.OtherSpeed");
+    fixture.service.add(other);
+    Schema2Json args{{"mapFormat", other->metadata.mapFormat_.toJson()}, {"layerId", "Road"}};
+    auto ambiguous = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(ambiguous["complete"] == false);
+    CHECK(ambiguous["reason"] == "ambiguous_schema");
+    REQUIRE(ambiguous["items"].size() == 2);
+    for (auto const& item : ambiguous["items"])
+        CHECK(
+            fixture.call("mapget_query_schema", item["selectArguments"])["result"]["mapSchemaId"] ==
+            item["mapSchemaId"]);
+    args["mapSchemaId"] = other->metadata.schemaId_;
+    CHECK(fixture.call("mapget_query_schema", args)["result"]["complete"] == true);
+    args["mapId"] = "Other";
+    CHECK(fixture.call("mapget_query_schema", args).contains("error"));
+    fixture.service.remove(other);
+    args.erase("mapId");
+    CHECK(fixture.call("mapget_query_schema", args).contains("error"));
+    CHECK(other->fills == 0);
+}
+
+TEST_CASE("Schema2 format selection intersects the requested layer", "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    auto other =
+        std::make_shared<Schema2NativeSource>("Other", "fixture.OtherSpeed", false, "Lane");
+    fixture.service.add(other);
+    auto result = fixture.call(
+        "mapget_query_schema",
+        {{"mapFormat", fixture.source->metadata.mapFormat_.toJson()}, {"layerId", "Road"}});
+    REQUIRE(result.contains("result"));
+    CHECK(result["result"]["complete"] == true);
+    CHECK(result["result"]["mapSchemaId"] == fixture.source->metadata.schemaId_);
+    CHECK(fixture.source->fills == 0);
+    CHECK(other->fills == 0);
+}
+
+TEST_CASE(
+    "Schema2 inventory sharing and authorization are provider scoped",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    auto shared = std::make_shared<Schema2NativeSource>("Shared");
+    fixture.service.add(shared);
+    auto hidden = std::make_shared<Schema2NativeSource>("Hidden", "private.SecretSpeed");
+    hidden->requireAuthHeaderRegexMatchOption("x-schema-test", std::regex("allowed"));
+    fixture.service.add(hidden);
+    auto inventory = fixture.call("mapget_list_schemas").at("result");
+    REQUIRE(inventory["items"].size() == 1);
+    CHECK(inventory["items"][0]["consumers"].size() == 2);
+    CHECK(inventory.dump().find("Hidden") == std::string::npos);
+    CHECK(fixture
+              .call(
+                  "mapget_query_schema",
+                  {{"mapSchemaId", hidden->metadata.schemaId_}, {"layerId", "Road"}})
+              .contains("error"));
+    fixture.service.remove(fixture.source);
+    CHECK(
+        fixture.call(
+            "mapget_query_schema",
+            {{"mapSchemaId", shared->metadata.schemaId_},
+             {"layerId", "Road"}})["result"]["complete"] == true);
+    fixture.service.remove(shared);
+    CHECK(fixture.call("mapget_list_schemas")["result"]["items"].empty());
+}
+
+TEST_CASE(
+    "Schema2 inventory filters providers before spending work on unrelated layers",
+    "[mcp-native][schema2][schema-inventory]")
+{
+    Schema2NativeFixture fixture;
+    auto excluded = std::make_shared<
+        Schema2NativeSource>("Excluded", "fixture.OtherSpeed", false, "Road", 1024);
+    auto shared = std::make_shared<Schema2NativeSource>("Shared");
+    fixture.service.add(excluded);
+    fixture.service.add(shared);
+    std::string selectedSourceId;
+    for (auto const& source : fixture.service.sourceCatalog(AuthHeaders{}, false).sources)
+        if (source.info && source.info->mapId_ == "Schema2")
+            selectedSourceId = source.descriptor.sourceId;
+    REQUIRE_FALSE(selectedSourceId.empty());
+
+    // JSON encoding has its own per-value work cost, in addition to registry traversal.
+    auto unfiltered = fixture.call("mapget_list_schemas", {{"maxWork", 512}}).at("result");
+    CHECK(unfiltered["complete"] == false);
+    CHECK(unfiltered["reason"] == "work_limit");
+    for (auto const& selector :
+         {Schema2Json{{"mapId", "Schema2"}},
+          Schema2Json{{"sourceId", selectedSourceId}},
+          Schema2Json{{"mapId", "Schema2"}, {"sourceId", selectedSourceId}}})
+    {
+        auto arguments = selector;
+        arguments["maxWork"] = 512;
+        auto result = fixture.call("mapget_list_schemas", arguments).at("result");
+        REQUIRE(result["complete"] == true);
+        REQUIRE(result["items"].size() == 1);
+        CHECK(result["items"][0]["mapSchemaId"] == fixture.source->metadata.schemaId_);
+        REQUIRE(result["items"][0]["consumers"].size() == 1);
+        CHECK(result["items"][0]["consumers"][0]["mapId"] == "Schema2");
+        CHECK(result["items"][0]["consumers"][0]["sourceId"] == selectedSourceId);
+    }
+    auto mismatch =
+        fixture
+            .call(
+                "mapget_list_schemas",
+                {{"mapId", "Excluded"}, {"sourceId", selectedSourceId}, {"maxWork", 32}})
+            .at("result");
+    CHECK(mismatch["complete"] == true);
+    CHECK(mismatch["items"].empty());
+    CHECK(fixture.source->fills == 0);
+    CHECK(excluded->fills == 0);
+    CHECK(shared->fills == 0);
+}
+
+TEST_CASE(
+    "Format-qualified schema discovery exposes native identity contracts",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    Schema2Json args{
+        {"mapFormat", fixture.source->metadata.mapFormat_.toJson()},
+        {"layerId", "Road"},
+        {"featureType", "Road"}};
+    auto result = fixture.call("mapget_query_schema", args).at("result");
+    auto contract = result["items"][0]["contract"];
+    CHECK(contract["produced"] == true);
+    CHECK(contract["uniqueIdCompositions"][0][0]["partId"] == "id");
+    CHECK(contract["uniqueIdCompositions"][1][0]["partId"] == "alias");
+    CHECK(contract["forwardRelationsKnown"] == false);
+    CHECK(contract["forwardRelations"].empty());
+    args["featureType"] = "Target";
+    result = fixture.call("mapget_query_schema", args).at("result");
+    REQUIRE(result["complete"] == true);
+    CHECK(result["items"][0]["schemaId"].is_null());
+    CHECK(result["items"][0]["contract"]["produced"] == false);
+    CHECK(result["items"][0]["values"].empty());
+    // An identity-only declaration does not authorize evaluation against a nonexistent root.
+    args["expression"] = "true";
+    CHECK(fixture.call("mapget_validate_expression", args).contains("error"));
+    CHECK(fixture.source->fills == 0);
+
+    auto declared = std::make_shared<Schema2NativeSource>("Declared", "fixture.Speed", true);
+    fixture.service.add(declared);
+    args = {
+        {"mapSchemaId", declared->metadata.schemaId_},
+        {"layerId", "Road"},
+        {"featureType", "Road"}};
+    contract = fixture.call("mapget_query_schema", args)["result"]["items"][0]["contract"];
+    CHECK(contract["forwardRelationsKnown"] == true);
+    REQUIRE(contract["forwardRelations"].size() == 1);
+    CHECK(contract["forwardRelations"][0]["name"] == "next");
+    CHECK(contract["forwardRelations"][0]["complete"] == true);
+    CHECK(contract["forwardRelations"][0]["locality"] == "same-container");
+    CHECK(declared->fills == 0);
 }

@@ -197,7 +197,7 @@ void HttpService::Impl::handleAttachmentRequest(
                 }
                 callback(response);
             },
-            detail::authHeadersFromRequest(req));
+            config_.proxyAuth.authorization(req));
     }
     catch (std::exception const& error) {
         callback(plainResponse(

@@ -78,6 +78,7 @@ Every datasource entry accepts these generic fields in addition to type-specific
 - `enabled` (optional, default `true`): when set to `false`, the entry is skipped before its type-specific constructor is called.
 - `ttl` (optional): cache time-to-live override in seconds. `0` means infinite.
 - `auth-header` (optional): header-to-regular-expression map as described below.
+- `auth-claims` (optional): JSON-pointer-to-string requirements on the verified identity. Every entry must match, in addition to `auth-header`.
 
 Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
@@ -100,6 +101,78 @@ sources:
 <!-- --8<-- [end:restrict-access] -->
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
+
+### Restricting access with `auth-claims`
+
+Use `auth-claims` for identity-based datasource permissions shared by browser,
+REST, WebSocket and native MCP data access:
+
+```yaml
+sources:
+  - type: DataSourceHost
+    url: https://example.com/mapget
+    auth-header:
+      X-MapViewer-Supplier: "^(here|mcp)$"
+    auth-claims:
+      /groups: SMS_users
+```
+
+Keys are JSON pointers into verified identity claims. Values are strings matched
+exactly against a string claim or a member of an array; they are not regular
+expressions. All configured requirements must match. Missing claims, wrong types
+and unverified identities fail a configured requirement. Header alternatives keep
+their existing OR behavior, but the header gate and the claim gate are combined
+with AND. Static MCP header grants therefore cannot bypass claim requirements.
+
+The same policy applies to source discovery (including initializing/failed rows),
+schema inventory and retrieval, tiles, filters, locate, attachments and object
+discovery. Cached data does not bypass authorization. Add-on and indirect source
+loads retain the caller's authorization. MCP read/control permissions remain
+separate: group membership does not grant tool permissions, and an MCP reader
+without a required group cannot access that datasource. There is no global MCP
+group requirement; other unrestricted datasources remain available.
+Global `/status` and `/status-data` remain global diagnostics, and configuration
+endpoints retain their separate administrative policies. These are not
+per-datasource projections.
+
+OAuth MCP uses the verified access token's claims. Ensure the identity provider
+actually includes the required claim in **access tokens**; a browser's ID token
+or user-info claim alone is not enough. Local MCP has no verified identity and
+cannot satisfy an `auth-claims` restriction.
+
+For ordinary browser requests, configure an authenticating reverse proxy to
+export its verified claims as one JSON object:
+
+```yaml
+mapget:
+  serve:
+    auth-trusted-proxy-addresses: [127.0.0.1]
+    auth-claims-header: x-mapviewer-claims
+```
+
+Both options are required together and take effect on restart. Peer addresses
+are exact canonical IP addresses, not CIDRs or forwarded addresses. The proxy
+must remove client-supplied `X-MapViewer-Claims` and replace it only after
+authentication. Mapget accepts the header only from a configured socket peer;
+`X-Forwarded-For` does not establish trust. The header must be a JSON object of
+at most 16 KiB and depth 16, without duplicate keys. Missing, malformed or
+untrusted headers supply no verified claims. No bearer token or private signing
+key needs to be forwarded from the browser.
+
+The proxy must authenticate **every** ordinary data route, not only MCP. This
+export is independent of MCP read/control roles, so browser users do not need
+an MCP role to use a map. Native `/mcp` takes claims only from its verified bearer
+token; `/mcp/browser` additionally requires its existing trusted browser identity
+and permission headers. Keep the direct backend listener private to the trusted
+proxy. Interactive connections retain their opening authorization until
+disconnect; changed group membership is not pushed into existing sockets.
+
+Native embedders pass `ClientAuthorization` to service operations. Header-only
+values have no verified claims. Omitting the optional authorization is explicit
+trusted in-process access, not anonymous network access; HTTP and MCP adapters
+always supply an authorization value. Extraction cursors reject changed
+authorization, including changed claims; start a new extraction after a token
+refresh changes that identity snapshot.
 
 <!-- mcp:
 title: "Mapget tile TTL"
@@ -589,7 +662,7 @@ Cache reset is disabled by default. Enabling it without at least one valid
 `=` into an HTTP header name and regular expression, so expressions may contain
 additional equals signs. Header names are case-insensitive, values use full
 regular-expression matching, and alternatives are ORed. The reset request must
-also satisfy the selected map's normal datasource `auth-header` restriction.
+also satisfy the selected map's normal datasource `auth-header` and `auth-claims` restrictions.
 
 Use this gate only behind a trusted authentication proxy. The proxy must strip
 client-supplied copies of the identity header, inject its authenticated value,

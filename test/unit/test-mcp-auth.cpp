@@ -1,4 +1,5 @@
 #include "../../libs/http-service/src/mcp-auth.h"
+#include "../../libs/http-service/src/bounded-json.h"
 #include "mcp-test-issuer.h"
 
 #include <CLI/CLI.hpp>
@@ -29,7 +30,7 @@ TEST_CASE(
     CHECK_FALSE(regular.configRead);
     CHECK_FALSE(regular.configWrite);
     CHECK_FALSE(regular.diagnostics);
-    CHECK(regular.datasourceHeaders.at("x-user") == "member@example.test");
+    CHECK(regular.datasourceAuthorization.headers.at("x-user") == "member@example.test");
     claims["admin"] = {"config-read", "diagnostics"};
     auto admin = auth.bearer(issuer.token(claims), insufficient);
     CHECK(admin.configRead);
@@ -73,7 +74,7 @@ TEST_CASE(
     McpAuthentication defaults(settings);
     defaults.installKeys(issuer.jwks);
     bool insufficient = false;
-    CHECK(defaults.bearer(issuer.token(), insufficient).datasourceHeaders.empty());
+    CHECK(defaults.bearer(issuer.token(), insufficient).datasourceAuthorization.headers.empty());
 
     settings.datasourceHeaders = {"x-supplier=shared"};
     settings.datasourceHeaderClaims = {"x-user=/email"};
@@ -85,9 +86,9 @@ TEST_CASE(
     auto reader = auth.bearer(issuer.token(claims), insufficient);
     REQUIRE(reader.valid(std::chrono::system_clock::now()));
     CHECK_FALSE(insufficient);
-    CHECK(reader.datasourceHeaders.size() == 2);
-    CHECK(reader.datasourceHeaders.at("x-supplier") == "shared");
-    CHECK(reader.datasourceHeaders.at("x-user") == "member@example.test");
+    CHECK(reader.datasourceAuthorization.headers.size() == 2);
+    CHECK(reader.datasourceAuthorization.headers.at("x-supplier") == "shared");
+    CHECK(reader.datasourceAuthorization.headers.at("x-user") == "member@example.test");
     CHECK_FALSE(reader.configRead);
     CHECK_FALSE(reader.configWrite);
     CHECK_FALSE(reader.diagnostics);
@@ -98,7 +99,7 @@ TEST_CASE(
     REQUIRE(controller.valid(std::chrono::system_clock::now()));
     CHECK_FALSE(controller.read);
     CHECK(controller.control);
-    CHECK(controller.datasourceHeaders.at("x-supplier") == "shared");
+    CHECK(controller.datasourceAuthorization.headers.at("x-supplier") == "shared");
 
     for (auto const& patch : json::array(
              {{{"iss", "https://other.example/realm"}},
@@ -112,10 +113,10 @@ TEST_CASE(
         invalid.update(patch);
         auto denied = auth.bearer(issuer.token(invalid), insufficient);
         CHECK_FALSE(denied.valid(std::chrono::system_clock::now()));
-        CHECK(denied.datasourceHeaders.empty());
+        CHECK(denied.datasourceAuthorization.headers.empty());
     }
     McpTestIssuer otherIssuer;
-    CHECK(auth.bearer(otherIssuer.token(), insufficient).datasourceHeaders.empty());
+    CHECK(auth.bearer(otherIssuer.token(), insufficient).datasourceAuthorization.headers.empty());
 }
 
 TEST_CASE(
@@ -535,6 +536,6 @@ TEST_CASE("MCP security configuration and public hints fail closed", "[mcp-auth]
     CHECK_NOTHROW(McpAuthentication(local));
     local.allowedOrigins = {"https://other.example"};
     CHECK_THROWS(McpAuthentication(local));
-    CHECK_THROWS(McpAuthentication::parseJson(std::string(100, ' '), 10));
-    CHECK_THROWS(McpAuthentication::parseJson("[[[[0]]]]", 100, 2));
+    CHECK_THROWS(mapget::detail::parseBoundedJson(std::string(100, ' '), 10));
+    CHECK_THROWS(mapget::detail::parseBoundedJson("[[[[0]]]]", 100, 2));
 }

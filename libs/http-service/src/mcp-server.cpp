@@ -1,4 +1,5 @@
 #include "mcp-server.h"
+#include "bounded-json.h"
 
 #include "mapget/log.h"
 #include "tiles-ws-session.h"
@@ -46,8 +47,8 @@ bool accepts(std::string const& header, std::string const& mime)
 }
 }  // namespace
 
-McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native)
-    : auth_(config),
+McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native, ProxyAuthentication proxyAuth)
+    : auth_(config, std::move(proxyAuth)),
       catalogWriteTime_(
           config.catalogPath.empty() ?
               std::filesystem::file_time_type{} :
@@ -370,7 +371,7 @@ void McpServer::fetchKeys()
                 // No redirect, token-controlled key URL or stale-key grace beyond the cache
                 // lifetime.
                 self->auth_
-                    .installKeys(McpAuthentication::parseJson(response->body(), 256 * 1024, 16));
+                    .installKeys(parseBoundedJson(response->body(), 256 * 1024, 16));
             }
             catch (...) {
                 log().warn("MCP trusted signing-key refresh failed.");
@@ -513,7 +514,7 @@ void McpServer::dispatch(
     nlohmann::json message;
     nlohmann::json id = nullptr;
     try {
-        message = McpAuthentication::parseJson(request->body(), maxRequestBytes);
+        message = parseBoundedJson(request->body(), maxRequestBytes);
     }
     catch (...) {
         reply(jsonResponse(

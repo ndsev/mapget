@@ -203,7 +203,7 @@ void HttpService::Impl::handleGetConfigRequest(
         config_.cacheResetEnabled &&
         authHeadersMatch(
             config_.cacheResetAuthHeaderAlternatives,
-            detail::authHeadersFromRequest(req));
+            config_.proxyAuth.authorization(req).headers);
     auto respond = [&](nlohmann::json payload) {
         if (!payload.contains("capabilities") ||
             !payload["capabilities"].is_object())

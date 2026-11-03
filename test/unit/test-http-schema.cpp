@@ -1,4 +1,5 @@
 #include "test-http-service-fixture.h"
+#include "../../libs/http-service/src/mcp-native-tools.h"
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-datasource/detail/schema-response.h"
@@ -31,7 +32,12 @@ namespace
 class SchemaTestSource final : public DataSource
 {
 public:
-    explicit SchemaTestSource(std::string map, std::string field = "speed", bool addOn = false)
+    explicit SchemaTestSource(
+        std::string map,
+        std::string field = "speed",
+        bool addOn = false,
+        size_t descriptionBytes = 0,
+        bool producedFeatureRoot = false)
     {
         auto metadata = nlohmann::json::parse(R"({
             "mapFormat": {"name": "schema-http-test", "version": "1"},
@@ -49,8 +55,26 @@ public:
         metadata["mapId"] = map;
         metadata["stringPoolId"] = map + "-" + field + "-strings";
         metadata["addOn"] = addOn;
-        metadata["layers"]["Road"]["featureModelSchema"]["properties"] = {{field, {{"type", "integer"}}}};
+        metadata["layers"]["Road"]["featureModelSchema"]["properties"] = {
+            {field, {{"type", "integer"}}}};
+        metadata["layers"]["Road"]["featureTypes"][0]["uniqueIdCompositions"][0][0]["description"] =
+            std::string(descriptionBytes, 'x');
         info_ = DataSourceInfo::fromJson(metadata);
+        if (producedFeatureRoot) {
+            // The explorer follows produced roots, not an unrelated legacy schema fragment.
+            auto owner = std::make_shared<MapSchema>(info_.mapFormat_);
+            auto layer = owner->newLayer("Road", LayerType::Features);
+            auto root = layer->addSchema(LayerSchema::FeatureKind);
+            layer->addFeatureType(
+                FeatureTypeInfo::fromJson(metadata["layers"]["Road"]["featureTypes"][0]),
+                root);
+            auto properties = layer->addSchema(simfil::Schema::Kind::Object);
+            layer->addFieldSchema(root, "properties", properties);
+            layer->addFieldSchema(properties, field, layer->addSchema(simfil::Schema::Kind::Int));
+            owner->finalize();
+            info_.schemaId_.clear();
+            info_.setMapSchema(std::move(owner));
+        }
     }
 
     DataSourceInfo info() override { return info_; }
@@ -78,10 +102,20 @@ public:
             service_.remove(source);
     }
 
-    std::shared_ptr<SchemaTestSource> add(
-        std::string map, std::string field = "speed", bool gated = false, bool addOn = false)
+    std::shared_ptr<SchemaTestSource>
+    add(std::string map,
+        std::string field = "speed",
+        bool gated = false,
+        bool addOn = false,
+        size_t descriptionBytes = 0,
+        bool producedFeatureRoot = false)
     {
-        auto source = std::make_shared<SchemaTestSource>(std::move(map), std::move(field), addOn);
+        auto source = std::make_shared<SchemaTestSource>(
+            std::move(map),
+            std::move(field),
+            addOn,
+            descriptionBytes,
+            producedFeatureRoot);
         if (gated)
             source->requireAuthHeaderRegexMatchOption("x-schema-access", std::regex("^allowed$"));
         service_.add(source);
@@ -353,9 +387,291 @@ TEST_CASE("HTTP clients retain distinct source IDs for primary and add-on schema
         auto row = std::ranges::find_if(catalog, [&](auto const& item) { return item.at("sourceId") == id; });
         REQUIRE(row != catalog.end());
         CHECK(row->at("mapId") == "SchemaHttpSharedMap");
-        auto schema = client.getSchema(id, source->info().schemaId_);
-        CHECK(schema->schemaId() == source->info().schemaId_);
+        auto schema = client.getSchema(id, row->at("schemaId").get<std::string>());
+        CHECK(schema->schemaId() == row->at("schemaId").get<std::string>());
+        if (source == primary)
+            CHECK(schema->schemaId() != source->info().schemaId_);
+        else
+            CHECK(schema->schemaId() == source->info().schemaId_);
     }
+}
+
+TEST_CASE("Schema explorer serves authorized inventory and lazy domain links", "[HttpSchema]")
+{
+    SchemaHttpFixture fixture;
+    auto source = fixture.add("SchemaExplorer");
+    auto hidden = fixture.add("SchemaExplorerHidden", "private", true);
+    auto response = fixture.get("/schemas");
+    REQUIRE(response->statusCode() == drogon::k200OK);
+    auto inventory = nlohmann::json::parse(response->body());
+    CHECK(inventory.dump().find(hidden->info().schemaId_) == std::string::npos);
+    auto found = std::ranges::find_if(
+        inventory["schemas"],
+        [&](auto const& item) { return item["mapSchemaId"] == source->info().schemaId_; });
+    REQUIRE(found != inventory["schemas"].end());
+    CHECK(found->at("ownerInstances") == 1);
+    auto id = source->info().mapSchema_->layer("Road")->featureSchema("Road");
+    std::vector<std::pair<std::string, std::string>> parameters{
+        {"mapSchemaId", source->info().schemaId_},
+        {"schemaId", std::to_string(id)}};
+    auto node = fixture.get("/schema/inspect", parameters);
+    REQUIRE(node->statusCode() == drogon::k200OK);
+    auto json = nlohmann::json::parse(node->body());
+    CHECK(json["schemaId"] == id);
+    CHECK(json["descriptor"].is_object());
+    CHECK_FALSE(json["descriptor"].contains("fields"));
+    REQUIRE(json["featureTypes"].size() == 1);
+    CHECK(json["featureTypes"][0]["name"] == "Road");
+    CHECK(json["featureTypes"][0]["produced"] == true);
+    CHECK(json["featureTypes"][0]["uniqueIdCompositions"][0][0]["partId"] == "id");
+    CHECK(json["featureTypes"][0]["forwardRelationsKnown"] == false);
+    for (auto const& field : json.value("fields", nlohmann::json::array())) {
+        CHECK(field.contains("name"));
+        CHECK(field.contains("$ref"));
+        CHECK_FALSE(field.contains("fields"));
+    }
+    parameters[0].second = hidden->info().schemaId_;
+    CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k404NotFound);
+    parameters[1].second = "1junk";
+    CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k400BadRequest);
+    parameters[1].second = "65536";
+    CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k400BadRequest);
+}
+
+TEST_CASE(
+    "Schema explorer search shares MCP discovery and honors current authorization",
+    "[HttpSchema][schema-search]")
+{
+    using Json = nlohmann::json;
+    SchemaHttpFixture fixture;
+    auto source = fixture.add("SchemaExplorerSearch", "speed_limit", true, false, 0, true);
+    auto info = source->info();
+    auto layer = info.mapSchema_->layer("Road");
+    auto root = layer->featureSchema("Road");
+    REQUIRE(layer->producesFeatureType("Road"));
+    auto properties = layer->childSchema(root, "properties");
+    REQUIRE(properties != simfil::NoSchemaId);
+    REQUIRE(layer->childSchema(properties, "speed_limit") != simfil::NoSchemaId);
+    AuthHeaders headers{{"x-schema-access", "allowed"}};
+    std::vector<std::pair<std::string, std::string>> parameters{
+        {"mapSchemaId", info.schemaId_},
+        {"layerId", "Road"},
+        {"schemaId", std::to_string(root)},
+        {"find", "SPEED-LIMIT"}};
+    CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k404NotFound);
+    auto response = fixture.get("/schema/inspect", parameters, headers);
+    REQUIRE(response->statusCode() == drogon::k200OK);
+    CHECK(response->getHeader("cache-control") == "no-store");
+    auto rest = Json::parse(response->body());
+    INFO(rest.dump());
+    REQUIRE(rest["items"].size() == 1);
+    CHECK(rest["complete"] == true);
+    CHECK(rest["discovery"]["scanComplete"] == true);
+    CHECK(rest["items"][0]["contexts"][0]["path"] == Json::array({"properties", "speed_limit"}));
+    CHECK_FALSE(rest["items"][0].contains("expandArguments"));
+    CHECK_FALSE(rest.contains("rootMatches"));
+
+    auto tools = std::make_shared<detail::McpNativeTools>(
+        fixture.service_,
+        McpConfig{},
+        [] { return Json::object(); },
+        nullptr,
+        [] { return Json::object(); },
+        [](auto const&, auto const&) { return Json::object(); });
+    detail::McpNativeTools::Principal principal{
+        "schema-search",
+        "reader",
+        std::chrono::system_clock::now() + std::chrono::hours(1),
+        true,
+        false};
+    principal.datasourceAuthorization.headers = headers;
+    auto promise = std::make_shared<std::promise<Json>>();
+    auto ready = promise->get_future();
+    (void)tools->invoke(
+        principal,
+        "mapget_query_schema",
+        {{"mapSchemaId", info.schemaId_},
+         {"layerId", "Road"},
+         {"schemaId", root},
+         {"find", "SPEED-LIMIT"},
+         {"limit", 32}},
+        [promise](auto reply) { promise->set_value(std::move(reply)); });
+    REQUIRE(ready.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    auto reply = ready.get();
+    INFO(reply.dump());
+    REQUIRE(reply.contains("result"));
+    auto mcp = reply["result"];
+    CHECK(tools->acceptsResult("mapget_query_schema", mcp));
+    for (auto& item : mcp["items"])
+        item.erase("expandArguments");
+    CHECK(mcp["items"] == rest["items"]);
+    CHECK(mcp["discovery"] == rest["discovery"]);
+    CHECK(mcp["complete"] == rest["complete"]);
+    CHECK(mcp["reason"] == rest["reason"]);
+
+    parameters.back().second = "not-present";
+    auto absent = Json::parse(fixture.get("/schema/inspect", parameters, headers)->body());
+    CHECK(absent["complete"] == true);
+    CHECK(absent["items"].empty());
+    parameters.back().second = " _- ";
+    CHECK(
+        fixture.get("/schema/inspect", parameters, headers)->statusCode() ==
+        drogon::k400BadRequest);
+    parameters.back().second = std::string(129, 'x');
+    CHECK(
+        fixture.get("/schema/inspect", parameters, headers)->statusCode() ==
+        drogon::k400BadRequest);
+    parameters.back().second = "speed";
+    parameters[1].second = "missing";
+    CHECK(
+        fixture.get("/schema/inspect", parameters, headers)->statusCode() == drogon::k404NotFound);
+    parameters[1].second = "Road";
+    fixture.service_.remove(source);
+    (void)fixture.add("SchemaExplorerSearch", "replacement", true, false, 0, true);
+    CHECK(
+        fixture.get("/schema/inspect", parameters, headers)->statusCode() == drogon::k404NotFound);
+}
+
+TEST_CASE(
+    "Schema inspection bounds native feature contract text before JSON projection",
+    "[HttpSchema][schema-contract-budget]")
+{
+    SchemaHttpFixture fixture;
+    for (auto size : {size_t{32}, size_t{200000}}) {
+        auto source =
+            fixture.add("ContractBudget" + std::to_string(size), "speed", false, false, size);
+        auto metadata = source->info();
+        auto schema = metadata.mapSchema_->layer("Road");
+        auto response = fixture.get(
+            "/schema/inspect",
+            {{"mapSchemaId", metadata.schemaId_},
+             {"schemaId", std::to_string(schema->featureSchema("Road"))}});
+        CHECK(response->getHeader("cache-control") == "no-store");
+        if (size == 32) {
+            REQUIRE(response->statusCode() == drogon::k200OK);
+            auto body = nlohmann::json::parse(response->body());
+            CHECK(
+                body["featureTypes"][0]["uniqueIdCompositions"][0][0]["description"] ==
+                std::string(size, 'x'));
+        }
+        else {
+            REQUIRE(response->statusCode() == drogon::k413RequestEntityTooLarge);
+            CHECK(response->body().size() < 256);
+            // The limit is enforced before copying this caller-controlled description,
+            // not just by inspecting the size of an already expanded response.
+            size_t remaining = 1024 * 1024;
+            CHECK_THROWS_AS(
+                schema->featureTypeContract(
+                    "Road",
+                    [&](size_t bytes)
+                    {
+                        if (bytes > remaining)
+                            throw std::length_error("contract budget");
+                        remaining -= bytes;
+                    }),
+                std::length_error);
+        }
+    }
+}
+
+TEST_CASE(
+    "Native feature contract traversal is budgeted without changing its shape",
+    "[HttpSchema][schema-contract-budget]")
+{
+    auto owner = std::make_shared<MapSchema>(MapFormat{"contract-budget", "1", {}});
+    auto layer = owner->newLayer("Road", LayerType::Features);
+    SchemaTestSource source("ContractIdentity");
+    auto identity = *source.info().mapSchema_->layer("Road")->getTypeInfo("Road");
+    auto root = layer->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"));
+    layer->addFeatureType(identity, root);
+    auto declarations = nlohmann::json::array();
+    for (size_t i = 0; i < 32; ++i)
+        declarations.push_back(
+            {{"ownerType", "Road"},
+             {"name", "link" + std::to_string(i)},
+             {"targetTypes", {"Road"}},
+             {"complete", true},
+             {"locality", "same-container"}});
+    layer->setJsonSchemaAnnotations(root, {{"x-mapget", {{"relationDeclarations", declarations}}}});
+    layer->setRootSchema(root);
+    owner->finalize();
+
+    size_t work = 0, bytes = 0;
+    auto contract = layer->featureTypeContract(
+        "Road",
+        [&](size_t size)
+        {
+            ++work;
+            bytes += size;
+        });
+    CHECK(contract == layer->featureTypeContract("Road"));
+    CHECK(contract["uniqueIdCompositions"] == identity.toJson()["uniqueIdCompositions"]);
+    REQUIRE(contract["forwardRelations"].size() == 32);
+    CHECK(bytes >= contract.dump().size());
+    CHECK(work > 32);
+    size_t remaining = 12;
+    CHECK_THROWS_AS(
+        layer->featureTypeContract(
+            "Road",
+            [&](size_t)
+            {
+                if (remaining == 0)
+                    throw std::length_error("contract traversal");
+                --remaining;
+            }),
+        std::length_error);
+    CHECK(remaining == 0);
+    CHECK(layer->featureTypeContract("Road") == contract);
+}
+
+TEST_CASE(
+    "Effective schema publication is atomic and respects contribution authorization",
+    "[HttpSchema][schema-composition]")
+{
+    SchemaHttpFixture fixture;
+    auto primary = fixture.add("SchemaComposition");
+    auto sourceId = fixture.sourceId(primary);
+    auto original = primary->info().mapSchema_;
+    auto addon = fixture.add("SchemaComposition", "added", true, true);
+    CHECK_FALSE(fixture.service_.getSchema(sourceId, original->schemaId(), AuthHeaders{}));
+    CHECK(
+        fixture.service_.schemaInventory(AuthHeaders{}).dump().find("SchemaComposition") ==
+        std::string::npos);
+
+    auto catalog = fixture.service_.sourceCatalog(AuthHeaders{{"x-schema-access", "allowed"}});
+    auto row = std::ranges::find_if(
+        catalog.sources,
+        [&](auto const& entry) { return entry.descriptor.sourceId == sourceId; });
+    REQUIRE(row != catalog.sources.end());
+    auto effective = row->info->mapSchema_;
+    REQUIRE(effective);
+    CHECK(effective->schemaId() != original->schemaId());
+    // A changed graph must publish even when both providers advertise the same format tuple.
+    CHECK(effective->format() == original->format());
+    CHECK(
+        fixture.service_.getSchema(
+            sourceId,
+            effective->schemaId(),
+            AuthHeaders{{"x-schema-access", "allowed"}}) == effective);
+    CHECK_FALSE(fixture.service_.getSchema(sourceId, effective->schemaId(), AuthHeaders{}));
+
+    fixture.service_.remove(addon);
+    CHECK(fixture.service_.getSchema(sourceId, original->schemaId(), AuthHeaders{}) == original);
+    CHECK_FALSE(fixture.service_.getSchema(sourceId, effective->schemaId(), AuthHeaders{}));
+    // The observer must not keep retired graphs alive; this local snapshot does.
+    auto memory = fixture.service_.getMemoryStatistics();
+    auto components = memory["mapget"]["components"];
+    CHECK(std::ranges::any_of(
+        components.items(),
+        [](auto const& item)
+        {
+            return item.key().starts_with("metadata.schemas.retired-pinned.") &&
+                item.value().at("allocated-bytes").template get<size_t>() > 0;
+        }));
+    std::weak_ptr<MapSchema const> retired = effective;
+    effective.reset();
+    catalog.sources.clear();
+    CHECK(retired.expired());
 }
 
 TEST_CASE("Remote datasource initialization resolves schema before exposing metadata", "[HttpSchema][HttpDataSource]")

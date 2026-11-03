@@ -275,6 +275,42 @@ insufficient scopes/permissions receive 403. Both carry a `WWW-Authenticate`
 challenge with the metadata URL and required scopes. Authentication failures
 do not echo tokens or claims.
 
+### Datasource Claims
+
+Native tools enforce each source's `auth-header` and `auth-claims` requirements,
+including schema discovery, cached reads and indirect relation/locate work.
+These gates supplement MCP read/control permissions; neither a group membership
+nor a fixed datasource header grants a tool permission.
+
+```yaml
+sources:
+  - type: SmartLayerTileService
+    uri: https://supplier.example/openapi.json
+    auth-header:
+      X-Supplier: "^(supplier|mcp)$"
+    auth-claims:
+      /groups: SMS_users
+```
+
+All claim entries must match an exact string or array member. Bearer requests
+use the verified access-token claims, so the identity provider must include the
+required claim in the access token, not only the ID token or UserInfo response.
+`mcp-datasource-headers` and scalar `mcp-datasource-header-claims` mappings still
+satisfy header alternatives only; they cannot bypass a claim requirement.
+
+Browser MCP calls use the same explicitly configured `auth-claims-header` and
+`auth-trusted-proxy-addresses` as ordinary HTTP/WebSocket datasource access.
+The authenticating proxy must strip that incoming header and export a verified
+JSON claims object. Those settings are independent of the four MCP identity/
+permission headers. Missing, malformed or untrusted claims deny restricted
+sources. Local MCP mode has no verified claims and cannot satisfy `auth-claims`.
+See [datasource authorization](mapget-config.md#restricting-access-with-auth-claims).
+
+Extraction cursors retain an exact authority snapshot. Changed claims, including
+token-refresh metadata such as `exp`, invalidate the cursor; restart extraction
+with the new credentials. Global diagnostics and configuration keep their
+existing independent access policies; they are not per-datasource projections.
+
 ## Configuration Reference
 
 All names below work as `--name` CLI options and as `mapget.serve.name` YAML
@@ -501,8 +537,9 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 | `mapget_docs` | Optional `query` or exact returned `title`, `component`, `offset` | Up to three complete Markdown sections and five further titles per page, plus content `revision` and optional `nextOffset`; no browser required |
 | `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId`, `details`, `offset` | Ordered source/layer identities, lifecycle/progress, partition kind, levels, feature type names and coverage-range counts; selected `mapId`/`sourceId` defaults to details, including ordered ID compositions and protocol metadata |
 | `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level`, `format` | Coverage summaries with bounds, counts and sample tile IDs; `format: "raw"` returns exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
-| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query` or `find`, `trace` | Compact grouped field/enum discovery or shallow feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
-| `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate`, `offset` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
+| `mapget_list_schemas` | Optional intersecting `mapId`, `sourceId`, `mapFormat`, `mapSchemaId` | Authorized exact artifacts with formats, consumers, layer roots and capacity statistics; no tile I/O or pagination |
+| `mapget_query_schema` | `layerId` and one of `mapId`, `mapFormat`, `mapSchemaId`; optional `sourceId` with `mapId`, exact `mapSchemaId` qualifier, `featureType` or numeric `schemaId`, `query` or `find`, `trace` | Compact grouped field/enum discovery or shallow overview; navigable artifact-qualified `$ref` identities |
+| `mapget_validate_expression` | The same schema selector plus `expression`; optional `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate`, `offset` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
 | `mapget_extract_features` | `mapId`, `layerId`; `partition`, `partitions` or canonical `featureIds`; optional `sourceId`, `featureType` or `featureTypes`, `scope`, `attributeIndex`, `attributeName`, `attributeLayer`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `cursor`, legacy `offset`, `trace` | Compact actual feature summaries by default; explicit feature/attribute projections with provenance, row completeness and bounded scan continuations |
 | `mapget_extract_source_data` | `mapId`, `layerId`, `partitions`, or `mapId`, `partition`, `reference`; optional `sourceId`, `match`, `query`, `trace` | Root/address-match rows, provenance and value sequences |
 | `mapget_convert_coordinates` | `from`: `wgs84` or `nds`, `x`, `y` | WGS84 degrees or signed NDS integer coordinates |
@@ -599,7 +636,35 @@ Summary `bounds` are `[west, south, east, north]`. Full longitude uses west/east
 the conservative south/north bounds `-90..90`.
 These geographic bounds summarize the grid range and do not replace its sparse mask.
 
-Call `mapget_query_schema` without a query or selector for a shallow list of
+Select a schema by `mapId` plus `layerId`, or independently by `mapFormat` plus
+`layerId`, or by exact `mapSchemaId` plus `layerId`. A map selector respects that
+map's advertised readable layers; format/artifact selection can inspect other
+roots in the same authorized graph without implying that data is available.
+`sourceId` only qualifies `mapId`. A `mapSchemaId` may additionally pin a map or
+format selection, but `mapId` and `mapFormat` are mutually exclusive.
+
+A format is an exact tuple, not a wildcard: omitted version and subsystem list
+mean empty values. Its `subsystems` is an array of `{name, version}` pairs;
+ordering is irrelevant and distinct versions of one name are preserved. When
+several authorized artifacts match both a format and the requested layer, the tool returns
+`complete: false, reason: "ambiguous_schema"` with exact `selectArguments`.
+Choose one rather than silently assuming the first is authoritative. The string
+`mapSchemaId` names the artifact; numeric `schemaId` names a domain inside it.
+Exact artifact selection avoids enumerating the catalog. Format/inventory traversal
+uses the request's work/cancellation budget before expanding layer/type rows; no
+feature data or full domain export is involved. A catalog change during inventory
+or loss of the selected binding before publication returns `schema_unavailable`;
+repeat discovery rather than reusing a stale numeric domain ID.
+
+A focused `featureType` overview includes the authoritative `contract`: ordered
+ID compositions, production status, root domain and forward relation declarations
+with completeness/locality. This works for format/artifact selection without a
+map or tile fetch. A reference-only type has an identity contract but no data
+root (`schemaId: null`, empty `values`); it cannot be used as an evaluation root.
+An unknown forward inventory is not proof that no relations exist. Explicit
+metadata query projections are not padded with this overview information.
+
+Call `mapget_query_schema` without a query or domain/feature selector for a shallow list of
 feature types and schema IDs. Select `featureType` to open its fields and shallow
 properties. Follow a numeric `$ref` using `schemaId` in the same layer to open a
 compound definition and its immediate fields. An implicit union's `$ref` lists

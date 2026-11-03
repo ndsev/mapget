@@ -426,7 +426,10 @@ TEST_CASE("Incoming callback failures terminate without publishing a complete bu
     CHECK(manifests == 0);
 }
 
-TEST_CASE("Incoming discovery reports incompatible add-on contracts without claiming completeness", "[incoming][add-on]") {
+TEST_CASE(
+    "Incoming discovery composes independent add-on relation declarations",
+    "[incoming][add-on]")
+{
     Service service(std::make_shared<MemCache>(),false,0ms,1);
     auto primary = std::make_shared<IncomingSource>(false, false);
     primary->emptyProvider = true;
@@ -441,15 +444,11 @@ TEST_CASE("Incoming discovery reports incompatible add-on contracts without clai
     REQUIRE(service.request(request)); waitDone(request);
     REQUIRE(request->getStatus() == RequestStatus::Success);
     REQUIRE(result.size() == 1);
-    CHECK_FALSE(result[0].complete_);
-    CHECK(result[0].status_ == IncomingRelationCollection::Status::Partial);
-    CHECK(result[0].relations_.empty());
-    CHECK(addon->tileLoads == 0);
-    CHECK(std::ranges::any_of(result[0].issues_, [&](auto const& issue) {
-        return issue.find("Cross-schema add-on composition is not supported") != std::string::npos &&
-            issue.find(primary->metadata.schemaId_) != std::string::npos &&
-            issue.find(addon->metadata.schemaId_) != std::string::npos;
-    }));
+    CHECK(result[0].complete_);
+    CHECK(result[0].status_ == IncomingRelationCollection::Status::Complete);
+    CHECK(result[0].relations_.size() == 3);
+    CHECK(addon->providerLoads == 1);
+    CHECK(result[0].issues_.empty());
 }
 
 TEST_CASE("Same-schema add-ons preserve incoming relations and report contributor failures", "[incoming][add-on]") {
@@ -482,11 +481,12 @@ TEST_CASE("Rejected add-on contracts leave primary tiles and dictionaries intact
     auto cache = std::make_shared<MemCache>();
     Service service(cache, false, 0ms, 1);
     auto primary = std::make_shared<IncomingSource>(false, false);
-    auto addon = std::make_shared<IncomingSource>();
+    auto addon = std::make_shared<IncomingSource>(true);
     addon->metadata.stringPoolId_ = "IncompatibleAddon";
     addon->metadata.isAddOn_ = true;
     REQUIRE(primary->metadata.schemaId_ != addon->metadata.schemaId_);
-    service.add(primary); service.add(addon);
+    service.add(primary);
+    REQUIRE_THROWS(service.add(addon));
     auto request = std::make_shared<LayerTilesRequest>("IncomingMap", "Surface",
         std::vector<PartitionId>{TileId::fromTileXY(1, 1, 2)});
     PartitionFeatureLayer::Ptr result;
@@ -504,7 +504,7 @@ TEST_CASE("Rejected add-on contracts leave primary tiles and dictionaries intact
         CHECK_FALSE(feature->attributesOrNull());
         CHECK_FALSE(feature->geomOrNull());
     }
-    CHECK(result->warnings().size() == 1);
+    CHECK(result->warnings().empty());
     CHECK(addon->tileLoads == 0);
     // Neither an add-on source pool nor a combined output pool should have been allocated.
     CHECK(cache->getStatistics().at("loaded-string-pools") == 1);

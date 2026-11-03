@@ -87,14 +87,16 @@ public:
     ServiceScheduler(ServiceScheduler const&) = delete;
     ServiceScheduler& operator=(ServiceScheduler const&) = delete;
 
-    /** Make a primary datasource eligible for tile work. */
-    void registerDataSource(RegisteredDataSource::Ptr const& source);
+    /** Publish ready generations, preserving permits and fencing replaced cached work.
+     * Invoke the returned completion only after releasing the catalog lock. */
+    [[nodiscard]] std::function<void()>
+    synchronizeDataSources(std::vector<RegisteredDataSource::Ptr> const& registrations);
 
-    /** Prevent new work for a datasource while allowing running calls to drain. */
-    void unregisterDataSource(RegisteredDataSource::Ptr const& source);
-
-    /** Enqueue a validated tile request. */
-    void enqueueRequest(LayerTilesRequest::Ptr request);
+    /** Atomically admit a bundle only if its authorized registrations are still current.
+     * No callback or authorization hook runs under the scheduling mutex. */
+    bool enqueueRequests(
+        std::vector<LayerTilesRequest::Ptr> const& requests,
+        std::vector<RegisteredDataSource::Ptr> const& registrations);
 
     /** Enqueue discovery using the same source permits and global worker budget as loads. */
     void enqueueDiscovery(
@@ -141,6 +143,8 @@ public:
     [[nodiscard]] Cache::Ptr cache() const { return cache_; }
 
 private:
+    /** Fence one map under mutex_; return external callbacks for execution after unlocking. */
+    std::function<void()> invalidateMapLocked(std::string const& mapId);
     /** One queued discovery callback, owned until completion or cancellation. */
     struct DiscoveryJob
     {

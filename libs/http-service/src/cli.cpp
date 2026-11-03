@@ -600,6 +600,7 @@ struct ServeCommand
     bool noLocation_ = false;
     std::string locationDbPath_;
     McpConfig mcp_;
+    ProxyAuthentication proxyAuth_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     ServeStartedCallback startedCallback_;
     CLI::App& app_;
@@ -736,6 +737,7 @@ struct ServeCommand
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
         mcp_.addOptions(*serveCmd);
+        proxyAuth_.addOptions(*serveCmd);
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -879,6 +881,7 @@ struct ServeCommand
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
         httpConfig.mcp = mcp_;
+        httpConfig.proxyAuth = proxyAuth_;
 
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);

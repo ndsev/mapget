@@ -20,9 +20,6 @@ namespace mapget::detail
 
 class TilesWsSession;
 
-/** Copy auth headers from the opening request into datasource requests. */
-AuthHeaders tilesWsAuthHeadersFromRequest(const drogon::HttpRequestPtr& req);
-
 /** Encode a payload with the TileLayerStream frame header. */
 std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload);
 
@@ -30,7 +27,7 @@ std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::s
 std::shared_ptr<TilesWsSession> tilesWsCreateSession(
     HttpService& service,
     std::weak_ptr<drogon::WebSocketConnection> conn,
-    AuthHeaders authHeaders);
+    ClientAuthorization authorization);
 
 /** Register one session in the status-data weak list. */
 void tilesWsRegisterForMetrics(const std::shared_ptr<TilesWsSession>& session);

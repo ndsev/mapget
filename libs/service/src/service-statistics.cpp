@@ -295,12 +295,9 @@ nlohmann::json Service::Impl::memoryStatistics()
     };
     std::vector<DataSourceMemoryCandidate> dataSourceCandidates;
     auto const registeredSources = dataSources_.snapshot();
-    std::unordered_set<MapSchema const*> countedSchemas;
+    metadata.merge("schemas", dataSources_.schemaMemoryUsage());
     for (auto const& source : registeredSources) {
         metadata.add("canonical-snapshots", source->metadataMemory);
-        if (auto const& schema = source->info->mapSchema_;
-            schema && countedSchemas.insert(schema.get()).second)
-            metadata.merge("schemas", schema->memoryUsage());
         metadata.add(
             "registered-source-objects",
             {

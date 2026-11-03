@@ -7,6 +7,7 @@ add_executable(test.mapget
   test-mcp-actions.cpp
   test-mcp-relay.cpp
   test-mcp-auth.cpp
+  test-datasource-auth.cpp
   test-mcp-native.cpp
   test-mcp-help.cpp
   test-feature-id-index.cpp
@@ -26,6 +27,8 @@ add_executable(test.mapget
   test-mcp-schema2.cpp
   test-layerschema-domains.cpp
   test-layer-schema-binding.cpp
+  test-schema-composition.cpp
+  test-schema-inventory.cpp
   test-schema-validation.cpp
   test-location.cpp
   test-http-datasource.cpp

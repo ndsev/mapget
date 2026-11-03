@@ -30,15 +30,6 @@ class McpServer;
 /** Snapshot REST stream pending-buffer ownership and high-water marks. */
 [[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
 
-[[nodiscard]] inline AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
-{
-    AuthHeaders headers;
-    for (auto const& [k, v] : req->headers()) {
-        headers.emplace(k, v);
-    }
-    return headers;
-}
-
 }  // namespace detail
 
 struct HttpService::Impl
@@ -116,6 +107,11 @@ struct HttpService::Impl
 
     /** Serve an exact source-bound schema on the bounded service worker pool. */
     void handleSchemaRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
+
+    /** Authorized inventory or one lazy domain, shared with MCP's native schema adapter. */
+    void handleSchemaInspectionRequest(
         drogon::HttpRequestPtr const& req,
         std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
 

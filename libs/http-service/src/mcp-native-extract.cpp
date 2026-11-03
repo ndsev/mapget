@@ -26,7 +26,7 @@ bool McpNativeTools::Call::resumeExtraction()
     }
     if (!checkpoint || checkpoint->expires <= std::chrono::steady_clock::now() ||
         !checkpoint->principal.sameUser(principal) ||
-        checkpoint->principal.datasourceHeaders != principal.datasourceHeaders)
+        checkpoint->principal.datasourceAuthorization != principal.datasourceAuthorization)
     {
         fail(
             "cursor_unavailable",
@@ -300,7 +300,7 @@ void McpNativeTools::Call::loadNext()
         request_ = child;
     }
     // Every partition is independently admitted, even if the catalog changed since selection.
-    (void)owner_.service_.request({child}, principal.datasourceHeaders);
+    (void)owner_.service_.request({child}, principal.datasourceAuthorization);
 }
 
 void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& tile)

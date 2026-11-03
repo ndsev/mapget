@@ -15,11 +15,12 @@ void HttpService::Impl::handleLocateRequest(
         nlohmann::json j = nlohmann::json::parse(std::string(req->body()));
         auto requestsJson = j["requests"];
         auto allResponsesJson = nlohmann::json::array();
+        auto const authorization = config_.proxyAuth.authorization(req);
 
         for (auto const& locateReqJson : requestsJson) {
             LocateRequest locateReq{locateReqJson};
             auto responsesJson = nlohmann::json::array();
-            for (auto const& resp : self_.locate(locateReq))
+            for (auto const& resp : self_.locate(locateReq, authorization))
                 responsesJson.emplace_back(resp.serialize());
             allResponsesJson.emplace_back(responsesJson);
         }

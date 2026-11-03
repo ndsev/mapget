@@ -36,7 +36,18 @@ contracts remain usable for GeoJSON/custom sources without invented field facts.
 Remote clients fetch the authorized exact schema separately before using catalog
 metadata. Binary constructors take installed schema resolvers and do no network
 I/O. Missing or mismatched schema identities are errors, including for cached
-partitions. Protocol 6.0 is the coordinated schema-binding/typed-scalar cutover.
+partitions. Protocol 6.1 additionally carries self-describing foreign identities
+and the shared SchemaPool contract. Service schema composition, authorized
+artifact inventory and weak owner accounting live in `service-schemas.cpp`, as
+methods of the existing datasource registry rather than a separate schema service.
+
+`LayerSchema::find()` owns bounded declaration discovery on a finalized graph.
+Its private search execution visits enumerable edges, ranks fields/types/named
+values, and returns representative paths with explicit completeness. MCP and the
+status explorer's REST endpoint use that same implementation; the MCP adapter
+alone adds tool-specific follow-up arguments. Keep authorization, exact-artifact
+selection and post-encoding owner rechecks in each transport. Do not duplicate
+graph traversal in the browser or turn status polling into schema enumeration.
 
 The [model contract](mapget-model.md#feature-model-schema) documents graph,
 scalar provenance and incoming relation semantics. The [HTTP API](mapget-api.md)
@@ -311,6 +322,21 @@ metadata and scheduler registration remain intact; no dictionary ID is copied
 onto a newly constructed instance. Withdrawn registrations invalidate their
 maps. Newly ready add-ons also invalidate their composed primary map even if
 its primary instance is retained; unrelated maps keep their cached tiles.
+
+Completion commits one source-model snapshot and its coalesced recipients under
+the scheduler lock, before invoking their callbacks outside it. A later reload
+or add-on publication does not revoke those committed deliveries: even if the
+first callback recomposes the map, the remaining recipients receive the same
+old model and its pinned schema. Invalidation removes its cache entry; new work
+uses the replacement registration, and descendant loads from an old request
+cannot switch to it. Queued/in-flight abort callbacks are isolated individually,
+so a throwing consumer cannot strand other requests or suppress catalog updates.
+
+Failed or missing add-on contributions remain warnings on an otherwise usable
+composite, but cap its lifetime at the error-tile TTL (or a shorter contributor
+lifetime). This includes synthetic roots for add-on-only layers: a temporary
+failure must not become a permanently cached empty result. Successful empty
+contributions retain the normal empty-tile lifetime.
 
 The catalog remains in current YAML order and publishes a new revision.
 Unfinished constructors retain the existing generation-based cancellation and

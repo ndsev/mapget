@@ -13,6 +13,16 @@ open browser; partition extraction reuses service scheduling and authorization.
 MCP is disabled unless `--mcp local` or `--mcp oauth` is supplied (or
 equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
 
+Datasource access requires a matching `auth-header` alternative, when configured,
+AND every `auth-claims` requirement. HTTP/WebSocket claims come only from an
+explicitly trusted authenticating proxy; an arbitrary claims header or bearer
+token on an ordinary REST route does not establish identity. This applies to
+catalog/schema discovery, tiles, filtering, locate, object discovery and
+attachments, including cached and indirect requests. See
+[configuration](mapget-config.md#restricting-access-with-auth-claims) for the trust setup.
+Global `/status` and `/status-data` remain global diagnostics; configuration
+endpoints retain their separate administrative policy.
+
 ## Base URL and stream formats
 
 JSON requests use `Content-Type: application/json`. `/tiles` and `/filter`
@@ -198,7 +208,10 @@ Catalog entries include:
 - `configIndex` and configured datasource `type`.
 
 Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
-`"sources-<revision>"`. `If-None-Match` may produce `304 Not Modified`.
+`"sources-<revision>-<visible-source-digest>"`. Validators include the authorized
+source IDs, so a changed identity cannot reuse a broader catalog at the same
+revision. Responses are `Cache-Control: private, no-cache`; `If-None-Match` may
+produce `304 Not Modified` only for the same visible catalog.
 
 ## `GET /schema`
 
@@ -287,6 +300,49 @@ the 64 MiB decoder check, so this is not yet a pre-buffer network byte limit.
 their real source IDs, including add-ons sharing a map ID. `sources()` retains
 its typed C++ return value. Installed schema owners are supplied to the binary
 reader for cross-layer projected values; unknown identities fail explicitly.
+
+## `GET /schemas` and `GET /schema/inspect`
+
+`/schemas` returns `{ "schemas": [...] }`: one row per exact currently authorized
+artifact, with `mapSchemaId`, descriptive `mapFormat`, layer roots, produced
+feature roots, cached graph statistics, and authorized `consumers`. A consumer's
+`role` distinguishes the published effective graph from a provider's native
+contract; composed consumers also list their constituent identities/formats.
+`ownerInstances` and `retainedBytes` count distinct in-memory owners, even if
+independent owners have equal content identities. These capacities are not RSS.
+Retired graphs are weakly observed for aggregate memory accounting, not retained
+or exposed as an authorization-free historical catalog.
+
+`/schema/inspect?mapSchemaId=<exact-artifact>&schemaId=<numeric-domain>` returns
+one native descriptor's metadata and `fields`, `elements`, `alternatives` links.
+Children carry `$ref` domain IDs rather than recursively expanded graphs, so
+shared and cyclic domains are safe to explore. Field links retain edge-specific
+`required` and `role` metadata. Opening a produced feature root also returns its
+`featureTypes` contracts: ID compositions, production status and source-owned
+forward relation declarations with explicit completeness/locality. An absent
+relation inventory is not an assertion of no possible relations.
+Add `layerId=<layer>&find=<name>` to search descendants of the selected `schemaId`
+instead of opening its descriptor. This uses the same `LayerSchema::find`
+implementation as MCP `mapget_query_schema(find=...)`: case, spaces, underscores
+and hyphens are ignored; field names, producer type names, enum symbols and named
+constants are ranked together. Lookup-only context edges are not traversed.
+The result contains `items`, `complete`, `reason`, and `discovery`, plus the exact
+artifact/layer/root identity. Items include `schemaId`, kind/type, representative
+path segments and matching symbol previews; a domain can occur on more paths
+than the response lists. Search returns at most 32 domains and is bounded to
+100,000 work units, two seconds and one MiB. Partial scans or omitted matches
+are explicitly marked; an empty partial response does not establish absence.
+Use a narrower root or search term rather than treating partial results as a
+complete inventory. The `find` term is limited to 128 bytes.
+
+Both endpoints check datasource authorization. Removed, inaccessible or stale
+artifacts return 404; malformed selectors return 400. An inventory changing during
+collection returns 409; retry the snapshot rather than combining generations.
+Inventory traversal has a 16,384-step/two-second budget; non-search domain inspection is bounded to
+16,384 metadata nodes and a one-MiB response, returning 413 with guidance for a
+focused MCP query rather than silently omitting information. Responses are
+`Cache-Control: no-store`. Binary `/schema` remains the source-bound installation
+API; a format description is not an authorization token.
 
 ## `POST /tiles`
 
@@ -725,12 +781,20 @@ keywords: ["locate", "feature ID", "secondary identity", "canonical ID", "featur
     {
       "mapId": "Tropico",
       "featureId": "Road.545554572.1001"
+    },
+    {
+      "mapId": "TargetMap",
+      "typeId": "Road",
+      "id": {"tileId": 33587669, "roadId": 42}
     }
   ]
 }
 ```
 
 Requests may also restrict lookup with `layerId` and a tagged `partition`.
+Unauthorized sources are excluded before invoking datasource locate and again
+before loading candidate partitions. An inaccessible target returns no matches,
+including when another caller has already warmed its cache.
 The response contains a parallel `responses` array. Each resolved result
 includes `partitionKey`, tagged `partition`, `layerId`, and
 `canonicalFeatureId`. Tile results additionally retain the legacy `tileId`
@@ -746,9 +810,13 @@ For example, an object result's identity fields are:
 }
 ```
 
-Canonical input
-is resolved against the ID compositions
-advertised by the layer before datasource dispatch. Datasources only plan
+Canonical strings and named parts are resolved against the target layer's ID
+compositions before datasource dispatch. The named `id` form is the same object
+exported for foreign feature references; it requires `mapId` and `typeId` and
+must not also contain `featureId`. Named parts are reordered by the matching
+composition; missing required parts, unknown parts, and incompatible values do
+not resolve. Only layers producing the requested type are considered, not layers
+which merely declare its identity for references. Datasources only plan
 candidate partitions and portable selectors; mapget loads candidates through its
 normal cache/coalescing path and returns concrete primary feature identities.
 Discovery is not a general feature-to-object index: object locate still needs
@@ -881,7 +949,7 @@ exact map ID. The JSON request body is:
 The endpoint is disabled by default. It is available only when mapget starts
 with `--allow-cache-reset` and at least one
 `--cache-reset-auth-header HEADER=REGEX` gate. A request must satisfy that global gate and the target
-map's ordinary datasource `auth-header` gate. Header names are matched without
+map's ordinary datasource `auth-header` and `auth-claims` gates. Header names are matched without
 case sensitivity, values use full regular-expression matching, and multiple
 configured alternatives are ORed.
 

@@ -12,7 +12,7 @@ class IncomingRequestExecution : public std::enable_shared_from_this<IncomingReq
 public:
     /** Admit exact roots and asynchronously load their target and provider partitions. */
     static bool start(Service::Impl& service, FeatureLayerFilterTilesRequest::Ptr request,
-                      std::optional<AuthHeaders> headers);
+                      std::optional<ClientAuthorization> headers);
 
 private:
     /** Terminalize callback failures and release all dependent requests. */
@@ -45,7 +45,7 @@ private:
 
     Service::Impl* service_ = nullptr;
     FeatureLayerFilterTilesRequest::Ptr request_;
-    std::optional<AuthHeaders> headers_;
+    std::optional<ClientAuthorization> headers_;
     uint64_t catalogRevision_ = 0;
     std::mutex mutex_;
     std::atomic_bool terminal_ = false;

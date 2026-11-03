@@ -580,7 +580,7 @@ public:
      */
     bool request(
         std::vector<LayerTilesRequest::Ptr> const& requests,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Request server-side filtering over source feature tiles.
@@ -590,12 +590,12 @@ public:
      */
     bool request(
         FeatureLayerFilterTilesRequest::Ptr const& request,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /** Request multiple server-side filter bundles. */
     bool request(
         std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Load the source feature tile through the ordinary scheduler/cache path,
@@ -603,7 +603,7 @@ public:
      */
     AttachmentResult attachment(
         AttachmentRequest const& request,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Asynchronous attachment form used by non-blocking transports.
@@ -612,14 +612,16 @@ public:
     void requestAttachment(
         AttachmentRequest request,
         std::function<void(AttachmentResult)> callback,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Trigger queries to all connected data sources to check
      * for a feature matching the given typeId and idParts.
      * Returns the list of MapTileKeys received from data sources.
      */
-    std::vector<LocateResponse> locate(LocateRequest const& req);
+    std::vector<LocateResponse> locate(
+        LocateRequest const& req,
+        std::optional<ClientAuthorization> const& authorization = {});
 
     /**
      * Discover associations without loading payloads, using the shared worker/permit budget.
@@ -635,7 +637,7 @@ public:
     void discoverObjects(
         ObjectDiscoveryRequest request,
         std::function<void(ObjectDiscoveryResult)> callback,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Abort the given request. The request will be removed from
@@ -677,18 +679,40 @@ public:
     [[nodiscard]] bool scheduleTask(std::function<void(bool)> task);
 
     /** DataSourceInfo for all data sources which have been added to this Service. */
-    std::vector<DataSourceInfo> info(std::optional<AuthHeaders> const& clientHeaders = {});
+    std::vector<DataSourceInfo> info(std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Return the immutable schema currently bound to an authorized, ready source.
-     * Both IDs must match exactly. Missing, unauthorized, removed, or rebound sources
+     * A supplied sourceId and schemaId must match exactly; an empty sourceId permits any
+     * current authorized provider of the exact artifact. Missing, unauthorized or removed sources
      * return null; a shared content-cache hit never bypasses the source check.
      * This only acquires an initialized owner: no schema construction or network I/O.
      */
     [[nodiscard]] std::shared_ptr<MapSchema const> getSchema(
         std::string_view sourceId,
         std::string_view schemaId,
-        std::optional<AuthHeaders> const& clientHeaders = {}) const;
+        std::optional<ClientAuthorization> const& clientAuthorization = {}) const;
+
+    /**
+     * Inventory authorized, currently registered schema artifacts, deduplicated by content ID.
+     * Contains descriptive formats, layer roots, cheap retained-capacity statistics and
+     * authorized consumers, never expanded domain graphs or tile data. An empty sourceId
+     * in getSchema resolves an inventory artifact through any current authorized provider.
+     * includeSource filters authorized sourceId/mapId pairs before visiting their owners;
+     * rejected providers contribute no consumers, ownership counts or retained bytes.
+     * include filters the remaining owners before allocating their inventory rows. checkpoint
+     * runs before snapshotting and throughout source/layer/type/consumer traversal; it may
+     * throw to abort without returning a partial inventory. No callback runs under the
+     * registry lock. Snapshot changes throw resource_unavailable_try_again for a fresh retry.
+     * Callbacks bound traversal, not individual authorization calls, snapshot copies or cached
+     * metadata copies; callers must separately bound the serialized response size.
+     */
+    [[nodiscard]] nlohmann::json schemaInventory(
+        std::optional<ClientAuthorization> const& clientAuthorization = {},
+        std::function<bool(MapSchema const&)> const& include = {},
+        std::function<void()> const& checkpoint = {},
+        std::function<bool(std::string_view sourceId, std::string_view mapId)> const&
+            includeSource = {}) const;
 
     /**
      * Ordered datasource catalog including initializing/failed config entries.
@@ -696,7 +720,7 @@ public:
      * to block until the current config-backed datasource reload has completed.
      */
     [[nodiscard]] DataSourceCatalogSnapshot sourceCatalog(
-        std::optional<AuthHeaders> const& clientHeaders = {},
+        std::optional<ClientAuthorization> const& clientAuthorization = {},
         bool waitUntilReloadDone = false) const;
 
     /** Current datasource catalog revision without cloning catalog metadata. */
@@ -706,7 +730,7 @@ public:
      */
     [[nodiscard]] bool isSourceCatalogChangeVisible(
         DataSourceCatalogChange const& change,
-        std::optional<AuthHeaders> const& clientHeaders = {}) const;
+        std::optional<ClientAuthorization> const& clientAuthorization = {}) const;
 
     /** Subscribe to datasource catalog changes such as config reloads or startup status
      * transitions. */
@@ -716,13 +740,13 @@ public:
     /**
      * Checks if any DataSource can serve the requested map+layer combination,
      * then returns Success. Otherwise returns NoDataSource, or Unauthorized
-     * if clientHeaders is passed and does not validate against the datasource's
+     * if clientAuthorization is passed and does not validate against the datasource's
      * auth requirements.
      */
     [[nodiscard]] RequestStatus hasLayerAndCanAccess(
         std::string const& mapId,
         std::string const& layerId,
-        std::optional<AuthHeaders> const& clientHeaders) const;
+        std::optional<ClientAuthorization> const& clientAuthorization) const;
 
     /**
      * Resolve request context (status and layer type) for one map+layer.
@@ -730,7 +754,7 @@ public:
     [[nodiscard]] LayerRequestContext resolveLayerRequest(
         std::string const& mapId,
         std::string const& layerId,
-        std::optional<AuthHeaders> const& clientHeaders,
+        std::optional<ClientAuthorization> const& clientAuthorization,
         std::optional<std::string> const& sourceId = {}) const;
 
     /**
@@ -740,7 +764,7 @@ public:
      */
     [[nodiscard]] bool resetMapCache(
         std::string const& mapId,
-        std::optional<AuthHeaders> const& clientHeaders = {});
+        std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Get Statistics about the operation of this service.

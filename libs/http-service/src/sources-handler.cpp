@@ -11,6 +11,7 @@
 #include "mapget/model/layerschema.h"
 #include "mapget/model/stream.h"
 #include "nlohmann/json.hpp"
+#include "picosha2.h"
 
 namespace mapget
 {
@@ -79,13 +80,20 @@ void HttpService::Impl::handleSourcesRequest(
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
     auto catalog = self_.sourceCatalog(
-        detail::authHeadersFromRequest(req),
+        config_.proxyAuth.authorization(req),
         shouldBlockUntilReloadDone(req));
-    const auto etag = fmt::format("\"sources-{}\"", catalog.revision);
+    // The revision alone is shared by callers with different datasource permissions.
+    // Bind validators to the visible rows so changing identity cannot reuse a broader catalog.
+    auto visibleSources = nlohmann::json::array();
+    for (auto const& source : catalog.sources)
+        visibleSources.push_back(source.descriptor.sourceId);
+    auto const etag = fmt::format("\"sources-{}-{}\"", catalog.revision,
+        picosha2::hash256_hex_string(visibleSources.dump()));
     if (req->getHeader("if-none-match") == etag) {
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k304NotModified);
         resp->addHeader("ETag", etag);
+        resp->addHeader("Cache-Control", "private, no-cache");
         resp->addHeader("X-Mapget-Sources-Revision", std::to_string(catalog.revision));
         resp->addHeader("X-Mapget-Sources-Config-Status", catalog.configStatus);
         if (!catalog.configStatusMessage.empty()) {
@@ -136,6 +144,7 @@ void HttpService::Impl::handleSourcesRequest(
     resp->setStatusCode(drogon::k200OK);
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     resp->addHeader("ETag", etag);
+    resp->addHeader("Cache-Control", "private, no-cache");
     resp->addHeader("X-Mapget-Sources-Revision", std::to_string(catalog.revision));
     resp->addHeader("X-Mapget-Sources-Config-Status", catalog.configStatus);
     if (!catalog.configStatusMessage.empty()) {

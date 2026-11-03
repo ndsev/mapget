@@ -28,7 +28,7 @@ protected:
 }
 
 bool IncomingRequestExecution::start(Service::Impl& service,
-    FeatureLayerFilterTilesRequest::Ptr request, std::optional<AuthHeaders> headers)
+    FeatureLayerFilterTilesRequest::Ptr request, std::optional<ClientAuthorization> headers)
 {
     auto const& filter = request->filter_;
     auto const& channel = filter.channels_.front();
@@ -173,12 +173,11 @@ void IncomingRequestExecution::discover(RequestStatus status)
         MapPartitionKey,
         std::pair<std::vector<LayerSchema::RelationDeclaration>, DataSource::Ptr>>
         readyProviders;
-    auto addons = service_->dataSources_.addOnSources();
     for (auto const& source : service_->dataSources_.snapshot()) {
         if (terminal_ || request_->isCancelled())
             return;
         if (source->info->mapId_ != request_->mapId_ || source->info->isAddOn_ ||
-            (headers_ && !source->dataSource->isDataSourceAuthorized(*headers_))) continue;
+            !source->authorized(headers_)) continue;
         for (auto const& [layerId, info] : source->info->layers_) {
             if (info->type_ != LayerType::Features || !info->canRead_)
                 continue;
@@ -189,17 +188,6 @@ void IncomingRequestExecution::discover(RequestStatus status)
             auto schema = info->layerSchema();
             auto declarations = schema->relationDeclarations();
             bool unknown = !schema->hasRelationDeclarations();
-            for (auto const& addon : addons) {
-                if (addon->info->mapId_ != request_->mapId_ ||
-                    (headers_ && !addon->dataSource->isDataSourceAuthorized(*headers_)))
-                    continue;
-                auto found = addon->info->layers_.find(layerId);
-                if (found == addon->info->layers_.end()) continue;
-                auto addedSchema = found->second->layerSchema();
-                unknown = unknown || !addedSchema->hasRelationDeclarations();
-                auto added = addedSchema->relationDeclarations();
-                declarations.insert(declarations.end(), added.begin(), added.end());
-            }
             for (size_t i = 0; i < targets_.size(); ++i) {
                 auto& collection = collections_[i];
                 auto const& key = collection.target_;
@@ -308,14 +296,15 @@ void IncomingRequestExecution::scan(PartitionFeatureLayer::Ptr const& layer,
                     reference->typeId() != target->typeId())
                     continue;
                 bool matches = relationTargetsFeature(*relation, *target);
-                auto composition = target->model().layerInfo()->matchingFeatureIdCompositionIndex(
-                    reference->typeId(), reference->keyValuePairs(), false);
-                if (!composition) { issue("An incoming reference uses an unknown ID composition."); continue; }
-                if (!matches && *composition != 0) {
+                ParsedFeatureId normalized;
+                if (!normalizeFeatureIdParts(reference->typeId(), castToKeyValue(reference->keyValuePairs()),
+                        *target->model().layerInfo(), normalized)) {
+                    issue("An incoming reference uses an unknown ID composition."); continue;
+                }
+                if (!matches && normalized.idCompositionIndex_ != 0) {
                     // Resolve secondary IDs only against the already loaded target model.
                     // No candidate is allowed to schedule a partition or layer fetch here.
-                    LocateRequest query(reference->mapId(), std::string(reference->typeId()),
-                                        castToKeyValue(reference->keyValuePairs()));
+                    LocateRequest query(reference->mapId(), normalized.typeId_, normalized.keyValuePairs_);
                     query.layerId_ = target->model().layerInfo()->layerId_;
                     query.partition_ = target->model().partitionId();
                     auto key = query.serialize().dump();

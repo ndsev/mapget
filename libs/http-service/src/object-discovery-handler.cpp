@@ -75,7 +75,7 @@ void HttpService::Impl::handleObjectDiscoveryRequest(
         if (work.empty())
             throw std::invalid_argument("Discovery requires at least one tile.");
         auto batch = std::make_shared<ObjectDiscoveryBatch>(work.size(), callback);
-        auto headers = detail::authHeadersFromRequest(req);
+        auto headers = config_.proxyAuth.authorization(req);
         for (size_t index = 0; index < work.size(); ++index) {
             auto request = work[index];
             self_.discoverObjects(

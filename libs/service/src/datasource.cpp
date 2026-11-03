@@ -139,12 +139,19 @@ void DataSource::requireAuthHeaderRegexMatchOption(std::string header, std::rege
         std::move(re));
 }
 
-bool DataSource::isDataSourceAuthorized(
-    AuthHeaders const& clientHeaders) const
+void DataSource::requireAuthClaim(std::string pointer, std::string expected)
 {
-    return authHeadersMatch(
-        authHeaderAlternatives_,
-        clientHeaders);
+    if (pointer.empty())
+        throw std::invalid_argument("An auth-claims key must be a nonempty JSON pointer.");
+    auto [_, inserted] = requiredClaims_.emplace(nlohmann::json::json_pointer(pointer), std::move(expected));
+    if (!inserted)
+        throw std::invalid_argument("Duplicate auth-claims requirement.");
+}
+
+bool DataSource::isDataSourceAuthorized(ClientAuthorization const& authorization) const
+{
+    return authHeadersMatch(authHeaderAlternatives_, authorization.headers) &&
+        authorization.matches(requiredClaims_);
 }
 
 StringId DataSource::cachedStringPoolOffset(const std::string& stringPoolId, Cache::Ptr const& cache)

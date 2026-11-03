@@ -294,6 +294,67 @@ TEST_CASE(
     REQUIRE(fingerprint("{value: one, value: two}") != fingerprint("{value: two, value: one}"));
 }
 
+TEST_CASE("Datasource claim gates protect initializing and failed catalog rows", "[DataSourceConfig][datasource-auth]")
+{
+    ConfigReloadTest test;
+    auto& config = DataSourceConfigService::get();
+    ClientAuthorization allowed{AuthHeaders{{"x-supplier", "mcp"}},
+        std::make_shared<nlohmann::json const>(nlohmann::json{{"groups", {"SMS_users"}}})};
+    ClientAuthorization denied{AuthHeaders{{"x-supplier", "mcp"}}};
+    std::atomic_bool checkedInitializing{false};
+    std::atomic_bool initializingAllowed{false};
+    std::atomic_bool initializingDenied{false};
+    config.registerDataSourceType("GatedFailure",
+        [&](YAML::Node const&, DataSourceInitContext&) -> DataSource::Ptr {
+            auto snapshot = test.service->sourceCatalog(allowed, false);
+            initializingAllowed = snapshot.sources.size() == 1 &&
+                snapshot.sources[0].status == DataSourceCatalogStatus::Initializing;
+            initializingDenied = test.service->sourceCatalog(denied, false).sources.empty();
+            checkedInitializing = true;
+            return nullptr;
+        });
+    test.load(R"(
+sources:
+  - type: GatedFailure
+    auth-header: {X-Supplier: '^mcp$'}
+    auth-claims: {/groups: SMS_users}
+)");
+    auto snapshot = test.settled();
+    REQUIRE(checkedInitializing);
+    CHECK(initializingAllowed);
+    CHECK(initializingDenied);
+    REQUIRE(snapshot.sources.size() == 1);
+    REQUIRE(snapshot.sources[0].status == DataSourceCatalogStatus::Failed);
+    CHECK(test.service->sourceCatalog(allowed).sources.size() == 1);
+    CHECK(test.service->sourceCatalog(denied).sources.empty());
+    DataSourceCatalogChange change;
+    change.sourceUpdate = DataSourceCatalogSourceUpdate{
+        .descriptor = snapshot.sources[0].descriptor,
+        .status = DataSourceCatalogStatus::Failed};
+    CHECK(test.service->isSourceCatalogChangeVisible(change, allowed));
+    CHECK_FALSE(test.service->isSourceCatalogChangeVisible(change, denied));
+}
+
+TEST_CASE("Datasource authorization configuration rejects malformed gates", "[DataSourceConfig][datasource-auth]")
+{
+    ConfigReloadTest test;
+    auto& config = DataSourceConfigService::get();
+    auto source = nlohmann::json{{"type", "Reload"}, {"mapId", "Gated"},
+                               {"auth-claims", {{"/groups", "SMS_users"}}}};
+    CHECK_NOTHROW(config.validateDataSourceConfig(nlohmann::json{{"sources", {source}}}));
+    for (auto const& invalid : nlohmann::json::array({
+            nullptr, nlohmann::json::array(), {{"groups", "SMS_users"}},
+            {{"/groups~invalid", "SMS_users"}}, {{"/groups", 123}}, {{"/groups", {"SMS_users"}}}})) {
+        source["auth-claims"] = invalid;
+        CHECK_THROWS(config.validateDataSourceConfig(nlohmann::json{{"sources", {source}}}));
+    }
+    for (auto const* invalid : {
+            "sources: [{type: Reload, auth-claims: {/groups: SMS_users, /groups: other}}]",
+            "sources: [{type: Reload, auth-header: {X-Role: allowed, x-role: other}}]",
+            "sources: [{type: Reload, auth-header: {X-Role: '['}}]"})
+        CHECK_THROWS(config.validateDataSourceConfig(YAML::Load(invalid)));
+}
+
 TEST_CASE(
     "Toggling one datasource preserves unrelated pools, cache and in-flight work",
     "[DataSourceConfig][config-reload]")
@@ -385,8 +446,8 @@ sources:
     REQUIRE(after.sources[1].dataSource != before.sources[1].dataSource);
     REQUIRE(after.sources[1].info->stringPoolId_ != before.sources[1].info->stringPoolId_);
     REQUIRE(after.sources[1].dataSource->ttl() == std::chrono::minutes(2));
-    REQUIRE(after.sources[1].dataSource->isDataSourceAuthorized({{"x-role", "new"}}));
-    REQUIRE_FALSE(after.sources[1].dataSource->isDataSourceAuthorized({{"x-role", "old"}}));
+    REQUIRE(after.sources[1].dataSource->isDataSourceAuthorized(AuthHeaders{{"x-role", "new"}}));
+    REQUIRE_FALSE(after.sources[1].dataSource->isDataSourceAuthorized(AuthHeaders{{"x-role", "old"}}));
     test.requireSuccess(test.request("Changed"));
     auto replacement = std::dynamic_pointer_cast<ReloadTestDataSource>(after.sources[1].dataSource);
     REQUIRE(replacement->fills == 1);
@@ -398,7 +459,7 @@ TEST_CASE(
     "[DataSourceConfig][config-reload][add-on]")
 {
     std::atomic_bool addOnReady{false};
-    std::atomic_bool invalidatedBeforeReady{false};
+    std::atomic_bool abortedWithPublishedCatalog{false};
     ConfigReloadTest test;
     std::string const disabled = R"(sources:
   - {type: Reload, mapId: Base}
@@ -419,31 +480,42 @@ TEST_CASE(
         "Features",
         std::vector<PartitionId>{TileId::fromTileXY(1, 0, 3)});
     inFlight->onDone_ =
-        [&invalidatedBeforeReady, service = test.service.get()](RequestStatus status)
+        [&abortedWithPublishedCatalog,
+         service = test.service.get(),
+         previousInfo = before.sources[0].info](RequestStatus status)
     {
-        // Invalidation invokes external completion callbacks. Re-entering the
-        // catalog must work, and the new composition must not be Ready yet.
+        // Cancellation callbacks run after atomic publication, outside the catalog
+        // lock. This same-schema add-on preserves metadata but replaces the active
+        // registration; re-entry must already see its coherent Ready catalog row.
         auto catalog = service->sourceCatalog();
-        invalidatedBeforeReady = status == RequestStatus::Aborted &&
+        abortedWithPublishedCatalog = status == RequestStatus::Aborted &&
+            !catalog.sources.empty() && catalog.sources[0].info == previousInfo &&
             std::ranges::any_of(catalog.sources,
                                 [](auto const& entry) {
                                     return entry.descriptor.addOn &&
-                                        entry.status == DataSourceCatalogStatus::Initializing;
+                                        entry.status == DataSourceCatalogStatus::Ready;
                                 });
     };
     REQUIRE(test.service->request({inFlight}));
     waitForCondition([&] { return base->fills == 2; });
 
     // Enabling an add-on changes the cached composition without replacing the
-    // primary. Wait for its Ready notification, after cache invalidation finishes.
+    // primary. The composed primary metadata also changes, so observers receive a
+    // full-catalog schema notification rather than a single-source status delta.
     auto subscription = test.service->subscribeToSourceCatalogChanges(
         [&addOnReady, service = test.service.get()](DataSourceCatalogChange const& change)
         {
-            if (change.sourceUpdate && change.sourceUpdate->descriptor.addOn &&
-                change.sourceUpdate->status == DataSourceCatalogStatus::Ready)
-            {
+            if (change.reason == "schema" && !change.sourceUpdate) {
                 // Observers can re-enter the catalog; publication must not hold its lock.
-                addOnReady = service->sourceCatalogRevision() >= change.revision;
+                auto catalog = service->sourceCatalog();
+                addOnReady =
+                    catalog.revision >= change.revision &&
+                    std::ranges::any_of(
+                        catalog.sources,
+                        [](auto const& entry) {
+                            return entry.descriptor.addOn &&
+                                entry.status == DataSourceCatalogStatus::Ready;
+                        });
             }
         });
     test.load(R"(sources:
@@ -453,7 +525,7 @@ TEST_CASE(
 )");
     auto enabled = test.settled();
     waitForCondition([&] { return addOnReady.load(); });
-    REQUIRE(invalidatedBeforeReady);
+    REQUIRE(abortedWithPublishedCatalog);
     REQUIRE(inFlight->getStatus() == RequestStatus::Aborted);
     base->pauseFills = false;
     REQUIRE(enabled.sources.size() == 3);
@@ -476,6 +548,68 @@ TEST_CASE(
     REQUIRE(addOn->fills == 1);
     REQUIRE(other->fills == 1);
     REQUIRE(test.constructions == 3);
+}
+
+TEST_CASE(
+    "Each silent reload withdrawal fences previously assembled schema inventories",
+    "[DataSourceConfig][config-reload][schema-inventory]")
+{
+    std::vector<uint64_t> capturedRevisions;
+    std::vector<nlohmann::json> capturedInventories;
+    std::vector<uint64_t> publishedRevisions;
+    ConfigReloadTest test;
+    test.load(R"(sources:
+  - {type: Reload, mapId: First, sourceId: first}
+  - {type: Reload, mapId: Second, sourceId: second}
+  - {type: Reload, mapId: Retained, sourceId: retained}
+)");
+    REQUIRE(test.settled().sources.size() == 3);
+
+    auto gate = std::make_shared<std::atomic_bool>(false);
+    std::vector<LayerTilesRequest::Ptr> requests;
+    for (auto const* map : {"First", "Second"}) {
+        auto request = std::make_shared<LayerTilesRequest>(
+            map,
+            "Features",
+            std::vector<PartitionId>{TileId::fromTileXY(1, 0, 3)});
+        request->setWorkAdmissionGate(gate);
+        request->onDone_ = [&, service = test.service.get()](RequestStatus status)
+        {
+            if (status != RequestStatus::Aborted)
+                return;
+            // The first withdrawal's external callback runs after the initial
+            // reload revision bump but before the next source is removed. This is
+            // exactly the window of a response assembled before later encoding.
+            capturedRevisions.push_back(service->sourceCatalogRevision());
+            capturedInventories.push_back(service->schemaInventory());
+        };
+        requests.push_back(std::move(request));
+    }
+    REQUIRE(test.service->request(requests));
+    auto subscription = test.service->subscribeToSourceCatalogChanges(
+        [&](DataSourceCatalogChange const& change)
+        {
+            if (change.reason == "reload")
+                publishedRevisions.push_back(change.revision);
+        });
+    test.load(R"(sources:
+  - {type: Reload, mapId: Retained, sourceId: retained}
+)");
+
+    REQUIRE(capturedRevisions.size() == 2);
+    REQUIRE(capturedInventories.size() == 2);
+    // These identical legacy declarations share one artifact; its consumers
+    // change on each withdrawal, even though the artifact identity is unchanged.
+    REQUIRE(capturedInventories[0].size() == 1);
+    REQUIRE(capturedInventories[1].size() == 1);
+    CHECK(capturedInventories[0][0]["consumers"].size() == 2);
+    CHECK(capturedInventories[1][0]["consumers"].size() == 1);
+    CHECK(capturedRevisions[1] > capturedRevisions[0]);
+    CHECK(test.service->sourceCatalogRevision() > capturedRevisions[0]);
+    REQUIRE(publishedRevisions.size() == 1);
+    CHECK(publishedRevisions[0] == test.service->sourceCatalogRevision());
+    for (auto const& request : requests)
+        CHECK(request->getStatus() == RequestStatus::Aborted);
 }
 
 TEST_CASE(

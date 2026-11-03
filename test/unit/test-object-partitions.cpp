@@ -4,10 +4,12 @@
 #include <future>
 #include <sstream>
 #include "../../libs/http-service/src/tiles-request-json.h"
+#include "../../libs/service/src/service-scheduler.h"
 #include "mapget/http-service/http-client.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/stringpool.h"
+#include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
 #include "test-http-service-fixture.h"
 
@@ -312,6 +314,38 @@ TEST_CASE(
     auto invalid = *source->metadata.layers_.at("Road");
     invalid.tileAssociationLevel_ = 16;
     CHECK_THROWS(invalid.validateIdentifiers());
+}
+
+TEST_CASE("Discovery admission rejects a replaced registration", "[objects][source-lifecycle]")
+{
+    using namespace std::chrono_literals;
+    detail::DataSourceRegistry registry;
+    detail::ServiceScheduler scheduler(registry, std::make_shared<MemCache>(), 0ms, 1, 5s, 1h);
+    auto source = std::make_shared<ObjectSource>();
+    auto old = registry.add(source, "objects");
+    scheduler.synchronizeDataSources(registry.snapshot())();
+    registry.remove(source);
+    auto current = registry.add(source, "objects");
+    scheduler.synchronizeDataSources(registry.snapshot())();
+    REQUIRE(old != current);
+    REQUIRE(old->info->schemaId_ == current->info->schemaId_);
+
+    auto discover = [&](detail::RegisteredDataSource::Ptr registration)
+    {
+        auto promise = std::make_shared<std::promise<ObjectDiscoveryResult>>();
+        auto result = promise->get_future();
+        scheduler.enqueueDiscovery(
+            std::move(registration),
+            {"Objects", "Road", TileId::fromTileXY(1, 1, 13)},
+            [promise](auto value) { promise->set_value(std::move(value)); });
+        REQUIRE(result.wait_for(5s) == std::future_status::ready);
+        return result.get();
+    };
+    // Simulate replacement between authorization and scheduling without timing a race.
+    CHECK(discover(old).status_ == ObjectDiscoveryResult::Status::Failed);
+    CHECK(source->discoveries == 0);
+    CHECK(discover(current).status_ == ObjectDiscoveryResult::Status::Success);
+    CHECK(source->discoveries == 1);
 }
 
 TEST_CASE(
