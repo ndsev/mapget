@@ -1450,7 +1450,7 @@ TEST_CASE("MapSchema rejects aliased numeric storage and invalid flag declaratio
         {
             auto invalid = mutateGenericDomains(
                 *graph,
-                [&](auto& payload, size_t start)
+                [&column, type = type, bits = bits](auto& payload, size_t start)
                 {
                     auto [offset, count] = column(payload, start, 4);
                     REQUIRE(count == 1);
