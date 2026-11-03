@@ -176,7 +176,6 @@ TEST_CASE("MCP local defaults use trusted startup inputs", "[mcp-auth][mcp-actio
 
     McpConfig local;
     local.mode = McpConfig::Mode::Local;
-    CHECK_THROWS(local.resolveDefaults("0.0.0.0", 8099, "/viewer"));
     CHECK_THROWS(local.resolveDefaults("127.0.0.1", 0, "/viewer"));
     local.resolveDefaults("127.0.0.1", 8099, "/viewer");
     CHECK_NOTHROW(local.validate());
@@ -198,6 +197,20 @@ TEST_CASE("MCP local defaults use trusted startup inputs", "[mcp-auth][mcp-actio
     CHECK(ipv6.catalogPath == "custom.json");
     CHECK(ipv6.endpoint == "http://[::1]/mcp");
     CHECK(ipv6.allowedHosts == std::vector<std::string>{"[::1]"});
+
+    for (auto const& [host, authority] :
+         {std::pair{"0.0.0.0", "localhost"},
+          std::pair{"::", "localhost"},
+          std::pair{"192.0.2.10", "192.0.2.10"},
+          std::pair{"2001:db8::1", "[2001:db8::1]"}})
+    {
+        McpConfig network;
+        network.mode = McpConfig::Mode::Local;
+        network.resolveDefaults(host, 8099, {});
+        CHECK_NOTHROW(network.validate());
+        CHECK(network.endpoint == "http://" + std::string(authority) + ":8099/mcp");
+        CHECK(network.allowedHosts.front() == std::string(authority) + ":8099");
+    }
 
     auto hosted = mapget::test::McpTestIssuer::configuration();
     hosted.catalogPath.clear();
@@ -233,17 +246,16 @@ TEST_CASE("MCP CLI settings are individual typed options", "[mcp-auth][mcp-actio
     CHECK_THROWS_AS(app.parse("--mcp 1"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-config old.json"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-browser-max-lifetime-seconds 3600"), CLI::ParseError);
+    CHECK_THROWS_AS(app.parse("--mcp-local-peer-addresses 172.17.0.1"), CLI::ParseError);
     CHECK_THROWS_AS(app.parse("--mcp-sessions not-an-integer"), CLI::ParseError);
 }
 
-TEST_CASE("MCP container access is explicit and uses the published port", "[mcp-auth]")
+TEST_CASE("MCP local allowlists use the client-facing endpoint, not the listener", "[mcp-auth]")
 {
     using mapget::McpConfig;
     McpConfig config;
     config.mode = McpConfig::Mode::Local;
     config.endpoint = "http://localhost:18099/mcp";
-    CHECK_THROWS(config.resolveDefaults("0.0.0.0", 8089, {}));
-    config.localPeerAddresses = {"172.17.0.1"};
     config.resolveDefaults("0.0.0.0", 8089, {});
     CHECK_NOTHROW(config.validate());
     CHECK(
@@ -254,47 +266,73 @@ TEST_CASE("MCP container access is explicit and uses the published port", "[mcp-
     for (auto const& [input, expected] :
          {std::pair{"http://localhost:80/mcp", "http://localhost/mcp"},
           std::pair{"https://localhost:443/mcp", "https://localhost/mcp"},
-          std::pair{"http://localhost:08099/mcp", "http://localhost:8099/mcp"}})
+          std::pair{"http://localhost:08099/mcp", "http://localhost:8099/mcp"},
+          std::pair{"https://viewer.example:443/mcp", "https://viewer.example/mcp"},
+          std::pair{"https://Viewer.Example/mcp", "https://viewer.example/mcp"},
+          std::pair{"http://LOCALHOST:8099/mcp", "http://localhost:8099/mcp"},
+          std::pair{"http://[0:0:0:0:0:0:0:1]:8099/mcp", "http://[::1]:8099/mcp"},
+          std::pair{"https://[2001:DB8:0:0:0:0:0:1]:8443/mcp", "https://[2001:db8::1]:8443/mcp"},
+          std::pair{"http://192.0.2.10:18099/mcp", "http://192.0.2.10:18099/mcp"},
+          std::pair{"https://[2001:db8::1]:8443/mcp", "https://[2001:db8::1]:8443/mcp"}})
     {
         McpConfig canonical;
         canonical.mode = McpConfig::Mode::Local;
         canonical.endpoint = input;
-        canonical.resolveDefaults("127.0.0.1", 8089, {});
+        canonical.resolveDefaults("0.0.0.0", 8089, {});
         CHECK_NOTHROW(canonical.validate());
         CHECK(canonical.endpoint == expected);
-        CHECK(
-            canonical.allowedOrigins.front() ==
-            std::string(expected).substr(0, std::string(expected).size() - 4));
+        auto const origin = std::string(expected).substr(0, std::string(expected).size() - 4);
+        auto request = drogon::HttpRequest::newHttpRequest();
+        request->addHeader("Host", origin.substr(origin.find("://") + 3));
+        request->addHeader("Origin", origin);
+        CHECK(McpAuthentication(canonical).acceptsRequest(request, true));
     }
 
-    McpConfig noEndpoint;
-    noEndpoint.mode = McpConfig::Mode::Local;
-    noEndpoint.localPeerAddresses = {"172.17.0.1"};
-    CHECK_THROWS(noEndpoint.resolveDefaults("0.0.0.0", 8089, {}));
-    for (auto const* address : {"", "*", "0.0.0.0", "::", "172.17.0.0/16", "gateway", "999.1.1.1"})
-    {
-        config.localPeerAddresses = {address};
-        CHECK_THROWS(config.validate());
-    }
-    config.localPeerAddresses = {"fd00::1"};
-    CHECK_NOTHROW(config.validate());
-    config.localPeerAddresses.assign(33, "172.17.0.1");
-    CHECK_THROWS(config.validate());
     for (auto const* endpoint :
-         {"http://remote.example/mcp", "http://localhost:0/mcp", "http://localhost:65536/mcp"})
+         {"http://localhost:0/mcp",
+          "http://localhost:65536/mcp",
+          "https://user@viewer.example/mcp",
+          "https://viewer.example/mcp?query",
+          "https://viewer.example/path/mcp",
+          "https://*/mcp",
+          "http://[1:::2]/mcp",
+          "http://127.1/mcp",
+          "http://127.000.0.1/mcp",
+          "http://999.1.1.1/mcp"})
     {
         config.endpoint = endpoint;
         CHECK_THROWS(config.resolveDefaults("127.0.0.1", 8089, {}));
     }
-    auto oauth = McpTestIssuer::configuration();
-    oauth.localPeerAddresses = {"172.17.0.1"};
-    CHECK_THROWS(oauth.validate());
+}
 
-    CLI::App app;
-    McpConfig options;
-    options.addOptions(app);
-    app.parse("--mcp-local-peer-addresses 172.17.0.1 fd00::1");
-    CHECK(options.localPeerAddresses == std::vector<std::string>{"172.17.0.1", "fd00::1"});
+TEST_CASE("MCP local Host and Origin validation is independent of proxy headers", "[mcp-auth]")
+{
+    mapget::McpConfig config;
+    config.mode = mapget::McpConfig::Mode::Local;
+    config.endpoint = "https://viewer.example/mcp";
+    config.resolveDefaults("0.0.0.0", 8089, {});
+    McpAuthentication auth(config);
+    auto request = drogon::HttpRequest::newHttpRequest();
+    request->addHeader("Host", "viewer.example");
+    CHECK(auth.acceptsRequest(request, false));
+    CHECK_FALSE(auth.acceptsRequest(request, true));
+    request->addHeader("Origin", "https://viewer.example");
+    request->addHeader("Forwarded", "for=192.0.2.10;host=other.example;proto=http");
+    request->addHeader("X-Forwarded-For", "192.0.2.10");
+    request->addHeader("X-Forwarded-Host", "other.example");
+    request->addHeader("X-Forwarded-Proto", "http");
+    request->addHeader("Authorization", "Bearer not-a-local-credential");
+    CHECK(auth.acceptsRequest(request, true));
+    CHECK(auth.browser(request).sameUser(auth.localPrincipal()));
+    CHECK(auth.info("test")["endpoint"] == config.endpoint);
+
+    request->addHeader("Host", "other.example");
+    request->addHeader("X-Forwarded-Host", "viewer.example");
+    CHECK_FALSE(auth.acceptsRequest(request, true));
+    request->addHeader("Host", "viewer.example");
+    request->addHeader("Origin", "https://other.example");
+    CHECK_FALSE(auth.acceptsRequest(request, false));
+    CHECK_FALSE(auth.browser(request).valid(std::chrono::system_clock::now()));
 }
 
 TEST_CASE(
@@ -494,6 +532,8 @@ TEST_CASE("MCP security configuration and public hints fail closed", "[mcp-auth]
     CHECK(localAuth.localPrincipal().valid(std::chrono::system_clock::now()));
     CHECK(localAuth.info("test")["scopes"].empty());
     local.allowedHosts.push_back("remote.example");
+    CHECK_NOTHROW(McpAuthentication(local));
+    local.allowedOrigins = {"https://other.example"};
     CHECK_THROWS(McpAuthentication(local));
     CHECK_THROWS(McpAuthentication::parseJson(std::string(100, ' '), 10));
     CHECK_THROWS(McpAuthentication::parseJson("[[[[0]]]]", 100, 2));

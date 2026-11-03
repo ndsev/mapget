@@ -205,22 +205,11 @@ void McpServer::setup(drogon::HttpAppFramework& app)
         "/.well-known/oauth-protected-resource",
         decltype(handler){handler},
         {drogon::Get, drogon::Options});
-    if (auth_.settings().mode == McpConfig::Mode::Local &&
-        auth_.settings().localPeerAddresses.empty()) {
-        app.registerBeginningAdvice(
-            [&app]
-            {
-                // Embedders retain the same loopback default as the CLI. A validated explicit
-                // peer allowlist opts into the container listener contract instead.
-                for (auto const& listener : app.getListeners()) {
-                    auto address = listener.toIp();
-                    if (address != "127.0.0.1" && address != "::1") {
-                        throw std::invalid_argument(
-                            "Local MCP requires a loopback-only HTTP listener (--host 127.0.0.1).");
-                    }
-                }
-            });
-    }
+    if (auth_.settings().mode == McpConfig::Mode::Local)
+        log().warn(
+            "MCP local mode is unauthenticated: reachable clients share access to enabled tools "
+            "and viewer sessions. Exposure follows the HTTP listener and port publishing; "
+            "use OAuth on untrusted networks.");
 }
 
 drogon::HttpResponsePtr McpServer::jsonResponse(nlohmann::json body, drogon::HttpStatusCode status)
@@ -239,7 +228,7 @@ void McpServer::handle(drogon::HttpRequestPtr request, Reply reply)
 {
     if (!auth_.acceptsRequest(request, request->path() == "/mcp/browser")) {
         reply(jsonResponse(
-            {{"error", "MCP Host/Origin or exposure policy rejected the request."}},
+            {{"error", "MCP Host/Origin policy rejected the request."}},
             drogon::k403Forbidden));
         return;
     }

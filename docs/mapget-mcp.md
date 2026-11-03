@@ -56,8 +56,9 @@ mapget serve --host 127.0.0.1 -p 8099 -w /path/to/viewer --mcp local
 
 The same options work in MapViewer's `serve` command. No separate MCP config
 file is needed. The default mode is `off`; opt-in is always explicit.
-Local mode derives the endpoint from the configured listener and port, and the
-loopback Host/Origin allowlists from that endpoint, never from request headers. Use a fixed port;
+Local mode derives the endpoint from the configured listener and port (`localhost`
+for wildcard listeners), and the Host/Origin allowlists from that endpoint, never
+from request headers. Use a fixed port when deriving the endpoint;
 port zero cannot provide a predictable connection URL. The default catalog is
 `<webapp directory>/web-mcp-actions.json`, including when the mount uses
 `/viewer:/path/to/viewer` syntax. Without a webapp, omit the catalog for a headless native-tool server, or pass
@@ -117,39 +118,52 @@ section, not in browser-writable datasource or public frontend configuration.
 and no MCP trust-setting writer is registered for `PATCH /config`.
 The removed `--mcp-config` JSON-file interface is not supported.
 
-Local mode gives explicitly allowed loopback clients one shared local identity.
-By default it requires a loopback-only listener and loopback socket peer. Exact
-Host and Origin allowlists always apply; forwarding headers are rejected. A
-browser action connection must supply an allowed Origin; non-browser MCP
-callers may omit it. Do not use local mode as an OAuth fallback or expose it
-through a public reverse proxy.
+Local mode is **unauthenticated, shared-user access**. It follows the ordinary
+HTTP server's network policy: listener binding, container port publishing,
+firewall and reverse proxy. There is no MCP-specific listener or peer-IP
+restriction. Every reachable client can use enabled tools and control the same
+local viewer sessions. Config reads/writes still require their separate opt-ins.
+
+**The native listener defaults to `0.0.0.0`, not loopback.** For machine-local
+access, explicitly use `--host 127.0.0.1`; for shared or untrusted networks, use
+OAuth. Startup logs warn whenever local mode is enabled. Local mode is never
+an automatic fallback from failed OAuth authentication.
+
+Exact Host and Origin allowlists still protect browser requests, but are not
+user authentication. A browser action connection must supply an allowed Origin;
+non-browser MCP callers may omit it. Forwarded headers are ignored for endpoint,
+Host/Origin and identity decisions, not rejected simply because a proxy adds them.
+
+### Client-Facing Endpoint
+
+`--mcp-endpoint` specifies the URL clients use, not the listening address. Local
+mode derives it from `--host` and `--port`; wildcard listeners (`0.0.0.0` or `::`)
+advertise `localhost`. Override it when clients use a different port, hostname
+or scheme, for example `https://viewer.example/mcp` behind a TLS reverse proxy.
+It supplies `/mcp/info` and erdblick's copied connection command, plus the default
+Host/Origin allowlists. It neither binds an interface nor configures proxy routes.
+OAuth additionally uses this URL as the protected resource and token audience.
+
+Local defaults allow the endpoint's authority and origin. For a loopback endpoint,
+`localhost`, `127.0.0.1` and `[::1]` are interchangeable at that public port.
+DNS case, IPv6 spelling and default ports are normalized before deriving these
+allowlists; IPv4 literals require canonical dotted notation.
+Explicit `--mcp-allowed-hosts` and `--mcp-allowed-origins` replace those defaults;
+use them for additional names or browser origins. Neither list allows wildcards.
 
 ### Local Containers
 
 Docker bridge publishing reaches the container interface, not its loopback.
-The socket peer is normally the bridge gateway, not the host's `127.0.0.1`.
-For this deployment only, explicitly configure both:
+Use `--mcp local --host 0.0.0.0` inside the container and publish on host loopback
+for machine-local access, for example `docker run -p 127.0.0.1:8099:8089 ...`.
+Set `--mcp-endpoint http://127.0.0.1:8099/mcp` for the host-visible port; the
+Python launcher does this automatically. No gateway discovery or peer allowlist
+is needed. Host networking instead uses the ordinary `--host` binding directly.
 
-- `--mcp-local-peer-addresses <gateway-IP>`: additional exact socket peers
-  trusted as the local user, at most 32 canonical literal IP addresses. No
-  hostnames, CIDRs, wildcard peers or forwarded-header interpretation.
-- `--mcp-endpoint http://127.0.0.1:<published-port>/mcp`: the host-visible URL.
-  This also supplies the port for default loopback Host/Origin allowlists;
-  it may differ from the container's listening port.
-
-With both settings, `--host 0.0.0.0` is permitted inside the container. Without
-both, the strict loopback-listener requirement remains. These peer settings
-are rejected in OAuth mode and do not weaken its authentication rules.
-
-**Publish the host port only on loopback**, for example
-`docker run -p 127.0.0.1:8099:8089 ...`. A container cannot determine whether
-Docker published its port on a public host interface. The peer allowlist does
-not authenticate users behind NAT: everyone routed through an allowed gateway
-gets the same local identity. Likewise, Host/Origin checks are not credentials.
-Use OAuth for shared or externally accessible deployments. Rootless runtimes
-and Docker Desktop may use a different forwarding peer; configure the actual
-runtime address, never an entire private network. Linux host-network mode can
-instead retain the ordinary loopback listener without any additional peers.
+Publishing on loopback does not isolate other containers on the same bridge:
+they can reach the container listener directly and share its local MCP access.
+Use container-network isolation or OAuth when those peers are untrusted. The
+removed `--mcp-local-peer-addresses` option is no longer accepted.
 
 `GET /mcp/info` returns `{"enabled":false}` when disabled. When enabled it returns
 `enabled`, `endpoint`, `authentication`, `scopes`, `catalogId`, and an optional
@@ -269,13 +283,12 @@ occurrences; YAML lists use the usual sequence syntax.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mcp` | `off` | `off`, loopback-only `local`, or `oauth` |
-| `mcp-endpoint` | Local listener URL | Canonical public resource URL ending in `/mcp`; also the required audience |
+| `mcp` | `off` | `off`, unauthenticated shared-user `local`, or `oauth`; local exposure follows ordinary server networking |
+| `mcp-endpoint` | Local listener URL (`localhost` for wildcard binds) | Client-facing resource URL ending in `/mcp`; supplies local allowlist defaults and the OAuth audience |
 | `mcp-catalog` | `<webapp>/web-mcp-actions.json` | Trusted generated catalog |
 | `mcp-help-docs` | None | Additional trusted Markdown directories/files; supplements bundled docs and `<webapp>/mcp-help`; contents hot-reload |
-| `mcp-allowed-hosts` | Local loopback names and port | Exact HTTP Host allowlist; required for OAuth |
-| `mcp-allowed-origins` | Local loopback HTTP origins | Exact browser Origin allowlist; required for OAuth |
-| `mcp-local-peer-addresses` | Empty | Additional exact canonical socket-peer IPs for a loopback-published container; local mode only, at most 32; broad listeners also require explicit `mcp-endpoint` |
+| `mcp-allowed-hosts` | Local endpoint authority (plus aliases for loopback) | Exact HTTP Host allowlist; required for OAuth |
+| `mcp-allowed-origins` | Local endpoint origin (plus aliases for loopback) | Exact browser Origin allowlist; required for OAuth |
 | `mcp-issuer` | None | Trusted HTTPS issuer |
 | `mcp-jwks-url` | None | Trusted HTTPS signing-key URL; exclusive with `mcp-jwks-file` |
 | `mcp-jwks-file` | None | Local public JWKS artifact, immutable until restart |
@@ -502,7 +515,7 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 
 Native data tools require the configured read permission. Configuration read/write and
 global diagnostics use **separate** permissions: viewer control never grants them.
-Local mode grants these permissions to its shared loopback identity, but config access
+Local mode grants these permissions to its shared local identity, but config access
 still requires the deployment opt-ins. OAuth defaults do not grant the new administrative
 permissions. Configure their claim/value pairs explicitly when desired.
 
@@ -1184,7 +1197,7 @@ JSON-RPC tools/list and tools/call protocol as `/mcp`, including finite SSE resu
 with a different authentication boundary:
 
 - Every request requires an explicitly allowed `Origin` and `Host`.
-- Local mode requires a loopback or explicitly allowed container peer and rejects forwarding headers as usual.
+- Local mode uses its shared unauthenticated identity; exact Host/Origin checks still apply, without peer-IP restrictions or identity from forwarding headers.
 - OAuth deployments use the trusted proxy's browser identity headers, exactly as
   the interactive WebSocket does. The proxy must strip caller-supplied authority
   headers and inject verified issuer, subject, expiry, and permissions for this

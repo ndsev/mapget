@@ -17,7 +17,8 @@ namespace mapget
 /** Restart-scoped MCP settings shared by the CLI and native HttpService embedders. */
 struct McpConfig
 {
-    /** Local access trusts loopback or explicit container peers, never an OAuth fallback. */
+    /** Local access is unauthenticated and shares the server's network exposure, never an OAuth
+     * fallback. */
     enum class Mode { Off, Local, OAuth };
 
     /** Hard admission limits, including mutations whose completion is still uncertain. */
@@ -40,8 +41,6 @@ struct McpConfig
     std::filesystem::path webHelpDirectory;  // Derived from the resolved webapp root, never a URL.
     std::vector<std::string> allowedHosts;  // Exact HTTP Host values, including non-default ports.
     std::vector<std::string> allowedOrigins;  // Exact origins; a browser must supply one.
-    /** Opt-in exact socket peers for loopback-published containers; never forwarded addresses. */
-    std::vector<std::string> localPeerAddresses;
     Limits limits;
 
     // Provider-neutral OAuth resource settings. The audience is always endpoint.
@@ -83,7 +82,8 @@ struct McpConfig
     /** Bind individual CLI11 options; this object must outlive parsing/callbacks on serve. */
     void addOptions(CLI::App& serve);
 
-    /** Derive local hints/catalog; broad listeners require explicit peers and a public endpoint. */
+    /** Derive local endpoint/allowlists from startup inputs; wildcard listeners advertise
+     * localhost. */
     void resolveDefaults(std::string const& host, int port, std::filesystem::path const& webRoot);
 
     /** Reject incomplete trust settings and invalid bounds before accepting connections. */

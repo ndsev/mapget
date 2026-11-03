@@ -61,8 +61,9 @@ def validate_response(message, protocol, method):
 class ViewerConnection:
     """A minimal real WebSocket peer; application behavior remains explicitly controlled by tests."""
 
-    def __init__(self, port, endpoint="/interactive", headers=None):
-        self.socket = socket.create_connection(("127.0.0.1", port), timeout=6)
+    def __init__(self, port, endpoint="/interactive", headers=None, source_address=None):
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=6,
+                                               source_address=source_address)
         self.buffer = b""
         key = base64.b64encode(os.urandom(16)).decode()
         handshake = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}",
@@ -316,8 +317,7 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", headers=headers)
             self.assertEqual(response.status, 400)
             self.assertEqual(self.rpc_result(response)["error"]["code"], code)
-        for headers in ({"Host": "attacker.example"}, {"Origin": "https://attacker.example"},
-                        {"X-Forwarded-For": "127.0.0.1"}):
+        for headers in ({"Host": "attacker.example"}, {"Origin": "https://attacker.example"}):
             self.assertEqual(self.http("GET", "/mcp/info", headers=headers)[0], 403)
         self.assertEqual(self.http("GET", "/mcp")[0], 405)
 
@@ -1048,24 +1048,63 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(self.http("/mcp/info", {"Host": f"localhost:{self.port}"})[0], 403)
         self.assertEqual(self.http("/mcp/info", {"Origin": f"http://localhost:{self.port}"})[0], 403)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Uses Linux's 127/8 source addresses")
-    def test_explicit_local_peer_and_published_endpoint(self):
-        """Container peers do not bypass Host, Origin, or forwarding-header checks."""
-        self.settings.update({"host": "0.0.0.0", "mcp-local-peer-addresses": ["127.0.0.2"],
-                              "mcp-endpoint": "http://localhost:18099/mcp"})
+    def test_local_wildcard_listener_defaults(self):
+        """Local MCP uses the ordinary listener; a wildcard advertises localhost, not 0.0.0.0."""
+        self.settings["host"] = "0.0.0.0"
         self.start()
-        headers = {"Host": "localhost:18099", "Origin": "http://localhost:18099"}
-        peer = ("127.0.0.2", 0)
-        status, info = self.http("/mcp/info", headers, source_address=peer)
+        status, info = self.http("/mcp/info")
         self.assertEqual(status, 200)
-        self.assertEqual(info["endpoint"], "http://localhost:18099/mcp")
-        self.assertEqual(self.http("/mcp/info", headers, source_address=("127.0.0.3", 0))[0], 403)
+        self.assertEqual(info["endpoint"], f"http://localhost:{self.port}/mcp")
+        self.log.flush()
+        self.log.seek(0)
+        self.assertIn("MCP local mode is unauthenticated", self.log.read())
+
+    def test_local_public_endpoint_and_forwarded_headers(self):
+        """An explicit proxy endpoint controls Host/Origin defaults, never forwarded headers."""
+        self.settings.update({"host": "0.0.0.0", "mcp-endpoint": "https://Viewer.Example:443/mcp"})
+        self.start()
+        headers = {"Host": "viewer.example", "Origin": "https://viewer.example"}
+        status, info = self.http("/mcp/info", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(info["endpoint"], "https://viewer.example/mcp")
+        forwarding = {"Forwarded": "for=192.0.2.10;host=evil.example;proto=http",
+                      "X-Forwarded-For": "192.0.2.10", "X-Forwarded-Host": "evil.example",
+                      "X-Forwarded-Proto": "http"}
+        self.assertEqual(self.http("/mcp/info", {**headers, **forwarding}), (status, info))
         for change in ({"Host": "evil.example"}, {"Origin": "https://evil.example"},
-                       {"Forwarded": "for=127.0.0.1"}, {"X-Forwarded-For": "127.0.0.1"},
+                       {"Host": "evil.example", "X-Forwarded-Host": "viewer.example"},
                        {"Host": f"127.0.0.1:{self.port}"}):
             with self.subTest(change=change):
-                self.assertEqual(self.http("/mcp/info", {**headers, **change},
-                                           source_address=peer)[0], 403)
+                self.assertEqual(self.http("/mcp/info", {**headers, **change})[0], 403)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Uses Linux's 127/8 source addresses")
+    def test_local_clients_share_identity_regardless_of_peer(self):
+        """Peer addresses neither block reachable callers nor partition local browser sessions."""
+        self.settings["host"] = "0.0.0.0"
+        self.start()
+        headers = {"Host": f"localhost:{self.port}", "Origin": f"http://localhost:{self.port}"}
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        clients = []
+        for address in ("127.0.0.2", "127.0.0.3"):
+            peer = (address, 0)
+            self.assertEqual(self.http("/mcp/info", headers, source_address=peer)[0], 200)
+            viewer = ViewerConnection(self.port, headers=headers, source_address=peer)
+            self.addCleanup(viewer.close)
+            viewer.send({"type": "mapget.actions.register", "version": 1,
+                         "catalogId": catalog["catalogId"], "label": address,
+                         "actions": [action["name"] for action in catalog["actions"]]})
+            self.assertEqual(viewer.receive()["type"], "mapget.actions.registered")
+            clients.append(viewer.client_id)
+        status, payload = self.http("/mcp", {
+            **headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-11-25"}, "POST", json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "viewer_list_sessions", "arguments": {}}}))
+        self.assertEqual(status, 200)
+        reply = payload if isinstance(payload, dict) else json.loads(next(
+            line[6:] for line in payload.splitlines() if line.startswith("data: ")))
+        sessions = reply["result"]["structuredContent"]["sessions"]
+        self.assertEqual(sorted(session["clientId"] for session in sessions), sorted(clients))
 
     def help_query(self, query):
         """Read an MCP result through a real initialized-era SSE response."""
@@ -1284,8 +1323,9 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
     def test_invalid_startup_configuration_fails_closed(self):
-        """Misspellings, removed switches, public local listeners and invalid limits fail startup."""
-        for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"), ("--host", "0.0.0.0"),
+        """Misspellings, removed switches and invalid limits fail startup."""
+        for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"),
+                          ("--mcp-local-peer-addresses", "127.0.0.1"),
                           ("--mcp-browser-max-lifetime-seconds", "3600"),
                           ("--mcp-sessions", "0"), ("--mcp-timeout-ms", "-1"), ("--mcp-issuer", "https://issuer.example")]:
             with self.subTest(overrides=overrides):

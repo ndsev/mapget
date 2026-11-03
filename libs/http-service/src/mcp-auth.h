@@ -31,7 +31,7 @@ public:
     /** Construct the RFC 9728/6750 challenge, including configured required scopes. */
     [[nodiscard]] std::string challenge(bool insufficient = false) const;
 
-    /** Check Host/Origin and local exposure without trusting forwarding headers. */
+    /** Check configured Host/Origin allowlists without interpreting forwarding headers. */
     [[nodiscard]] bool acceptsRequest(drogon::HttpRequestPtr const& request, bool browser) const;
 
     /** Bind a browser to verified proxy claims or the explicitly enabled local identity. */

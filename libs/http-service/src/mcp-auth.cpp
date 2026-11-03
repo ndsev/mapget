@@ -27,12 +27,6 @@ bool containsWord(std::string const& list, std::string const& expected)
     return false;
 }
 
-/** Only literal loopback addresses qualify; DNS and forwarded addresses are not evidence. */
-bool loopback(std::string const& address)
-{
-    return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
-}
-
 /** Bound decoded JSON before jwt-cpp's recursive JSON parser or NumericDate conversions run. */
 jwt::decoded_jwt<jwt::traits::nlohmann_json> decodeToken(std::string const& token)
 {
@@ -168,20 +162,8 @@ bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bo
     {
         return false;
     }
-    if (config_.mode == McpConfig::Mode::Local) {
-        auto const peer = request->peerAddr().toIp();
-        if (!loopback(peer) &&
-            std::none_of(
-                config_.localPeerAddresses.begin(),
-                config_.localPeerAddresses.end(),
-                [&peer](auto const& allowed)
-                { return peer == allowed || peer == "::ffff:" + allowed; }))
-            return false;
-        for (auto const& [name, value] : request->headers()) {
-            if (name == "forwarded" || name.starts_with("x-forwarded-"))
-                return false;
-        }
-    }
+    // Local mode has no network-peer authentication. Forwarded headers do not select
+    // authority, origin or identity; OAuth's trusted browser-proxy check is separate.
     return true;
 }
 
