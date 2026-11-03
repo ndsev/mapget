@@ -861,7 +861,7 @@ representations which should start hidden. Clients retain saved user visibility
 in preference to this default; omission preserves their existing defaults.
 
 A feature-scope, point-only filter channel may set `pointCloudMaxPoints` to an
-integer from 0 to 13999999. A positive value limits each candidate feature's
+unsigned 32-bit integer. A positive value limits each candidate feature's
 matching point geometries together. Objects within the quota retain every point,
 including duplicates. Larger objects retain exactly the requested number of
 original records, spaced evenly through source order, including both endpoints

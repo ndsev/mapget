@@ -236,10 +236,10 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
             });
         }
         if (channel.pointCloudMaxPoints_ &&
-            (*channel.pointCloudMaxPoints_ > DefaultPointCloudMaxPoints || channel.scope_ != FeatureLayerFilterScope::Feature ||
+            (channel.scope_ != FeatureLayerFilterScope::Feature ||
              channel.group_ || channel.relation_ || channel.geometryTypes_ != (1U << static_cast<unsigned>(GeomType::Points)))) {
             return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
-                "Point-cloud sampling requires a feature-only point channel and a per-object quota in 0..13999999."});
+                "Point-cloud sampling requires a feature-only point channel."});
         }
         if (channel.geometryName_ && channel.geometryName_->empty()) {
             return tl::unexpected(simfil::Error{
