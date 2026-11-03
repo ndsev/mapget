@@ -976,7 +976,7 @@ void McpNativeTools::Call::listSchemas()
         {
             return (!format || owner.format() == *format) &&
                 (!arguments.contains("mapSchemaId") ||
-                 arguments["mapSchemaId"] == owner.schemaId());
+                 arguments["mapSchemaId"].get_ref<std::string const&>() == owner.schemaId());
         },
         [&]
         {
@@ -985,8 +985,10 @@ void McpNativeTools::Call::listSchemas()
         },
         [&](std::string_view sourceId, std::string_view mapId)
         {
-            return (!arguments.contains("mapId") || arguments["mapId"] == mapId) &&
-                (!arguments.contains("sourceId") || arguments["sourceId"] == sourceId);
+            return (!arguments.contains("mapId") ||
+                    arguments["mapId"].get_ref<std::string const&>() == mapId) &&
+                (!arguments.contains("sourceId") ||
+                 arguments["sourceId"].get_ref<std::string const&>() == sourceId);
         });
     for (auto item : inventory) {
         if (!step())
@@ -1002,7 +1004,8 @@ bool McpNativeTools::Call::selectSchemaLayer()
         selectLayer();
         if (arguments.contains("mapSchemaId") &&
             (!layer_->schemaOwner() ||
-             arguments["mapSchemaId"] != layer_->schemaOwner()->schemaId()))
+             arguments["mapSchemaId"].get_ref<std::string const&>() !=
+                 layer_->schemaOwner()->schemaId()))
         {
             fail("schema_unavailable", "The map's current schema does not match mapSchemaId.");
             return false;

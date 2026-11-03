@@ -430,14 +430,14 @@ TEST_CASE(
     auto owner = fixture.source->metadata.mapSchema_;
     auto inventory = fixture.call("mapget_list_schemas").at("result");
     REQUIRE(inventory["items"].size() == 1);
-    CHECK(inventory["items"][0]["mapSchemaId"] == owner->schemaId());
+    CHECK(inventory["items"][0]["mapSchemaId"].get<std::string>() == owner->schemaId());
     CHECK(inventory["items"][0]["mapFormat"] == owner->format().toJson());
     CHECK(inventory["items"][0]["consumers"].size() == 1);
 
     Schema2Json args{{"mapFormat", owner->format().toJson()}, {"layerId", "Road"}};
     auto result = fixture.call("mapget_query_schema", args).at("result");
     CHECK(result["complete"] == true);
-    CHECK(result["mapSchemaId"] == owner->schemaId());
+    CHECK(result["mapSchemaId"].get<std::string>() == owner->schemaId());
     args["expression"] = "attributes.speed > 10";
     auto validation = fixture.call("mapget_validate_expression", args).at("result");
     CHECK(validation["items"][0]["valid"] == true);
