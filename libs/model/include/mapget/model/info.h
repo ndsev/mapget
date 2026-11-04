@@ -353,6 +353,9 @@ struct LayerInfo
     /** Required level in 0..15 for object discovery, not object resolution; absent on tile layers. */
     std::optional<int> tileAssociationLevel_;
 
+    /** Optional presentation default; saved user visibility always takes precedence. */
+    std::optional<bool> defaultVisible_;
+
     /**
      * Return the typed feature-model schema for this layer.
      * SchemaIds are assigned during schema construction and are independent of

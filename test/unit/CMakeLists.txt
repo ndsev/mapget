@@ -4,13 +4,21 @@ add_executable(test.mapget
   test-main.cpp
   test-object-partitions.cpp
   test-model.cpp
+  test-mcp-actions.cpp
+  test-mcp-relay.cpp
+  test-mcp-auth.cpp
+  test-mcp-native.cpp
+  test-mcp-help.cpp
   test-feature-id-index.cpp
   test-model-geometry.cpp
+  test-pointcloud-sampler.cpp
+  test-incoming-relations.cpp
   test-filter-service.cpp
   test-subsetlayer.cpp
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-layerschema-domains.cpp
   test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
@@ -52,7 +60,12 @@ if(MAPGET_WITH_JEMALLOC)
     TIMEOUT 20)
 endif()
 
+# The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
+add_dependencies(test.mapget test.mapget.datasource-server)
+
 target_link_libraries(test.mapget
+  PRIVATE
+    jwt-cpp::jwt-cpp
   PUBLIC
     mapget-log
     mapget-model
@@ -71,6 +84,7 @@ target_link_libraries(test.mapget.datasource-server
 target_compile_definitions(test.mapget
   PRIVATE
     MAPGET_TEST_DATASOURCE_SERVER_EXE=\"$<TARGET_FILE:test.mapget.datasource-server>\"
+    MAPGET_TEST_LOCATION_DB=\"${plazs_SOURCE_DIR}/tests/data/places.sqlite\"
     MAPGET_TEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
 target_link_libraries(test.mapget.filelog

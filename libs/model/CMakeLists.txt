@@ -20,7 +20,10 @@ add_library(mapget-model STATIC
   include/mapget/model/featureid.h
   include/mapget/model/stream.h
   include/mapget/model/relation.h
+  include/mapget/model/incoming-relations.h
   include/mapget/model/point.h
+  include/mapget/model/pointcloud-sampler.h
+    include/mapget/model/pointcloud-geometry.h
   include/mapget/model/pointnode.h
   include/mapget/model/geometry-data.h
   include/mapget/model/geometry.h
@@ -43,6 +46,7 @@ add_library(mapget-model STATIC
   src/featurelayer.cpp
   src/subsetlayer.cpp
   src/featurelayer-filter.cpp
+  src/incoming-relations.cpp
   src/geojson-import.cpp
   src/json-compare.cpp
   src/layerschema.cpp

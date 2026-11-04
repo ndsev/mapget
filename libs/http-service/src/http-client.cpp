@@ -282,10 +282,26 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
         return request;
     }
 
+    const bool incoming = std::ranges::any_of(request->filter_.channels_, [](auto const& channel) {
+        return channel.relation_ && channel.relation_->incoming_;
+    });
+    bool sawEnd = false;
+    bool sawSuccess = false;
+    nlohmann::json incomingSuccess;
+    std::vector<PartitionFeatureLayer::Ptr> snapshots;
+    std::vector<IncomingRelationCollection> collections;
     auto reader = std::make_unique<TileLayerStream::Reader>(
         [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
-        [request](auto&& result)
+        [&](auto&& result)
         {
+            if (incoming) {
+                if (sawSuccess || sawEnd) throw std::runtime_error("Incoming snapshot arrived after terminal status");
+                auto snapshot = std::dynamic_pointer_cast<PartitionFeatureLayer>(result);
+                if (!snapshot || snapshots.size() >= IncomingRelationCollection::MaxSnapshots)
+                    throw std::runtime_error("Invalid incoming feature snapshot stream");
+                snapshots.push_back(std::move(snapshot));
+                return;
+            }
             auto subset = std::dynamic_pointer_cast<PartitionSubsetLayer>(result);
             if (!subset) {
                 log().warn("HttpClient /filter ignored non-subset tile layer result");
@@ -294,23 +310,41 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
             request->notifyResult(std::move(subset));
         },
         impl_->stringPoolProvider_,
-        [request](TileLayerStream::MessageType type, std::string_view payload)
+        [&](TileLayerStream::MessageType type, std::string_view payload)
         {
+            if (incoming && sawEnd)
+                throw std::runtime_error("Incoming control frame arrived after EndOfStream");
+            if (incoming && type == TileLayerStream::MessageType::EndOfStream) {
+                if (!sawSuccess && !request->isDone())
+                    throw std::runtime_error("Incoming stream ended without terminal status");
+                sawEnd = true;
+                return;
+            }
+            if (incoming && type == TileLayerStream::MessageType::IncomingRelations) {
+                if (sawSuccess || sawEnd) throw std::runtime_error("Incoming manifest arrived after terminal status");
+                if (collections.size() >= 16)
+                    throw std::runtime_error("Too many incoming manifests");
+                collections.push_back(IncomingRelationCollection::fromJson(nlohmann::json::parse(payload)));
+                return;
+            }
             if (type != TileLayerStream::MessageType::Status || payload.empty()) {
                 return;
             }
             try {
                 auto status = nlohmann::json::parse(std::string(payload));
-                request->notifyProgress(status);
                 const auto state = status.value("state", std::string{});
+                if (incoming && state == "Success") incomingSuccess = status;
+                else request->notifyProgress(status);
                 if (state == "Failed" || state == "Aborted") {
                     request->setStatus(RequestStatus::Aborted);
                 }
                 else if (state == "Success") {
-                    request->setStatus(RequestStatus::Success);
+                    sawSuccess = true;
+                    if (!incoming) request->setStatus(RequestStatus::Success);
                 }
             }
             catch (const std::exception& e) {
+                if (incoming) throw;
                 log().warn("HttpClient /filter ignored invalid status payload: {}", e.what());
             }
         });
@@ -397,6 +431,30 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
 
             try {
                 reader->read(*decodedBody);
+                if (incoming && !request->isDone()) {
+                    if (!sawEnd || !sawSuccess || !reader->eos() || collections.empty())
+                        throw std::runtime_error("Incomplete incoming inspection stream");
+                    std::set<std::pair<MapPartitionKey, std::string>> targets;
+                    for (auto const& collection : collections) {
+                        FeatureInspectionView view(collection, snapshots);
+                        if (!targets.emplace(collection.target_, collection.featureId_).second)
+                            throw std::runtime_error("Duplicate incoming target manifest");
+                    }
+                    std::set<std::pair<MapPartitionKey, std::string>> expected;
+                    for (auto const& root : request->exactRoots_) {
+                        auto key = MapPartitionKey(LayerType::Features, request->mapId_, request->layerId_, root.partitionId_);
+                        auto layer = std::ranges::find_if(snapshots, [&](auto const& value) { return value->id() == key; });
+                        if (layer == snapshots.end()) throw std::runtime_error("Missing requested incoming target snapshot");
+                        auto feature = root.canonicalFeatureId_.empty() ? (*layer)->find(root.typeId_, root.featureId_)
+                            : (*layer)->find(root.canonicalFeatureId_);
+                        if (!feature) throw std::runtime_error("Missing requested incoming target feature");
+                        expected.emplace(key, feature->id()->toString());
+                    }
+                    if (targets != expected) throw std::runtime_error("Incoming manifests do not cover the requested roots");
+                    for (auto const& layer : snapshots) request->notifyFeatureSnapshot(layer);
+                    for (auto const& collection : collections) request->notifyIncomingRelations(collection);
+                    request->notifyProgress(incomingSuccess);
+                }
             }
             catch (const std::exception& e) {
                 log().error("Failed to parse /filter response: {}", e.what());

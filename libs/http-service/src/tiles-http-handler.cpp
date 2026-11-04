@@ -383,6 +383,23 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         scheduleDrain();
     }
 
+    /** Serialize the typed incoming association manifest after its feature snapshots. */
+    void addIncomingRelations(IncomingRelationCollection const& collection)
+    {
+        {
+            std::unique_lock lock(mutex_);
+            if (!waitForPendingCapacityUnlocked(lock))
+                return;
+            if (responseType_ == binaryMimeType) {
+                writer_->sendIncomingRelations(collection);
+            } else {
+                appendOutgoingUnlocked(collection.toJson().dump());
+                appendOutgoingUnlocked("\n");
+            }
+        }
+        scheduleDrain();
+    }
+
     /** Serialize one search status update into the pending HTTP response buffer. */
     void addStatus(nlohmann::json const& status)
     {
@@ -615,6 +632,10 @@ void HttpService::Impl::handleTilesLikeRequest(
         std::optional<FeatureLayerFilterRequest> filterTemplate;
         if (endpoint == TilesStreamEndpoint::Filter) {
             filterTemplate = detail::parseRestFilterEnvelopeJson(j);
+            if (std::ranges::any_of(filterTemplate->channels_, [](auto const& channel) {
+                    return channel.relation_ && channel.relation_->incoming_;
+                }) && requestsIt->size() != 1)
+                throw std::runtime_error("Incoming inspection requires exactly one layer request per envelope");
         } else if (detail::containsFilterFields(j)) {
             throw std::runtime_error("Filter fields are not supported by POST /tiles; use POST /filter");
         }
@@ -690,6 +711,8 @@ void HttpService::Impl::handleTilesLikeRequest(
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
     for (auto& request : state->filterRequests_) {
+        request->onFeatureSnapshot([state](auto const& layer) { state->addResult(layer); });
+        request->onIncomingRelations([state](auto const& collection) { state->addIncomingRelations(collection); });
         request->onFilterResult(
             [state](PartitionSubsetLayer::Ptr layer) { state->addResult(std::move(layer)); });
         request->onStatus([state](nlohmann::json const& status) {

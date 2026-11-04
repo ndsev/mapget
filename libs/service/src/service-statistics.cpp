@@ -126,6 +126,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
              {"running", schedulerStats.runningJobs}}},
         {"queued-tile-work-items", schedulerStats.queuedTileWorkItems},
         {"queued-discovery-jobs", schedulerStats.queuedDiscoveryJobs},
+        {"queued-service-tasks", schedulerStats.queuedTasks},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
         {"datasource-config",
          nlohmann::json{
@@ -351,6 +352,10 @@ nlohmann::json Service::Impl::memoryStatistics()
         catalog.add("config-status-message", stringMemoryUsage(sourceConfigStatusMessage_));
         catalog.add("construction-threads", vectorMemoryUsage(dataSourceConstructionThreads_));
         catalog.add("config-datasource-handles", vectorMemoryUsage(dataSourcesFromConfig_));
+        catalog.add("config-fingerprints", vectorMemoryUsage(dataSourceConfigFingerprints_));
+        for (auto const& fingerprint : dataSourceConfigFingerprints_) {
+            catalog.add("config-fingerprints", stringMemoryUsage(fingerprint));
+        }
         auto const addOnCount = std::ranges::count_if(
             registeredSources,
             [](auto const& source) { return source->info->isAddOn_; });

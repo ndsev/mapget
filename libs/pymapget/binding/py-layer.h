@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/incoming-relations.h"
 #include "mapget/model/subsetlayer.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatalayer.h"
@@ -466,6 +467,43 @@ void bindTileLayer(py::module_& m)
     using namespace mapget;
     using namespace simfil;
 
+    py::class_<IncomingRelationReference>(m, "IncomingRelationReference", "A stored relation associated with an incoming target by the backend.")
+        .def_readonly("source", &IncomingRelationReference::source_, "Original source partition key.")
+        .def_readonly("feature_id", &IncomingRelationReference::featureId_, "Original source feature ID.")
+        .def_readonly("relation_index", &IncomingRelationReference::relationIndex_, "Original zero-based relation ordinal.")
+        .def_readonly("name", &IncomingRelationReference::name_, "Stored relation name.")
+        .def_readonly("target_feature_id", &IncomingRelationReference::targetFeatureId_, "Backend-resolved canonical target ID.");
+    py::class_<IncomingRelationCollection>(m, "IncomingRelationCollection", "Typed incoming manifest with dependency completeness and expiry.")
+        .def_static("from_json", [](std::string const& value) {
+            return IncomingRelationCollection::fromJson(nlohmann::json::parse(value));
+        }, "Parse and validate a versioned incoming manifest.")
+        .def("to_json", [](IncomingRelationCollection const& value) { return value.toJson().dump(); }, "Serialize the manifest as JSON.")
+        .def("to_dict", [](IncomingRelationCollection const& value) { return layerJsonToPython(value.toJson()); }, "Return the manifest as Python values.")
+        .def_readonly("target", &IncomingRelationCollection::target_, "Selected target partition key.")
+        .def_readonly("feature_id", &IncomingRelationCollection::featureId_, "Selected canonical feature ID.")
+        .def_readonly("snapshots", &IncomingRelationCollection::snapshots_, "Required feature snapshot keys.")
+        .def_readonly("relations", &IncomingRelationCollection::relations_, "Backend-associated source relation descriptors.")
+        .def_readonly("complete", &IncomingRelationCollection::complete_, "Whether all declared eligible families were fully inspected.")
+        .def_readonly("issues", &IncomingRelationCollection::issues_, "Partial-result diagnostics.")
+        .def_readonly("expires_at_ms", &IncomingRelationCollection::expiresAtMs_, "Earliest finite dependency expiry, or None.");
+    py::class_<FeatureInspectionView>(m, "FeatureInspectionView", "Owns the selected target and validated original source relation models.")
+        .def(py::init<IncomingRelationCollection, std::vector<PartitionFeatureLayer::Ptr>>(),
+             "Validate a manifest and retain its supporting snapshots.")
+        .def("target", [](FeatureInspectionView const& view) { return BoundFeature(view.target()); }, "Return the canonical selected target.")
+        .def("collection", &FeatureInspectionView::collection, "Return manifest completeness, expiry and original descriptors.")
+        .def("incoming", [](FeatureInspectionView const& view) {
+            py::list rows;
+            for (auto const& row : view.incoming()) {
+                py::dict value;
+                value["source"] = py::cast(BoundFeature(row.source_));
+                value["relation"] = py::cast(BoundRelation(row.relation_));
+                value["source_key"] = py::cast(row.sourceKey_);
+                value["ordinal"] = row.ordinal_;
+                rows.append(value);
+            }
+            return rows;
+        }, "Return source-owned relation handles; no inverse edges are created.");
+
     py::class_<PartitionLayer, PartitionLayer::Ptr>(m, "PartitionLayer", R"pbdoc(
         Common base class for mapget tile payloads.
 
@@ -886,6 +924,32 @@ void bindTileLayer(py::module_& m)
             &PartitionSourceDataLayer::setSourceDataAddressFormat,
             py::arg("format"),
             "Set the source-data address format.")
+        .def(
+            "find_source_data",
+            [](PartitionSourceDataLayer const& self,
+               SourceDataAddress address,
+               bool containing,
+               size_t maxNodes,
+               size_t maxMatches)
+            {
+                auto matches = self.findSourceData(address, containing, maxNodes, maxMatches);
+                if (!matches)
+                    throw py::value_error(matches.error().message);
+                std::vector<BoundSourceDataCompound> result;
+                result.reserve(matches->size());
+                for (auto& match : *matches)
+                    result.emplace_back(std::move(match));
+                return result;
+            },
+            py::arg("address"),
+            py::arg("containing") = false,
+            py::arg("max_nodes") = 100000,
+            py::arg("max_matches") = 1000,
+            "Resolve an absolute native source address. Exact matching supports opaque addresses; "
+            "containing=True returns every smallest enclosing bit range. Presentation scopes do "
+            "not "
+            "change lookup coordinates. Raises ValueError for unsupported containment or exceeded "
+            "traversal/match budgets, rather than returning an incomplete ambiguity result.")
         .def(
             "to_json",
             [](PartitionSourceDataLayer& self) { return self.toJson().dump(); },

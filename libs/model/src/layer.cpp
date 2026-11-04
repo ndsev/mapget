@@ -213,9 +213,10 @@ PartitionLayer::PartitionLayer(
 
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     bitsery::Deserializer<Adapter> s(Adapter(input.begin(), input.end()));
-    s.text1b(mapId_, std::numeric_limits<uint32_t>::max());
+    // Declared strings and container counts cannot exceed the supplied frame.
+    s.text1b(mapId_, input.size());
     std::string layerName;
-    s.text1b(layerName, std::numeric_limits<uint32_t>::max());
+    s.text1b(layerName, input.size());
     layerInfo_ = layerInfoResolveFun(mapId_, layerName);
 
     s.object(mapVersion_);
@@ -231,7 +232,7 @@ PartitionLayer::PartitionLayer(
     s.object(partitionId_);
     if (partitionId_.kind() != layerInfo_->partitionKind_)
         throw std::invalid_argument("Partition kind does not match layer metadata.");
-    s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
+    s.text1b(stringPoolId_, input.size());
 
     int64_t timestamp = 0;
     s.value8b(timestamp);
@@ -246,14 +247,14 @@ PartitionLayer::PartitionLayer(
     }
 
     std::string infoJsonString;
-    s.text1b(infoJsonString, std::numeric_limits<uint32_t>::max());
+    s.text1b(infoJsonString, input.size());
     info_ = json::parse(infoJsonString);
 
     bool hasError = false;
     s.value1b(hasError);
     if (hasError) {
         error_ = "";  // Tell the optional that it has a value.
-        s.text1b(*error_, std::numeric_limits<uint32_t>::max());
+        s.text1b(*error_, input.size());
     }
 
     bool hasErrorCode = false;
@@ -265,14 +266,14 @@ PartitionLayer::PartitionLayer(
 
     s.container(
         warnings_,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& serializer, auto& warning)
-        { serializer.text1b(warning, std::numeric_limits<uint32_t>::max()); });
+        input.size(),
+        [&](auto& serializer, auto& warning)
+        { serializer.text1b(warning, input.size()); });
     bool hasLegalInfo = false;
     s.value1b(hasLegalInfo);
     if (hasLegalInfo) {
         legalInfo_ = "";  // Tell the optional that it has a value.
-        s.text1b(*legalInfo_, std::numeric_limits<uint32_t>::max());
+        s.text1b(*legalInfo_, input.size());
     }
 
     if (s.adapter().error() != bitsery::ReaderError::NoError) {

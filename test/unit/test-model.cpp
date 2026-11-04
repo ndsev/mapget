@@ -16,6 +16,34 @@
 
 using namespace mapget;
 
+TEST_CASE("Action-control frames use the ordinary stream control callback", "[interactive-session]")
+{
+    auto const payload =
+        R"({"type":"mapget.actions.cancel","version":1,"callId":"test-call","reason":"timeout"})";
+    std::string encoded;
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer([&](std::string frame, auto) { encoded += frame; }, offsets);
+    writer.sendStatus(payload);
+    // VTLV's message discriminator follows the three two-byte version fields.
+    encoded.at(6) = static_cast<char>(TileLayerStream::MessageType::ActionControl);
+    writer.sendEndOfStream();
+
+    std::vector<std::pair<TileLayerStream::MessageType, std::string>> received;
+    TileLayerStream::Reader reader(
+        {},
+        [](auto) { FAIL("Action-control frames must not be parsed as tile layers."); },
+        {},
+        [&](auto type, std::string_view value) { received.emplace_back(type, value); });
+    reader.read(std::string_view(encoded).substr(0, 12));
+    REQUIRE(received.empty());
+    reader.read(std::string_view(encoded).substr(12));
+    REQUIRE(received.size() == 2);
+    REQUIRE(received[0].first == TileLayerStream::MessageType::ActionControl);
+    REQUIRE(received[0].second == payload);
+    REQUIRE(received[1].first == TileLayerStream::MessageType::EndOfStream);
+    REQUIRE(reader.eos());
+}
+
 namespace
 {
 

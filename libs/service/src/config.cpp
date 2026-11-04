@@ -18,6 +18,46 @@ namespace mapget
 {
 namespace {
 
+/** Encode YAML structure without lossy scalar conversion or map presentation order. */
+nlohmann::json configStructure(YAML::Node const& node)
+{
+    // Quoting changes the non-specific tag (! versus ?), not yaml-cpp's scalar
+    // value. Explicit application/type tags remain part of constructor input.
+    auto tag = node.Tag();
+    if (tag == "!" || tag == "?") {
+        tag.clear();
+    }
+    auto result = nlohmann::json::array({static_cast<int>(node.Type()), std::move(tag)});
+    if (node.IsScalar()) {
+        result.push_back(node.Scalar());
+    }
+    else if (node.IsSequence()) {
+        for (auto const& child : node) {
+            result.push_back(configStructure(child));
+        }
+    }
+    else if (node.IsMap()) {
+        auto fields = nlohmann::json::array();
+        for (auto const& field : node) {
+            fields.push_back(nlohmann::json::array(
+                {configStructure(field.first), configStructure(field.second)}));
+        }
+        auto sorted = fields;
+        std::sort(
+            sorted.begin(),
+            sorted.end(),
+            [](auto const& a, auto const& b) { return a[0] < b[0]; });
+        // Duplicate YAML keys make order observable to readers. Only normalize
+        // ordinary mappings with distinct keys; keep ambiguous input conservative.
+        auto duplicate = std::adjacent_find(
+            sorted.begin(),
+            sorted.end(),
+            [](auto const& a, auto const& b) { return a[0] == b[0]; });
+        result.push_back(duplicate == sorted.end() ? std::move(sorted) : std::move(fields));
+    }
+    return result;
+}
+
 nlohmann::json ttlSchema()
 {
     return {
@@ -262,6 +302,11 @@ void DataSourceConfigService::loadConfig()
         {
             std::lock_guard memberAccessLock(memberAccessMutex_);
             validateDataSourceConfig(config);
+            auto sharedConfig = YAML::Clone(config);
+            sharedConfig.remove("sources");
+            picosha2::hash256_hex_string(
+                nlohmann::json::array({configFilePath_, configStructure(sharedConfig)}).dump(),
+                dataSourceContextFingerprint_);
             currentConfig_.clear();
             dataSourceConfigStats_ = {};
             if (auto sourcesNode = config["sources"]) {
@@ -413,6 +458,16 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
     return result;
 }
 
+std::string DataSourceConfigService::dataSourceConfigFingerprint(YAML::Node const& descriptor) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    std::string fingerprint;
+    picosha2::hash256_hex_string(
+        nlohmann::json::array({dataSourceContextFingerprint_, configStructure(descriptor)}).dump(),
+        fingerprint);
+    return fingerprint;
+}
+
 void DataSourceConfigService::registerDataSourceType(
     std::string const& typeName,
     LegacyDataSourceConstructor constructor,
@@ -550,6 +605,7 @@ YAML::Node jsonToYaml(
 {
     YAML::Node node;
     if (json.is_object()) {
+        node = YAML::Node(YAML::NodeType::Map);
         for (auto it = json.begin(); it != json.end(); ++it) {
             if (isSecretConfigKey(it.key()) && it.value().is_string())
             {
@@ -564,6 +620,8 @@ YAML::Node jsonToYaml(
         }
     }
     else if (json.is_array()) {
+        // Empty containers must remain containers (not YAML null), e.g. sources: [].
+        node = YAML::Node(YAML::NodeType::Sequence);
         for (const auto& item : json) {
             node.push_back(jsonToYaml(item, maskedSecretMap));
         }
@@ -975,6 +1033,7 @@ void DataSourceConfigService::reset() {
     constructors_.clear();
     currentConfig_.clear();
     configFilePath_.clear();
+    dataSourceContextFingerprint_.clear();
     schema_.reset();
     validator_.reset();
     publicConfigSectionSerializers_.clear();

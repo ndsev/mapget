@@ -90,6 +90,58 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
 
 PartitionSourceDataLayer::~PartitionSourceDataLayer() = default;
 
+tl::expected<
+    std::vector<PartitionSourceDataLayer::model_ptr<SourceDataCompoundNode>>,
+    simfil::Error>
+PartitionSourceDataLayer::findSourceData(
+    SourceDataAddress address,
+    bool containing,
+    size_t maxNodes,
+    size_t maxMatches,
+    std::function<bool()> cancelled) const
+{
+    if (containing && sourceDataAddressFormat() != SourceDataAddressFormat::BitRange)
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Opaque addresses require exact matching."});
+    std::vector<model_ptr<SourceDataCompoundNode>> matches;
+    uint64_t smallest = UINT64_MAX;
+    // Addresses belong to the layer's compound records, not their presentation
+    // tree paths. Scan that compact column once: large coordinate/value arrays
+    // cannot consume the address lookup budget, and shared/cyclic views cannot
+    // duplicate a match. A compound need not be attached to a presentation root.
+    for (uint32_t index = 0; index < impl_->compounds_.size(); ++index) {
+        if (cancelled && cancelled())
+            return tl::unexpected(simfil::Error{
+                simfil::Error::RuntimeError,
+                "Source address resolution cancelled."});
+        if (maxNodes-- == 0)
+            return tl::unexpected(simfil::Error{
+                simfil::Error::RuntimeError,
+                "Source address lookup limit reached."});
+        auto const range = impl_->compounds_.at(index).sourceAddress_;
+        bool hit = range.u64() == address.u64();
+        if (containing && !hit && range.bitSize() > 0) {
+            auto end = uint64_t(range.bitOffset()) + range.bitSize();
+            hit = range.bitOffset() <= address.bitOffset() &&
+                uint64_t(address.bitOffset()) + address.bitSize() <= end &&
+                (address.bitSize() != 0 || address.bitOffset() < end);
+        }
+        if (hit && (!containing || range.bitSize() <= smallest)) {
+            if (containing && range.bitSize() < smallest)
+                matches.clear();
+            smallest = range.bitSize();
+            if (matches.size() >= maxMatches)
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::RuntimeError,
+                    "Source address match limit reached."});
+            matches.push_back(
+                resolve<SourceDataCompoundNode>(simfil::ModelNodeAddress(Compound, index)));
+        }
+    }
+    return matches;
+}
+
 simfil::Environment& PartitionSourceDataLayer::evaluationEnvironment()
 {
     return *impl_->expressionEnvironment_;

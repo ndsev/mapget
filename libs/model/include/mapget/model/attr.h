@@ -1,6 +1,7 @@
 #pragma once
 
 #include "geometry.h"
+#include "simfil/overlay.h"
 #include "sourcedatareference.h"
 #include "validity.h"
 
@@ -30,6 +31,17 @@ public:
      * Read-only attribute name accessor.
      */
     [[nodiscard]] std::string_view name() const;
+
+    /**
+     * Build the common filter/extraction context without mutating the attribute or string pool.
+     * Zero explicit validities produce one fallback context, with $hasValidity=false.
+     */
+    [[nodiscard]] model_ptr<simfil::OverlayNode> queryContext(
+        model_ptr<Feature> const& feature,
+        std::string_view layerName,
+        uint32_t attributeIndex,
+        uint32_t validityIndex,
+        uint32_t validityCount) const;
 
     /**
      * Iterate over the attribute's extra fields. The passed lambda must return

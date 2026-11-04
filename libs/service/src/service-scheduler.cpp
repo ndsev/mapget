@@ -275,12 +275,14 @@ void ServiceScheduler::stop() noexcept
 {
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
     std::list<DiscoveryJob> cancelledDiscovery;
+    std::list<std::function<void(bool)>> cancelledTasks;
     {
         std::lock_guard lock(mutex_);
         if (stopping_) {
             return;
         }
         stopping_ = true;
+        cancelledTasks.splice(cancelledTasks.end(), tasks_);
         cancelledDiscovery.splice(cancelledDiscovery.end(), discoveryJobs_);
         abortedRequests.assign(requests_.begin(), requests_.end());
         requests_.clear();
@@ -294,6 +296,13 @@ void ServiceScheduler::stop() noexcept
         }
     }
 
+    for (auto& task : cancelledTasks) {
+        try {
+            task(false);
+        }
+        catch (...) { /* Shutdown must still join workers. */
+        }
+    }
     for (auto& job : cancelledDiscovery)
         job.run(true);
     for (auto const& request : abortedRequests) {
@@ -365,10 +374,21 @@ void ServiceScheduler::DiscoveryJob::run(bool cancelled) noexcept
     }
 }
 
+bool ServiceScheduler::enqueueTask(std::function<void(bool)> task)
+{
+    std::lock_guard lock(mutex_);
+    if (!task || stopping_ || tasks_.size() >= 128)
+        return false;
+    tasks_.push_back(std::move(task));
+    jobsAvailable_.notify_one();
+    return true;
+}
+
 void ServiceScheduler::workerLoop()
 {
     while (true) {
         std::unique_ptr<TileLoadJob> job;
+        std::function<void(bool)> task;
         std::optional<DiscoveryJob> discovery;
         std::shared_ptr<SourceConcurrency> permit;
         {
@@ -395,16 +415,35 @@ void ServiceScheduler::workerLoop()
                 return false;
             };
             // Alternate job kinds so association requests cannot starve payload loads.
-            if (!preferDiscovery_ || !takeDiscovery())
-                job = takeNextTileJobLocked(lock);
-            if (!job && !discovery)
-                takeDiscovery();
-            if (!job && !discovery)
+            if (!tasks_.empty() && preferTask_) {
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+            else {
+                if (!preferDiscovery_ || !takeDiscovery())
+                    job = takeNextTileJobLocked(lock);
+                if (!job && !discovery)
+                    takeDiscovery();
+                if (!job && !discovery && !tasks_.empty()) {
+                    task = std::move(tasks_.front());
+                    tasks_.pop_front();
+                }
+            }
+            if (!job && !discovery && !task)
                 continue;
+            preferTask_ = !static_cast<bool>(task);
             preferDiscovery_ = !discovery.has_value();
             ++runningJobs_;
         }
-        if (discovery) {
+        if (task) {
+            try {
+                task(true);
+            }
+            catch (...) {
+                log().error("Service task failed.");
+            }
+        }
+        else if (discovery) {
             discovery->run(!permit);
             releaseSourcePermit(permit);
         }
@@ -420,6 +459,8 @@ void ServiceScheduler::workerLoop()
 
 bool ServiceScheduler::hasRunnableWorkLocked() const
 {
+    if (!tasks_.empty())
+        return true;
     for (auto const& job : discoveryJobs_) {
         auto source =
             std::ranges::find_if(sources_, [&](auto const& s) { return s->source == job.source; });
@@ -728,6 +769,7 @@ ServiceSchedulerStatistics ServiceScheduler::statistics() const
         .activeTileRequests = requests_.size(),
         .queuedTileWorkItems = queuedTileWorkItems,
         .queuedDiscoveryJobs = discoveryJobs_.size(),
+        .queuedTasks = tasks_.size(),
         .inFlightTileJobs = inFlightTiles_.size(),
     };
 }
@@ -825,6 +867,10 @@ void ServiceScheduler::collectMemoryUsage(
             requests_.size() * sizeof(LayerTilesRequest::Ptr),
             requests_.size() * (sizeof(LayerTilesRequest::Ptr) + 2 * sizeof(void*)),
         });
+    scheduler.add(
+        "service-task-queue",
+        {tasks_.size() * sizeof(std::function<void(bool)>),
+         tasks_.size() * (sizeof(std::function<void(bool)>) + 2 * sizeof(void*))});
     scheduler.add(
         "discovery-jobs",
         {discoveryJobs_.size() * sizeof(DiscoveryJob),

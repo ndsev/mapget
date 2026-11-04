@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <stdexcept>
 #include "simfil/model/column.h"
 #include "simfil/model/string-pool.h"
 
@@ -39,9 +40,8 @@ struct SourceDataAddress
      */
     static SourceDataAddress fromBitPosition(size_t offset, size_t size)
     {
-        /* Assert that both values fit into a 32-bit integer. */
-        assert((offset & BitMask) == offset);
-        assert((size & BitMask) == size);
+        if (offset > BitMask || size > BitMask)
+            throw std::length_error("Source-data bit offset or size exceeds uint32 representation");
 
         return SourceDataAddress{
             static_cast<uint32_t>(offset),

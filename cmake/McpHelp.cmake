@@ -1,0 +1,45 @@
+include_guard(GLOBAL)
+
+# Register a logical documentation folder once. Runtime scans the source directory
+# directly; packaging scans it at build/install time rather than freezing a file list.
+function(add_mcp_doc_folder)
+  cmake_parse_arguments(DOC "" "COMPONENT;DIRECTORY" "" ${ARGN})
+  if(DOC_UNPARSED_ARGUMENTS OR NOT DOC_COMPONENT MATCHES "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" OR NOT DOC_DIRECTORY)
+    message(FATAL_ERROR "add_mcp_doc_folder requires COMPONENT <name> DIRECTORY <path>")
+  endif()
+  get_filename_component(source "${DOC_DIRECTORY}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+  if(NOT IS_DIRECTORY "${source}")
+    message(FATAL_ERROR "MCP documentation directory does not exist: ${source}")
+  endif()
+  if(NOT TARGET mapget-mcp-docs)
+    set(output "${MAPGET_DEPLOY_DIR}")
+    if(NOT output)
+      set(output "${CMAKE_BINARY_DIR}/bin")
+    endif()
+    file(MAKE_DIRECTORY "${output}")
+    set_property(GLOBAL PROPERTY MAPGET_MCP_DOC_REGISTRY "{}")
+    set_property(GLOBAL PROPERTY MAPGET_MCP_DOC_OUTPUT "${output}")
+    add_custom_target(mapget-mcp-docs ALL
+      COMMAND "${CMAKE_COMMAND}" "-DREGISTRY=${output}/.mcp-help-sources.json"
+        "-DDESTINATION=${output}/mcp-help" -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/McpHelpStage.cmake"
+      COMMENT "Staging MCP Markdown documentation" VERBATIM)
+    set_property(TARGET mapget-mcp-docs PROPERTY MAPGET_MCP_HELP_DIRECTORY "${output}/mcp-help")
+  endif()
+  get_property(registry GLOBAL PROPERTY MAPGET_MCP_DOC_REGISTRY)
+  get_property(output GLOBAL PROPERTY MAPGET_MCP_DOC_OUTPUT)
+  string(JSON previous ERROR_VARIABLE missing GET "${registry}" "${DOC_COMPONENT}")
+  if(NOT missing AND NOT previous STREQUAL source)
+    message(FATAL_ERROR "MCP documentation component ${DOC_COMPONENT} is already registered")
+  endif()
+  if(NOT missing)
+    return()
+  endif()
+  string(REPLACE "\\" "\\\\" escaped "${source}")
+  string(REPLACE "\"" "\\\"" escaped "${escaped}")
+  string(JSON registry SET "${registry}" "${DOC_COMPONENT}" "\"${escaped}\"")
+  set_property(GLOBAL PROPERTY MAPGET_MCP_DOC_REGISTRY "${registry}")
+  # This development-only file must not enter wheels, installations or Docker images.
+  file(WRITE "${output}/.mcp-help-sources.json" "${registry}\n")
+  install(DIRECTORY "${source}/" DESTINATION "${CMAKE_INSTALL_BINDIR}/mcp-help/${DOC_COMPONENT}"
+    FILES_MATCHING PATTERN "*.md")
+endfunction()
