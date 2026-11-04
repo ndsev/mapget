@@ -506,10 +506,10 @@ void registerDefaultDatasourceTypes()
     auto& service = DataSourceConfigService::get();
     service.registerDataSourceType(
         "DataSourceHost",
-        [](YAML::Node const& config) -> DataSource::Ptr
+        [](YAML::Node const& config, DataSourceInitContext& context) -> DataSource::Ptr
         {
             if (auto url = config["url"])
-                return RemoteDataSource::fromHostPort(url.as<std::string>());
+                return RemoteDataSource::fromHostPort(url.as<std::string>(), context.isCancelled);
             else
                 throw std::runtime_error("Missing `url` field.");
         },
@@ -600,6 +600,7 @@ struct ServeCommand
     bool noLocation_ = false;
     std::string locationDbPath_;
     McpConfig mcp_;
+    ProxyAuthentication proxyAuth_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     ServeStartedCallback startedCallback_;
     CLI::App& app_;
@@ -736,6 +737,7 @@ struct ServeCommand
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
         mcp_.addOptions(*serveCmd);
+        proxyAuth_.addOptions(*serveCmd);
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -879,6 +881,7 @@ struct ServeCommand
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
         httpConfig.mcp = mcp_;
+        httpConfig.proxyAuth = proxyAuth_;
 
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);

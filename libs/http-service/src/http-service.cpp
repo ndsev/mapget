@@ -40,7 +40,7 @@ bool HttpService::enqueueInteractiveControlTask(std::function<void()> task)
 
 void HttpService::setup(drogon::HttpAppFramework& app)
 {
-    detail::registerTilesWebSocketController(app, *this, impl_->mcp_);
+    detail::registerTilesWebSocketController(app, *this, impl_->mcp_, impl_->config_.proxyAuth);
     if (impl_->mcp_) {
         impl_->mcp_->setup(app);
     }
@@ -82,6 +82,23 @@ void HttpService::setup(drogon::HttpAppFramework& app)
             std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         { impl_->handleAttachmentRequest(req, std::move(callback)); },
         {drogon::Get});
+
+    app.registerHandler(
+        "/schema",
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        { impl_->handleSchemaRequest(req, std::move(callback)); },
+        {drogon::Get});
+
+    for (auto const* path : {"/schemas", "/schema/inspect"})
+        app.registerHandler(
+            path,
+            [this](
+                drogon::HttpRequestPtr const& req,
+                std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+            { impl_->handleSchemaInspectionRequest(req, std::move(callback)); },
+            {drogon::Get});
 
     app.registerHandler(
         "/sources",

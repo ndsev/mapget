@@ -18,7 +18,7 @@ class McpServer : public std::enable_shared_from_this<McpServer>
 {
 public:
     /** Load trust/catalog configuration before accepting any browser registrations. */
-    McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native);
+    McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native, ProxyAuthentication proxyAuth = {});
 
     /** Drain callbacks and destroy thread-affine state before stopping the private control loop. */
     ~McpServer();

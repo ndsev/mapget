@@ -1,6 +1,7 @@
 #include "datasource-client.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/model/stream.h"
+#include "mapget/model/mapschema.h"
 #include "process.hpp"
 #include "mapget/log.h"
 
@@ -11,13 +12,17 @@
 
 #include <chrono>
 #include <regex>
+#include <stdexcept>
 
 namespace mapget
 {
 
-RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
+RemoteDataSource::RemoteDataSource(
+    std::string const& host, uint16_t port, TileCancellationCheck const& isCancelled)
 {
-    httpClientLoop_ = std::make_unique<trantor::EventLoopThread>("MapgetRemoteDataSource");
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
+    httpClientLoop_ = std::make_shared<trantor::EventLoopThread>("MapgetRemoteDataSource");
     httpClientLoop_->run();
 
     const auto hostString = fmt::format("http://{}:{}/", host, port);
@@ -28,7 +33,9 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     infoReq->setMethod(drogon::Get);
     infoReq->setPath("/info");
 
-    auto [result, fetchedInfoResp] = infoClient->sendRequest(infoReq);
+    auto [result, fetchedInfoResp] = infoClient->sendRequest(infoReq, 30.0);
+    if (isCancelled && isCancelled())
+        throw TileLoadCancelled();
     if (result != drogon::ReqResult::Ok || !fetchedInfoResp) {
         raise(fmt::format("Failed to fetch datasource info: [{}]", drogon::to_string_view(result)));
     }
@@ -51,11 +58,61 @@ RemoteDataSource::RemoteDataSource(const std::string& host, uint16_t port)
     }
     info_ = DataSourceInfo::fromJson(infoJson);
 
+    if (!info_.mapSchema_) {
+        if (info_.schemaId_.empty())
+            raise("Remote datasource has no schema identity.");
+        auto schemaRequest = drogon::HttpRequest::newHttpRequest();
+        schemaRequest->setMethod(drogon::Get);
+        schemaRequest->setPath("/schema");
+        schemaRequest->setParameter("schemaId", info_.schemaId_);
+        schemaRequest->addHeader("Accept-Encoding", "identity");
+        // Revalidate the exact binding even when another remote source populated the content cache.
+        schemaRequest->addHeader("If-None-Match", "*");
+        auto [probeResult, probeResponse] = infoClient->sendRequest(schemaRequest, 30.0);
+        if (isCancelled && isCancelled())
+            throw TileLoadCancelled();
+        if (probeResult != drogon::ReqResult::Ok || !probeResponse ||
+            probeResponse->statusCode() != drogon::k304NotModified)
+            raise("Remote datasource schema binding is unavailable.");
+
+        // Cancellation abandons only this waiter. Shared work owns its inputs and event loop,
+        // independently of the first source, because another source may still need the result.
+        MapSchema::ConstPtr schema;
+        try {
+            schema = MapSchema::getOrBuild(
+                "binary:" + info_.schemaId_,
+                [loop = httpClientLoop_, hostString, id = info_.schemaId_] {
+                    // Own the connection locally so it is destroyed before the captured event loop.
+                    auto client = drogon::HttpClient::newHttpClient(hostString, loop->getLoop());
+                    auto request = drogon::HttpRequest::newHttpRequest();
+                    request->setMethod(drogon::Get);
+                    request->setPath("/schema");
+                    request->setParameter("schemaId", id);
+                    request->addHeader("Accept-Encoding", "identity");
+                    auto [status, response] = client->sendRequest(request, 30.0);
+                    if (status != drogon::ReqResult::Ok || !response ||
+                        response->statusCode() != drogon::k200OK)
+                        throw std::runtime_error("Failed to fetch remote datasource schema.");
+                    auto body = response->body();
+                    return MapSchema::read(
+                        {reinterpret_cast<uint8_t const*>(body.data()), body.size()}, id);
+                },
+                isCancelled);
+        }
+        catch (std::exception const&) {
+            if (isCancelled && isCancelled())
+                throw TileLoadCancelled();
+            throw;
+        }
+        if (isCancelled && isCancelled())
+            throw TileLoadCancelled();
+        info_.setMapSchema(std::move(schema));
+    }
+    info_.validateSchema();
+
     if (info_.stringPoolId_.empty()) {
         // Unique node IDs are required for the string pool offsets.
-        raise(
-            fmt::format("Remote data source is missing node ID! Source info: {}",
-                std::string(fetchedInfoResp->body())));
+        raise("Remote data source is missing its string-pool ID.");
     }
 
     // Create as many clients as parallel requests are allowed.
@@ -137,7 +194,9 @@ PartitionLayer::Ptr RemoteDataSource::get(
     TileLayerStream::Reader reader(
         [&](auto&& mapId, auto&& layerId) { return info.getLayer(std::string(layerId)); },
         [&](auto&& tile) { result = tile; },
-        cache);
+        cache,
+        {},
+        [&](std::string_view id) { return id == info.schemaId_ ? info.mapSchema_ : nullptr; });
     reader.read(std::string(tileResponse->body()));
 
     if (result && loadStateCallback) {
@@ -275,13 +334,14 @@ void RemoteDataSource::onCacheExpired(
     }
 }
 
-std::shared_ptr<RemoteDataSource> RemoteDataSource::fromHostPort(const std::string& hostPort)
+std::shared_ptr<RemoteDataSource> RemoteDataSource::fromHostPort(
+    std::string const& hostPort, TileCancellationCheck const& isCancelled)
 {
     auto delimiterPos = hostPort.find(':');
     std::string dsHost = hostPort.substr(0, delimiterPos);
     int dsPort = std::stoi(hostPort.substr(delimiterPos + 1, hostPort.size()));
     log().info("Connecting to datasource at {}:{}.", dsHost, dsPort);
-    return std::make_shared<RemoteDataSource>(dsHost, dsPort);
+    return std::make_shared<RemoteDataSource>(dsHost, dsPort, isCancelled);
 }
 
 RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)

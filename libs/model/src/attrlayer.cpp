@@ -164,14 +164,11 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
             schema(),
             name,
             simfil::Schema::Kind::Object);
-        if (schemaId != simfil::NoSchemaId) {
-            // A shared attribute layer may be reached through multiple feature schemas.
-            auto const current = l->schema();
-            auto const target = current == simfil::NoSchemaId || current == schemaId
-                ? schemaId
-                : simfil::NoSchemaId;
+        if (schemaId != simfil::NoTypeId) {
+            auto const target =
+                model().checkedContainerSchema(l->schema(), schemaId, simfil::ValueType::Object);
             if (auto result = l->setSchema(target); !result) {
-                log().warn("Failed to set attribute layer schema: {}", result.error().message);
+                raise(result.error().message);
             }
         }
     }
@@ -287,7 +284,7 @@ AttributeLayerList::ExtensionPtr AttributeLayerList::mergedExtension() const
     return {};
 }
 
-simfil::SchemaId AttributeLayerList::schema() const
+simfil::TypeId AttributeLayerList::schema() const
 {
     if (auto local = localObject()) {
         return local->schema();
@@ -295,10 +292,10 @@ simfil::SchemaId AttributeLayerList::schema() const
     if (auto feature = featureScopedFeature()) {
         return model().attributeLayerMapSchemaId(feature->typeId());
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
-tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::SchemaId schemaId)
+tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::TypeId schemaId)
 {
     auto local = localObject();
     if (!local) {

@@ -5,6 +5,8 @@
 #include <bit>
 #include <charconv>
 #include <iterator>
+#include <limits>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -83,7 +85,7 @@ void resolveVisiblePartLayout(
                                            std::is_same_v<T, std::string>) {
                             prefixFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
                         }
-                        else {
+                        else if constexpr (std::is_integral_v<T>) {
                             prefixFeatureIdParts.emplace_back(*keyStr, static_cast<int64_t>(v));
                         }
                     },
@@ -145,8 +147,9 @@ void appendTypedKeyValue(
         [&](auto&& v)
         {
             using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, simfil::ByteArray>) {
-                raiseFmt("FeatureId part '{}' cannot be a ByteArray.", *keyStr);
+            if constexpr (
+                std::is_same_v<T, simfil::ByteArray> || std::is_same_v<T, simfil::Bitmask>) {
+                raiseFmt("FeatureId part '{}' must be an integer or string.", *keyStr);
             }
             else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>) {
                 fn(*keyStr, v);
@@ -249,9 +252,8 @@ struct CompositionParseState
     simfil::StringId field)
 {
     auto owner = featureId.model().shared_from_this();
-    if (field == StringPool::IdStr) {
-        return model_ptr<simfil::ValueNode>::make(featureId.toString(), owner);
-    }
+    if (field == StringPool::TypeIdStr)
+        return model_ptr<simfil::ValueNode>::make(std::string(featureId.typeId()), owner);
     if (field == StringPool::MapIdStr) {
         if (auto mapId = featureId.externalMapId()) {
             return model_ptr<simfil::ValueNode>::make(std::string(*mapId), owner);
@@ -266,14 +268,8 @@ FeatureId::FeatureId(
     simfil::ModelConstPtr l,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(l, a, key), data_(data)
+    : FeatureId(static_cast<FeatureId::Data const&>(data), std::move(l), a, key)
 {
-    if (data_.idPartValues_ != simfil::InvalidArrayIndex) {
-        values_ = model().resolve<simfil::Array>(
-            simfil::ModelNodeAddress{
-                simfil::ModelPool::ColumnId::Arrays,
-                static_cast<uint32_t>(data_.idPartValues_)});
-    }
 }
 
 FeatureId::FeatureId(
@@ -283,11 +279,40 @@ FeatureId::FeatureId(
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(l, a, key), data_(data)
 {
-    if (data_.idPartValues_ != simfil::InvalidArrayIndex) {
-        values_ = model().resolve<simfil::Array>(
-            simfil::ModelNodeAddress{
-                simfil::ModelPool::ColumnId::Arrays,
-                static_cast<uint32_t>(data_.idPartValues_)});
+    if (data_.idParts_.column() == simfil::ModelPool::ColumnId::Arrays) {
+        if (data_.extMapId_ != simfil::StringPool::Empty)
+            raise("A foreign FeatureId must store named parts, not schema-backed array values.");
+        values_ = model().resolve<simfil::Array>(data_.idParts_);
+        (void)values_->size();
+    }
+    else if (data_.idParts_.column() == simfil::ModelPool::ColumnId::Objects) {
+        if (data_.extMapId_ == simfil::StringPool::Empty || data_.useCommonTilePrefix_ ||
+            data_.idCompositionIndex_ != 0)
+            raise("Named FeatureId parts require an explicit foreign map without a local prefix.");
+        auto parts = model().resolve<simfil::Object>(data_.idParts_);
+        auto const map = externalMapId();
+        auto const type = typeId();
+        if (!map || map->empty() || *map == model().mapId() || map->size() > 1024 || type.empty() ||
+            type.size() > 1024 || parts->size() == 0 || parts->size() > 255)
+            raise("Invalid named foreign FeatureId storage.");
+        validateIdentifierName("map id", *map, {}, "/");
+        validateIdentifierName("feature type name", type, ".");
+        std::set<simfil::StringId> names;
+        for (auto const& [key, value] : parts->fields()) {
+            auto const name = model().strings()->resolve(key);
+            if (!name || name->empty() || name->size() > 1024 || !names.insert(key).second ||
+                !value)
+                raise("Invalid named foreign FeatureId part.");
+            validateIdentifierName("id-part label", *name, ".");
+            auto scalar = value->value();
+            if (!std::holds_alternative<int64_t>(scalar) &&
+                !std::holds_alternative<std::string>(scalar) &&
+                !std::holds_alternative<std::string_view>(scalar))
+                raise("Foreign FeatureId parts must be integer or string scalars.");
+        }
+    }
+    else {
+        raise("FeatureId parts must refer to an Array or Object.");
     }
 }
 
@@ -310,7 +335,12 @@ std::string_view FeatureId::typeId() const
     if (auto s = model().strings()->resolve(data_.typeId_)) {
         return *s;
     }
-    return "err-unresolved-typename";
+    raiseFmt(
+        "Feature type string ID {} is missing from dictionary '{}' for map '{}' layer '{}'.",
+        data_.typeId_,
+        model().stringPoolId(),
+        model().mapId(),
+        model().layerInfo()->layerId_);
 }
 
 std::string FeatureId::mapId() const
@@ -337,6 +367,10 @@ std::optional<std::string_view> FeatureId::externalMapId() const
 
 std::string FeatureId::toString() const
 {
+    if (externalMapId())
+        raise(
+            "Foreign FeatureId has no canonical string before target-map resolution; use "
+            "toJson().");
     return formatFeatureIdString(
         typeId(),
         castToKeyValue(keyValuePairs()),
@@ -364,10 +398,10 @@ simfil::ModelNode::Ptr FeatureId::at(int64_t i) const
         return {};
     }
     switch (i) {
-    case 0:
-        return referenceFieldNode(*this, StringPool::IdStr);
+    case 0: return model().resolve<simfil::Object>(data_.idParts_);
     case 1:
         return referenceFieldNode(*this, StringPool::MapIdStr);
+    case 2: return referenceFieldNode(*this, StringPool::TypeIdStr);
     default:
         return {};
     }
@@ -375,7 +409,7 @@ simfil::ModelNode::Ptr FeatureId::at(int64_t i) const
 
 uint32_t FeatureId::size() const
 {
-    return externalMapId() ? 2U : 0U;
+    return externalMapId() ? 3U : 0U;
 }
 
 simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
@@ -383,6 +417,8 @@ simfil::ModelNode::Ptr FeatureId::get(const simfil::StringId& f) const
     if (!externalMapId()) {
         return {};
     }
+    if (f == StringPool::IdStr)
+        return model().resolve<simfil::Object>(data_.idParts_);
     return referenceFieldNode(*this, f);
 }
 
@@ -396,6 +432,7 @@ simfil::StringId FeatureId::keyAt(int64_t i) const
         return StringPool::IdStr;
     case 1:
         return StringPool::MapIdStr;
+    case 2: return StringPool::TypeIdStr;
     default:
         return {};
     }
@@ -414,8 +451,19 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
-    ensureVisiblePartLayout();
     KeyValueViewPairs result;
+    if (data_.idParts_.column() == simfil::ModelPool::ColumnId::Objects) {
+        auto parts = model().resolve<simfil::Object>(data_.idParts_);
+        result.reserve(parts->size());
+        for (auto const& [key, value] : parts->fields())
+            appendTypedKeyValue(
+                model(),
+                key,
+                value,
+                [&](std::string_view name, auto&& scalar) { result.emplace_back(name, scalar); });
+        return result;
+    }
+    ensureVisiblePartLayout();
 
     if (data_.useCommonTilePrefix_) {
         if (auto idPrefix = model().getIdPrefix()) {
@@ -438,6 +486,77 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
     }
 
     return result;
+}
+
+KeyValuePairs parseFeatureIdPartsJson(nlohmann::json const& parts)
+{
+    if (!parts.is_object() || parts.empty() || parts.size() > 255)
+        raise("Named feature ID parts must be an object with 1..255 entries.");
+    KeyValuePairs result;
+    result.reserve(parts.size());
+    for (auto const& [name, value] : parts.items()) {
+        if (name.empty() || name.size() > 1024)
+            raise("Feature ID part names must contain 1..1024 bytes.");
+        validateIdentifierName("id-part label", name, ".");
+        if (value.is_string())
+            result.emplace_back(name, value.get<std::string>());
+        else if (
+            value.is_number_integer() &&
+            (!value.is_number_unsigned() ||
+             value.get<uint64_t>() <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())))
+            result.emplace_back(name, value.get<int64_t>());
+        else
+            raise("Named feature ID parts must be int64 integers or strings.");
+    }
+    return result;
+}
+
+bool normalizeFeatureIdParts(
+    std::string_view typeId,
+    KeyValuePairs const& parts,
+    LayerInfo const& layerInfo,
+    ParsedFeatureId& result)
+{
+    result = {};
+    auto const* type = layerInfo.getTypeInfo(typeId, false);
+    if (!type)
+        return false;
+    std::set<std::string_view> names;
+    for (auto const& [name, value] : parts)
+        if (!names.insert(name).second)
+            return false;
+    for (size_t index = 0;
+         index < type->uniqueIdCompositions_.size() && index <= std::numeric_limits<uint8_t>::max();
+         ++index)
+    {
+        KeyValuePairs ordered;
+        bool matches = true;
+        for (auto const& definition : type->uniqueIdCompositions_[index]) {
+            auto part = std::find_if(
+                parts.begin(),
+                parts.end(),
+                [&](auto const& item) { return item.first == definition.idPartLabel_; });
+            if (part == parts.end()) {
+                if (!definition.isOptional_) {
+                    matches = false;
+                    break;
+                }
+                continue;
+            }
+            auto value = part->second;
+            if (!definition.validate(value)) {
+                matches = false;
+                break;
+            }
+            ordered.emplace_back(part->first, std::move(value));
+        }
+        // Unknown parts must not disappear while selecting a composition.
+        if (matches && ordered.size() == parts.size()) {
+            result = {std::string(typeId), std::move(ordered), static_cast<uint8_t>(index)};
+            return true;
+        }
+    }
+    return false;
 }
 
 bool parseFeatureIdString(

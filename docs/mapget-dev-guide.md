@@ -1,6 +1,6 @@
 # Mapget Developer Guide
 
-This guide describes the protocol-5 implementation: complete source partitions,
+This guide describes complete source partitions,
 server-evaluated subset layers, semantic geometry names, and lazy attachments.
 
 ## Components
@@ -17,6 +17,64 @@ server-evaluated subset layers, semantic geometry names, and lazy attachments.
 - `libs/pymapget` exposes the same model/service contracts to Python.
 
 `apps/mapget` wires these libraries into the CLI.
+
+## Schema ownership and readiness
+
+Build and finalize one `MapSchema` before publishing a usable `DataSourceInfo`.
+Use `MapSchema::getOrBuild()` with a key derived from the complete format and
+converter inputs to coalesce identical construction, then `setMapSchema()` to
+bind runtime layer metadata. Builders can outlive an individually cancelled
+waiter; capture inputs by ownership, never references to a datasource constructor
+or its progress callback. Completed cache entries retain graphs weakly.
+
+A published graph is immutable. Metadata and partitions share it; source reload
+publishes a new snapshot instead of changing an ordinary shared pointer beneath
+readers. Layer names match exactly. A feature type's declared ID definitions are
+available from its LayerSchema, not a second LayerInfo vector. Open legacy
+contracts remain usable for GeoJSON/custom sources without invented field facts.
+
+Remote clients fetch the authorized exact schema separately before using catalog
+metadata. Binary constructors take installed schema resolvers and do no network
+I/O. Missing or mismatched schema identities are errors, including for cached
+partitions. Protocol 6.2 includes self-describing foreign identities, shared
+SchemaPool graphs and the revised static dictionary for enum raw-value metadata.
+It rejects older streams before decoding their differently numbered fields.
+MapSchema codec 3 embeds SchemaPool codec 2; native and WASM consumers must be
+rebuilt together. Service schema composition, authorized
+artifact inventory and weak owner accounting live in `service-schemas.cpp`, as
+methods of the existing datasource registry rather than a separate schema service.
+
+`LayerSchema::find()` owns bounded declaration discovery on a finalized graph.
+Its private search execution visits enumerable edges, ranks fields/types/named
+values, and returns representative paths with explicit completeness. MCP and the
+status explorer's REST endpoint use that same implementation; the MCP adapter
+alone adds tool-specific follow-up arguments. Keep authorization, exact-artifact
+selection and post-encoding owner rechecks in each transport. Do not duplicate
+graph traversal in the browser or turn status polling into schema enumeration.
+The optional `test/status-page` Playwright suite exercises the embedded status
+HTML independently of erdblick; native schema/search tests cover the API and
+MCP/REST parity.
+
+The [model contract](mapget-model.md#feature-model-schema) documents graph,
+scalar provenance and incoming relation semantics. The [HTTP API](mapget-api.md)
+documents schema retrieval; [Python schema views](mapget-python-schema.md)
+describe owner-retaining access from bindings.
+
+### Schema memory measurements
+
+Service statistics count each registered `MapSchema` owner once, including its
+dictionary, type columns and indexes; small metadata snapshots are counted
+separately. Partition counters include qualified scalars, bitmasks and schema
+binding tables. These are capacity-based lower bounds, not a complete heap census:
+binding wrapper/control-block allocations, temporary construction/codec buffers
+and graphs retained only by retired partitions or clients are not fully attributed.
+
+`memory.transport.schema-artifacts` reports the public HTTP service's encoded
+buffer capacities once, including evicted buffers still held by active responses.
+It does not include a separate datasource server's cache or client receive buffers.
+The artifact-size limit is checked after encoding; it is not a bound on scratch
+memory or all concurrent responses. Measure cold construction peaks separately
+from retained graph capacity and distinguish process peak RSS from live allocations.
 
 ## Object datasource integration
 
@@ -270,6 +328,21 @@ metadata and scheduler registration remain intact; no dictionary ID is copied
 onto a newly constructed instance. Withdrawn registrations invalidate their
 maps. Newly ready add-ons also invalidate their composed primary map even if
 its primary instance is retained; unrelated maps keep their cached tiles.
+
+Completion commits one source-model snapshot and its coalesced recipients under
+the scheduler lock, before invoking their callbacks outside it. A later reload
+or add-on publication does not revoke those committed deliveries: even if the
+first callback recomposes the map, the remaining recipients receive the same
+old model and its pinned schema. Invalidation removes its cache entry; new work
+uses the replacement registration, and descendant loads from an old request
+cannot switch to it. Queued/in-flight abort callbacks are isolated individually,
+so a throwing consumer cannot strand other requests or suppress catalog updates.
+
+Failed or missing add-on contributions remain warnings on an otherwise usable
+composite, but cap its lifetime at the error-tile TTL (or a shorter contributor
+lifetime). This includes synthetic roots for add-on-only layers: a temporary
+failure must not become a permanently cached empty result. Successful empty
+contributions retain the normal empty-tile lifetime.
 
 The catalog remains in current YAML order and publishes a new revision.
 Unfinished constructors retain the existing generation-based cancellation and
@@ -772,7 +845,7 @@ upload another snapshot.
 
 Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Config replacement and shutdown cancel pending waits and reject obsolete construction results. Failed-source statistics count current rows, not attempts.
 
-The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime error tiles instead use ordinary TTL metadata, capped by `mapget.serve.error-tile-ttl` (default five seconds). The cache and filtered subsets preserve that lifetime; a failed source or dependency is represented in its dependent outputs rather than aborting a whole viewport. Query-definition errors remain request failures. Successful empty source layers use `mapget.serve.empty-tile-ttl` (default five seconds); this is applied before add-on composition and filtering so empty dependencies retain a finite lifetime even when the final result is nonempty. Browser reconnection and datasource constructor backoff do not govern tile freshness.
+The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime error tiles instead use ordinary TTL metadata, capped by `mapget.serve.error-tile-ttl` (default five seconds). The cache and filtered subsets preserve that lifetime; a failed source or dependency is represented in its dependent outputs rather than aborting a whole viewport. Query-definition errors remain request failures. Successful empty source layers use `mapget.serve.empty-tile-ttl` (default one hour); this is applied before add-on composition and filtering so empty dependencies retain a finite lifetime even when the final result is nonempty. Browser reconnection and datasource constructor backoff do not govern tile freshness.
 
 Incoming inspection is implemented by `service-incoming.cpp` beside ordinary filter execution.
 It uses request-local bounded state and the existing tile scheduler/cache. Schema metadata

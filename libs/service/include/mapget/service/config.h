@@ -65,6 +65,8 @@ struct DataSourceDescriptor {
 
     /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
     AuthHeaderRegexMap authHeaderAlternatives;
+    /** Enforce the same claims on initializing/failed catalog rows as on ready sources. */
+    AuthClaimRequirements requiredClaims;
 };
 
 

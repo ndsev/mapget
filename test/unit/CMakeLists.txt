@@ -7,18 +7,29 @@ add_executable(test.mapget
   test-mcp-actions.cpp
   test-mcp-relay.cpp
   test-mcp-auth.cpp
+  test-datasource-auth.cpp
   test-mcp-native.cpp
   test-mcp-help.cpp
   test-feature-id-index.cpp
+  test-foreign-feature-id.cpp
   test-model-geometry.cpp
   test-pointcloud-sampler.cpp
   test-incoming-relations.cpp
   test-filter-service.cpp
   test-subsetlayer.cpp
+  test-subset-schema.cpp
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-mapschema.cpp
+  test-mapschema-compose.cpp
+  test-http-schema.cpp
+  test-mcp-schema2.cpp
   test-layerschema-domains.cpp
+  test-layer-schema-binding.cpp
+  test-schema-composition.cpp
+  test-schema-inventory.cpp
+  test-schema-validation.cpp
   test-location.cpp
   test-http-datasource.cpp
   test-cache.cpp
@@ -66,6 +77,7 @@ add_dependencies(test.mapget test.mapget.datasource-server)
 target_link_libraries(test.mapget
   PRIVATE
     jwt-cpp::jwt-cpp
+    picosha2
   PUBLIC
     mapget-log
     mapget-model

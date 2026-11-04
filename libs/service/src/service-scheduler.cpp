@@ -46,88 +46,122 @@ ServiceScheduler::~ServiceScheduler() noexcept
     stop();
 }
 
-void ServiceScheduler::registerDataSource(RegisteredDataSource::Ptr const& source)
+std::function<void()> ServiceScheduler::synchronizeDataSources(
+    std::vector<RegisteredDataSource::Ptr> const& registrations)
 {
-    if (!source || source->info->isAddOn_) {
-        return;
-    }
-    auto concurrency = std::make_shared<SourceConcurrency>(SourceConcurrency{
-        .source = source,
-        .limit = static_cast<size_t>(source->info->maxParallelJobs_),
-    });
+    std::vector<std::function<void()>> completions;
     {
         std::lock_guard lock(mutex_);
-        if (stopping_) {
-            return;
-        }
-        sources_.push_back(std::move(concurrency));
-    }
-    jobsAvailable_.notify_all();
-}
-
-void ServiceScheduler::unregisterDataSource(RegisteredDataSource::Ptr const& source)
-{
-    if (!source || source->info->isAddOn_) {
-        return;
-    }
-    {
-        std::lock_guard lock(mutex_);
+        if (stopping_)
+            return [] {
+            };
+        std::set<std::string> changedMaps;
         for (auto const& state : sources_) {
-            if (state->source == source) {
+            auto replacement = std::ranges::find_if(
+                registrations,
+                [&](auto const& candidate) {
+                    return !candidate->info->isAddOn_ &&
+                        candidate->dataSource == state->source->dataSource;
+                });
+            if (replacement == registrations.end()) {
                 state->enabled = false;
+                changedMaps.insert(state->source->info->mapId_);
+            }
+            else if (*replacement != state->source) {
+                changedMaps.insert(state->source->info->mapId_);
+                // Existing jobs retain their registration separately. Reuse the permit counter
+                // so an uncancellable old fill still counts against this provider's parallelism.
+                state->source = *replacement;
+                state->limit = static_cast<size_t>((*replacement)->info->maxParallelJobs_);
             }
         }
-        std::erase_if(sources_, [&](auto const& state) { return state->source == source; });
-        if (sources_.empty()) {
-            nextSourceIndex_ = 0;
+        std::erase_if(sources_, [](auto const& state) { return !state->enabled; });
+        for (auto const& source : registrations) {
+            if (source->info->isAddOn_ ||
+                std::ranges::any_of(
+                    sources_,
+                    [&](auto const& state) { return state->source == source; }))
+                continue;
+            sources_.push_back(std::make_shared<SourceConcurrency>(SourceConcurrency{
+                .source = source,
+                .limit = static_cast<size_t>(source->info->maxParallelJobs_)}));
         }
-        else {
-            nextSourceIndex_ %= sources_.size();
-        }
+        nextSourceIndex_ = sources_.empty() ? 0 : nextSourceIndex_ % sources_.size();
+        for (auto const& map : changedMaps)
+            completions.push_back(invalidateMapLocked(map));
     }
-    jobsAvailable_.notify_all();
+    // Catalog publication holds its own lock while calling this method. Return callbacks to
+    // its caller rather than re-entering user/filter code under either coordination lock.
+    return [this, completions = std::move(completions)]
+    {
+        for (auto const& complete : completions)
+            complete();
+        jobsAvailable_.notify_all();
+    };
 }
 
-void ServiceScheduler::enqueueRequest(LayerTilesRequest::Ptr request)
+bool ServiceScheduler::enqueueRequests(
+    std::vector<LayerTilesRequest::Ptr> const& requests,
+    std::vector<RegisteredDataSource::Ptr> const& registrations)
 {
-    if (!request) {
-        raise("Attempt to enqueue a null LayerTilesRequest.");
-    }
-    if (request->isDone()) {
-        request->notifyStatus();
-        return;
-    }
+    if (requests.size() != registrations.size() ||
+        std::ranges::any_of(requests, [](auto const& request) { return !request; }))
+        raise("Tile admission requires a registration for every non-null request.");
 
     auto reject = false;
-    std::vector<std::pair<MapPartitionKey, PartitionLayer::LoadState>> joined;
+    // One collection per bundle member, preserving request order without retaining a
+    // registration on every queued tile. Invalidation fences admitted work thereafter.
+    std::vector<std::vector<std::pair<MapPartitionKey, PartitionLayer::LoadState>>>
+        joined(requests.size());
     {
         std::lock_guard lock(mutex_);
-        if (stopping_) {
-            reject = true;
+        reject = stopping_;
+        for (size_t i = 0; i < requests.size() && !reject; ++i) {
+            if (requests[i]->isDone())
+                continue;
+            reject = !registrations[i] ||
+                std::ranges::none_of(
+                    sources_,
+                    [&](auto const& source)
+                    {
+                        return source->enabled && source->source == registrations[i] &&
+                            requestMatchesSourceLocked(requests[i], *source);
+                    });
         }
-        else {
-            // Join now, even when every worker/permit is busy. Otherwise a live
-            // queued consumer could be invisible when the previous one aborts.
-            for (auto const& key : request->resolvedTileKeys_) {
-                auto job = inFlightTiles_.find(key);
-                if (job != inFlightTiles_.end() && request->tileKeysNotStarted_.erase(key)) {
-                    job->second->waitingRequests.push_back(request);
-                    joined.emplace_back(key, job->second->loadStatus);
+        if (!reject) {
+            // Recomposition can change authorization even when the artifact is identical.
+            // Validate every registration before joining any work, not just its schema ID.
+            for (size_t i = 0; i < requests.size(); ++i) {
+                auto const& request = requests[i];
+                if (request->isDone())
+                    continue;
+                // Join even when all permits are busy, so live consumers remain visible
+                // if the request which originally admitted this tile gets cancelled.
+                for (auto const& key : request->resolvedTileKeys_) {
+                    auto job = inFlightTiles_.find(key);
+                    if (job != inFlightTiles_.end() && request->tileKeysNotStarted_.erase(key)) {
+                        job->second->waitingRequests.push_back(request);
+                        joined[i].emplace_back(key, job->second->loadStatus);
+                    }
                 }
+                if (!request->tileKeysNotStarted_.empty())
+                    requests_.push_back(request);
             }
-            if (!request->tileKeysNotStarted_.empty())
-                requests_.push_back(request);
         }
     }
     // Completion callbacks are external and may re-enter the service, so they
     // must never execute while the scheduler mutex is held.
     if (reject) {
-        request->setStatus(RequestStatus::Aborted);
-        return;
+        for (auto const& request : requests)
+            if (!request->isDone())
+                request->setStatus(RequestStatus::Aborted);
+        return false;
     }
-    for (auto const& [key, state] : joined)
-        request->notifyLoadState(key, state);
+    for (size_t i = 0; i < requests.size(); ++i)
+        for (auto const& [key, state] : joined[i])
+            requests[i]->notifyLoadState(key, state);
     jobsAvailable_.notify_all();
+    return true;
 }
 
 void ServiceScheduler::notifyWorkAvailable()
@@ -216,59 +250,83 @@ void ServiceScheduler::addFilterMemoryTracker(std::shared_ptr<FilterMemoryTracke
 
 void ServiceScheduler::invalidateMap(std::string const& mapId)
 {
-    std::vector<LayerTilesRequest::Ptr> abortedRequests;
-    std::list<DiscoveryJob> cancelledDiscovery;
+    std::function<void()> complete;
     {
         std::lock_guard lock(mutex_);
-        ++mapEpochs_[mapId];
-        for (auto job = discoveryJobs_.begin(); job != discoveryJobs_.end();) {
-            if (job->request.mapId_ == mapId) {
-                auto cancelled = job++;
-                cancelledDiscovery.splice(cancelledDiscovery.end(), discoveryJobs_, cancelled);
-            }
-            else {
-                ++job;
-            }
-        }
+        complete = invalidateMapLocked(mapId);
+    }
+    complete();
+}
 
-        for (auto request = requests_.begin(); request != requests_.end();) {
-            if (*request && (*request)->mapId_ == mapId) {
-                abortedRequests.push_back(*request);
-                request = requests_.erase(request);
-            }
-            else {
-                ++request;
-            }
+std::function<void()> ServiceScheduler::invalidateMapLocked(std::string const& mapId)
+{
+    std::vector<LayerTilesRequest::Ptr> abortedRequests;
+    std::list<DiscoveryJob> cancelledDiscovery;
+    ++mapEpochs_[mapId];
+    for (auto job = discoveryJobs_.begin(); job != discoveryJobs_.end();) {
+        if (job->request.mapId_ == mapId) {
+            auto cancelled = job++;
+            cancelledDiscovery.splice(cancelledDiscovery.end(), discoveryJobs_, cancelled);
         }
-        for (auto job = inFlightTiles_.begin(); job != inFlightTiles_.end();) {
-            if (job->first.mapId_ != mapId) {
-                ++job;
-                continue;
-            }
-            abortedRequests.insert(
-                abortedRequests.end(),
-                job->second->waitingRequests.begin(),
-                job->second->waitingRequests.end());
-            job->second->waitingRequests.clear();
-            job->second->cancelled = true;
-            job = inFlightTiles_.erase(job);
+        else {
+            ++job;
         }
-        // A running tile publishes under this mutex and checks the same epoch,
-        // so no stale result can enter the cache after invalidation returns.
-        cache_->invalidateMap(mapId);
     }
 
-    std::ranges::sort(abortedRequests, {}, [](auto const& request) { return request.get(); });
-    abortedRequests
-        .erase(std::unique(abortedRequests.begin(), abortedRequests.end()), abortedRequests.end());
-    for (auto& job : cancelledDiscovery)
-        job.run(true);
-    for (auto const& request : abortedRequests) {
-        if (request && !request->isDone()) {
-            request->setStatus(RequestStatus::Aborted);
+    for (auto request = requests_.begin(); request != requests_.end();) {
+        if (*request && (*request)->mapId_ == mapId) {
+            abortedRequests.push_back(*request);
+            request = requests_.erase(request);
+        }
+        else {
+            ++request;
         }
     }
-    jobsAvailable_.notify_all();
+    for (auto job = inFlightTiles_.begin(); job != inFlightTiles_.end();) {
+        if (job->first.mapId_ != mapId) {
+            ++job;
+            continue;
+        }
+        abortedRequests.insert(
+            abortedRequests.end(),
+            job->second->waitingRequests.begin(),
+            job->second->waitingRequests.end());
+        job->second->waitingRequests.clear();
+        job->second->cancelled = true;
+        job = inFlightTiles_.erase(job);
+    }
+    // A running tile publishes under this mutex and checks the same epoch,
+    // so no stale result can enter the cache after invalidation returns.
+    cache_->invalidateMap(mapId);
+    return [this,
+            abortedRequests = std::move(abortedRequests),
+            cancelledDiscovery = std::move(cancelledDiscovery)]() mutable
+    {
+        std::ranges::sort(abortedRequests, {}, [](auto const& request) { return request.get(); });
+        abortedRequests.erase(
+            std::unique(abortedRequests.begin(), abortedRequests.end()),
+            abortedRequests.end());
+        for (auto& job : cancelledDiscovery)
+            job.run(true);
+        for (auto const& request : abortedRequests) {
+            if (request && !request->isDone()) {
+                try {
+                    request->setStatus(RequestStatus::Aborted);
+                }
+                catch (...) {
+                    // A failing consumer must not prevent the remaining aborts or the
+                    // catalog notification after this completion batch.
+                    try {
+                        log().error("LayerTilesRequest completion callback failed during invalidation.");
+                    }
+                    catch (...) {
+                        // Even a failing log sink must not interrupt the completion batch.
+                    }
+                }
+            }
+        }
+        jobsAvailable_.notify_all();
+    };
 }
 
 void ServiceScheduler::stop() noexcept
@@ -338,8 +396,13 @@ void ServiceScheduler::enqueueDiscovery(
     DiscoveryJob job{std::move(source), std::move(request), std::move(callback)};
     {
         std::lock_guard lock(mutex_);
+        // The caller authorized this exact registration before taking our lock.
+        // Recomposition may have replaced it in between, even with the same artifact.
+        auto current = std::ranges::any_of(
+            sources_,
+            [&](auto const& state) { return state->enabled && state->source == job.source; });
         // Admission is bounded; completed work is never dropped by an outbox watermark.
-        if (!stopping_ && discoveryJobs_.size() < 4096) {
+        if (!stopping_ && current && discoveryJobs_.size() < 4096) {
             discoveryJobs_.push_back(std::move(job));
             jobsAvailable_.notify_one();
             return;

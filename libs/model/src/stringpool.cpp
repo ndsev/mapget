@@ -20,7 +20,6 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(DirectionStr, "direction");
     addStaticKey(ValidityStr, "validity");
     addStaticKey(PropertiesStr, "properties");
-    addStaticKey(NameStr, "name");
     addStaticKey(TargetStr, "target");
     addStaticKey(SourceValidityStr, "sourceValidity");
     addStaticKey(TargetValidityStr, "targetValidity");
@@ -112,7 +111,6 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(ExpressionIndexStr, "expressionIndex");
     addStaticKey(StageStr, "stage");
     addStaticKey(MessageStr, "message");
-    addStaticKey(SchemaBitmaskStr, "bitmask");
 }
 
 tl::expected<void, simfil::Error>

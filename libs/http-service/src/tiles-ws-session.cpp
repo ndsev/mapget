@@ -145,10 +145,10 @@ public:
     TilesWsSession(
         HttpService& service,
         std::weak_ptr<drogon::WebSocketConnection> conn,
-        AuthHeaders authHeaders)
+        ClientAuthorization authorization)
         : service_(service),
           conn_(std::move(conn)),
-          authHeaders_(std::move(authHeaders)),
+          authorization_(std::move(authorization)),
           writer_(
               std::make_unique<TileLayerStream::Writer>(
                   [this](std::string msg, TileLayerStream::MessageType type) { onWriterMessage(std::move(msg), type); },
@@ -611,7 +611,7 @@ public:
                 auto context = service_.resolveLayerRequest(
                     parsed.mapId,
                     parsed.layerId,
-                    authHeaders_,
+                    authorization_,
                     parsed.sourceId);
                 auto pendingKeys = requestedTileKeys(parsed);
                 if (shouldAbandonReconciliation(sequence)) {
@@ -1316,10 +1316,10 @@ private:
     {
         bool serviceRequestsAccepted = true;
         if (!serviceRequests.empty()) {
-            serviceRequestsAccepted = service_.request(serviceRequests, authHeaders_);
+            serviceRequestsAccepted = service_.request(serviceRequests, authorization_);
         }
         if (serviceRequestsAccepted && !filterServiceRequests.empty()) {
-            serviceRequestsAccepted = service_.request(filterServiceRequests, authHeaders_);
+            serviceRequestsAccepted = service_.request(filterServiceRequests, authorization_);
         }
         if (!serviceRequestsAccepted) {
             abortRequests(serviceRequests);
@@ -2121,7 +2121,7 @@ private:
         // see the same catalog row through `/sources`; otherwise keep the old
         // generic invalidation shape and avoid leaking auth-scoped metadata.
         if (change.sourceUpdate
-            && service_.isSourceCatalogChangeVisible(change, std::optional<AuthHeaders>{authHeaders_}))
+            && service_.isSourceCatalogChangeVisible(change, std::optional<ClientAuthorization>{authorization_}))
         {
             auto const& update = *change.sourceUpdate;
             auto source = nlohmann::json::object({
@@ -2167,7 +2167,7 @@ private:
     uint64_t requestId_ = 0;
     uint64_t nextRequestId_ = 1;
 
-    AuthHeaders authHeaders_;
+    ClientAuthorization authorization_;
 
     mutable std::mutex mutex_;
     std::shared_ptr<std::atomic_bool> workAdmissionOpen_ = std::make_shared<std::atomic_bool>(true);
@@ -2328,16 +2328,6 @@ void handleTilesNextRequest(
 }  // namespace
 
 
-/** Forward auth-header extraction through the opaque-session adapter boundary. */
-AuthHeaders tilesWsAuthHeadersFromRequest(const drogon::HttpRequestPtr& req)
-{
-    AuthHeaders headers;
-    for (auto const& [k, v] : req->headers()) {
-        headers.emplace(k, v);
-    }
-    return headers;
-}
-
 /** Encode a stream frame without exposing session internals to the Drogon controller. */
 std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::string_view payload)
 {
@@ -2348,9 +2338,9 @@ std::string tilesWsEncodeStreamMessage(TileLayerStream::MessageType type, std::s
 std::shared_ptr<TilesWsSession> tilesWsCreateSession(
     HttpService& service,
     std::weak_ptr<drogon::WebSocketConnection> conn,
-    AuthHeaders authHeaders)
+    ClientAuthorization authorization)
 {
-    auto session = std::make_shared<TilesWsSession>(service, std::move(conn), std::move(authHeaders));
+    auto session = std::make_shared<TilesWsSession>(service, std::move(conn), std::move(authorization));
     session->startSourceCatalogSubscription();
     return session;
 }

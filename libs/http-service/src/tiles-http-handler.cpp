@@ -603,7 +603,7 @@ void HttpService::Impl::handleTilesLikeRequest(
 
     const std::string accept = req->getHeader("accept");
     const std::string acceptEncoding = req->getHeader("accept-encoding");
-    auto clientHeaders = detail::authHeadersFromRequest(req);
+    auto clientAuthorization = config_.proxyAuth.authorization(req);
 
     nlohmann::json j;
     try {
@@ -721,9 +721,9 @@ void HttpService::Impl::handleTilesLikeRequest(
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
 
-    const auto tileRequestsAccepted = self_.request(state->requests_, clientHeaders);
+    const auto tileRequestsAccepted = self_.request(state->requests_, clientAuthorization);
     const auto filterRequestsAccepted =
-        tileRequestsAccepted ? self_.request(state->filterRequests_, clientHeaders) : state->filterRequests_.empty();
+        tileRequestsAccepted ? self_.request(state->filterRequests_, clientAuthorization) : state->filterRequests_.empty();
     const auto canProcess = tileRequestsAccepted && filterRequestsAccepted;
     if (!canProcess) {
         for (auto const& r : state->requests_) {

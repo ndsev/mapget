@@ -8,11 +8,15 @@ add_library(mapget-http-service STATIC
   include/mapget/http-service/http-client.h
   include/mapget/http-service/cli.h
   include/mapget/http-service/mcp-config.h
+  include/mapget/http-service/proxy-auth.h
 
   src/http-service.cpp
   src/http-service-impl.h
   src/http-service-impl.cpp
   src/attachment-handler.cpp
+  src/bounded-json.h
+  src/bounded-json.cpp
+  src/proxy-auth.cpp
   src/cache-reset-handler.cpp
   src/config-handler.cpp
   src/http-client.cpp
@@ -37,6 +41,7 @@ add_library(mapget-http-service STATIC
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
+  src/schema-handler.cpp
   src/status-handler.cpp
   src/status-page.h
   src/status-page.cpp

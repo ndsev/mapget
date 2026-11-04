@@ -48,6 +48,7 @@ void McpNativeTools::buildCatalog()
          {"reason", {{"type", {"string", "null"}}}},
          {"issues", array(Json::object(), 100)},
          {"traces", {{"type", "object"}}},
+         {"mapSchemaId", string()},
          {"nextOffset", integer(0, INT32_MAX)}},
         {"items", "complete", "reason", "issues", "traces"});
     auto add =
@@ -108,9 +109,10 @@ void McpNativeTools::buildCatalog()
         "List authorized sources in configuration order with lifecycle state and layer metadata. "
         "mapId/sourceId selects detailed metadata by default; unfocused discovery is compact. "
         "Compact layers contains renderable layers; sourceDataLayers lists raw layer IDs. "
-        "A layerId filter returns that layer's metadata, including raw layers. schemaFeatureTypes "
-        "lists schema roots; featureTypes also includes reference-only identifier types. "
-        "Excludes schemas and coverage records; no tile I/O. "
+        "A layerId filter returns that layer's metadata, including raw layers. featureTypes "
+        "comes from the authoritative schema; produced=false marks reference-only types. "
+        "mapFormat describes the source format; schemaId identifies the exact shared schema. "
+        "Excludes inline schemas and coverage records; no tile I/O or schema reconstruction. "
         "offset/nextOffset page matching sources in this snapshot; retain the same filters.",
         sources);
     auto coverage = selection;
@@ -146,7 +148,36 @@ void McpNativeTools::buildCatalog()
         {"model", "expectedRevision"},
         true);
 
-    auto schema = selection;
+    auto mapFormat = object(
+        {{"name", string()},
+         {"version", {{"type", "string"}, {"maxLength", 512}}},
+         {"subsystems",
+          array(
+              object(
+                  {{"name", string()}, {"version", {{"type", "string"}, {"maxLength", 512}}}},
+                  {"name", "version"}),
+              256)}},
+        {"name"});
+    mapFormat["description"] =
+        "Exact descriptive tuple. Omitted version/subsystems mean empty, not wildcard. "
+        "Subsystem pairs are order-independent; one name may have multiple versions.";
+    auto schemaSelection = selection;
+    schemaSelection["mapFormat"] = mapFormat;
+    schemaSelection["mapSchemaId"] = string(256);
+    schemaSelection["mapSchemaId"]["description"] =
+        "Exact artifact identity from mapget_list_schemas. May qualify mapId or mapFormat; "
+        "alone selects any current authorized provider. Not a numeric typeId.";
+    auto inventory = schemaSelection;
+    inventory.erase("layerId");
+    add("mapget_list_schemas",
+        "Discover authorized loaded schema artifacts independently of maps; no tile I/O. "
+        "Shared artifacts appear once with authorized consumers, layer roots, format versions "
+        "and retained-capacity statistics. Optional selectors intersect; no pagination, "
+        "narrow filters if incomplete. Use mapSchemaId to disambiguate several artifacts for "
+        "one format. Type IDs are local to that exact artifact.",
+        inventory);
+
+    auto schema = schemaSelection;
     schema.update(query);
     schema["featureType"] = string();
     schema["find"] = {
@@ -156,39 +187,48 @@ void McpNativeTools::buildCatalog()
         {"description",
          "Substring of one declared field/type/enum name, ignoring case, spaces, underscores and "
          "hyphens (speed limit matches SPEED_LIMIT or speedLimit). Use one keyword/name per call, "
-         "e.g. speed or truck. Returns compact matches with schemaId and representative data path "
+         "e.g. speed or truck. Returns compact matches with typeId and representative data path "
          "segments (* means array element). Not actual feature values or an exhaustive list of "
          "paths through shared definitions. Mutually exclusive with query."}};
-    schema["schemaId"] = integer(1, simfil::MaxSchemaId);
-    schema["schemaId"]["description"] =
-        "Open a descriptor's $ref within this layer; mutually exclusive with featureType.";
+    schema["typeId"] = integer(1, simfil::MaxTypeId);
+    schema["typeId"]["description"] =
+        "Open a descriptor's numeric $ref within this layer; mutually exclusive with featureType. "
+        "Local to the response's mapSchemaId, not the source catalog's string schemaId.";
     schema["query"]["description"] =
         "Simfil over descriptor metadata, e.g. fields.properties.fields or **.typename; "
         "evaluates the full lazy graph, not the default overview.";
     add("mapget_query_schema",
-        "Inspect schema descriptors, not feature values; no tile I/O. Unfocused calls list "
-        "feature types and schema IDs. featureType/schemaId opens immediate fields and shallow "
+        "Inspect schema descriptors, not feature values; no tile I/O. Select mapId, mapFormat, "
+        "or mapSchemaId, always with layerId. A format matching several artifacts returns "
+        "ambiguous_schema with exact selectArguments; no arbitrary first match. Unfocused calls "
+        "list "
+        "produced feature types and type IDs, or the SourceData layer root. "
+        "featureType/typeId opens immediate fields and shallow "
         "properties; childrenOmitted/$ref identifies unexpanded compounds. Explicit query/find "
-        "is not overview-limited. find groups field/type and enum-symbol matches, with "
-        "schemaId, owning contexts and grouped enum symbols. Exact symbols rank first. "
+        "is not overview-limited. A featureType overview includes its native ID compositions "
+        "and forward relation contract; reference-only types have no data root. find groups "
+        "field/type and enum-symbol matches, with "
+        "typeId, owning contexts and grouped enum symbols. Exact symbols rank first. "
         "No pagination: use expandArguments or narrowing choices for broader results. "
         "fields/elements/alternatives distinguish objects, arrays and logical combinations. "
         "Large enum overviews return enumCount/enumPreview; explicit queries expose exact values.",
         schema,
-        {"mapId", "layerId"});
+        {"layerId"});
     actions_["mapget_query_schema"].tool["inputSchema"]["allOf"] = Json::array(
-        {{{"not", {{"required", {"featureType", "schemaId"}}}}},
+        {{{"not", {{"required", {"featureType", "typeId"}}}}},
          {{"not", {{"required", {"query", "find"}}}}}});
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"] = integer(1, 1000);
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"]["default"] = 8;
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"]["description"] =
-        "Default 8; overview/find return at most 32 domains. Explicit queries may raise the value "
+        "Default 8; overview/find return at most 32 types. Explicit queries may raise the value "
         "limit to 1000.";
-    auto validation = selection;
+    auto validation = schemaSelection;
     validation["expression"] = string(4096);
     validation["offset"] = integer(0, INT32_MAX);
     validation["featureType"] = string();
-    validation["attributeSchema"] = integer(1, UINT32_MAX);
+    validation["attributeTypeId"] = integer(1, simfil::MaxTypeId);
+    validation["attributeTypeId"]["description"] =
+        "Numeric type ID for a declared attribute context in the selected exact schema.";
     validation["scope"] = {{"enum", {"feature", "attribute", "auto"}}};
     validation["rewrite"] = {{"type", "boolean"}};
     validation["rewrite"]["description"] =
@@ -198,13 +238,24 @@ void McpNativeTools::buildCatalog()
     validation["predicate"] = {{"type", "boolean"}};
     add("mapget_validate_expression",
         "Compile simfil with mapget functions and the chosen layer schema, without tile I/O. "
+        "Select mapId, mapFormat or mapSchemaId with layerId, just as for mapget_query_schema. "
         "Optional search normalization uses the same schema normalization as /filter. "
         "Syntax validity is not proof of runtime success. Unresolved/dynamic access means "
         "metadata cannot prove a path, not that the field or data is absent. "
         "limit/offset page validation contexts; valid describes only the returned contexts. "
         "Follow nextOffset with unchanged selectors/expression for the rest.",
         validation,
-        {"mapId", "layerId", "expression"});
+        {"layerId", "expression"});
+    for (auto const* action : {"mapget_query_schema", "mapget_validate_expression"}) {
+        // Exactly one primary selector; an artifact may additionally pin a map/format selection.
+        auto artifactOnly = Json{{"required", {"mapSchemaId"}}};
+        artifactOnly["not"]["anyOf"] =
+            Json::array({{{"required", {"mapId"}}}, {{"required", {"mapFormat"}}}});
+        auto& input = actions_[action].tool["inputSchema"];
+        input["oneOf"] =
+            Json::array({{{"required", {"mapId"}}}, {{"required", {"mapFormat"}}}, artifactOnly});
+        input["dependencies"]["sourceId"] = Json::array({"mapId"});
+    }
     actions_["mapget_query_schema"].tool["outputSchema"]["properties"]["schemaView"] = {
         {"enum", {"shallow_overview", "matches"}}};
     actions_["mapget_query_schema"].tool["outputSchema"]["properties"]["guidance"] = string(1024);

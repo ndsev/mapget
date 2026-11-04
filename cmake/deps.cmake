@@ -59,6 +59,8 @@ CPMAddPackage(
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
 CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
+# Exact schema identities are also needed by model-only/WASM consumers.
+CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
     OPTIONS
@@ -86,7 +88,7 @@ else()
     CPMAddPackage(
         NAME simfil
         GITHUB_REPOSITORY Klebert-Engineering/simfil
-        GIT_TAG e324358e1662e8736af3de7502cf3421dfd7df48
+        GIT_TAG 0589c7b09293002486b35218ddc516cbdd0c7f06
         GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
@@ -222,7 +224,6 @@ endif()
             "YAML_CPP_BUILD_TOOLS OFF"
             "YAML_CPP_BUILD_CONTRIB OFF")
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
-    CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
 endif ()
 

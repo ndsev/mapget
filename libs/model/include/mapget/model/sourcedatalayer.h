@@ -50,7 +50,8 @@ public:
     PartitionSourceDataLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     ~PartitionSourceDataLayer() override;
 
@@ -63,6 +64,11 @@ public:
      * Get this pool's simfil evaluation environment.
      */
     simfil::Environment& evaluationEnvironment();
+
+    /** Translate a fresh, exclusively owned native model into a composed schema.
+     * Source addresses, compound nodes and payload storage remain unchanged.
+     */
+    void rebindSchema(std::shared_ptr<LayerInfo> const& info);
 
     /**
      * Serialize the layer.

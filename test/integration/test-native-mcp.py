@@ -73,8 +73,9 @@ def validate_response(message, protocol, method):
 class ViewerConnection:
     """A minimal real WebSocket peer; application behavior remains explicitly controlled by tests."""
 
-    def __init__(self, port, endpoint="/interactive", headers=None):
-        self.socket = socket.create_connection(("127.0.0.1", port), timeout=6)
+    def __init__(self, port, endpoint="/interactive", headers=None, source_address=None):
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=6,
+                                               source_address=source_address)
         self.buffer = b""
         key = base64.b64encode(os.urandom(16)).decode()
         handshake = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}",
@@ -144,7 +145,8 @@ class ViewerConnection:
                 raise EOFError("Viewer received a close frame")
             assert opcode == 2
             major, minor, patch, message_type, length = struct.unpack_from("<HHHBI", payload)
-            assert (major, minor) == (5, 5)
+            # Native TileLayerStream version; independent of the MCP specification revision.
+            assert (major, minor) == (6, 1), (major, minor, patch)
             assert len(payload) == 11 + length
             if message_type == kind:
                 return json.loads(payload[11:])
@@ -318,7 +320,7 @@ class NativeMcpTest(unittest.TestCase):
             self.assertEqual(result["cacheScope"], "private")
             self.assertEqual(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "mapget")
             if method == "tools/list":
-                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 13)
+                self.assertEqual(len(result["tools"]), len(self.catalog["actions"]) + 14)
             else:
                 self.assertEqual(result["supportedVersions"], ["2026-07-28", "2025-11-25", "2025-06-18"])
         self.assertEqual(self.call("viewer_list_sessions", {})["structuredContent"], {"sessions": []})
@@ -327,8 +329,7 @@ class NativeMcpTest(unittest.TestCase):
             _, response = self.begin_rpc("tools/list", headers=headers)
             self.assertEqual(response.status, 400)
             self.assertEqual(self.rpc_result(response)["error"]["code"], code)
-        for headers in ({"Host": "attacker.example"}, {"Origin": "https://attacker.example"},
-                        {"X-Forwarded-For": "127.0.0.1"}):
+        for headers in ({"Host": "attacker.example"}, {"Origin": "https://attacker.example"}):
             self.assertEqual(self.http("GET", "/mcp/info", headers=headers)[0], 403)
         self.assertEqual(self.http("GET", "/mcp")[0], 405)
 
@@ -704,7 +705,8 @@ class NativeMcpTest(unittest.TestCase):
         """A native-only server needs neither a webapp nor a generated browser catalog."""
         _, response = self.begin_rpc("tools/list")
         names = {tool["name"] for tool in self.rpc_result(response)["result"]["tools"]}
-        self.assertEqual(len(names), 13)
+        self.assertEqual(len(names), 14)
+        self.assertIn("mapget_list_schemas", names)
         self.assertIn("mapget_docs", names)
         self.assertIn("mapget_extract_source_data", names)
         self.assertIn("mapget_get_coverage", names)
@@ -922,7 +924,7 @@ class NativeMcpTest(unittest.TestCase):
             self.assertNotIn("resultType", tools)
             self.assertNotIn("ttlMs", tools)
             self.assertNotIn("cacheScope", tools)
-            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 13)
+            self.assertEqual(len(tools["tools"]), len(self.catalog["actions"]) + 14)
             _, response = self.begin_rpc("tools/call", {
                 "name": "viewer_set_app_state", "arguments": self.arguments(viewer, "viewer_set_app_state")},
                 protocol=protocol)
@@ -1014,19 +1016,26 @@ class NativeMcpConfigTest(unittest.TestCase):
         return [str(MAPGET_BINARY), "--config", str(self.config_path), "serve", *overrides]
 
     def start(self, *overrides):
-        """Start a bounded isolated process and wait for its ordinary health endpoint."""
+        """Wait for configured sources, not just the listener that precedes config loading."""
         process = subprocess.Popen(self.command(*overrides), cwd=self.directory,
                                    stdout=self.log, stderr=subprocess.STDOUT)
         self.addCleanup(self.stop, process)
+        expected_sources = sorted(source["mapId"] for source in self.sources if source.get("enabled", True))
         deadline = time.monotonic() + 20
         while process.poll() is None and time.monotonic() < deadline:
             try:
-                if self.http("/status-data")[0] == 200:
-                    return
+                status, body = self.http("/status-data")
+                if status == 200:
+                    service = body["service"]
+                    # Unlike /sources, these ready registrations include supplier-gated maps.
+                    if (service["datasource-config"]["configured"] == len(self.sources)
+                            and sorted(source["name"] for source in service["datasources"]) == expected_sources):
+                        return
             except OSError:
-                time.sleep(0.05)
+                pass
+            time.sleep(0.05)
         self.log.seek(0)
-        self.fail("MCP config service did not start: " + self.log.read())
+        self.fail("MCP config service sources did not become ready: " + self.log.read())
 
     def stop(self, process):
         """Do not leave a config-watching child alive after a failed assertion."""
@@ -1037,9 +1046,10 @@ class NativeMcpConfigTest(unittest.TestCase):
             process.kill()
             process.wait()
 
-    def http(self, path, headers=None, method="GET", body=None):
+    def http(self, path, headers=None, method="GET", body=None, source_address=None):
         """Return HTTP and parsed JSON where available; config writes return plain text."""
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6,
+                                                source_address=source_address)
         try:
             connection.request(method, path, body, headers or {})
             response = connection.getresponse()
@@ -1088,6 +1098,64 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(self.http("/mcp/info")[0], 200)
         self.assertEqual(self.http("/mcp/info", {"Host": f"localhost:{self.port}"})[0], 403)
         self.assertEqual(self.http("/mcp/info", {"Origin": f"http://localhost:{self.port}"})[0], 403)
+
+    def test_local_wildcard_listener_defaults(self):
+        """Local MCP uses the ordinary listener; a wildcard advertises localhost, not 0.0.0.0."""
+        self.settings["host"] = "0.0.0.0"
+        self.start()
+        status, info = self.http("/mcp/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["endpoint"], f"http://localhost:{self.port}/mcp")
+        self.log.flush()
+        self.log.seek(0)
+        self.assertIn("MCP local mode is unauthenticated", self.log.read())
+
+    def test_local_public_endpoint_and_forwarded_headers(self):
+        """An explicit proxy endpoint controls Host/Origin defaults, never forwarded headers."""
+        self.settings.update({"host": "0.0.0.0", "mcp-endpoint": "https://Viewer.Example:443/mcp"})
+        self.start()
+        headers = {"Host": "viewer.example", "Origin": "https://viewer.example"}
+        status, info = self.http("/mcp/info", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(info["endpoint"], "https://viewer.example/mcp")
+        forwarding = {"Forwarded": "for=192.0.2.10;host=evil.example;proto=http",
+                      "X-Forwarded-For": "192.0.2.10", "X-Forwarded-Host": "evil.example",
+                      "X-Forwarded-Proto": "http"}
+        self.assertEqual(self.http("/mcp/info", {**headers, **forwarding}), (status, info))
+        for change in ({"Host": "evil.example"}, {"Origin": "https://evil.example"},
+                       {"Host": "evil.example", "X-Forwarded-Host": "viewer.example"},
+                       {"Host": f"127.0.0.1:{self.port}"}):
+            with self.subTest(change=change):
+                self.assertEqual(self.http("/mcp/info", {**headers, **change})[0], 403)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Uses Linux's 127/8 source addresses")
+    def test_local_clients_share_identity_regardless_of_peer(self):
+        """Peer addresses neither block reachable callers nor partition local browser sessions."""
+        self.settings["host"] = "0.0.0.0"
+        self.start()
+        headers = {"Host": f"localhost:{self.port}", "Origin": f"http://localhost:{self.port}"}
+        catalog = json.loads(self.catalog.read_text(encoding="utf-8"))
+        clients = []
+        for address in ("127.0.0.2", "127.0.0.3"):
+            peer = (address, 0)
+            self.assertEqual(self.http("/mcp/info", headers, source_address=peer)[0], 200)
+            viewer = ViewerConnection(self.port, headers=headers, source_address=peer)
+            self.addCleanup(viewer.close)
+            viewer.send({"type": "mapget.actions.register", "version": 1,
+                         "catalogId": catalog["catalogId"], "label": address,
+                         "actions": [action["name"] for action in catalog["actions"]]})
+            self.assertEqual(viewer.receive()["type"], "mapget.actions.registered")
+            clients.append(viewer.client_id)
+        status, payload = self.http("/mcp", {
+            **headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-11-25"}, "POST", json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "viewer_list_sessions", "arguments": {}}}))
+        self.assertEqual(status, 200)
+        reply = payload if isinstance(payload, dict) else json.loads(next(
+            line[6:] for line in payload.splitlines() if line.startswith("data: ")))
+        sessions = reply["result"]["structuredContent"]["sessions"]
+        self.assertEqual(sorted(session["clientId"] for session in sessions), sorted(clients))
 
     def help_query(self, query):
         """Read an MCP result through a real initialized-era SSE response."""
@@ -1257,6 +1325,143 @@ class NativeMcpConfigTest(unittest.TestCase):
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         self.assertEqual(self.http("/mcp/browser", headers, "POST", body)[0], 403)
 
+    @staticmethod
+    def encoded_claims(value):
+        """Use the proxy's single unpadded base64url transport, including malformed JSON fixtures."""
+        return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+    def claims_settings(self):
+        """One source needs both its supplier header and a verified group membership."""
+        self.oauth_settings()
+        self.settings.update({"auth-trusted-proxy-addresses": ["127.0.0.1"],
+                              "auth-claims-header": "test-claims",
+                              "mcp-datasource-headers": ["x-supplier=mcp"]})
+        self.sources = [{"type": "GridDataSource", "mapId": "Restricted",
+                         "auth-header": {"X-Supplier": "^(here|mcp)$"},
+                         "auth-claims": {"/groups": "SMS_users"}, "layers": [
+                             {"name": "Road", "featureType": "DevSrc-Road", "geometry": {"type": "line"}},
+                             {"name": "Intersections", "featureType": "DevSrc-Intersection",
+                              "geometry": {"type": "point"}}]}]
+        return {"X-Supplier": "here", "test-claims": self.encoded_claims(
+                    '{"groups":["SMS_users"],"family_name":"M\u00fcller"}'),
+                "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-11-25", "Origin": "https://viewer.example",
+                "test-issuer": "https://issuer.example/realm", "test-subject": "browser-user",
+                "test-expiry": str(int(time.time()) + 600), "test-permissions": "viewer-read"}
+
+    def test_webmcp_datasource_claims_and_tool_permissions(self):
+        """Static header grants never bypass source claims; group membership never grants MCP roles."""
+        headers = self.claims_settings()
+        self.start()
+
+        def call(name, arguments, authority):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": name, "arguments": arguments}})
+            status, reply = self.http("/mcp/browser", authority, "POST", body)
+            self.assertEqual(status, 200, reply)
+            if isinstance(reply, str):
+                reply = json.loads(next(line[6:] for line in reply.splitlines() if line.startswith("data: ")))
+            return reply["result"]
+
+        result = call("mapget_list_sources", {}, headers)
+        self.assertEqual({s["mapId"] for s in result["structuredContent"]["items"]}, {"Restricted"})
+        tile = call("mapget_convert_tile_id", {"longitude": 11.5, "latitude": 48.1, "level": 13}, headers)
+        tile_id = tile["structuredContent"]["items"][0]["tileId"]
+        selection = {"mapId": "Restricted", "layerId": "Road", "limit": 1,
+                     "partitions": [{"kind": "tile", "id": tile_id}], "query": "id"}
+        warm = call("mapget_extract_features", selection, headers)
+        self.assertFalse(warm.get("isError", False), warm)
+        for changes in ({"test-claims": ""}, {"test-claims": self.encoded_claims('{"groups":["other"]}')},
+                        {"test-claims": self.encoded_claims('{"groups":["SMS_users_extra"]}')}):
+            denied = dict(headers, **changes)
+            self.assertEqual(call("mapget_list_sources", {}, denied)["structuredContent"]["items"], [])
+            self.assertTrue(call("mapget_extract_features", selection, denied)["isError"])
+        denied = dict(headers, **{"test-permissions": "viewer-control"})
+        self.assertTrue(call("mapget_list_sources", {}, denied)["isError"])
+        # Incoming supplier headers must not override the explicitly configured MCP marker.
+        self.assertEqual(len(call("mapget_list_sources", {}, dict(headers, **{"X-Supplier": "attacker"}))
+                             ["structuredContent"]["items"]), 1)
+
+    def test_datasource_proxy_claims_on_rest_and_websocket(self):
+        """REST and WebSocket admission share the exact claims/header check, including warm caches."""
+        headers = self.claims_settings()
+        self.start()
+        source = self.http("/sources", headers)[1][0]
+        self.assertEqual(source["mapId"], "Restricted")
+        self.assertEqual(len(self.http("/schemas", headers)[1]["schemas"]), 1)
+        # Use a small level-13 tile, not a hemisphere-sized procedural GridDataSource workload.
+        request = {"mapId": "Restricted", "layerId": "Road", "tileIds": [536870912]}
+        body = json.dumps({"requests": [request], "responseType": "json"})
+        raw_headers = dict(headers, Accept="application/jsonl")
+        status, response = self.http("/tiles", raw_headers, "POST", body)
+        self.assertEqual(status, 200, response)
+
+        for claims in ("", "null", "[]", "not-json", '{"groups":["other"]}',
+                       '{"groups":"SMS_users_extra"}', '{"groups":"SMS_users,other"}',
+                       '{"groups":[],"groups":["SMS_users"]}',
+                       '{"groups":["SMS_users"],"nested":' + '[' * 20 + '0' + ']' * 20 + '}',
+                       '{"groups":["SMS_users"],"padding":"' + 'x' * 17000 + '"}'):
+            denied = dict(raw_headers, **{"test-claims": self.encoded_claims(claims)})
+            self.assertEqual(self.http("/sources", denied)[1], [])
+            self.assertEqual(self.http("/schemas", denied)[1]["schemas"], [])
+            self.assertEqual(self.http("/schema?sourceId=" + source["sourceId"] +
+                                       "&schemaId=" + source["schemaId"], denied)[0], 404)
+            self.assertEqual(self.http("/tiles", denied, "POST", body)[0], 403)
+        for malformed in ('{"groups":["SMS_users"]}', headers["test-claims"] + "=",
+                          "header." + headers["test-claims"] + ".signature", "A", "/+", "_w"):
+            denied = dict(raw_headers, **{"test-claims": malformed})
+            self.assertEqual(self.http("/sources", denied)[1], [])
+            self.assertEqual(self.http("/tiles", denied, "POST", body)[0], 403)
+        self.assertEqual(self.http("/sources", dict(headers, **{"X-Supplier": "other"}))[1], [])
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=6)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/sources", headers=headers)
+        response = connection.getresponse()
+        etag = response.getheader("ETag")
+        self.assertEqual(response.getheader("Cache-Control"), "private, no-cache")
+        response.read()
+        connection.request("GET", "/sources", headers=dict(headers, **{"If-None-Match": etag}))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 304)
+        response.read()
+        connection.request("GET", "/sources", headers=dict(headers, **{
+            "If-None-Match": etag, "test-claims": ""}))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.read()), [])
+
+        for claims, expected in ((headers["test-claims"], "Success"), ("", "Unauthorized")):
+            viewer = ViewerConnection(self.port, headers=dict(headers, **{"test-claims": claims}))
+            self.addCleanup(viewer.close)
+            viewer.send({"requestId": 1, "requests": [request]})
+            while True:
+                status = viewer.receive(4)
+                if status["requestId"] == 1 and status["allDone"]:
+                    self.assertEqual(status["requests"][0]["statusText"], expected, status)
+                    break
+            viewer.close()
+
+    def test_datasource_proxy_claims_reject_untrusted_socket_peer(self):
+        """Forwarded addresses cannot grant proxy trust to the actual loopback peer."""
+        headers = self.claims_settings()
+        # macOS does not assign all of 127/8 to loopback. Make the ordinary peer
+        # untrusted instead of requiring an extra local source address to bind.
+        self.settings["auth-trusted-proxy-addresses"] = ["127.0.0.2"]
+        self.start()
+        spoofed = dict(headers, **{"X-Forwarded-For": "127.0.0.2",
+                                  "Forwarded": "for=127.0.0.2"})
+        self.assertEqual(self.http("/sources", spoofed)[1], [])
+        self.assertEqual(self.http("/schemas", spoofed)[1]["schemas"], [])
+
+    def test_datasource_claims_cannot_be_asserted_without_proxy_configuration(self):
+        """The claims-looking header is inert unless the operator enabled that trust boundary."""
+        headers = self.claims_settings()
+        del self.settings["auth-trusted-proxy-addresses"]
+        del self.settings["auth-claims-header"]
+        self.start()
+        self.assertEqual(self.http("/sources", headers)[1], [])
+        self.assertEqual(self.http("/schemas", headers)[1]["schemas"], [])
+
     def test_viewer_registration_outlives_handshake_credentials(self):
         """A live authenticated socket survives expiry; new handshakes and HTTP calls do not."""
         self.oauth_settings()
@@ -1306,8 +1511,9 @@ class NativeMcpConfigTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
     def test_invalid_startup_configuration_fails_closed(self):
-        """Misspellings, removed switches, public local listeners and invalid limits fail startup."""
-        for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"), ("--host", "0.0.0.0"),
+        """Misspellings, removed switches and invalid limits fail startup."""
+        for overrides in [("--mcp", "automatic"), ("--mcp-config", "old.json"),
+                          ("--mcp-local-peer-addresses", "127.0.0.1"),
                           ("--mcp-browser-max-lifetime-seconds", "3600"),
                           ("--mcp-sessions", "0"), ("--mcp-timeout-ms", "-1"), ("--mcp-issuer", "https://issuer.example")]:
             with self.subTest(overrides=overrides):

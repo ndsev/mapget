@@ -2,6 +2,7 @@
 
 #include "locate.h"
 #include "mapget/log.h"
+#include "mapget/model/mapschema.h"
 #include "service-impl.h"
 
 #include <tuple>
@@ -10,6 +11,13 @@ namespace mapget::detail
 {
 namespace
 {
+
+/** Require a finite retry lifetime without lengthening a producer's shorter TTL. */
+void capTileTtl(PartitionLayer& tile, std::chrono::milliseconds limit)
+{
+    if (!tile.ttl() || tile.ttl()->count() <= 0 || *tile.ttl() > limit)
+        tile.setTtl(limit);
+}
 
 /** Bound empty source lifetimes; otherwise apply ordinary datasource/service defaults. */
 void applySuccessfulTileTtl(
@@ -26,8 +34,7 @@ void applySuccessfulTileTtl(
     if (empty) {
         // Missing data must be rechecked even when ordinary successful tiles live
         // indefinitely. Empty subsets are not source layers and never enter here.
-        if (!tile.ttl() || tile.ttl()->count() <= 0 || *tile.ttl() > emptyTileTtl)
-            tile.setTtl(emptyTileTtl);
+        capTileTtl(tile, emptyTileTtl);
         return;
     }
     if (tile.ttl()) {
@@ -42,7 +49,8 @@ void applySuccessfulTileTtl(
     }
 }
 
-void includeLifetime(PartitionFeatureLayer& composite, PartitionFeatureLayer const& contributor)
+/** Carry the earliest finite dependency expiry into the composed result. */
+void includeLifetime(PartitionLayer& composite, PartitionLayer const& contributor)
 {
     auto const contributorTtl = contributor.ttl();
     if (!contributorTtl || contributorTtl->count() <= 0) {
@@ -73,8 +81,13 @@ TileLoadJob::TileLoadJob(
     ServiceScheduler& scheduler,
     std::shared_ptr<SourceConcurrency> source,
     std::shared_ptr<TileLoadState> state)
-    : scheduler_(scheduler), source_(std::move(source)), state_(std::move(state))
+    : scheduler_(scheduler),
+      source_(std::move(source)),
+      registration_(source_->source),
+      state_(std::move(state))
 {
+    // Constructed under the scheduler mutex. SourceConcurrency may publish a newer
+    // registration while this job runs; only its permit counter remains shared.
 }
 
 TileLoadJob::TileLoadJob(
@@ -121,7 +134,7 @@ void TileLoadJob::run() noexcept
         if (isCancelled())
             throw TileLoadCancelled();
         if (state_->cacheExpiredAt) {
-            source_->source->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
+            registration_->dataSource->onCacheExpired(state_->tileKey, *state_->cacheExpiredAt);
         }
 
         scheduler_.notifyTileLoadState(*state_, PartitionLayer::LoadState::BackendFetching);
@@ -129,39 +142,73 @@ void TileLoadJob::run() noexcept
         {
             scheduler_.notifyTileLoadState(*state_, state);
         };
-        auto layer = source_->source->dataSource->get(
-            state_->tileKey,
-            scheduler_.cache_,
-            *source_->source->info,
-            std::move(notifyWaitingRequests), isCancelled);
+        auto effectiveInfo = registration_->info->getLayer(state_->tileKey.layerId_);
+        auto nativeInfo = registration_->nativeInfo->getLayer(state_->tileKey.layerId_, false);
+        PartitionLayer::Ptr layer;
+        if (nativeInfo) {
+            layer = registration_->dataSource->get(
+                state_->tileKey,
+                scheduler_.cache_,
+                *registration_->nativeInfo,
+                std::move(notifyWaitingRequests),
+                isCancelled);
+        }
+        else {
+            // An add-on may publish a new feature layer which the primary converter
+            // cannot fill. Its contributions still run in the primary's source job.
+            if (effectiveInfo->type_ != LayerType::Features)
+                raise("Only feature layers may be introduced by add-ons.");
+            layer = std::make_shared<PartitionFeatureLayer>(
+                state_->tileKey.partitionId_,
+                registration_->info->stringPoolId_,
+                registration_->info->mapId_,
+                effectiveInfo,
+                scheduler_.cache_->getStringPool(registration_->info->stringPoolId_));
+        }
         if (!layer) {
             raise("DataSource::get() returned null.");
+        }
+        if (nativeInfo && layer->schemaId() != nativeInfo->schemaOwner()->schemaId())
+            raise("DataSource::get() returned a model with a different native schema.");
+        if (layer->schemaId() != effectiveInfo->schemaOwner()->schemaId()) {
+            if (layer.use_count() != 1)
+                raise(
+                    "DataSource::get() must return an exclusively owned model for schema "
+                    "composition.");
+            if (effectiveInfo->type_ == LayerType::Features)
+                std::static_pointer_cast<PartitionFeatureLayer>(layer)->rebindSchema(effectiveInfo);
+            else if (effectiveInfo->type_ == LayerType::SourceData)
+                std::static_pointer_cast<PartitionSourceDataLayer>(layer)
+                    ->rebindSchema(effectiveInfo);
+            else
+                raise("Unsupported native partition kind for schema composition.");
         }
 
         if (layer->error()) {
             // Failures expire independently of the successful-tile policy, which
             // may be infinite. Preserve a shorter positive producer lifetime.
-            if (!layer->ttl() || layer->ttl()->count() <= 0 ||
-                *layer->ttl() > scheduler_.errorTileTtl_)
-                layer->setTtl(scheduler_.errorTileTtl_);
+            capTileTtl(*layer, scheduler_.errorTileTtl_);
         }
-        else {
+        else if (nativeInfo) {
             applySuccessfulTileTtl(
                 *layer,
-                *source_->source->dataSource,
+                *registration_->dataSource,
                 scheduler_.defaultTtl_,
                 scheduler_.emptyTileTtl_);
         }
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
-            loadAddOnTiles(
+            auto const complete = loadAddOnTiles(
                 std::static_pointer_cast<PartitionFeatureLayer>(layer),
-                *source_->source,
-                scheduler_.dataSources_,
+                *registration_,
                 scheduler_.cache_,
                 scheduler_.defaultTtl_,
                 scheduler_.emptyTileTtl_,
                 isCancelled);
+            // Keep usable base/contributor features, but retry incomplete compositions.
+            // In particular, an empty synthetic root has no primary TTL to bound it.
+            if (!complete)
+                capTileTtl(*layer, scheduler_.errorTileTtl_);
         }
 
         // The worker continues with cache publication and every attached
@@ -186,27 +233,32 @@ void TileLoadJob::run() noexcept
     }
 }
 
-void loadAddOnTiles(
+bool loadAddOnTiles(
     PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
-    DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
     std::optional<std::chrono::milliseconds> const& defaultTtl,
     std::chrono::milliseconds emptyTileTtl,
     TileCancellationCheck const& isCancelled)
 {
-    for (auto const& addOn : dataSources.addOnSources()) {
-        if (addOn->info->mapId_ != baseTile->mapId()) {
+    auto complete = true;
+    for (auto const& addOn : baseSource.addOns) {
+        auto layer = addOn->nativeInfo->getLayer(baseTile->layerInfo()->layerId_, false);
+        if (!layer)
+            continue;
+        if (layer->type_ != LayerType::Features) {
+            baseTile->addWarning("An advertised add-on provider has an incompatible layer type.");
+            complete = false;
             continue;
         }
-
         if (isCancelled && isCancelled())
             throw TileLoadCancelled();
-        auto loaded = addOn->dataSource->get(baseTile->id(), cache, *addOn->info, {}, isCancelled);
+        auto loaded =
+            addOn->dataSource->get(baseTile->id(), cache, *addOn->nativeInfo, {}, isCancelled);
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning("An advertised add-on provider returned no tile.");
+            baseTile->addWarning("An advertised add-on provider returned no tile.");
+            complete = false;
             continue;
         }
         if (loaded->error()) {
@@ -214,17 +266,28 @@ void loadAddOnTiles(
                 "Error while fetching add-on tile {}: {}",
                 baseTile->id().toString(),
                 *loaded->error());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
+            baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
+            includeLifetime(*baseTile, *loaded);
+            complete = false;
             continue;
         }
         if (loaded->layerInfo()->type_ != LayerType::Features) {
             log().warn("Add-on tile {} is not a feature layer.", baseTile->id().toString());
-            if (addOn->info->layers_.contains(baseTile->layerInfo()->layerId_))
-                baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
+            baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
+            complete = false;
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
+        if (addOnTile->schemaId() != addOn->nativeInfo->schemaId_) {
+            baseTile->addWarning(fmt::format(
+                "Add-on '{}' skipped: returned schema '{}' differs from its advertised "
+                "schema '{}'. Fix the provider's native schema binding.",
+                addOn->sourceId,
+                addOnTile->schemaId(),
+                addOn->nativeInfo->schemaId_));
+            complete = false;
+            continue;
+        }
         // Even an empty add-on may gain features later. Its lifetime must reach
         // the composite rather than disappearing during the merge.
         applySuccessfulTileTtl(*addOnTile, *addOn->dataSource, defaultTtl, emptyTileTtl);
@@ -292,6 +355,7 @@ void loadAddOnTiles(
             }
         }
     }
+    return complete;
 }
 
 /** Owns one asynchronous attachment request until its source tile is terminal. */
@@ -299,7 +363,7 @@ class AttachmentRequestExecution
 {
 public:
     AttachmentRequest request;
-    DataSource::Ptr dataSource;
+    RegisteredDataSource::Ptr registration;
     std::function<void(AttachmentResult)> callback;
 
     /** Capture a valid datasource attachment advertised by the source tile. */
@@ -308,7 +372,7 @@ public:
         if (!tile || tile->error() || tile->glbAttachmentName() != request.name_) {
             return;
         }
-        auto produced = dataSource->attachment(request);
+        auto produced = registration->dataSource->attachment(request);
         if (!produced) {
             return;
         }
@@ -586,11 +650,16 @@ void LayerTilesRequest::setStatus(RequestStatus s)
     notifyStatus();
 }
 
+/** Wake request waiters even when the terminal consumer callback fails. */
 void LayerTilesRequest::notifyStatus()
 {
-    if (isDone() && onDone_) {
-        // Run the final callback function.
-        onDone_(this->status_);
+    try {
+        if (isDone() && onDone_)
+            onDone_(this->status_);
+    }
+    catch (...) {
+        statusConditionVariable_.notify_all();
+        throw;
     }
     statusConditionVariable_.notify_all();
 }
@@ -661,18 +730,23 @@ bool LayerTilesRequest::admitsNewWork() const
 
 bool Service::Impl::requestTiles(
     std::vector<LayerTilesRequest::Ptr> const& requests,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization,
+    detail::RegisteredDataSource::Ptr const& expectedSource)
 {
     auto allAvailable = true;
+    std::vector<detail::RegisteredDataSource::Ptr> registrations;
+    registrations.reserve(requests.size());
     for (auto const& request : requests) {
         if (!request) {
             raise("Attempt to request a null LayerTilesRequest.");
         }
+        auto& registration = registrations.emplace_back();
         auto const context = resolveLayerRequest(
             request->mapId_,
             request->layerId_,
-            clientHeaders,
-            request->sourceId_);
+            clientAuthorization,
+            request->sourceId_,
+            &registration);
         switch (context.status_) {
         case RequestStatus::NoDataSource:
             allAvailable = false;
@@ -691,6 +765,13 @@ bool Service::Impl::requestTiles(
             request->setStatus(RequestStatus::Unauthorized);
             break;
         default:
+            // Descendants must use the generation that authorized their parent,
+            // even if its replacement publishes an identical schema.
+            if (expectedSource && registration != expectedSource) {
+                allAvailable = false;
+                request->setStatus(RequestStatus::Aborted);
+                break;
+            }
             if (std::ranges::any_of(
                     request->tileIds_,
                     [&](auto const& id) { return id.kind() != context.partitionKind_; }))
@@ -706,23 +787,21 @@ bool Service::Impl::requestTiles(
 
     // Bundles are atomic: one rejected member aborts every otherwise-open
     // sibling rather than exposing a partially fulfilled logical request.
-    for (auto const& request : requests) {
-        if (!allAvailable) {
+    if (!allAvailable) {
+        for (auto const& request : requests) {
             if (request->getStatus() == RequestStatus::Open) {
                 request->setStatus(RequestStatus::Aborted);
             }
         }
-        else if (!request->isDone()) {
-            scheduler_.enqueueRequest(request);
-        }
+        return false;
     }
-    return allAvailable;
+    return scheduler_.enqueueRequests(requests, registrations);
 }
 
 void Service::Impl::requestAttachment(
     AttachmentRequest request,
     std::function<void(AttachmentResult)> callback,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     if (!callback) {
         return;
@@ -732,35 +811,21 @@ void Service::Impl::requestAttachment(
         return;
     }
 
+    detail::RegisteredDataSource::Ptr selectedSource;
     auto const context = resolveLayerRequest(
         request.tileKey_.mapId_,
         request.tileKey_.layerId_,
-        clientHeaders,
-        request.sourceId_);
+        clientAuthorization,
+        request.sourceId_,
+        &selectedSource);
     if (context.status_ != RequestStatus::Success || context.layerType_ != LayerType::Features) {
         callback(AttachmentResult{.status_ = context.status_});
         return;
     }
 
-    detail::RegisteredDataSource::Ptr selectedSource;
-    for (auto const& source : dataSources_.matchingPrimarySources(
-             request.tileKey_.mapId_,
-             request.tileKey_.layerId_,
-             request.sourceId_))
-    {
-        if (!clientHeaders || source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
-            selectedSource = source;
-            break;
-        }
-    }
-    if (!selectedSource) {
-        callback({});
-        return;
-    }
-
     auto execution = std::make_shared<detail::AttachmentRequestExecution>();
     execution->request = std::move(request);
-    execution->dataSource = selectedSource->dataSource;
+    execution->registration = selectedSource;
     execution->callback = std::move(callback);
     auto tileRequest = std::make_shared<LayerTilesRequest>(
         execution->request.tileKey_.mapId_,
@@ -773,7 +838,7 @@ void Service::Impl::requestAttachment(
     {
         execution->finish(status);
     };
-    (void)requestTiles({tileRequest}, clientHeaders);
+    (void)requestTiles({tileRequest}, clientAuthorization, selectedSource);
 }
 
 }  // namespace mapget

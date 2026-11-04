@@ -2,6 +2,7 @@
 #include "tiles-request-json.h"
 
 #include "mapget/log.h"
+#include "mapget/model/mapschema.h"
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
@@ -13,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -125,23 +127,27 @@ void applyHeaders(drogon::HttpRequestPtr const& req, AuthHeaders const& headers)
 }  // namespace
 
 struct HttpClient::Impl {
-    std::unique_ptr<trantor::EventLoopThread> loopThread_;
+    std::string baseUrl_;
+    std::shared_ptr<trantor::EventLoopThread> loopThread_;
     drogon::HttpClientPtr client_;
-    std::unordered_map<std::string, DataSourceInfo> sources_;
+    /** Ordered (sourceId, metadata) entries, including add-ons sharing the primary mapId. */
+    std::vector<std::pair<std::string, DataSourceInfo>> sources_;
+    /** Installed graphs for all authorized source entries, including shared/cross-layer projections. */
+    std::unordered_map<std::string, std::shared_ptr<MapSchema const>> schemas_;
     std::shared_ptr<TileLayerStream::StringPoolCache> stringPoolProvider_;
     AuthHeaders headers_;
 
-    Impl(std::string const& host, uint16_t port, AuthHeaders headers, bool enableCompression) : headers_(std::move(headers))
+    Impl(std::string const& host, uint16_t port, AuthHeaders headers, bool enableCompression)
+        : baseUrl_(fmt::format("http://{}:{}/", host, port)), headers_(std::move(headers))
     {
         if (enableCompression && !(headers_.contains("Accept-Encoding") || headers_.contains("accept-encoding"))) {
             headers_.emplace("Accept-Encoding", "gzip");
         }
 
-        loopThread_ = std::make_unique<trantor::EventLoopThread>("MapgetHttpClient");
+        loopThread_ = std::make_shared<trantor::EventLoopThread>("MapgetHttpClient");
         loopThread_->run();
 
-        const auto hostString = fmt::format("http://{}:{}/", host, port);
-        client_ = drogon::HttpClient::newHttpClient(hostString, loopThread_->getLoop());
+        client_ = drogon::HttpClient::newHttpClient(baseUrl_, loopThread_->getLoop());
 
         stringPoolProvider_ = std::make_shared<TileLayerStream::StringPoolCache>();
 
@@ -165,17 +171,89 @@ struct HttpClient::Impl {
         }
 
         for (auto const& info : nlohmann::json::parse(*decodedBody)) {
+            if (info.value("status", "ready") != "ready")
+                continue;
+            auto sourceId = info.at("sourceId").get<std::string>();
+            if (sourceId.empty() || std::ranges::any_of(sources_, [&](auto const& source) {
+                    return source.first == sourceId;
+                }))
+                throw std::runtime_error("Sources catalog contains an empty or duplicate sourceId.");
             auto parsedInfo = DataSourceInfo::fromJson(info);
-            sources_.emplace(parsedInfo.mapId_, parsedInfo);
+            if (!parsedInfo.mapSchema_) {
+                parsedInfo.setMapSchema(getSchema(sourceId, parsedInfo.schemaId_));
+            }
+            parsedInfo.validateSchema();
+            schemas_.emplace(parsedInfo.schemaId_, parsedInfo.mapSchema_);
+            sources_.emplace_back(std::move(sourceId), std::move(parsedInfo));
         }
     }
 
-    [[nodiscard]] std::shared_ptr<LayerInfo> resolve(std::string_view const& map, std::string_view const& layer) const
+    /** Keep authorization source-specific, but share validated immutable content across clients. */
+    std::shared_ptr<MapSchema const> getSchema(std::string const& sourceId, std::string const& schemaId)
     {
-        auto mapIt = sources_.find(std::string(map));
-        if (mapIt == sources_.end())
-            raise("Could not find map data source info");
-        return mapIt->second.getLayer(std::string(layer));
+        if (sourceId.empty() || schemaId.empty())
+            throw std::invalid_argument("Schema retrieval requires sourceId and schemaId.");
+
+        auto makeRequest = [&] {
+            auto request = drogon::HttpRequest::newHttpRequest();
+            request->setMethod(drogon::Get);
+            request->setPath("/schema");
+            request->setParameter("sourceId", sourceId);
+            request->setParameter("schemaId", schemaId);
+            applyHeaders(request, headers_);
+            // The binary codec already bounds decoded size. Avoid an additional unbounded inflate.
+            request->addHeader("Accept-Encoding", "identity");
+            return request;
+        };
+
+        auto probe = makeRequest();
+        probe->addHeader("If-None-Match", "*");
+        auto [probeStatus, probeResponse] = client_->sendRequest(probe, 30.0);
+        if (probeStatus != drogon::ReqResult::Ok || !probeResponse ||
+            probeResponse->statusCode() != drogon::k304NotModified)
+            throw std::runtime_error("Schema binding is unavailable for this source.");
+
+        return MapSchema::getOrBuild(
+            "binary:" + schemaId,
+            [loop = loopThread_, baseUrl = baseUrl_, request = makeRequest(), schemaId] {
+                // The copied request owns its auth headers; the connection cannot outlive this loop.
+                auto client = drogon::HttpClient::newHttpClient(baseUrl, loop->getLoop());
+                auto [status, response] = client->sendRequest(request, 30.0);
+                if (status != drogon::ReqResult::Ok || !response ||
+                    response->statusCode() != drogon::k200OK)
+                    throw std::runtime_error("Failed to fetch schema artifact.");
+                auto body = response->body();
+                return MapSchema::read(
+                    {reinterpret_cast<uint8_t const*>(body.data()), body.size()}, schemaId);
+            });
+    }
+
+    [[nodiscard]] std::shared_ptr<LayerInfo> resolve(
+        std::string_view map,
+        std::string_view layer,
+        std::optional<std::string> const& sourceId = {}) const
+    {
+        std::shared_ptr<LayerInfo> result;
+        for (auto const& [id, source] : sources_) {
+            if (source.isAddOn_ || (sourceId && id != *sourceId) || source.mapId_ != map)
+                continue;
+            auto candidate = source.getLayer(std::string(layer), false);
+            if (!candidate)
+                continue;
+            if (result)
+                throw std::runtime_error("Ambiguous datasource for map/layer; specify sourceId.");
+            result = std::move(candidate);
+        }
+        if (!result)
+            throw std::runtime_error("Could not resolve the requested source/map/layer metadata.");
+        return result;
+    }
+
+    /** Binary readers only consult installed owners; parsing must never trigger network I/O. */
+    std::shared_ptr<MapSchema const> resolveSchema(std::string_view id) const
+    {
+        auto found = schemas_.find(std::string(id));
+        return found == schemas_.end() ? nullptr : found->second;
     }
 };
 
@@ -194,6 +272,23 @@ std::vector<DataSourceInfo> HttpClient::sources() const
     return result;
 }
 
+std::shared_ptr<MapSchema const> HttpClient::getSchema(
+    std::string const& sourceId, std::string const& schemaId)
+{
+    return impl_->getSchema(sourceId, schemaId);
+}
+
+nlohmann::json HttpClient::sourceCatalog() const
+{
+    auto result = nlohmann::json::array();
+    for (auto const& [sourceId, info] : impl_->sources_) {
+        auto source = info.toJson();
+        source["sourceId"] = sourceId;
+        result.push_back(std::move(source));
+    }
+    return result;
+}
+
 LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request)
 {
     // Finalize requests that did not contain any tiles.
@@ -203,9 +298,13 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     }
 
     auto reader = std::make_unique<TileLayerStream::Reader>(
-        [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
+        [this, sourceId = request->sourceId_](auto&& mapId, auto&& layerId) {
+            return impl_->resolve(mapId, layerId, sourceId);
+        },
         [request](auto&& result) { request->notifyResult(result); },
-        impl_->stringPoolProvider_);
+        impl_->stringPoolProvider_,
+        std::function<void(TileLayerStream::MessageType, std::string_view)>{},
+        [this](std::string_view id) { return impl_->resolveSchema(id); });
 
     using namespace nlohmann;
 
@@ -226,7 +325,7 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
     if (result == drogon::ReqResult::Ok && resp) {
         if (resp->statusCode() == drogon::k200OK) {
             try {
-                auto const layerInfo = impl_->resolve(request->mapId_, request->layerId_);
+                auto const layerInfo = impl_->resolve(request->mapId_, request->layerId_, request->sourceId_);
                 request->prepareResolvedLayer(layerInfo->type_);
             }
             catch (const std::exception& e) {
@@ -291,7 +390,11 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
     std::vector<PartitionFeatureLayer::Ptr> snapshots;
     std::vector<IncomingRelationCollection> collections;
     auto reader = std::make_unique<TileLayerStream::Reader>(
-        [this](auto&& mapId, auto&& layerId) { return impl_->resolve(mapId, layerId); },
+        [this, request](auto&& mapId, auto&& layerId) {
+            // Related snapshots can belong to another layer/map. Never apply the root's selector there.
+            return impl_->resolve(mapId, layerId,
+                mapId == request->mapId_ && layerId == request->layerId_ ? request->sourceId_ : std::nullopt);
+        },
         [&](auto&& result)
         {
             if (incoming) {
@@ -347,7 +450,8 @@ FeatureLayerFilterTilesRequest::Ptr HttpClient::filter(
                 if (incoming) throw;
                 log().warn("HttpClient /filter ignored invalid status payload: {}", e.what());
             }
-        });
+        },
+        [this](std::string_view id) { return impl_->resolveSchema(id); });
 
     using namespace nlohmann;
 

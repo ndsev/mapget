@@ -16,6 +16,75 @@
 
 using namespace mapget;
 
+TEST_CASE("Dictionary cache retirement preserves retained model owners", "[model][stream]")
+{
+    TileLayerStream::StringPoolCache cache;
+    auto keep = cache.getStringPool("Keep");
+    auto retire = cache.getStringPool("Retire");
+    REQUIRE(keep->emplace("kept"));
+    REQUIRE(retire->emplace("old"));
+    auto const offset = cache.stringPoolOffsets().at("Keep");
+    auto info = LayerInfo::fromJson(R"({
+        "layerId": "Features", "type": "Features", "featureTypes": [{
+            "name": "Retained", "uniqueIdCompositions": [[{"partId": "id", "datatype": "U32"}]]
+        }]
+    })"_json);
+    auto tile =
+        std::make_shared<PartitionFeatureLayer>(TileId{}, "Retire", "RetentionMap", info, retire);
+    tile->newFeature("Retained", {{"id", 7}});
+    auto const before = tile->toJson();
+
+    cache.retainStringPools({"Keep"});
+
+    REQUIRE(cache.getStringPool("Keep") == keep);
+    REQUIRE(cache.stringPoolOffsets().at("Keep") == offset);
+    REQUIRE_FALSE(cache.stringPoolOffsets().contains("Retire"));
+    REQUIRE(retire->get("old"));
+    auto replacement = cache.getStringPool("Retire");
+    REQUIRE(replacement != retire);
+    REQUIRE_FALSE(replacement->get("old"));
+    retire.reset();
+    REQUIRE(tile->at(0)->id()->typeId() == "Retained");
+    REQUIRE(tile->toJson() == before);
+}
+
+TEST_CASE("Static field names resolve to their procedural field IDs", "[model][schema2]")
+{
+    StringPool strings("StaticVocabulary");
+    // Duplicate names at different IDs make string lookups disagree with procedural get().
+    for (simfil::StringId id = 1; id < simfil::StringPool::FirstDynamicId; ++id) {
+        if (auto name = strings.resolve(id)) {
+            CAPTURE(id, *name);
+            CHECK(strings.get(*name) == id);
+        }
+    }
+    CHECK(strings.get("name") == StringPool::NameStr);
+    CHECK(strings.get("bitmask") == StringPool::SchemaBitmaskStr);
+    CHECK(LayerSchema::BitmaskKind == simfil::Schema::Kind::Bitmask);
+}
+
+TEST_CASE("Streams reject the old static field dictionary before dispatch", "[model][stream][schema2]")
+{
+    std::string encoded;
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer([&](std::string frame, auto) { encoded += frame; }, offsets);
+    writer.sendStatus("{}");
+    REQUIRE(encoded.size() >= 11);
+    // Version uses three little-endian uint16 fields. 6.1 predates rawValue's static ID.
+    encoded[0] = 6;
+    encoded[1] = 0;
+    encoded[2] = 1;
+    encoded[3] = 0;
+    bool dispatched = false;
+    TileLayerStream::Reader reader(
+        {},
+        [&](auto) { dispatched = true; },
+        {},
+        [&](auto, auto) { dispatched = true; });
+    CHECK_THROWS(reader.read(encoded));
+    CHECK_FALSE(dispatched);
+}
+
 TEST_CASE("Action-control frames use the ordinary stream control callback", "[interactive-session]")
 {
     auto const payload =
@@ -91,7 +160,8 @@ TEST_CASE(
 {
     auto layerInfo = LayerInfo::fromJson(R"({
         "layerId": "SourceData-Test",
-        "type": "SourceData"
+        "type": "SourceData",
+        "featureModelSchema": {}
     })"_json);
     auto strings = std::make_shared<StringPool>("SourceDataScopeNode");
     auto tile = std::make_shared<PartitionSourceDataLayer>(
@@ -330,13 +400,16 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
     SECTION("Detached feature IDs preserve optional external map IDs")
     {
         REQUIRE(featureForId1->toJson() == nlohmann::json("Way.42.84.0123456789abcdef"));
-        REQUIRE(externalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE_THROWS(externalFeatureId->toString());
         REQUIRE(externalFeatureId->mapId() == "ValidationMap");
         REQUIRE(externalFeatureId->externalMapId() == std::optional<std::string_view>{"ValidationMap"});
-        REQUIRE(externalFeatureId->toJson() == nlohmann::json{
-            {"id", "Way.7.11.fedcba9876543210"},
-            {"mapId", "ValidationMap"},
-        });
+        REQUIRE(
+            externalFeatureId->toJson() ==
+            nlohmann::json{
+                {"typeId", "Way"},
+                {"id", {{"wayIdU32", 7}, {"wayIdU64", 11}, {"wayIdUUID128", "fedcba9876543210"}}},
+                {"mapId", "ValidationMap"},
+            });
     }
 
     SECTION("Evaluate simfil filter")
@@ -439,7 +512,7 @@ TEST_CASE("FeatureLayer", "[test.featurelayer]")
         auto deserializedExternalFeatureId = deserializedTile->resolve<FeatureId>(
             simfil::ModelNodeAddress{PartitionFeatureLayer::ColumnId::ExternalFeatureIds, 2});
         REQUIRE(deserializedExternalFeatureId);
-        REQUIRE(deserializedExternalFeatureId->toString() == "Way.7.11.fedcba9876543210");
+        REQUIRE(deserializedExternalFeatureId->toJson() == externalFeatureId->toJson());
         REQUIRE(deserializedExternalFeatureId->mapId() == "ValidationMap");
         REQUIRE(
             deserializedExternalFeatureId->externalMapId() ==
@@ -1124,10 +1197,13 @@ TEST_CASE("Single-entry validity collections are exposed as singular nodes", "[t
     auto const& relationNode = static_cast<simfil::ModelNode const&>(*materializedRelation);
     auto const targetNode = relationNode.get(StringPool::TargetStr);
     REQUIRE(targetNode);
-    REQUIRE(targetNode->toJson() == nlohmann::json{
-        {"id", "Way.2"},
-        {"mapId", "ValidationMap"},
-    });
+    REQUIRE(
+        targetNode->toJson() ==
+        nlohmann::json{
+            {"typeId", "Way"},
+            {"id", {{"wayId", 2}}},
+            {"mapId", "ValidationMap"},
+        });
     auto const sourceValidityNode = relationNode.get(StringPool::SourceValidityStr);
     REQUIRE(sourceValidityNode);
     REQUIRE(sourceValidityNode->toJson() == nlohmann::json{{"direction", "POSITIVE"}});
@@ -1170,13 +1246,17 @@ TEST_CASE("Feature-id validities expose external map references", "[test.feature
     auto const& attrNode = static_cast<simfil::ModelNode const&>(*materializedAttr);
     auto const validityNode = attrNode.get(StringPool::ValidityStr);
     REQUIRE(validityNode);
-    REQUIRE(validityNode->toJson() == nlohmann::json{
-        {"direction", "POSITIVE"},
-        {"featureId", {
-            {"id", "Way.2"},
-            {"mapId", "ValidationMap"},
-        }},
-    });
+    REQUIRE(
+        validityNode->toJson() ==
+        nlohmann::json{
+            {"direction", "POSITIVE"},
+            {"featureId",
+             {
+                 {"typeId", "Way"},
+                 {"id", {{"wayId", 2}}},
+                 {"mapId", "ValidationMap"},
+             }},
+        });
 }
 
 TEST_CASE("Simple validities upgrade only their owning collection slot", "[test.featurelayer.validity]")

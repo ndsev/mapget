@@ -103,6 +103,7 @@ nlohmann::json HttpService::Impl::statusSnapshot() const
     auto cache = self_.cache()->getStatistics();
     auto websocket = detail::tilesWebSocketMetricsSnapshot();
     auto httpStreams = detail::tilesHttpMetricsSnapshot();
+    auto const schemaBytes = schemaResponses_->allocatedCapacity();
 
     uint64_t cacheBytes = 0;
     if (auto memory = cache.find("memory"); memory != cache.end() && memory->is_object()) {
@@ -116,7 +117,7 @@ nlohmann::json HttpService::Impl::statusSnapshot() const
     }
     auto const transportBytes =
         websocket.value("pending-controller-allocated-bytes", uint64_t{0}) +
-        httpStreams.value("pending-capacity-bytes", uint64_t{0});
+        httpStreams.value("pending-capacity-bytes", uint64_t{0}) + schemaBytes;
     auto const knownBytes =
         serviceMemory.value("known-current-bytes", uint64_t{0}) +
         cacheBytes + transportBytes;
@@ -125,6 +126,12 @@ nlohmann::json HttpService::Impl::statusSnapshot() const
     serviceMemory["transport"] = {
         {"interactive", websocket},
         {"rest-streams", httpStreams},
+        {"schema-artifacts", {
+            {"measurement", "std-string-capacity"},
+            {"allocated-bytes", schemaBytes},
+            {"retained-cache-capacity-bytes", schemaResponses_->retainedCapacity()},
+            {"max-artifact-bytes", detail::SchemaResponseCache::MaxArtifactBytes},
+        }},
         {"current-bytes", transportBytes},
     };
     serviceMemory["allocator-trim"] = memoryTrimStatistics();

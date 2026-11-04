@@ -5,7 +5,7 @@ namespace mapget
 void Service::discoverObjects(
     ObjectDiscoveryRequest request,
     std::function<void(ObjectDiscoveryResult)> callback,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     if (!callback)
         return;
@@ -14,7 +14,7 @@ void Service::discoverObjects(
     auto matches = impl_->dataSources_
                        .matchingPrimarySources(request.mapId_, request.layerId_, request.sourceId_);
     for (auto const& source : matches) {
-        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders))
+        if (!source->authorized(clientAuthorization))
             continue;
         if (selected) {
             error = "Ambiguous discovery datasource; specify sourceId.";

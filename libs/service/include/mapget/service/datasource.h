@@ -3,6 +3,7 @@
 #include "cache.h"
 #include "locate.h"
 #include "object-discovery.h"
+#include "authorization.h"
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/sourcedatalayer.h"
@@ -13,12 +14,6 @@
 
 namespace mapget
 {
-/**
- * Dict which is used to store and forward authorization information
- * from the client to the datasource.
- */
-using AuthHeaders = std::unordered_map<std::string, std::string>;
-
 /** Cheap cooperative probe for a whole shared tile job, not an individual request. */
 using TileCancellationCheck = std::function<bool()>;
 
@@ -148,7 +143,11 @@ public:
      */
     [[nodiscard]] virtual std::optional<uint64_t> estimatedRetainedMemoryBytes() const;
 
-    /** Called by mapget::Service worker. Dispatches to Cache or fill(...) on miss. */
+    /** Called on a service cache miss with the provider's original metadata snapshot.
+     * Return a fresh, exclusively owned mutable model. The service may translate its
+     * schema domains and merge add-ons before caching; overrides must not return a
+     * cached model shared with other requests. The default constructs and fills a model.
+     */
     virtual PartitionLayer::Ptr
     get(MapPartitionKey const& k,
         Cache::Ptr& cache,
@@ -159,11 +158,13 @@ public:
     /** Add an authorization header-regex pair for this datasource. */
     void requireAuthHeaderRegexMatchOption(std::string header, std::regex re);
 
+    /** Require one exact verified claim, in addition to all existing datasource gates. */
+    void requireAuthClaim(std::string pointer, std::string expected);
+
     /**
-     * Validate that one of the given authorization header-value pairs authorizes
-     * use of this datasource, if it is restricted.
+     * Require a matching header alternative AND every configured verified-claim rule.
      */
-    [[nodiscard]] bool isDataSourceAuthorized(AuthHeaders const& clientHeaders) const;
+    [[nodiscard]] bool isDataSourceAuthorized(ClientAuthorization const& authorization) const;
 
     /**
      * Set a TTL fallback for successful nonempty tile/object payloads.
@@ -189,6 +190,9 @@ protected:
 
     /** Map of authorization header-regex pairs which can be entered into the datasource YAML config. */
     AuthHeaderRegexMap authHeaderAlternatives_;
+
+    /** All claim rules must match; unlike header alternatives these are cumulative. */
+    AuthClaimRequirements requiredClaims_;
 
     /** TTL fallback applied to generated tiles (0 = infinite, unset = use service default). */
     std::optional<std::chrono::milliseconds> ttl_;

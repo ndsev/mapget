@@ -26,7 +26,7 @@ public:
     static bool start(
         Service::Impl& service,
         FeatureLayerFilterTilesRequest::Ptr const& request,
-        std::optional<AuthHeaders> const& clientHeaders);
+        std::optional<ClientAuthorization> const& clientAuthorization);
 
     /** Prune removed outputs while retaining shared source and relation work. */
     void retainOutputs(std::set<PartitionId> const& retainedPartitionIds);
@@ -206,9 +206,8 @@ private:
     Service::Impl* impl = nullptr;
     FeatureLayerFilterTilesRequest::Ptr request;
     SimfilExpressionCache expressionCache;
-    std::shared_ptr<DataSourceInfo const> sourceInfo;
-    DataSource::Ptr sourceDataSource;
-    std::optional<AuthHeaders> clientHeaders;
+    RegisteredDataSource::Ptr registration;
+    std::optional<ClientAuthorization> clientAuthorization;
     bool hasPointGroups = false;
     bool hasStoredRelations = false;
     int outputLevel = 0;

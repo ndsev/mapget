@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include "mapget/log.h"
 
 TEST_CASE("FileLogging", "[Logging]")
@@ -24,8 +25,19 @@ TEST_CASE("FileLogging", "[Logging]")
         test_log_size = std::filesystem::file_size(test_log_file);
     }
 
-    mapget::log().trace("Hello from logging test!");
-    mapget::log().flush();
+    // Logger initialization must not corrupt CLI schema/binary output on stdout.
+    std::ostringstream startupOutput;
+    auto* previousOutput = std::cout.rdbuf(startupOutput.rdbuf());
+    try {
+        mapget::log().trace("Hello from logging test!");
+        mapget::log().flush();
+    }
+    catch (...) {
+        std::cout.rdbuf(previousOutput);
+        throw;
+    }
+    std::cout.rdbuf(previousOutput);
+    CHECK(startupOutput.str().empty());
     auto new_test_log_size = std::filesystem::file_size(test_log_file);
     REQUIRE(test_log_size < new_test_log_size);
 

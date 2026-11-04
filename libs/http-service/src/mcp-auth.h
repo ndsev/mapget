@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mcp-viewer-relay.h"
+#include "mapget/http-service/proxy-auth.h"
 
 #include <drogon/HttpRequest.h>
 
@@ -17,7 +18,7 @@ class McpAuthentication
 {
 public:
     /** Validate explicit, restart-scoped settings shared with the CLI and native embedders. */
-    explicit McpAuthentication(McpConfig config);
+    explicit McpAuthentication(McpConfig config, ProxyAuthentication proxyAuth = {});
 
     /** Return validated deployment settings to the HTTP owner, not to an HTTP caller. */
     [[nodiscard]] McpConfig const& settings() const { return config_; }
@@ -31,7 +32,7 @@ public:
     /** Construct the RFC 9728/6750 challenge, including configured required scopes. */
     [[nodiscard]] std::string challenge(bool insufficient = false) const;
 
-    /** Check Host/Origin and local exposure without trusting forwarding headers. */
+    /** Check configured Host/Origin allowlists without interpreting forwarding headers. */
     [[nodiscard]] bool acceptsRequest(drogon::HttpRequestPtr const& request, bool browser) const;
 
     /** Bind a browser to verified proxy claims or the explicitly enabled local identity. */
@@ -54,22 +55,15 @@ public:
     /** Atomically replace public keys after validating bounded RSA signing-key metadata. */
     void installKeys(nlohmann::json const& jwks);
 
-    /** Read bounded, shallow JSON before any recursive consumers see it. */
-    [[nodiscard]] static nlohmann::json
-    parseJson(std::string_view input, size_t maxBytes, size_t maxDepth = 64);
-
     /** Load bounded key/catalog-adjacent files without accepting URLs. */
     [[nodiscard]] static nlohmann::json
     readJson(std::filesystem::path const& path, size_t maxBytes);
 
 private:
     McpConfig config_;
+    ProxyAuthentication proxyAuth_;
     std::map<std::string, std::string, std::less<>> keys_;
     std::chrono::steady_clock::time_point keysExpireAt_;
-
-    /** Apply one JSON-pointer membership rule without coercion or expression evaluation. */
-    [[nodiscard]] static bool
-    permission(nlohmann::json const& claims, std::string const& claim, std::string const& expected);
 
     /** Extract a bounded subject/expiry and mapped permissions only after signature verification.
      */

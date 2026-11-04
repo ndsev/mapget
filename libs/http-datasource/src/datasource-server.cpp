@@ -2,13 +2,17 @@
 
 #include "mapget/log.h"
 #include "mapget/model/info.h"
+#include "mapget/http-datasource/detail/schema-response.h"
 #include "mapget/model/stream.h"
 
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpResponse.h>
+#include <trantor/utils/ConcurrentTaskQueue.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -40,8 +44,67 @@ struct DataSourceServer::Impl
         cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
+    /** Shared encoding/cache policy with the public endpoint; authorization stays at each boundary. */
+    detail::SchemaResponseCache schemaResponses_;
+    /** Bound queued requests as well as thread count; an idle datasource starts no schema worker. */
+    std::atomic_size_t schemaRequests_{0};
+    std::mutex schemaTasksMutex_;
+    std::unique_ptr<trantor::ConcurrentTaskQueue> schemaTasks_;
+
     explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.stringPoolId_))
     {
+        info_.validateSchema();
+    }
+
+    /** Serve only this initialized source's exact artifact, never a global token lookup. */
+    void handleSchemaRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+    {
+        auto error = [&](drogon::HttpStatusCode status, std::string message) {
+            auto response = drogon::HttpResponse::newHttpResponse();
+            response->setStatusCode(status);
+            response->addHeader("Cache-Control", "no-store");
+            response->setBody(std::move(message));
+            callback(response);
+        };
+        auto expectedId = req->getParameter("schemaId");
+        if (expectedId.empty() || expectedId.size() > 4096) {
+            error(drogon::k400BadRequest, "schemaId is required (at most 4096 bytes).");
+            return;
+        }
+        if (expectedId != info_.schemaId_) {
+            error(drogon::k404NotFound, "Schema binding is unavailable.");
+            return;
+        }
+        if (schemaRequests_.fetch_add(1) >= 32) {
+            --schemaRequests_;
+            error(drogon::k503ServiceUnavailable, "Schema request queue is full.");
+            return;
+        }
+        try {
+            std::lock_guard lock(schemaTasksMutex_);
+            if (!schemaTasks_)
+                schemaTasks_ = std::make_unique<trantor::ConcurrentTaskQueue>(1, "MapgetSchema");
+            schemaTasks_->runTaskInQueue([this, validator = req->getHeader("if-none-match"), callback] {
+                drogon::HttpResponsePtr response;
+                try {
+                    response = schemaResponses_.response(info_.mapSchema_, validator);
+                }
+                catch (...) {
+                    response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k500InternalServerError);
+                    response->addHeader("Cache-Control", "no-store");
+                    response->setBody("Schema serialization failed.");
+                }
+                --schemaRequests_;
+                callback(response);
+            });
+        }
+        catch (...) {
+            --schemaRequests_;
+            error(drogon::k503ServiceUnavailable, "Schema work could not be scheduled.");
+        }
     }
 };
 
@@ -57,7 +120,11 @@ DataSourceServer& DataSourceServer::onObjectDiscoveryRequest(
     return *this;
 }
 
-DataSourceServer::~DataSourceServer() = default;
+DataSourceServer::~DataSourceServer()
+{
+    // Stop admission before Impl destroys and joins its lazily created schema worker.
+    stop();
+}
 
 DataSourceServer& DataSourceServer::onTileFeatureRequest(
     std::function<void(PartitionFeatureLayer::Ptr)> const& callback)
@@ -102,6 +169,13 @@ DataSourceInfo const& DataSourceServer::info() { return impl_->info_; }
 
 void DataSourceServer::setup(drogon::HttpAppFramework& app)
 {
+    app.registerHandler(
+        "/schema",
+        [this](drogon::HttpRequestPtr const& req,
+               std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        { impl_->handleSchemaRequest(req, std::move(callback)); },
+        {drogon::Get});
+
     app.registerHandler(
         "/objects/discover",
         [this](

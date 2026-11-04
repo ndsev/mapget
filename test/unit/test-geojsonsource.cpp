@@ -368,10 +368,11 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(laneLayer != nullptr);
 
         // Verify feature type names
-        REQUIRE(roadLayer->featureTypes_.size() == 1);
-        REQUIRE(roadLayer->featureTypes_[0].name_ == "RoadFeature");
-        REQUIRE(laneLayer->featureTypes_.size() == 1);
-        REQUIRE(laneLayer->featureTypes_[0].name_ == "LaneFeature");
+        REQUIRE(roadLayer->featureTypes().size() == 1);
+        REQUIRE(roadLayer->featureTypes()[0].name_ == "RoadFeature");
+        REQUIRE(laneLayer->featureTypes().size() == 1);
+        REQUIRE(laneLayer->featureTypes()[0].name_ == "LaneFeature");
+        REQUIRE(roadLayer->schemaOwner() == laneLayer->schemaOwner());
 
         // Fill Road layer
         auto strings = std::make_shared<StringPool>(info.stringPoolId_);

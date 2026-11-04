@@ -2,6 +2,7 @@
 
 #include "mapget/detail/http-server.h"
 #include "mapget/http-service/mcp-config.h"
+#include "mapget/http-service/proxy-auth.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/service.h"
@@ -48,6 +49,8 @@ struct HttpServiceConfig
     uint32_t locationResultMaxLimit = 50;
     /** Explicit, restart-scoped MCP opt-in and trust settings; disabled by default. */
     McpConfig mcp;
+    /** Verified datasource claims from an explicitly trusted authenticating reverse proxy. */
+    ProxyAuthentication proxyAuth;
 
     /**
      * Period between glibc allocator trims which return unused heap pages to the OS.

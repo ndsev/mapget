@@ -25,7 +25,9 @@ namespace mapget
 {
 
 /**
- * DataSource which connects to a running DataSourceServer.
+ * DataSource which connects to a running DataSourceServer. Initialization fetches
+ * compact /info metadata and resolves /schema before publishing usable metadata.
+ * Immutable decoded schemas are shared by exact validated content identity.
  */
 class RemoteDataSource : public DataSource
 {
@@ -33,14 +35,17 @@ public:
     /**
      * Construct from joint host:port string.
      */
-    static std::shared_ptr<RemoteDataSource> fromHostPort(std::string const& hostPort);
+    static std::shared_ptr<RemoteDataSource> fromHostPort(
+        std::string const& hostPort, TileCancellationCheck const& isCancelled = {});
 
     /**
      * Construct a DataSource with the host and port of
      * a running DataSourceServer. Throws if the connection
-     * fails for any reason.
+     * fails for any reason. Cancellation is checked around initialization I/O
+     * and shared schema waits; it never cancels another source's schema build.
      */
-    RemoteDataSource(std::string const& host, uint16_t port);
+    RemoteDataSource(
+        std::string const& host, uint16_t port, TileCancellationCheck const& isCancelled = {});
     ~RemoteDataSource();
 
     // DataSource method overrides
@@ -71,7 +76,8 @@ private:
     std::string error_;
 
     // Multiple http clients allow parallel GET requests
-    std::unique_ptr<trantor::EventLoopThread> httpClientLoop_;
+    // Shared schema fetches pin the event loop independently of a cancelled source initializer.
+    std::shared_ptr<trantor::EventLoopThread> httpClientLoop_;
     std::vector<std::shared_ptr<drogon::HttpClient>> httpClients_;
     std::atomic_uint64_t nextClient_{0};
 };

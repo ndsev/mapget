@@ -485,20 +485,44 @@ parseFeatureReferenceJson(PartitionFeatureLayer& tile, nlohmann::json const& jso
     }
     else if (json.is_object()) {
         auto const idIt = json.find("id");
-        if (idIt == json.end() || !idIt->is_string()) {
-            raiseImport("Feature reference objects must contain a string `id` field.");
-        }
-        canonicalId = idIt->get<std::string>();
-
         if (auto mapIdIt = json.find("mapId"); mapIdIt != json.end()) {
-            if (!mapIdIt->is_string()) {
-                raiseImport("Feature reference `mapId` must be a string.");
+            if (!mapIdIt->is_string() || mapIdIt->get_ref<std::string const&>().empty()) {
+                raiseImport("Feature reference `mapId` must be a non-empty string.");
             }
             externalMapId = mapIdIt->get<std::string>();
         }
+        if (idIt != json.end() && idIt->is_object()) {
+            auto type = json.find("typeId");
+            if (!externalMapId || type == json.end() || !type->is_string() ||
+                type->get_ref<std::string const&>().empty())
+                raiseImport("Named feature references require non-empty `mapId` and `typeId`.");
+            ParsedFeatureReferenceJson result;
+            result.externalMapId_ = std::move(externalMapId);
+            result.featureId_.typeId_ = type->get<std::string>();
+            result.featureId_.keyValuePairs_ = parseFeatureIdPartsJson(*idIt);
+            if (*result.externalMapId_ == tile.mapId()) {
+                ParsedFeatureId local;
+                if (!normalizeFeatureIdParts(
+                        result.featureId_.typeId_,
+                        result.featureId_.keyValuePairs_,
+                        *tile.layerInfo(),
+                        local))
+                    raiseImport("Named local feature reference does not match an ID composition.");
+                result.featureId_ = std::move(local);
+            }
+            return result;
+        }
+        if (idIt == json.end() || !idIt->is_string())
+            raiseImport(
+                "Feature references require a canonical local string or named `id` object.");
+        if (externalMapId && *externalMapId != tile.mapId())
+            raiseImport("Foreign feature references require `typeId` and named `id` parts.");
+        canonicalId = idIt->get<std::string>();
     }
     else {
-        raiseImport("Feature references must be encoded as canonical feature-id strings or `{id, mapId}` objects.");
+        raiseImport(
+            "Feature references require a canonical local string or `{mapId, typeId, id}` with "
+            "named parts.");
     }
 
     ParsedFeatureReferenceJson parsed;
@@ -510,7 +534,7 @@ parseFeatureReferenceJson(PartitionFeatureLayer& tile, nlohmann::json const& jso
     return parsed;
 }
 
-/** Parse a canonical feature-id string into a detached FeatureId node. */
+/** Import a local canonical ID or a self-describing foreign reference. */
 [[nodiscard]] model_ptr<FeatureId>
 importFeatureReferenceId(PartitionFeatureLayer& tile, nlohmann::json const& json)
 {
@@ -1228,8 +1252,9 @@ importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJ
     if (options.fallbackFeatureType_) {
         return *options.fallbackFeatureType_;
     }
-    if (tile.layerInfo()->featureTypes_.size() == 1) {
-        return tile.layerInfo()->featureTypes_.front().name_;
+    auto const producedTypes = tile.layerInfo()->layerSchema()->featureTypes();
+    if (producedTypes.size() == 1) {
+        return producedTypes.front();
     }
     raiseImport("Could not determine feature type. Missing 'typeId' and no fallback feature type was configured.");
     return {};

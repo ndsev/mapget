@@ -1,5 +1,6 @@
 #include "layer.h"
 #include "mapget/log.h"
+#include "mapschema.h"
 
 #include <bitsery/bitsery.h>
 #include <bitsery/adapter/buffer.h>
@@ -198,6 +199,8 @@ PartitionLayer::PartitionLayer(
       timestamp_(std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::system_clock::now().time_since_epoch()))
 {
+    if (!info || !info->schemaOwner() || !info->schemaOwner()->finalized())
+        throw std::invalid_argument("Partition construction requires installed schema metadata.");
     if (id.kind() != info->partitionKind_)
         throw std::invalid_argument("Partition kind does not match layer metadata.");
 }
@@ -219,6 +222,9 @@ PartitionLayer::PartitionLayer(
     s.text1b(layerName, input.size());
     layerInfo_ = layerInfoResolveFun(mapId_, layerName);
 
+    if (!layerInfo_ || layerInfo_->layerId_ != layerName || !layerInfo_->schemaOwner())
+        throw std::invalid_argument("Partition layer schema is not installed.");
+
     s.object(mapVersion_);
     if (!mapVersion_.isCompatible(layerInfo_->version_)) {
         raise(fmt::format(
@@ -233,6 +239,12 @@ PartitionLayer::PartitionLayer(
     if (partitionId_.kind() != layerInfo_->partitionKind_)
         throw std::invalid_argument("Partition kind does not match layer metadata.");
     s.text1b(stringPoolId_, input.size());
+
+    std::string artifactId;
+    s.text1b(artifactId, input.size());
+    if (artifactId != schemaId())
+        throw std::invalid_argument(
+            "Partition schema does not match installed metadata; discard stale payload.");
 
     int64_t timestamp = 0;
     s.value8b(timestamp);
@@ -289,6 +301,30 @@ PartitionLayer::PartitionLayer(
 TileId PartitionLayer::tileId() const
 {
     return partitionId_.tileId();
+}
+
+std::string_view PartitionLayer::schemaId() const
+{
+    return layerInfo_->schemaOwner()->schemaId();
+}
+
+void PartitionLayer::installSchemaResolver(
+    simfil::ModelPool& model,
+    SchemaResolveFun const& schemas) const
+{
+    auto owner = layerInfo_->schemaOwner();
+    model.setSchemaResolver(
+        [owner = std::move(owner), schemas](std::string_view identity)
+        {
+            auto graph = identity == owner->schemaId() ?
+                owner :
+                (schemas ? schemas(identity) : nullptr);
+            if (!graph || !graph->finalized() || graph->schemaId() != identity)
+                throw std::invalid_argument(
+                    "Partition references an uninstalled schema artifact: " +
+                    std::string(identity));
+            return graph->binding();
+        });
 }
 
 std::string PartitionLayer::stringPoolId() const
@@ -360,6 +396,12 @@ void PartitionLayer::setMapId(const std::string& id)
 
 void PartitionLayer::setLayerInfo(const std::shared_ptr<LayerInfo>& info)
 {
+    // A graph may contain several layers with different roots and identity definitions.
+    if (!info || !info->schemaOwner() || info->schemaOwner()->schemaId() != schemaId() ||
+        info->layerId_ != layerInfo_->layerId_ ||
+        info->type_ != layerInfo_->type_ || info->partitionKind_ != layerInfo_->partitionKind_)
+        throw std::invalid_argument(
+            "Cannot reinterpret a partition under different schema metadata.");
     layerInfo_ = info;
 }
 
@@ -439,6 +481,8 @@ tl::expected<void, simfil::Error> PartitionLayer::write(std::ostream& outputStre
     s.object(mapVersion_);
     s.object(partitionId_);
     s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
+    auto artifactId = std::string(schemaId());
+    s.text1b(artifactId, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());
     if (ttl_)
@@ -494,6 +538,7 @@ nlohmann::json PartitionLayer::toServiceJson() const
                   {"data", std::move(result)}};
     }
     addDiagnosticsToJson(result);
+    result["schemaId"] = schemaId();
     // Service envelopes expose the same lifetime as binary headers, including
     // subset/source-data responses whose model JSON has no header fields.
     result["timestamp"] =

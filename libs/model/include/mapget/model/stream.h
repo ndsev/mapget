@@ -5,8 +5,9 @@
 #include "incoming-relations.h"
 
 #include <map>
-#include <span>
+#include <set>
 #include <shared_mutex>
+#include <span>
 #include <vector>
 
 namespace mapget
@@ -94,7 +95,7 @@ public:
      * - Version 1.5:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
      * - Version 1.6:
-     *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
+     *   + Added SIMFIL object/array TypeId columns to ModelPool payloads.
      * - Version 1.7:
      *   + Added TileSearchResultLayer Message.
      * - Version 1.8:
@@ -137,8 +138,17 @@ public:
      *     format, which previously evolved without that header on the release branch.
      * - Version 5.5:
      *   + Added typed incoming-relation manifests with ordinary feature snapshots.
+     * - Version 6.0:
+     *   + Exact MapSchema identities in partition headers, separate binary schema artifacts.
+     *   + Schema-bound ModelPool values, persistent bitmasks and qualified scalar projections.
+     * - Version 6.1:
+     *   + FeatureId parts use tagged array/object addresses; foreign references retain named parts.
+     *   + Shared SchemaPool graphs distinguish contextual edges and composed type remappings.
+     * - Version 6.2:
+     *   + Schema raw-value metadata extends simfil's static dictionary; mapget field IDs shift.
+     *   + MapSchema codec 3 / SchemaPool codec 2 carry native relation contracts and enum ordinals.
      */
-    static constexpr Version CurrentProtocolVersion{5, 5, 0};
+    static constexpr Version CurrentProtocolVersion{6, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
@@ -156,7 +166,8 @@ public:
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(PartitionLayer::Ptr)> onParsedLayer,
             std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
-            std::function<void(MessageType, std::string_view)> onControlMessage = {});
+            std::function<void(MessageType, std::string_view)> onControlMessage = {},
+            SchemaResolveFun schemas = {});
 
         /**
          * Add some bytes to parse. The next object will be parsed once
@@ -197,6 +208,7 @@ public:
         std::vector<uint8_t> buffer_;
         size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
+        SchemaResolveFun schemas_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(PartitionLayer::Ptr)> onParsedLayer_;
         std::function<void(MessageType, std::string_view)> onControlMessage_;
@@ -269,6 +281,12 @@ public:
          * used by a mapget http client to set the `stringPoolOffsets` info.
          */
         [[nodiscard]] virtual StringPoolOffsetMap stringPoolOffsets() const;
+
+        /**
+         * Release cache ownership of obsolete dictionaries after a catalog edit.
+         * Decoded layers retain their shared dictionaries until their own release.
+         */
+        void retainStringPools(std::set<std::string> const& stringPoolIds);
 
     protected:
         mutable std::shared_mutex stringPoolCacheMutex_;

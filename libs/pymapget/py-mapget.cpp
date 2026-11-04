@@ -8,12 +8,16 @@ namespace py = pybind11;
 using namespace py::literals;
 using namespace std::string_literals;
 
+// Binding headers share helpers and the PackedTileId caster; preserve dependency order.
+// clang-format off
 #include "binding/py-tileid.h"
 #include "binding/py-model.h"
+#include "binding/py-schema.h"
 #include "binding/py-layer.h"
 #include "binding/py-datasource.h"
 #include "binding/py-service.h"
 #include "binding/py-client.h"
+// clang-format on
 
 #include "mapget/http-service/cli.h"
 
@@ -24,6 +28,7 @@ PYBIND11_MODULE(pymapget, m)
     bindTileId(m);
     bindPartitionId(m);
     bindModel(m);
+    mapget::bindSchema(m);
     bindTileLayer(m);
     bindDataSourceServer(m);
     bindHttpService(m);

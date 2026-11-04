@@ -1,6 +1,7 @@
 #pragma once
 
 #include "http-service.h"
+#include "mapget/http-datasource/detail/schema-response.h"
 #include "mapget/location/location.h"
 
 #include <drogon/HttpRequest.h>
@@ -29,15 +30,6 @@ class McpServer;
 /** Snapshot REST stream pending-buffer ownership and high-water marks. */
 [[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
 
-[[nodiscard]] inline AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
-{
-    AuthHeaders headers;
-    for (auto const& [k, v] : req->headers()) {
-        headers.emplace(k, v);
-    }
-    return headers;
-}
-
 }  // namespace detail
 
 struct HttpService::Impl
@@ -48,6 +40,10 @@ struct HttpService::Impl
     std::shared_ptr<detail::McpServer> mcp_;
     /** Lookup backend used by GET /location when location search is enabled. */
     std::shared_ptr<SqliteLocationLookup> locationLookup_;
+
+    /** Shared with tasks that may outlive the HTTP implementation; no per-request body copies. */
+    std::shared_ptr<detail::SchemaResponseCache> schemaResponses_ =
+        std::make_shared<detail::SchemaResponseCache>();
 
     /** Interruptible wait state for the allocator-maintenance worker. */
     std::mutex memoryTrimMutex_;
@@ -108,6 +104,16 @@ struct HttpService::Impl
     void handleSourcesRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
+
+    /** Serve an exact source-bound schema on the bounded service worker pool. */
+    void handleSchemaRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
+
+    /** Authorized inventory or one lazy domain, shared with MCP's native schema adapter. */
+    void handleSchemaInspectionRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
 
     /** Serve the self-contained operational status dashboard. */
     void handleStatusRequest(

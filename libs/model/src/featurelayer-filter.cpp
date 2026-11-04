@@ -217,7 +217,7 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
 
     std::set<std::string> channelIds;
     auto const layerInfo = sourceLayer.layerInfo();
-    auto const canValidateTypes = layerInfo && !layerInfo->featureTypes_.empty();
+    auto const canValidateTypes = layerInfo && !layerInfo->featureTypes().empty();
     for (auto const& channel : channels_) {
         if (channel.relation_ && channel.relation_->incoming_) {
             return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
@@ -490,7 +490,7 @@ private:
 class FeatureLayerFilterRequest::ExpressionEvaluator
 {
 public:
-    using ProgramKey = std::tuple<std::string, bool, simfil::SchemaId>;
+    using ProgramKey = std::tuple<std::string, bool, simfil::TypeId>;
     using ValueCache = std::map<ProgramKey, std::vector<simfil::Value>>;
 
     /** One result sequence per expression, with failures retaining their expression index. */
@@ -575,7 +575,7 @@ public:
             std::move(fields),
             traces,
             expressionCache,
-            sourceLayer.layerSchema().get(),
+            sourceLayer.layerSchema(),
             bindingCompileContext(bindings)));
     }
 
@@ -638,7 +638,7 @@ public:
     [[nodiscard]] tl::expected<bool, Failure> filter(
         std::optional<std::string> const& expression,
         simfil::ModelNode const& context,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         simfil::Diagnostics* diagnostics = nullptr,
         ValueCache* valueCache = nullptr)
     {
@@ -656,7 +656,7 @@ public:
     [[nodiscard]] Projection fields(
         std::string_view channelId,
         simfil::ModelNode const& context,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         std::span<std::string const> expressions,
         Scope scope,
         Issues& issues,
@@ -693,7 +693,7 @@ private:
         std::vector<std::pair<simfil::StringId, simfil::Value>> bindings,
         std::map<std::string, simfil::Trace>& traces,
         SimfilExpressionCache& expressionCache,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> schemaIdentity,
         std::string compileContext)
         : environment_(std::move(environment)),
           bindings_(std::move(bindings)),
@@ -709,7 +709,7 @@ private:
         std::string_view expression,
         simfil::ModelNode const& context,
         bool anyMode,
-        simfil::SchemaId rootSchema,
+        simfil::TypeId rootSchema,
         simfil::Diagnostics* diagnostics,
         ValueCache* valueCache)
     {
@@ -795,7 +795,7 @@ private:
     std::vector<std::pair<simfil::StringId, simfil::Value>> bindings_;
     std::map<std::string, simfil::Trace>& traces_;
     SimfilExpressionCache& expressionCache_;
-    LayerSchema const* schemaIdentity_ = nullptr;
+    simfil::model_ptr<LayerSchema> schemaIdentity_ = nullptr;
     std::string compileContext_;
     std::map<ProgramKey, simfil::BoundExpression> programs_;
 };
@@ -908,7 +908,7 @@ private:
     void scanAttributes(
         model_ptr<Feature> const& feature,
         simfil::ModelNode const& featureContext,
-        simfil::SchemaId featureSchema,
+        simfil::TypeId featureSchema,
         Channel& channel,
         ExpressionEvaluator::ValueCache& featureEvaluations);
 
@@ -1945,7 +1945,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
 void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& featureContext,
-    simfil::SchemaId featureSchema,
+    simfil::TypeId featureSchema,
     Channel& channel,
     ExpressionEvaluator::ValueCache& featureEvaluations)
 {
@@ -2464,7 +2464,10 @@ FeatureLayerFilterRequest::completeRelations(
                         }
                         auto reverseTarget = reverse->target();
                         if (!reverseTarget ||
-                            reverseTarget->toString() != descriptor->source_->id()->toString()) {
+                            reverseTarget->mapId() != descriptor->source_->model().mapId() ||
+                            reverseTarget->externalMapId() ||
+                            reverseTarget->toString() != descriptor->source_->id()->toString())
+                        {
                             continue;
                         }
                         auto candidateId = fmt::format("{}#{}", targetIdentity, ordinal);
@@ -2869,7 +2872,7 @@ PartitionFeatureLayer::find(
         auto compiled = compileCache.getOrCompile(
             expression,
             options,
-            layerSchema().get(),
+            layerSchema(),
             bindingCompileContext(selector.bindings_),
             [&] { return simfil::compile(*environment, expression, options); });
         if (!compiled) {
@@ -2940,6 +2943,13 @@ PartitionFeatureLayer::find(
                         return tl::unexpected(simfil::Error{
                             simfil::Error::InvalidArguments,
                             "A feature-ID expression returned an object that is not a FeatureId.",
+                        });
+                    }
+                    if (featureId->externalMapId()) {
+                        return tl::unexpected(simfil::Error{
+                            simfil::Error::InvalidArguments,
+                            "A feature-ID selector cannot resolve a foreign reference in the "
+                            "current layer.",
                         });
                     }
                     canonicalId = featureId->toString();

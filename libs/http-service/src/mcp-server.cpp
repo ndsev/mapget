@@ -1,4 +1,5 @@
 #include "mcp-server.h"
+#include "bounded-json.h"
 
 #include "mapget/log.h"
 #include "tiles-ws-session.h"
@@ -46,8 +47,8 @@ bool accepts(std::string const& header, std::string const& mime)
 }
 }  // namespace
 
-McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native)
-    : auth_(config),
+McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native, ProxyAuthentication proxyAuth)
+    : auth_(config, std::move(proxyAuth)),
       catalogWriteTime_(
           config.catalogPath.empty() ?
               std::filesystem::file_time_type{} :
@@ -205,20 +206,11 @@ void McpServer::setup(drogon::HttpAppFramework& app)
         "/.well-known/oauth-protected-resource",
         decltype(handler){handler},
         {drogon::Get, drogon::Options});
-    if (auth_.settings().mode == McpConfig::Mode::Local) {
-        app.registerBeginningAdvice(
-            [&app]
-            {
-                // An embedding application has the same local-only obligation as the serve CLI.
-                for (auto const& listener : app.getListeners()) {
-                    auto address = listener.toIp();
-                    if (address != "127.0.0.1" && address != "::1") {
-                        throw std::invalid_argument(
-                            "Local MCP requires a loopback-only HTTP listener (--host 127.0.0.1).");
-                    }
-                }
-            });
-    }
+    if (auth_.settings().mode == McpConfig::Mode::Local)
+        log().warn(
+            "MCP local mode is unauthenticated: reachable clients share access to enabled tools "
+            "and viewer sessions. Exposure follows the HTTP listener and port publishing; "
+            "use OAuth on untrusted networks.");
 }
 
 drogon::HttpResponsePtr McpServer::jsonResponse(nlohmann::json body, drogon::HttpStatusCode status)
@@ -237,7 +229,7 @@ void McpServer::handle(drogon::HttpRequestPtr request, Reply reply)
 {
     if (!auth_.acceptsRequest(request, request->path() == "/mcp/browser")) {
         reply(jsonResponse(
-            {{"error", "MCP Host/Origin or exposure policy rejected the request."}},
+            {{"error", "MCP Host/Origin policy rejected the request."}},
             drogon::k403Forbidden));
         return;
     }
@@ -379,7 +371,7 @@ void McpServer::fetchKeys()
                 // No redirect, token-controlled key URL or stale-key grace beyond the cache
                 // lifetime.
                 self->auth_
-                    .installKeys(McpAuthentication::parseJson(response->body(), 256 * 1024, 16));
+                    .installKeys(parseBoundedJson(response->body(), 256 * 1024, 16));
             }
             catch (...) {
                 log().warn("MCP trusted signing-key refresh failed.");
@@ -524,7 +516,7 @@ void McpServer::dispatch(
     nlohmann::json message;
     nlohmann::json id = nullptr;
     try {
-        message = McpAuthentication::parseJson(request->body(), maxRequestBytes);
+        message = parseBoundedJson(request->body(), maxRequestBytes);
     }
     catch (...) {
         reply(jsonResponse(

@@ -56,8 +56,9 @@ mapget serve --host 127.0.0.1 -p 8099 -w /path/to/viewer --mcp local
 
 The same options work in MapViewer's `serve` command. No separate MCP config
 file is needed. The default mode is `off`; opt-in is always explicit.
-Local mode derives the endpoint and loopback Host/Origin allowlists from the
-configured listener and port, never from request headers. Use a fixed port;
+Local mode derives the endpoint from the configured listener and port (`localhost`
+for wildcard listeners), and the Host/Origin allowlists from that endpoint, never
+from request headers. Use a fixed port when deriving the endpoint;
 port zero cannot provide a predictable connection URL. The default catalog is
 `<webapp directory>/web-mcp-actions.json`, including when the mount uses
 `/viewer:/path/to/viewer` syntax. Without a webapp, omit the catalog for a headless native-tool server, or pass
@@ -117,12 +118,52 @@ section, not in browser-writable datasource or public frontend configuration.
 and no MCP trust-setting writer is registered for `PATCH /config`.
 The removed `--mcp-config` JSON-file interface is not supported.
 
-Local mode gives explicitly allowed loopback clients one shared local identity.
-It requires loopback-only listeners, a loopback socket peer, and exact Host
-and Origin allowlists. Forwarding headers are rejected. Do not expose local
-mode through a reverse proxy or use it as an OAuth fallback. Ordinary Docker
-bridge port publishing does not satisfy this loopback policy. A browser action
-connection must supply an allowed Origin; non-browser MCP callers may omit it.
+Local mode is **unauthenticated, shared-user access**. It follows the ordinary
+HTTP server's network policy: listener binding, container port publishing,
+firewall and reverse proxy. There is no MCP-specific listener or peer-IP
+restriction. Every reachable client can use enabled tools and control the same
+local viewer sessions. Config reads/writes still require their separate opt-ins.
+
+**The native listener defaults to `0.0.0.0`, not loopback.** For machine-local
+access, explicitly use `--host 127.0.0.1`; for shared or untrusted networks, use
+OAuth. Startup logs warn whenever local mode is enabled. Local mode is never
+an automatic fallback from failed OAuth authentication.
+
+Exact Host and Origin allowlists still protect browser requests, but are not
+user authentication. A browser action connection must supply an allowed Origin;
+non-browser MCP callers may omit it. Forwarded headers are ignored for endpoint,
+Host/Origin and identity decisions, not rejected simply because a proxy adds them.
+
+### Client-Facing Endpoint
+
+`--mcp-endpoint` specifies the URL clients use, not the listening address. Local
+mode derives it from `--host` and `--port`; wildcard listeners (`0.0.0.0` or `::`)
+advertise `localhost`. Override it when clients use a different port, hostname
+or scheme, for example `https://viewer.example/mcp` behind a TLS reverse proxy.
+It supplies `/mcp/info` and erdblick's copied connection command, plus the default
+Host/Origin allowlists. It neither binds an interface nor configures proxy routes.
+OAuth additionally uses this URL as the protected resource and token audience.
+
+Local defaults allow the endpoint's authority and origin. For a loopback endpoint,
+`localhost`, `127.0.0.1` and `[::1]` are interchangeable at that public port.
+DNS case, IPv6 spelling and default ports are normalized before deriving these
+allowlists; IPv4 literals require canonical dotted notation.
+Explicit `--mcp-allowed-hosts` and `--mcp-allowed-origins` replace those defaults;
+use them for additional names or browser origins. Neither list allows wildcards.
+
+### Local Containers
+
+Docker bridge publishing reaches the container interface, not its loopback.
+Use `--mcp local --host 0.0.0.0` inside the container and publish on host loopback
+for machine-local access, for example `docker run -p 127.0.0.1:8099:8089 ...`.
+Set `--mcp-endpoint http://127.0.0.1:8099/mcp` for the host-visible port; the
+Python launcher does this automatically. No gateway discovery or peer allowlist
+is needed. Host networking instead uses the ordinary `--host` binding directly.
+
+Publishing on loopback does not isolate other containers on the same bridge:
+they can reach the container listener directly and share its local MCP access.
+Use container-network isolation or OAuth when those peers are untrusted. The
+removed `--mcp-local-peer-addresses` option is no longer accepted.
 
 `GET /mcp/info` returns `{"enabled":false}` when disabled. When enabled it returns
 `enabled`, `endpoint`, `authentication`, `scopes`, `catalogId`, and an optional
@@ -234,6 +275,42 @@ insufficient scopes/permissions receive 403. Both carry a `WWW-Authenticate`
 challenge with the metadata URL and required scopes. Authentication failures
 do not echo tokens or claims.
 
+### Datasource Claims
+
+Native tools enforce each source's `auth-header` and `auth-claims` requirements,
+including schema discovery, cached reads and indirect relation/locate work.
+These gates supplement MCP read/control permissions; neither a group membership
+nor a fixed datasource header grants a tool permission.
+
+```yaml
+sources:
+  - type: SmartLayerTileService
+    uri: https://supplier.example/openapi.json
+    auth-header:
+      X-Supplier: "^(supplier|mcp)$"
+    auth-claims:
+      /groups: SMS_users
+```
+
+All claim entries must match an exact string or array member. Bearer requests
+use the verified access-token claims, so the identity provider must include the
+required claim in the access token, not only the ID token or UserInfo response.
+`mcp-datasource-headers` and scalar `mcp-datasource-header-claims` mappings still
+satisfy header alternatives only; they cannot bypass a claim requirement.
+
+Browser MCP calls use the same explicitly configured `auth-claims-header` and
+`auth-trusted-proxy-addresses` as ordinary HTTP/WebSocket datasource access.
+The authenticating proxy must strip that incoming header and export a verified
+unpadded base64url-encoded UTF-8 JSON claims object. Those settings are independent of the four MCP identity/
+permission headers. Missing, malformed or untrusted claims deny restricted
+sources. Local MCP mode has no verified claims and cannot satisfy `auth-claims`.
+See [datasource authorization](mapget-config.md#restricting-access-with-auth-claims).
+
+Extraction cursors retain an exact authority snapshot. Changed claims, including
+token-refresh metadata such as `exp`, invalidate the cursor; restart extraction
+with the new credentials. Global diagnostics and configuration keep their
+existing independent access policies; they are not per-datasource projections.
+
 ## Configuration Reference
 
 All names below work as `--name` CLI options and as `mapget.serve.name` YAML
@@ -242,12 +319,12 @@ occurrences; YAML lists use the usual sequence syntax.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mcp` | `off` | `off`, loopback-only `local`, or `oauth` |
-| `mcp-endpoint` | Local listener URL | Canonical public resource URL ending in `/mcp`; also the required audience |
+| `mcp` | `off` | `off`, unauthenticated shared-user `local`, or `oauth`; local exposure follows ordinary server networking |
+| `mcp-endpoint` | Local listener URL (`localhost` for wildcard binds) | Client-facing resource URL ending in `/mcp`; supplies local allowlist defaults and the OAuth audience |
 | `mcp-catalog` | `<webapp>/web-mcp-actions.json` | Trusted generated catalog |
 | `mcp-help-docs` | None | Additional trusted Markdown directories/files; supplements bundled docs and `<webapp>/mcp-help`; contents hot-reload |
-| `mcp-allowed-hosts` | Local loopback names and port | Exact HTTP Host allowlist; required for OAuth |
-| `mcp-allowed-origins` | Local loopback HTTP origins | Exact browser Origin allowlist; required for OAuth |
+| `mcp-allowed-hosts` | Local endpoint authority (plus aliases for loopback) | Exact HTTP Host allowlist; required for OAuth |
+| `mcp-allowed-origins` | Local endpoint origin (plus aliases for loopback) | Exact browser Origin allowlist; required for OAuth |
 | `mcp-issuer` | None | Trusted HTTPS issuer |
 | `mcp-jwks-url` | None | Trusted HTTPS signing-key URL; exclusive with `mcp-jwks-file` |
 | `mcp-jwks-file` | None | Local public JWKS artifact, immutable until restart |
@@ -466,8 +543,9 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 | `mapget_docs` | Optional `query` or exact returned `title`, `component`, `offset` | Up to three complete Markdown sections and five further titles per page, plus content `revision` and optional `nextOffset`; no browser required |
 | `mapget_list_sources` | Optional `mapId`, `layerId`, `sourceId`, `details`, `offset` | Ordered source/layer identities, lifecycle/progress, partition kind, levels, feature type names and coverage-range counts; selected `mapId`/`sourceId` defaults to details, including ordered ID compositions and protocol metadata |
 | `mapget_get_coverage` | `mapId`, `layerId`; optional `sourceId`, `level`, `format` | Coverage summaries with bounds, counts and sample tile IDs; `format: "raw"` returns exact sparse occupancy masks; `coverageKnown` distinguishes unspecified coverage |
-| `mapget_query_schema` | `mapId`, `layerId`; optional `sourceId`, `featureType` or `schemaId`, `query` or `find`, `trace` | Compact grouped field/enum discovery or shallow feature/attribute overview by default; focused sequences of descriptor metadata with navigable `$ref` identities |
-| `mapget_validate_expression` | `mapId`, `layerId`, `expression`; optional `sourceId`, `featureType`, `attributeSchema`, `scope`, `rewrite`, `predicate`, `offset` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
+| `mapget_list_schemas` | Optional intersecting `mapId`, `sourceId`, `mapFormat`, `mapSchemaId` | Authorized exact artifacts with formats, consumers, layer roots and capacity statistics; no tile I/O or pagination |
+| `mapget_query_schema` | `layerId` and one of `mapId`, `mapFormat`, `mapSchemaId`; optional `sourceId` with `mapId`, exact `mapSchemaId` qualifier, `featureType` or numeric `typeId`, `query` or `find`, `trace` | Compact grouped field/enum discovery or shallow overview; navigable artifact-qualified `$ref` identities |
+| `mapget_validate_expression` | The same schema selector plus `expression`; optional `featureType`, `attributeTypeId`, `scope`, `rewrite`, `predicate`, `offset` | Compilation and schema-access assessment per context, normalized expression, diagnostics; no tile I/O |
 | `mapget_extract_features` | `mapId`, `layerId`; `partition`, `partitions` or canonical `featureIds`; optional `sourceId`, `featureType` or `featureTypes`, `scope`, `attributeIndex`, `attributeName`, `attributeLayer`, `predicate`, `rewrite`, `query` or `expressions`, `geometry`, `cursor`, legacy `offset`, `trace` | Compact actual feature summaries by default; explicit feature/attribute projections with provenance, row completeness and bounded scan continuations |
 | `mapget_extract_source_data` | `mapId`, `layerId`, `partitions`, or `mapId`, `partition`, `reference`; optional `sourceId`, `match`, `query`, `trace` | Root/address-match rows, provenance and value sequences |
 | `mapget_convert_coordinates` | `from`: `wgs84` or `nds`, `x`, `y` | WGS84 degrees or signed NDS integer coordinates |
@@ -480,7 +558,7 @@ machine-readable catalog. Permission-filtered listing does not replace call-time
 
 Native data tools require the configured read permission. Configuration read/write and
 global diagnostics use **separate** permissions: viewer control never grants them.
-Local mode grants these permissions to its shared loopback identity, but config access
+Local mode grants these permissions to its shared local identity, but config access
 still requires the deployment opt-ins. OAuth defaults do not grant the new administrative
 permissions. Configure their claim/value pairs explicitly when desired.
 
@@ -511,7 +589,7 @@ between bearer users.
 
 <!-- mcp:
 title: "Native source and layer discovery"
-keywords: ["sourceDataLayers", "source discovery", "owning layer", "schemaFeatureTypes"]
+keywords: ["sourceDataLayers", "source discovery", "owning layer", "schemaId", "mapFormat"]
 -->
 ### Source And Layer Discovery
 
@@ -521,9 +599,13 @@ ordered primary/secondary identifier compositions, protocol metadata and expande
 `details:false` explicitly requests the compact form, even with these selectors;
 `details:true` explicitly expands an unfocused inventory. A `layerId` filter alone opens
 that layer's metadata (including raw layers), but does not enable source details.
-Both forms omit the potentially large feature-model schema and coverage records.
-`schemaFeatureTypes` lists schema roots; `featureTypes` also contains identifier definitions
-for reference-only types. Neither schema declarations nor a documentation support table proves
+Both forms include the descriptive `mapFormat` tuple and exact string `schemaId`, but omit
+inline JSON schemas and coverage records. Discovery reads the initialized immutable schema;
+it does not rebuild it, export it to JSON Schema, or fetch tiles. A layer's `hasSchema`
+reports its bound contract. Each `featureTypes` entry comes from that contract's authoritative
+identity definitions; `produced:false` marks a reference-only type. There is no second
+`schemaFeatureTypes` list. Unadvertised schema roots do not become available layers.
+Neither schema declarations nor a documentation support table proves
 that a particular record exists in a loaded map.
 
 <!-- mcp:
@@ -535,8 +617,8 @@ Start with `viewer_get_controls` and its active `view.layers` map/layer identiti
 Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
 and indirect attribute features. Use `mapget_list_sources` filtered to that layer
 for compact type names. `featureTypes` advertises identifier compositions, which
-can include types used only by references. `schemaFeatureTypes` lists the actual
-feature schema roots available for introspection in that layer. Neither list proves
+can include types used only by references. Its `produced` flag distinguishes actual
+feature schema roots available for introspection in that layer. This inventory does not prove
 that a particular tile contains instances. If a type is absent from the current
 layer's roots, check other layers in the same map before concluding it is unavailable.
 Focused `mapId`/`sourceId` discovery includes ordered primary/secondary ID compositions
@@ -560,12 +642,40 @@ Summary `bounds` are `[west, south, east, north]`. Full longitude uses west/east
 the conservative south/north bounds `-90..90`.
 These geographic bounds summarize the grid range and do not replace its sparse mask.
 
-Call `mapget_query_schema` without a query or selector for a shallow list of
-feature types and schema IDs. Select `featureType` to open its fields and shallow
-properties. Follow a numeric `$ref` using `schemaId` in the same layer to open a
+Select a schema by `mapId` plus `layerId`, or independently by `mapFormat` plus
+`layerId`, or by exact `mapSchemaId` plus `layerId`. A map selector respects that
+map's advertised readable layers; format/artifact selection can inspect other
+roots in the same authorized graph without implying that data is available.
+`sourceId` only qualifies `mapId`. A `mapSchemaId` may additionally pin a map or
+format selection, but `mapId` and `mapFormat` are mutually exclusive.
+
+A format is an exact tuple, not a wildcard: omitted version and subsystem list
+mean empty values. Its `subsystems` is an array of `{name, version}` pairs;
+ordering is irrelevant and distinct versions of one name are preserved. When
+several authorized artifacts match both a format and the requested layer, the tool returns
+`complete: false, reason: "ambiguous_schema"` with exact `selectArguments`.
+Choose one rather than silently assuming the first is authoritative. The string
+`mapSchemaId` names the artifact; numeric `typeId` names a type inside it.
+Exact artifact selection avoids enumerating the catalog. Format/inventory traversal
+uses the request's work/cancellation budget before expanding layer/type rows; no
+feature data or full type export is involved. A catalog change during inventory
+or loss of the selected binding before publication returns `schema_unavailable`;
+repeat discovery rather than reusing a stale numeric type ID.
+
+A focused `featureType` overview includes the authoritative `contract`: ordered
+ID compositions, production status, root type and forward relation declarations
+with completeness/locality. This works for format/artifact selection without a
+map or tile fetch. A reference-only type has an identity contract but no data
+root (`typeId: null`, empty `values`); it cannot be used as an evaluation root.
+An unknown forward inventory is not proof that no relations exist. Explicit
+metadata query projections are not padded with this overview information.
+
+Call `mapget_query_schema` without a query or type/feature selector for a shallow list of
+feature types and type IDs. Select `featureType` to open its fields and shallow
+properties. Follow a numeric `$ref` using `typeId` in the same layer to open a
 compound definition and its immediate fields. An implicit union's `$ref` lists
 alternative IDs; follow each integer separately. Large enums use `enumCount` and
-`enumPreview`; an explicit query on that schema can retrieve the full domain.
+`enumPreview`; an explicit query on that schema can retrieve the full type.
 For example:
 
 ```json
@@ -584,7 +694,7 @@ queryable. An exhausted descriptor allocation budget makes the whole result
 `complete: false`, even when a scalar projection hides its `node-budget` marker.
 Default descriptor responses identify `schemaView: "shallow_overview"`.
 `childrenOmitted: true` marks nonempty compound fields/elements/alternatives that
-were not expanded; open their `$ref` with `schemaId`, or use `find` to discover a
+were not expanded; open their `$ref` with `typeId`, or use `find` to discover a
 field across the selected type/layer. `complete: true` means the overview response
 is complete, not that every descendant is displayed. An unexpanded reference does
 not imply missing data.
@@ -599,6 +709,15 @@ over the active map/layer. Unresolved metadata indicates uncertainty, not an
 invalid runtime field. For runtime sampling, `mapget_extract_features` requires
 explicit nonempty partitions or canonical feature IDs; it never scans a map.
 
+Native feature/source-data layers use one exact schema graph. The service can compose
+compatible primary and add-on contracts into a published effective artifact, translating
+each provider's type IDs into that owner. Discovery distinguishes this published graph
+from its provider contracts and reports the constituent artifact identities. An incompatible
+contribution is skipped with a warning while primary data remains available; affected
+incoming-relation results remain partial. No type metadata is stripped to make
+incompatible data fit, and IDs from a provider graph must not be interpreted directly in
+the composed graph.
+
 <!-- mcp:
 keywords: [partial results, limits, extraction, integer, bytes]
 -->
@@ -608,7 +727,7 @@ Input-schema rejections include bounded field-level issues. `conflictingFields` 
 supplied combination prohibited by the input schema. Remove at least one of those fields.
 `triggerFields` explains a selector dependency: `missingField` names a required companion and
 `expected.const` supplies its required value. For example, `attributeName` requires
-`scope:attribute`; `featureType` and `schemaId` select alternative schema roots.
+`scope:attribute`; `featureType` and `typeId` select alternative schema roots.
 
 Success is an object in `structuredContent`, with the same JSON in a text content block:
 
@@ -664,10 +783,38 @@ nested arrays; objects remain objects. Non-JSON/lossy scalars use explicit tags:
 ]
 ```
 
-A genuine object containing `$mapget` is escaped as `{"$mapget":"object","value":{...}}`.
+A genuine object containing `$mapget` or `_bitmask` is escaped as
+`{"$mapget":"object","value":{...}}`, so application data cannot masquerade as a scalar tag.
 Integers within JavaScript's exact range remain JSON numbers. Null remains null;
 simfil's missing-field behavior is not rewritten (a missing field can yield null and a
 diagnostic). Repeated object fields retain mapget's array/`_multimap` projection.
+
+Schema-qualified scalar projections (including booleans and bytes) have an explicit metadata
+envelope:
+
+```json
+{"$mapget":"qualified","value":255,"schema":"producer:exact-schema-token","typeId":123}
+```
+
+The inner `value` keeps its primitive representation, including the existing exact-integer or
+nonfinite/bytes tags when needed. `schema` identifies the immutable artifact; `typeId` is local to
+that artifact. Equal raw values can have different types. Names, units and special meanings
+come from that exact type, never from the number or field name. A value without provenance
+stays ordinary; null and missing values do not inherit it. Selecting an existing value can
+retain its type, while arithmetic such as `speed + 0` produces an unqualified number.
+Compound traversal reads the concrete parent's field/element binding before scalarization.
+No result schema is synthesized, and no parallel result-type array is required.
+
+Bitmasks use simfil's generic lossless representation, not a mapget scalar wrapper:
+
+```json
+{"_bitmask":true,"bits":"0x8000000000000001","schema":"producer:exact-schema-token","typeId":124}
+```
+
+The full-width hexadecimal string preserves bit 63, zero and unnamed bits. Labels are not
+substituted for raw bits. This applies to feature projections, raw SourceData and trace samples.
+Use the exact artifact/type pair to inspect the declaration. Each extraction row also
+reports `mapSchemaId` from its actual retained partition, not a newer catalog replacement.
 
 `trace: true` captures simfil `trace(...)` samples immediately into bounded JSON, rather
 than keeping source models alive. At most 16 names, 100 samples per name, and 512 characters
@@ -680,9 +827,23 @@ keywords: [schema, descriptor, validation, completion, simfil]
 ### Schema And Expression Semantics
 
 `mapget_query_schema` uses simfil's lazy `SchemaModel` on the same `LayerSchema` graph used
-by completion. Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
+by completion and expression validation. `mapSchemaId` on these responses is the exact string
+artifact identity; the tool's numeric `typeId` argument and descriptor `$ref` values are
+local type IDs, not the catalog's string `schemaId`. Keep both identities when retaining
+results across reloads. The schema has its own dictionary; query environments bind it to their
+private data dictionaries without mutating a datasource's streamed dictionary.
+Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
 open/nullable/required flags and terminal recursion/budget markers as appropriate.
-Array elements are possible domains, not fabricated sample records; union alternatives are
+Named-value declarations distinguish ordinary constants, special numeric values and flags;
+they do not turn an open numeric range into an exhaustive enum. `find` matches those names
+as well as field/type names and string enum symbols, returning bounded matching-name summaries
+and `valuesArguments` for the native declarations. Missing semantics remain unknown.
+An optional `rawValue` preserves an enum's physical integer ordinal separately
+from its logical `value` (for example a string label). Ordinals beyond the signed
+64-bit descriptor range use decimal strings. Absence means no ordinal was
+declared; it is not an implicit zero. `numericDomain` continues to describe
+physical ranges, units and scaling rather than a graph identity.
+Array elements are possible types, not fabricated sample records; union alternatives are
 distinct from arrays. Omitting `query` returns the shallow overview; explicit
 queries evaluate the full lazy graph. For example:
 
@@ -703,10 +864,10 @@ exact field/type names and substring matches. Within each class, shorter paths
 bring owning assignments ahead of deeply nested generic fields. This supports
 both finding the values of a known field and locating the field that accepts a known classification.
 
-Matches are grouped by `schemaId`, with up to two representative owning `contexts`.
+Matches are grouped by `typeId`, with up to two representative owning `contexts`.
 Each context has a `path` (`*` means an array element); feature-root searches also
 return `featureType`, a copyable `featureQuery`, and `attributeContext` when known.
-A search starting at `schemaId` returns paths relative to that definition rather
+A search starting at `typeId` returns paths relative to that definition rather
 than inventing a feature-root query. `contextsOmitted` identifies encountered contexts omitted from this preview;
 false does not establish that these are every possible owner.
 Shared definitions are traversed once per root, so these are representative paths,
@@ -714,7 +875,7 @@ not an exhaustive inventory of every route through the graph.
 
 Enum groups include `matchingSymbols`, their count, and an eight-symbol `preview`.
 Exact symbols remain visible even when many substring matches are omitted.
-Symbols describe actual string literals; flag domains identify their symbols as
+Symbols describe actual string literals; flag types identify their symbols as
 flags, not an exhaustive list of flag combinations. Separate `literalPreview`
 values retain non-string enum literals, including lossless tags for unsafe integers.
 The schema does not infer a numeric source-format encoding for a string symbol.
@@ -723,15 +884,15 @@ value/work/byte budgets. `expandArguments` opens the definition's shallow struct
 
 Discovery defaults to eight groups and allows at most thirty-two. It has **no
 pagination**. `discovery.scanComplete` says whether the traversal finished;
-`matchedDomains` and `omittedDomains` are lower bounds when it did not. A completed
+`matchedTypes` and `omittedTypes` are lower bounds when it did not. A completed
 scan with omitted groups returns `complete:false, reason:"matches_omitted"`.
 Use the returned `narrowing[].arguments` to focus on an observed feature type or
-assignment/domain, or use one group's `expandArguments`. A work-limited scan is
+assignment/type, or use one group's `expandArguments`. A work-limited scan is
 explicitly incomplete even if it found no matches.
 
 Overviews show at most sixteen immediate children per container and eight enum
-values. `childrenOmitted`, `fieldCount`/`domainCount`, and `enumCount` identify larger
-domains. Follow `$ref`/`schemaId`, use `find` for an omitted named member or symbol,
+values. `childrenOmitted`, `fieldCount`/`typeCount`, and `enumCount` identify larger
+types. Follow `$ref`/`typeId`, use `find` for an omitted named member or symbol,
 or request a focused descriptor `query`. Explicit queries can raise `limit` to
 1000 values; they remain bounded and do not paginate. `find` and `query` are
 exclusive. Schema declarations do not establish actual feature values; open or
@@ -745,14 +906,14 @@ Discover feature type names with `mapget_list_sources`, select one with
 a Classic Routing layer with declared `Link.properties.travelDirection` can be
 inspected with `featureType: "Link"` and
 `query: "fields.properties.fields.travelDirection"`. Follow a returned `$ref`
-using `schemaId` in that same source/layer. Check completeness on each read.
-Schema descriptors establish types and possible domains; use bounded feature
+using `typeId` in that same source/layer. Check completeness on each read.
+Schema descriptors establish types and possible types; use bounded feature
 extraction to establish actual values and missing-value behavior.
 
 Expression validation instead binds **data** schemas to the compiler. It never evaluates
 against fake features or fetches map data. `scope` is `feature`, `attribute`, or `auto`;
 `rewrite: true` requests the existing search normalization. Auto scope also uses normalization
-when metadata is available. An explicit `attributeSchema` must identify a real attribute context.
+when metadata is available. An explicit `attributeTypeId` must identify a real attribute context.
 Without it, available attribute contexts are compiled separately. `limit` bounds
 contexts, `offset` selects the first, and `nextOffset` continues with the same
 expression and selectors. `contextCount` describes the available contexts;
@@ -1116,7 +1277,7 @@ JSON-RPC tools/list and tools/call protocol as `/mcp`, including finite SSE resu
 with a different authentication boundary:
 
 - Every request requires an explicitly allowed `Origin` and `Host`.
-- Local mode requires a loopback peer and rejects forwarding headers as usual.
+- Local mode uses its shared unauthenticated identity; exact Host/Origin checks still apply, without peer-IP restrictions or identity from forwarding headers.
 - OAuth deployments use the trusted proxy's browser identity headers, exactly as
   the interactive WebSocket does. The proxy must strip caller-supplied authority
   headers and inject verified issuer, subject, expiry, and permissions for this

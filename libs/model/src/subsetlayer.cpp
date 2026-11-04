@@ -1,4 +1,5 @@
 #include "subsetlayer.h"
+#include "mapschema.h"
 
 #include <algorithm>
 #include <chrono>
@@ -57,40 +58,6 @@ struct IssueWire
     std::string message_;
     uint64_t occurrenceCount_ = 1;
 };
-
-simfil::ArrayIndex idPartValuesToArrayIndex(
-    PartitionSubsetLayer& layer,
-    std::vector<IdPart> const& composition,
-    KeyValueViewPairs const& idParts)
-{
-    auto values = layer.newArray(std::max<size_t>(1, composition.size()), true);
-    auto part = idParts.begin();
-    for (auto const& definition : composition) {
-        if (part != idParts.end() && definition.idPartLabel_ == part->first) {
-            values->append(std::visit(
-                [&](auto&& value) -> simfil::ModelNode::Ptr {
-                    return layer.newValue(value);
-                },
-                part->second));
-            ++part;
-            continue;
-        }
-        if (!definition.isOptional_) {
-            raiseFmt(
-                "Missing non-optional ID part '{}' while materializing a subset feature ID.",
-                definition.idPartLabel_);
-        }
-        values->append(layer.resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{}));
-    }
-    if (part != idParts.end()) {
-        raiseFmt(
-            "Unexpected trailing ID part '{}' while materializing a subset feature ID.",
-            part->first);
-    }
-    return static_cast<simfil::ArrayIndex>(values->addr().index());
-}
 
 nlohmann::json arrayToJson(model_ptr<Array> const& array)
 {
@@ -319,7 +286,7 @@ nlohmann::json FeatureEntry::toJson() const
 {
     return {
         {"type", "FeatureEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
         {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
@@ -508,7 +475,7 @@ nlohmann::json AttributeValidityEntry::toJson() const
 {
     auto result = nlohmann::json::object({
         {"type", "AttributeValidityEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"hostValues", arrayToJson(hostValues())},
         {"values", arrayToJson(values())},
@@ -525,8 +492,8 @@ nlohmann::json AttributeValidityEntry::toJson() const
         auto const from = transitionFromFeatureId();
         auto const to = transitionToFeatureId();
         result["geometryDescriptionType"] = "feature-transition";
-        result["transitionFromFeatureId"] = from ? from->toString() : "";
-        result["transitionToFeatureId"] = to ? to->toString() : "";
+        result["transitionFromFeatureId"] = from ? from->toJson() : nlohmann::json("");
+        result["transitionToFeatureId"] = to ? to->toJson() : nlohmann::json("");
         result["transitionFromConnectedEnd"] =
             transitionFromConnectedEnd() == ValidityData::End ? "end" : "start";
         result["transitionToConnectedEnd"] =
@@ -800,7 +767,7 @@ nlohmann::json GroupEntry::toJson() const
         {"type", "GroupEntry"},
         {"groupKey", groupKey() ? groupKey()->toJson() : nlohmann::json()},
         {"representativeFeatureId",
-            representativeFeatureId() ? representativeFeatureId()->toString() : ""},
+         representativeFeatureId() ? representativeFeatureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
         {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
@@ -1280,12 +1247,14 @@ PartitionSubsetLayer::PartitionSubsetLayer(
 PartitionSubsetLayer::PartitionSubsetLayer(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter)
+    StringPoolResolveFun const& stringPoolGetter,
+    SchemaResolveFun const& schemas)
     : PartitionFeatureModelLayerBase(
           input,
           layerInfoResolveFun,
           stringPoolGetter,
-          &deserializationOffsetBytes_),
+          &deserializationOffsetBytes_,
+          schemas),
       geometryAnchor_(
           partitionId_.kind() == PartitionKind::Tile ?
               partitionId_.tileId().centerWgs84() :
@@ -1368,6 +1337,8 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
+    // Imported domains already retain every graph; the transport resolver is construction-only.
+    setSchemaResolver({});
 }
 
 PartitionSubsetLayer::~PartitionSubsetLayer() = default;
@@ -1620,51 +1591,15 @@ std::optional<std::string> const& PartitionSubsetLayer::glbAttachmentName() cons
     return glbAttachmentName_;
 }
 
-simfil::ModelNode::Ptr PartitionSubsetLayer::materializeValue(simfil::Value const& value)
-{
-    switch (value.type) {
-    case simfil::ValueType::Undef:
-        return newUndefined();
-    case simfil::ValueType::Null:
-        return resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{});
-    case simfil::ValueType::Bool:
-        return newSmallValue(value.as<simfil::ValueType::Bool>());
-    case simfil::ValueType::Int:
-        return newValue(value.as<simfil::ValueType::Int>());
-    case simfil::ValueType::Float:
-        return newValue(value.as<simfil::ValueType::Float>());
-    case simfil::ValueType::String:
-        return newValue(value.as<simfil::ValueType::String>());
-    case simfil::ValueType::Bytes:
-        return newValue(value.as<simfil::ValueType::Bytes>());
-    case simfil::ValueType::Object:
-    case simfil::ValueType::Array: {
-        if (!value.node()) {
-            raise("Projected compound value has no native model node.");
-        }
-        auto copied = copyNode(*value.node());
-        if (!copied) {
-            raiseFmt("Could not materialize projected value: {}", copied.error().message);
-        }
-        return *copied;
-    }
-    case simfil::ValueType::TransientObject:
-        raise("Transient objects cannot be materialized in a subset.");
-    case simfil::ValueType::LAST_:
-        break;
-    }
-    raise("Unsupported SIMFIL value type for PartitionSubsetLayer.");
-    return {};
-}
-
 model_ptr<Array> PartitionSubsetLayer::newValueArray(std::span<simfil::ModelNode::Ptr const> values)
 {
     if (values.empty()) {
         return sharedEmptyArray();
     }
-    auto array = newArray(values.size(), true);
+    auto created = tryNewArray(values.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
     for (auto const& value : values) {
         if (!value || value->type() != simfil::ValueType::Array) {
             raise("Each projected expression requires a result sequence (array).");
@@ -1681,7 +1616,10 @@ model_ptr<Array> PartitionSubsetLayer::newValueErrors(
     if (errors.empty()) {
         return sharedEmptyArray();
     }
-    auto array = newArray(errors.size(), true);
+    auto created = tryNewArray(errors.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
     for (auto const& error : errors) {
         if (error.expressionIndex_ >= expressionCount ||
             (error.stage_ != "compilation" && error.stage_ != "evaluation" &&
@@ -1689,11 +1627,21 @@ model_ptr<Array> PartitionSubsetLayer::newValueErrors(
         {
             raise("Invalid projected-value error index or stage.");
         }
-        auto entry = newObject(3, true);
-        entry->addField("expressionIndex",
-            newValue(static_cast<int64_t>(error.expressionIndex_)));
-        entry->addField("stage", newValue(error.stage_));
-        entry->addField("message", newValue(error.message_));
+        auto createdEntry = tryNewObject(3, true);
+        if (!createdEntry)
+            raise<std::length_error>(createdEntry.error().message);
+        auto entry = *createdEntry;
+        auto addValue = [&](std::string_view key, auto const& value)
+        {
+            auto node = tryNewValue(value);
+            if (!node)
+                raise<std::length_error>(node.error().message);
+            if (auto added = entry->addField(key, *node); !added)
+                raise(added.error().message);
+        };
+        addValue("expressionIndex", static_cast<int64_t>(error.expressionIndex_));
+        addValue("stage", error.stage_);
+        addValue("message", error.message_);
         array->append(entry);
     }
     return array;
@@ -1999,9 +1947,7 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
     std::stable_sort(
         sortedMembers.begin(),
         sortedMembers.end(),
-        [](auto const& left, auto const& right) {
-            return left->toString() < right->toString();
-        });
+        [](auto const& left, auto const& right) { return left->toJson() < right->toJson(); });
     auto members = newArray(std::max<size_t>(1, sortedMembers.size()), true);
     for (auto const& member : sortedMembers) {
         members->append(member);
@@ -2022,50 +1968,6 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
         &groupEntries_.back(),
         shared_from_this(),
         {ColumnId::GroupEntries, index},
-        mpKey_);
-}
-
-model_ptr<FeatureId> PartitionSubsetLayer::newFeatureId(
-    std::string_view const& typeId,
-    KeyValueViewPairs const& featureIdParts,
-    std::optional<std::string_view> externalMapId)
-{
-    if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
-        raiseFmt(
-            "Could not find a matching ID composition of type {} for subset result.",
-            typeId);
-    }
-    auto typeIdString = strings()->emplace(typeId);
-    if (!typeIdString) {
-        raise(typeIdString.error().message);
-    }
-    auto const compositionIndex =
-        *layerInfo_->matchingFeatureIdCompositionIndex(
-            typeId,
-            featureIdParts,
-            false);
-    auto const& composition =
-        layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[compositionIndex];
-
-    simfil::StringId externalMapIdString = simfil::StringPool::Empty;
-    if (externalMapId && *externalMapId != mapId()) {
-        auto storedMapId = strings()->emplace(*externalMapId);
-        if (!storedMapId) {
-            raise(storedMapId.error().message);
-        }
-        externalMapIdString = *storedMapId;
-    }
-    auto const address = appendFeatureId(FeatureId::Data{
-        false,
-        compositionIndex,
-        *typeIdString,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts),
-        externalMapIdString,
-    });
-    return FeatureId(
-        featureIds_.at(address.index()),
-        shared_from_this(),
-        address,
         mpKey_);
 }
 

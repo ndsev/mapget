@@ -22,6 +22,9 @@ struct IncomingRelationReference
 /** Typed manifest accompanying immutable target/source snapshots in an incoming response. */
 struct IncomingRelationCollection
 {
+    /** Completeness refers only to the reported provider partitions, never the whole map. */
+    enum class Status { NoPossibleFamily, Complete, Partial, UnsupportedScope };
+
     static constexpr size_t MaxRelations = 4096;
     static constexpr size_t MaxSnapshots = 64;
     MapPartitionKey target_;
@@ -30,6 +33,9 @@ struct IncomingRelationCollection
     std::vector<IncomingRelationReference> relations_;
     std::vector<std::string> issues_;
     bool complete_ = true;
+    Status status_ = Status::Complete;
+    /** Admitted provider partitions, including providers returning no matching relations. */
+    std::vector<MapPartitionKey> scope_;
     std::optional<int64_t> expiresAtMs_;
 
     /** Encode the versioned result contract independently of feature-layer dictionaries. */

@@ -141,7 +141,8 @@ public:
     PartitionFeatureLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     /**
      * Get/Set common id prefix for all features in this layer.
@@ -168,18 +169,6 @@ public:
      */
     model_ptr<Feature>
     newFeature(std::string_view const& typeId, KeyValueViewPairs const& featureIdParts);
-
-    /**
-     * Create a new feature id. Use this function to create a reference to another
-     * feature. The created feature id will not use the common feature id prefix from
-     * this tile feature layer, since the reference may be to a feature stored in a
-     * different tile or map. When `externalMapId` is set to another map, the detached
-     * reference keeps that map id for binary serialization and JSON export.
-     */
-    model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt) override;
 
     /**
      * Create a new relation. Use this function to create a named reference to another
@@ -318,7 +307,13 @@ public:
     [[nodiscard]] std::vector<std::string> checkForErrors() const override;
 
     /** Return the layer schema attached through this tile's LayerInfo, if available. */
-    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
+    [[nodiscard]] simfil::model_ptr<LayerSchema> layerSchema() const;
+
+    /** Translate a fresh, exclusively owned native model into a composed schema.
+     * Keeps payload addresses/identities intact; invalidates compiled query state.
+     * Metadata must describe the same layer and a composition containing this graph.
+     */
+    void rebindSchema(std::shared_ptr<LayerInfo> const& info);
 
     /** Return a schema entry by schema key, or by feature type name as a convenience. */
     [[nodiscard]] LayerSchema::Entry const* getSchema(std::string_view typeName) const;
@@ -479,24 +474,31 @@ protected:
         PartitionFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 
+    /** Translate a copied producer domain into this layer's composed graph. */
+    simfil::SchemaReference remapSchemaReference(simfil::SchemaReference const& reference) const;
+
     /** Get the primary id composition for the given feature type. */
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
     /** Resolve schema IDs used by mapget's custom feature-model nodes. */
-    [[nodiscard]] simfil::SchemaId featureSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId featurePropertiesSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId attributeLayerMapSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId schemaIdForKey(std::string_view key) const;
-    [[nodiscard]] simfil::SchemaId childSchemaId(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId featureSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId featurePropertiesSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId attributeLayerMapSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId schemaIdForKey(std::string_view key) const;
+    [[nodiscard]] simfil::TypeId childSchemaId(
+        simfil::TypeId parent,
         std::string_view fieldName,
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
-    [[nodiscard]] simfil::SchemaId childSchemaId(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId childSchemaId(
+        simfil::TypeId parent,
         simfil::StringId field,
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
-    void applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const;
-    void applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const;
+    void applyObjectSchema(simfil::Object& object, simfil::TypeId schemaId) const;
+    void applyArraySchema(simfil::Array& array, simfil::TypeId schemaId) const;
+    /** Preserve a concrete binding when the containing declaration explicitly admits it. */
+    [[nodiscard]] simfil::TypeId
+    checkedContainerSchema(simfil::TypeId concrete, simfil::TypeId declared, simfil::ValueType type)
+        const;
 
     /**
      * Create a new attribute layer collection.
