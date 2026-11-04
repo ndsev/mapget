@@ -408,7 +408,7 @@ TEST_CASE("Incoming callback failures terminate without publishing a complete bu
         for (auto const& type : source->metadata.getLayer("Lane")->featureTypes())
             schema->addFeatureType(
                 type,
-                type.name_ == "Lane" ? root : simfil::NoSchemaId,
+                type.name_ == "Lane" ? root : simfil::NoTypeId,
                 type.name_ == "Lane");
         REQUIRE_THROWS(owner->finalize());
         CHECK(manifests == 0);

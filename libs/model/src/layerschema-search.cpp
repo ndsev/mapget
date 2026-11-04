@@ -21,7 +21,7 @@ public:
     Search(
         LayerSchema const& layer,
         std::string_view text,
-        std::span<simfil::SchemaId const> roots,
+        std::span<simfil::TypeId const> roots,
         std::span<std::string const> types,
         simfil::EvaluationOptions const& limits,
         size_t maxBytes)
@@ -76,7 +76,7 @@ public:
                 walk(id, {});
                 if (!rootMatches_.empty() && rootMatches.size() < 8 && roots_.size() > 1) {
                     charge(96);
-                    Json entry{{"schemaId", id}, {"matchedDomains", rootMatches_.size()}};
+                    Json entry{{"typeId", id}, {"matchedTypes", rootMatches_.size()}};
                     if (!types_.empty())
                         entry["featureType"] = copyText(types_[root_]);
                     rootMatches.push_back(std::move(entry));
@@ -88,7 +88,7 @@ public:
         }
         auto scanReason = std::exchange(reason_, {});
         remainingWork_ += reserve;
-        std::vector<std::pair<simfil::SchemaId, Match*>> ordered;
+        std::vector<std::pair<simfil::TypeId, Match*>> ordered;
         for (auto& [id, match] : best_)
             ordered.emplace_back(id, &match);
         std::stable_sort(
@@ -135,9 +135,9 @@ public:
         }
         Json discovery{
             {"scanComplete", scanReason.empty()},
-            {"matchedDomains", matched_.size()},
-            {"returnedDomains", items.size()},
-            {"omittedDomains", matched_.size() - items.size()},
+            {"matchedTypes", matched_.size()},
+            {"returnedTypes", items.size()},
+            {"omittedTypes", matched_.size() - items.size()},
             {"paths", "representative"}};
         return {
             {"items", std::move(items)},
@@ -159,14 +159,14 @@ private:
 
     LayerSchema const& layer_;
     MapSchema::ConstPtr owner_;
-    std::span<simfil::SchemaId const> roots_;
+    std::span<simfil::TypeId const> roots_;
     std::span<std::string const> types_;
     simfil::EvaluationOptions limits_;
     size_t remainingWork_, remainingBytes_, root_ = 0;
     std::string needle_, reason_;
     std::vector<size_t> prefix_;
-    std::map<simfil::SchemaId, Match> best_;
-    std::set<simfil::SchemaId> matched_, visited_, rootMatches_;
+    std::map<simfil::TypeId, Match> best_;
+    std::set<simfil::TypeId> matched_, visited_, rootMatches_;
     std::vector<std::string_view> path_;
     std::vector<bool> elementSteps_;
 
@@ -290,8 +290,8 @@ private:
                     return {{"$mapget", "bytes"}, {"hex", v.toHex(false)}};
                 }
                 else if constexpr (std::is_same_v<T, simfil::Bitmask>) {
-                    if (v.domain)
-                        chargeText(v.domain.binding->identity());
+                    if (v.type)
+                        chargeText(v.type.binding->identity());
                     return v.toJson();
                 }
                 else
@@ -314,7 +314,7 @@ private:
         if (!field.empty())
             result["fieldName"] = copyText(field);
         if (types_.empty()) {
-            result["relativeToSchemaId"] = roots_[root_];
+            result["relativeToTypeId"] = roots_[root_];
             return result;
         }
         result["featureType"] = copyText(types_[root_]);
@@ -331,7 +331,7 @@ private:
                 {"featureType", copyText(owner.attribute_.featureType_)},
                 {"layer", copyText(owner.attribute_.attributeLayerName_)},
                 {"name", copyText(owner.attribute_.attributeName_)},
-                {"schemaId", owner.attribute_.attributeSchema_}};
+                {"typeId", owner.attribute_.attributeSchema_}};
         }
         std::string query = "_";
         for (size_t i = 0; i < path.size(); ++i) {
@@ -354,9 +354,9 @@ private:
     }
 
     /** Score every incoming edge, but expand each domain only once per selected root. */
-    void walk(simfil::SchemaId id, std::string_view field, size_t depth = 0)
+    void walk(simfil::TypeId id, std::string_view field, size_t depth = 0)
     {
-        if (!step() || id == simfil::NoSchemaId)
+        if (!step() || id == simfil::NoTypeId)
             return;
         // Alternatives retain the same data path but still consume a C++ stack frame.
         if (depth > std::min<size_t>(limits_.maxDepth, 256)) {
@@ -422,7 +422,7 @@ private:
                     if (found == best_.end()) {
                         charge(384);
                         Json item{
-                            {"schemaId", id},
+                            {"typeId", id},
                             {"kind",
                              copyText(owner_->strings()
                                           ->resolve(simfil::Schema::kindNameId(layer_.kind(id)))
@@ -500,7 +500,7 @@ private:
         if (!visited_.insert(id).second)
             return;
         // The packed enumerable edge view skips only context roles, never '$'-prefixed data.
-        owner_->domain(id)->forEachEnumerableField(
+        owner_->type(id)->forEachEnumerableField(
             [&](simfil::StringId field, auto children)
             {
                 if (!step())
@@ -515,7 +515,7 @@ private:
             });
         layer_.forEachElementSchema(
             id,
-            [&](simfil::SchemaId child)
+            [&](simfil::TypeId child)
             {
                 path_.emplace_back("*");
                 elementSteps_.push_back(true);
@@ -530,7 +530,7 @@ private:
 
 nlohmann::json LayerSchema::find(
     std::string_view text,
-    std::span<simfil::SchemaId const> roots,
+    std::span<simfil::TypeId const> roots,
     std::span<std::string const> featureTypes,
     simfil::EvaluationOptions const& limits,
     size_t maxBytes,

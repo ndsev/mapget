@@ -490,7 +490,7 @@ private:
 class FeatureLayerFilterRequest::ExpressionEvaluator
 {
 public:
-    using ProgramKey = std::tuple<std::string, bool, simfil::SchemaId>;
+    using ProgramKey = std::tuple<std::string, bool, simfil::TypeId>;
     using ValueCache = std::map<ProgramKey, std::vector<simfil::Value>>;
 
     /** One result sequence per expression, with failures retaining their expression index. */
@@ -638,7 +638,7 @@ public:
     [[nodiscard]] tl::expected<bool, Failure> filter(
         std::optional<std::string> const& expression,
         simfil::ModelNode const& context,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         simfil::Diagnostics* diagnostics = nullptr,
         ValueCache* valueCache = nullptr)
     {
@@ -656,7 +656,7 @@ public:
     [[nodiscard]] Projection fields(
         std::string_view channelId,
         simfil::ModelNode const& context,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         std::span<std::string const> expressions,
         Scope scope,
         Issues& issues,
@@ -709,7 +709,7 @@ private:
         std::string_view expression,
         simfil::ModelNode const& context,
         bool anyMode,
-        simfil::SchemaId rootSchema,
+        simfil::TypeId rootSchema,
         simfil::Diagnostics* diagnostics,
         ValueCache* valueCache)
     {
@@ -908,7 +908,7 @@ private:
     void scanAttributes(
         model_ptr<Feature> const& feature,
         simfil::ModelNode const& featureContext,
-        simfil::SchemaId featureSchema,
+        simfil::TypeId featureSchema,
         Channel& channel,
         ExpressionEvaluator::ValueCache& featureEvaluations);
 
@@ -1945,7 +1945,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
 void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& featureContext,
-    simfil::SchemaId featureSchema,
+    simfil::TypeId featureSchema,
     Channel& channel,
     ExpressionEvaluator::ValueCache& featureEvaluations)
 {

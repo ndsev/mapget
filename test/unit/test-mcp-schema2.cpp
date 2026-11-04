@@ -13,14 +13,14 @@ using Schema2Json = nlohmann::json;
 
 namespace
 {
-/** A native-only contract, including reference-only IDs and domains with identical raw codes. */
+/** A native-only contract, including reference-only IDs and types with identical raw codes. */
 class Schema2NativeSource final : public DataSource
 {
 public:
     DataSourceInfo metadata;
     std::atomic_size_t fills{0};
-    simfil::SchemaId speed = 0, count = 0, flags = 0, properties = 0;
-    simfil::SchemaId enabled = 0, payload = 0;
+    simfil::TypeId speed = 0, count = 0, flags = 0, properties = 0;
+    simfil::TypeId enabled = 0, payload = 0;
 
     /** Publish one finalized graph without any legacy inline schema fields. */
     explicit Schema2NativeSource(
@@ -58,13 +58,15 @@ public:
             {.name = "UNLIMITED",
              .value = int64_t{255},
              .role = simfil::Schema::NamedValue::Role::Special,
-             .meaning = simfil::Schema::NamedValue::Meaning::Unbounded});
+             .meaning = simfil::Schema::NamedValue::Meaning::Unbounded,
+             .rawValue = int64_t{255}});
         layer->addNamedValue(
             count,
             {.name = "UNKNOWN_COUNT",
              .value = int64_t{255},
              .role = simfil::Schema::NamedValue::Role::Special,
-             .meaning = simfil::Schema::NamedValue::Meaning::Unknown});
+             .meaning = simfil::Schema::NamedValue::Meaning::Unknown,
+             .rawValue = UINT64_MAX});
         layer->setBitWidth(flags, 64);
         layer->addNamedValue(
             flags,
@@ -93,7 +95,7 @@ public:
             FeatureTypeInfo::fromJson(Schema2Json::parse(R"({
             "name":"Target","uniqueIdCompositions":[[{"partId":"id","datatype":"U64"}]]
         })")),
-            simfil::NoSchemaId,
+            simfil::NoTypeId,
             false);
         layer->setRootSchema(root);
         if (declareRelations)
@@ -284,7 +286,7 @@ TEST_CASE(
     auto raw = fixture.call("mapget_query_schema", {{"mapId", "Schema2"}, {"layerId", "Raw"}})
                    .at("result");
     REQUIRE(raw["items"].size() == 1);
-    CHECK(raw["items"][0]["schemaId"] == fixture.source->properties);
+    CHECK(raw["items"][0]["typeId"] == fixture.source->properties);
     CHECK(raw["items"][0]["layerId"] == "Raw");
     CHECK_FALSE(raw["items"][0].contains("featureType"));
     CHECK(fixture.source->fills == 0);
@@ -296,36 +298,40 @@ TEST_CASE("Schema2 MCP exposes native numeric and named-value descriptors", "[mc
     Schema2Json args{
         {"mapId", "Schema2"},
         {"layerId", "Road"},
-        {"schemaId", fixture.source->speed},
+        {"typeId", fixture.source->speed},
         {"query", "numericDomain"}};
     auto numeric = fixture.call("mapget_query_schema", args).at("result");
     REQUIRE(numeric["complete"] == true);
-    auto domain = numeric["items"][0]["values"][0];
-    CHECK(domain["unit"] == "km/h");
-    CHECK(domain["minimum"] == 0);
-    CHECK(domain["maximum"] == 255);
-    CHECK(domain["ordinaryRanges"][0] == Schema2Json({{"min", 1}, {"max", 253}}));
+    auto type = numeric["items"][0]["values"][0];
+    CHECK(type["unit"] == "km/h");
+    CHECK(type["minimum"] == 0);
+    CHECK(type["maximum"] == 255);
+    CHECK(type["ordinaryRanges"][0] == Schema2Json({{"min", 1}, {"max", 253}}));
     args["query"] = "namedValues.*";
     auto special = fixture.call("mapget_query_schema", args).at("result");
     CHECK(special["items"][0]["values"][0]["name"] == "UNLIMITED");
     CHECK(special["items"][0]["values"][0]["value"] == 255);
     CHECK(special["items"][0]["values"][0]["meaning"] == "unbounded");
-    args.erase("schemaId");
+    CHECK(special["items"][0]["values"][0]["rawValue"] == 255);
+    args["typeId"] = fixture.source->count;
+    auto wideOrdinal = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(wideOrdinal["items"][0]["values"][0]["rawValue"] == "18446744073709551615");
+    args.erase("typeId");
     args.erase("query");
     args["find"] = "UNLIMITED";
     auto found = fixture.call("mapget_query_schema", args).at("result");
     REQUIRE_FALSE(found["items"].empty());
-    CHECK(found["items"][0]["schemaId"] == fixture.source->speed);
+    CHECK(found["items"][0]["typeId"] == fixture.source->speed);
     CHECK(found["items"][0]["namedValues"]["matchingNames"][0] == "UNLIMITED");
     args.erase("find");
-    args["schemaId"] = fixture.source->flags;
+    args["typeId"] = fixture.source->flags;
     args["query"] = "bitWidth";
     CHECK(fixture.call("mapget_query_schema", args)["result"]["items"][0]["values"][0] == 64);
     CHECK(fixture.source->fills == 0);
 }
 
 TEST_CASE(
-    "Schema2 MCP projections preserve exact scalar domains and full-width flags",
+    "Schema2 MCP projections preserve exact scalar types and full-width flags",
     "[mcp-native][schema2]")
 {
     Schema2NativeFixture fixture;
@@ -359,9 +365,9 @@ TEST_CASE(
         CHECK(values[i][0]["value"] == 255);
         CHECK(values[i][0]["schema"] == token);
     }
-    CHECK(values[0][0]["domain"] == fixture.source->speed);
-    CHECK(values[1][0]["domain"] == fixture.source->count);
-    CHECK(values[2][0]["domain"] == fixture.source->speed);
+    CHECK(values[0][0]["typeId"] == fixture.source->speed);
+    CHECK(values[1][0]["typeId"] == fixture.source->count);
+    CHECK(values[2][0]["typeId"] == fixture.source->speed);
     CHECK(values[3][0] == 255);
     CHECK(values[4][0] == 255);
     CHECK(
@@ -370,9 +376,9 @@ TEST_CASE(
             {{"_bitmask", true},
              {"bits", "0x8000000000000001"},
              {"schema", token},
-             {"domain", fixture.source->flags}}));
+             {"typeId", fixture.source->flags}}));
     CHECK(values[6][0]["speed"]["value"] == 50);
-    CHECK(values[6][0]["speed"]["domain"] == fixture.source->speed);
+    CHECK(values[6][0]["speed"]["typeId"] == fixture.source->speed);
     CHECK(values[7][0].is_null());
     CHECK(values[8][0] == Schema2Json({{"$mapget", "object"}, {"value", {{"_bitmask", true}}}}));
     CHECK(values[9][0]["bits"] == "0x0000000000000000");
@@ -385,7 +391,7 @@ TEST_CASE(
             {{"$mapget", "qualified"},
              {"value", true},
              {"schema", token},
-             {"domain", fixture.source->enabled}}));
+             {"typeId", fixture.source->enabled}}));
     Schema2Json bytes{{"$mapget", "bytes"}, {"hex", "0001ff"}};
     CHECK(
         values[13][0] ==
@@ -393,7 +399,7 @@ TEST_CASE(
             {{"$mapget", "qualified"},
              {"value", bytes},
              {"schema", token},
-             {"domain", fixture.source->payload}}));
+             {"typeId", fixture.source->payload}}));
     CHECK(values[14][0] == true);
     CHECK(values[15][0] == bytes);
     CHECK(result.dump().find("resultSchema") == std::string::npos);
@@ -610,7 +616,7 @@ TEST_CASE(
     args["featureType"] = "Target";
     result = fixture.call("mapget_query_schema", args).at("result");
     REQUIRE(result["complete"] == true);
-    CHECK(result["items"][0]["schemaId"].is_null());
+    CHECK(result["items"][0]["typeId"].is_null());
     CHECK(result["items"][0]["contract"]["produced"] == false);
     CHECK(result["items"][0]["values"].empty());
     // An identity-only declaration does not authorize evaluation against a nonexistent root.

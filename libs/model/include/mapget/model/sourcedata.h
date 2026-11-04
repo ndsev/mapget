@@ -47,8 +47,8 @@ public:
 
     void setSchemaName(std::string_view name);
     /** Attach an exact raw-domain identity from this partition's immutable MapSchema. */
-    void setSchema(simfil::SchemaId id);
-    [[nodiscard]] simfil::SchemaId schema() const override;
+    void setSchema(simfil::TypeId id);
+    [[nodiscard]] simfil::TypeId schema() const override;
     std::string_view schemaName() const;
 
     /**

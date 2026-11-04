@@ -195,16 +195,16 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
     auto scalar = [&](Json raw)
     {
         // Provenance is explicit response metadata, never inferred from a numeric code.
-        auto domain = value.schemaReference();
-        if (!domain)
+        auto type = value.schemaReference();
+        if (!type)
             return raw;
         charge(64);
-        chargeString(domain.binding->identity());
+        chargeString(type.binding->identity());
         return Json{
             {"$mapget", "qualified"},
             {"value", std::move(raw)},
-            {"schema", domain.binding->identity()},
-            {"domain", domain.id}};
+            {"schema", type.binding->identity()},
+            {"typeId", type.id}};
     };
     switch (value.type) {
     case ValueType::Undef: return {{"$mapget", "undefined"}};
@@ -240,10 +240,10 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
     }
     case ValueType::Bitmask: {
         auto const& mask = value.as<ValueType::Bitmask>();
-        // simfil owns the full-width tag and domain validation; no mapget-specific codec.
+        // simfil owns the full-width tag and type validation; no mapget-specific codec.
         charge(96);
-        if (mask.domain)
-            chargeString(mask.domain.binding->identity());
+        if (mask.type)
+            chargeString(mask.type.binding->identity());
         return mask.toJson();
     }
     case ValueType::Array:
@@ -376,7 +376,7 @@ void McpNativeTools::Call::diagnostics(
 Json McpNativeTools::Call::evaluate(
     std::string const& query,
     simfil::ModelNode const& root,
-    simfil::SchemaId schema,
+    simfil::TypeId schema,
     bool predicate)
 {
     auto result = Json::array();
@@ -474,7 +474,7 @@ Json McpNativeTools::Call::evaluate(
 
 Json McpNativeTools::Call::schemaOverview(
     simfil::ModelNode const& node,
-    std::set<simfil::SchemaId> const& expanded,
+    std::set<simfil::TypeId> const& expanded,
     size_t depth)
 {
     if (!step())
@@ -490,10 +490,10 @@ Json McpNativeTools::Call::schemaOverview(
     if (reference) {
         auto ids = valueJson(simfil::Value::field(reference));
         if (ids.is_number_integer())
-            expand = expanded.contains(ids.get<simfil::SchemaId>());
+            expand = expanded.contains(ids.get<simfil::TypeId>());
         else if (ids.is_array())
             for (auto const& id : ids)
-                expand |= expanded.contains(id.get<simfil::SchemaId>());
+                expand |= expanded.contains(id.get<simfil::TypeId>());
         result["$ref"] = std::move(ids);
     }
     for (uint32_t i = 0; i < node.size(); ++i) {
@@ -503,10 +503,10 @@ Json McpNativeTools::Call::schemaOverview(
         if (key == simfil::StringPool::SchemaRef)
             continue;
         bool fields = key == simfil::StringPool::SchemaFields;
-        bool domains = key == simfil::StringPool::SchemaElements ||
+        bool types = key == simfil::StringPool::SchemaElements ||
             key == simfil::StringPool::SchemaAlternatives;
         // A semantic reference is intentional, not a truncated query. Enum previews are bounded.
-        if ((fields || domains) && (!expand || depth >= 2)) {
+        if ((fields || types) && (!expand || depth >= 2)) {
             if (node.at(i)->size())
                 result["childrenOmitted"] = true;
             continue;
@@ -522,24 +522,19 @@ Json McpNativeTools::Call::schemaOverview(
                 preview.push_back(valueJson(simfil::Value::at(*child, *child->at(j), j)));
             continue;
         }
-        if (!fields && !domains) {
+        if (!fields && !types) {
             result[name] = valueJson(simfil::Value::field(child));
             continue;
         }
         auto values = fields ? Json::object() : Json::array();
         if (child->size() > 16) {
-            result[fields ? "fieldCount" : "domainCount"] = child->size();
+            result[fields ? "fieldCount" : "typeCount"] = child->size();
             result["childrenOmitted"] = true;
         }
         for (uint32_t j = 0; j < std::min<uint32_t>(child->size(), 16); ++j) {
-            // Feature.attributes aliases Feature.properties. Preserve its reference without
-            // expanding the same large attribute inventory twice.
-            auto const alias = fields && depth == 0 &&
-                child->owningModel()->lookupStringId(child->keyAt(j)).value() == "attributes";
-            auto value = schemaOverview(
-                *child->at(j),
-                alias ? std::set<simfil::SchemaId>{} : expanded,
-                depth + 1);
+            // The native graph omits lookup-only aliases from enumeration.
+            // Explicitly declared members retain their ordinary expansion policy.
+            auto value = schemaOverview(*child->at(j), expanded, depth + 1);
             if (fields) {
                 auto field = child->owningModel()->lookupStringId(child->keyAt(j)).value();
                 chargeString(field);
@@ -573,16 +568,16 @@ void McpNativeTools::Call::querySchema()
         schema->featureTypes();
     if (layer_->type_ != LayerType::Features && arguments.contains("featureType"))
         throw std::invalid_argument("featureType requires a feature layer");
-    std::vector<simfil::SchemaId> roots;
-    if (arguments.contains("schemaId")) {
+    std::vector<simfil::TypeId> roots;
+    if (arguments.contains("typeId")) {
         if (arguments.contains("featureType"))
-            throw std::invalid_argument("Choose featureType or schemaId");
-        auto id = arguments["schemaId"].get<simfil::SchemaId>();
+            throw std::invalid_argument("Choose featureType or typeId");
+        auto id = arguments["typeId"].get<simfil::TypeId>();
         if (!schema->hasSchema(id)) {
             fail(
                 "unknown_schema",
-                "The selected layer has no such schemaId. Read mapget_query_schema "
-                "with the same mapId/layerId and no schemaId to discover its current roots.");
+                "The selected layer has no such typeId. Read mapget_query_schema "
+                "with the same mapId/layerId and no typeId to discover its current roots.");
             return;
         }
         roots.push_back(id);
@@ -592,8 +587,8 @@ void McpNativeTools::Call::querySchema()
     }
     else {
         for (auto const& type : types) {
-            // Identity-only declarations can have a synthesized common-field domain,
-            // but that domain does not describe data produced by this layer.
+            // Identity-only declarations can have a synthesized common-field type,
+            // but that type does not describe data produced by this layer.
             if (arguments.contains("featureType") && schema->getTypeInfo(type, false) &&
                 !schema->producesFeatureType(type))
             {
@@ -603,13 +598,13 @@ void McpNativeTools::Call::querySchema()
                 }
                 append(
                     {{"featureType", type},
-                     {"schemaId", nullptr},
+                     {"typeId", nullptr},
                      {"contract", boundedJson(schema->featureTypeContract(type, reserveContract))},
                      {"values", Json::array()}});
                 return;
             }
             auto id = schema->featureSchema(type);
-            if (id == simfil::NoSchemaId) {
+            if (id == simfil::NoTypeId) {
                 fail(
                     "unknown_feature_type",
                     "The selected layer has no schema root for this featureType. "
@@ -635,13 +630,13 @@ void McpNativeTools::Call::querySchema()
         Json values;
         if (arguments.contains("query")) {
             // Explicit queries see the whole lazy graph, never the overview's projection.
-            values = evaluate(arguments["query"], *root, simfil::NoSchemaId);
+            values = evaluate(arguments["query"], *root, simfil::NoTypeId);
         }
         else {
             // Unfocused discovery is a type inventory. Opening a type/definition is shallow:
-            // compound domains remain directly followable $refs instead of exhausting a page.
-            std::set<simfil::SchemaId> expanded;
-            if (arguments.contains("featureType") || arguments.contains("schemaId") ||
+            // compound types remain directly followable $refs instead of exhausting a page.
+            std::set<simfil::TypeId> expanded;
+            if (arguments.contains("featureType") || arguments.contains("typeId") ||
                 layer_->type_ != LayerType::Features)
                 expanded.insert(id);
             if (arguments.contains("featureType")) {
@@ -652,7 +647,7 @@ void McpNativeTools::Call::querySchema()
                 expanded.insert(properties.begin(), properties.end());
             }
             // Logical alternatives describe the same selected value position.
-            std::vector<simfil::SchemaId> pending(expanded.begin(), expanded.end());
+            std::vector<simfil::TypeId> pending(expanded.begin(), expanded.end());
             while (!pending.empty() && step()) {
                 auto current = pending.back();
                 pending.pop_back();
@@ -660,16 +655,16 @@ void McpNativeTools::Call::querySchema()
                     if (expanded.insert(alternative).second)
                         pending.push_back(alternative);
             }
-            expanded.erase(simfil::NoSchemaId);
+            expanded.erase(simfil::NoTypeId);
             values = Json::array({schemaOverview(*root, expanded)});
         }
         // Projections such as **.typename may never emit a node-budget marker themselves.
         if (model->exhausted())
             truncate("schema_node_limit");
-        Json item{{"schemaId", id}, {"values", std::move(values)}};
+        Json item{{"typeId", id}, {"values", std::move(values)}};
         if (arguments.contains("featureType") && !arguments.contains("query"))
             item["contract"] = boundedJson(schema->featureTypeContract(types[i], reserveContract));
-        if (!arguments.contains("schemaId") && layer_->type_ == LayerType::Features)
+        if (!arguments.contains("typeId") && layer_->type_ == LayerType::Features)
             item["featureType"] = types[i];
         else if (layer_->type_ != LayerType::Features)
             item["layerId"] = layer_->layerId_;
@@ -679,7 +674,7 @@ void McpNativeTools::Call::querySchema()
 }
 
 void McpNativeTools::Call::findSchema(
-    std::vector<simfil::SchemaId> const& roots,
+    std::vector<simfil::TypeId> const& roots,
     std::vector<std::string> const& types)
 {
     auto schema = layer_->layerSchema();
@@ -687,7 +682,7 @@ void McpNativeTools::Call::findSchema(
     auto found = schema->find(
         arguments.at("find").get<std::string>(),
         roots,
-        !arguments.contains("schemaId") && layer_->type_ == LayerType::Features ?
+        !arguments.contains("typeId") && layer_->type_ == LayerType::Features ?
             std::span<std::string const>(types) :
             std::span<std::string const>{},
         {.maxResults = limit_,
@@ -699,8 +694,8 @@ void McpNativeTools::Call::findSchema(
     remainingWork_ -= std::min(remainingWork_, summary.work);
     if (!step(0)) {
         discovery_ = std::move(found["discovery"]);
-        discovery_["returnedDomains"] = 0;
-        discovery_["omittedDomains"] = discovery_["matchedDomains"];
+        discovery_["returnedTypes"] = 0;
+        discovery_["omittedTypes"] = discovery_["matchedTypes"];
         return;
     }
     auto selection = Json{
@@ -716,13 +711,13 @@ void McpNativeTools::Call::findSchema(
         if (root.contains("featureType"))
             next["featureType"] = root["featureType"];
         else
-            next["schemaId"] = root["schemaId"];
-        narrowing_.push_back({{"arguments", next}, {"matchedDomains", root["matchedDomains"]}});
+            next["typeId"] = root["typeId"];
+        narrowing_.push_back({{"arguments", next}, {"matchedTypes", root["matchedTypes"]}});
     }
     for (auto& item : found["items"]) {
         try {
             auto expand = selection;
-            expand["schemaId"] = item["schemaId"];
+            expand["typeId"] = item["typeId"];
             item["expandArguments"] = expand;
             if (item.contains("namedValues")) {
                 auto read = expand;
@@ -743,7 +738,7 @@ void McpNativeTools::Call::findSchema(
                 auto next = expand;
                 for (auto const& context : item["contexts"])
                     if (context.contains("attributeContext")) {
-                        next["schemaId"] = context["attributeContext"]["schemaId"];
+                        next["typeId"] = context["attributeContext"]["typeId"];
                         break;
                     }
                 next["find"] = arguments["find"];
@@ -751,7 +746,7 @@ void McpNativeTools::Call::findSchema(
                     narrowing_.begin(),
                     narrowing_.end(),
                     [&](auto const& choice) { return choice["arguments"] == next; });
-                if (!same && next["schemaId"] != roots.front())
+                if (!same && next["typeId"] != roots.front())
                     narrowing_.push_back({{"arguments", next}});
             }
             if (!append(boundedJson(item)))
@@ -762,8 +757,8 @@ void McpNativeTools::Call::findSchema(
         }
     }
     discovery_ = std::move(found["discovery"]);
-    discovery_["returnedDomains"] = items_.size();
-    discovery_["omittedDomains"] = discovery_["matchedDomains"].get<size_t>() - items_.size();
+    discovery_["returnedTypes"] = items_.size();
+    discovery_["omittedTypes"] = discovery_["matchedTypes"].get<size_t>() - items_.size();
     if (!found["complete"].get<bool>())
         truncate(
             found["reason"] == "cancelled" ?
@@ -787,7 +782,7 @@ void McpNativeTools::Call::validateExpression()
     auto scope = arguments.value("scope", "feature");
     auto featureLayer = layer_->type_ == LayerType::Features;
     if (!featureLayer &&
-        (arguments.contains("featureType") || arguments.contains("attributeSchema") ||
+        (arguments.contains("featureType") || arguments.contains("attributeTypeId") ||
          scope == "attribute"))
         throw std::invalid_argument("Feature/attribute context requires a feature layer");
     if ((arguments.value("rewrite", false) || scope == "auto") && schema && featureLayer) {
@@ -815,15 +810,15 @@ void McpNativeTools::Call::validateExpression()
         schema && featureLayer ?
         schema->featureTypes() :
         std::vector<std::string>{""};
-    std::set<std::pair<std::string, simfil::SchemaId>> contexts;
+    std::set<std::pair<std::string, simfil::TypeId>> contexts;
     for (auto const& type : types) {
         if (!step())
             break;
         auto id = schema ?
             (featureLayer ? schema->featureSchema(type) : schema->rootSchema()) :
-            simfil::NoSchemaId;
+            simfil::NoTypeId;
         if (arguments.contains("featureType") && schema &&
-            (id == simfil::NoSchemaId || !schema->producesFeatureType(type)))
+            (id == simfil::NoTypeId || !schema->producesFeatureType(type)))
         {
             fail(
                 "unknown_feature_type",
@@ -838,17 +833,17 @@ void McpNativeTools::Call::validateExpression()
                 if (!step())
                     break;
                 if (attribute.featureType_ != type ||
-                    (arguments.contains("attributeSchema") &&
-                     arguments["attributeSchema"] != attribute.attributeSchema_))
+                    (arguments.contains("attributeTypeId") &&
+                     arguments["attributeTypeId"] != attribute.attributeSchema_))
                     continue;
                 contexts
                     .emplace(type, schema->attributeQuerySchema(type, attribute.attributeSchema_));
                 found = true;
             }
-            if (!found && arguments.contains("attributeSchema"))
+            if (!found && arguments.contains("attributeTypeId"))
                 throw std::invalid_argument("attribute schema");
             if (!found)
-                contexts.emplace(type, simfil::NoSchemaId);
+                contexts.emplace(type, simfil::NoTypeId);
         }
         else
             contexts.emplace(type, id);
@@ -875,7 +870,7 @@ void McpNativeTools::Call::validateExpression()
             {.any = arguments.value("predicate", false),
              .rewriteMode = simfil::RewriteMode::Schema,
              .rootSchema = id});
-        Json context{{"featureType", type}, {"schemaId", id}, {"schemaCertain", false}};
+        Json context{{"featureType", type}, {"typeId", id}, {"schemaCertain", false}};
         if (!featureLayer) {
             context.erase("featureType");
             context["layerId"] = layer_->layerId_;
@@ -887,7 +882,7 @@ void McpNativeTools::Call::validateExpression()
                 {"offset", ast.error().location.offset},
                 {"size", ast.error().location.size}};
         }
-        else if (id != simfil::NoSchemaId) {
+        else if (id != simfil::NoTypeId) {
             auto paths = simfil::referencedSchemaPaths(*env_, **ast, id);
             if (paths) {
                 context["unresolvedAccess"] = paths->hasUnresolvedAccess;

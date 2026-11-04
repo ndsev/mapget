@@ -428,7 +428,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                             tile->layerSchema()->attributeQuerySchema(
                                                 feature->typeId(),
                                                 attribute->schema()) :
-                                            simfil::NoSchemaId;
+                                            simfil::NoTypeId;
                                         auto row = identity;
                                         row["attributeIndex"] = index;
                                         row["attributeLayer"] = name;
@@ -479,7 +479,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
 bool McpNativeTools::Call::extractRow(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& context,
-    simfil::SchemaId schema,
+    simfil::TypeId schema,
     Json identity,
     model_ptr<Validity> const& validity)
 {

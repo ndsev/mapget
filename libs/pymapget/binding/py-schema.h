@@ -33,8 +33,8 @@ inline void bindSchema(pybind11::module_& m)
     namespace py = pybind11;
 
     py::class_<simfil::SchemaReference>(m, "SchemaReference", R"pbdoc(
-        Read-only exact domain identity retaining its immutable graph.
-        domain is local to schema_id. An empty reference has domain zero and an empty
+        Read-only exact type identity retaining its immutable graph.
+        type_id is local to schema_id. An empty reference has type_id zero and an empty
         identity; no semantics may be inferred from its raw scalar value.
     )pbdoc")
         .def_property_readonly(
@@ -43,29 +43,29 @@ inline void bindSchema(pybind11::module_& m)
             { return self ? std::string(self.binding->identity()) : std::string{}; },
             "Exact schema token, or an empty string for unknown provenance.")
         .def_readonly(
-            "domain",
+            "type_id",
             &simfil::SchemaReference::id,
-            "Local domain ID; zero means unknown.")
+            "Graph-local numeric type ID; zero means unknown.")
         .def(
             "__bool__",
             [](simfil::SchemaReference const& self) { return bool(self); },
-            "Whether this reference identifies a retained domain.");
+            "Whether this reference identifies a retained type.");
 
     py::class_<simfil::Bitmask>(m, "Bitmask", R"pbdoc(
         Read-only full-width flag value with intrinsic schema identity.
         bits is an exact Python integer, not a label-table index. Unknown bits and zero
-        remain valid raw values. The domain retains its graph after source destruction.
+        remain valid raw values. The type reference retains its graph after source destruction.
     )pbdoc")
         .def_readonly(
             "bits",
             &simfil::Bitmask::bits,
             "Exact unsigned 64-bit bits, including unknown bits.")
-        .def_readonly("domain", &simfil::Bitmask::domain, "Owner-retaining SchemaReference.")
+        .def_readonly("type", &simfil::Bitmask::type, "Owner-retaining SchemaReference.")
         .def(
             "to_dict",
             [](simfil::Bitmask const& self)
             { return py::module_::import("json").attr("loads")(self.toJson().dump()); },
-            "Return simfil's exact {_bitmask, bits, schema, domain} JSON representation.");
+            "Return simfil's exact {_bitmask, bits, schema, typeId} JSON representation.");
 
     py::class_<MapFormat>(m, "MapFormat", R"pbdoc(
         Read-only descriptive source-format tuple, not a schema cache key.
@@ -171,6 +171,8 @@ inline void bindSchema(pybind11::module_& m)
         or MapSchema.from_metadata for legacy inputs. No Python mutators or detached
         feature registry are exposed. Layers and identity-part views retain this graph
         independently of the client, datasource, or Python MapSchema object.
+        Native schema construction is currently C++ only; Python producers continue
+        to use from_metadata with legacy JSON declarations.
     )pbdoc")
         .def_static(
             "read",
@@ -212,7 +214,7 @@ inline void bindSchema(pybind11::module_& m)
             Normalize legacy datasource metadata using the native input adapter.
 
             featureTypes and optional featureModelSchema are accepted unchanged.
-            Identity-only inputs produce open property domains; missing or conflicting
+            Identity-only inputs produce open property types; missing or conflicting
             identities raise. This does not resolve canonical schemaId references:
             obtain their exact artifact with read() or Client.get_schema() instead.
         )pbdoc")
@@ -237,7 +239,7 @@ inline void bindSchema(pybind11::module_& m)
         .def_property_readonly(
             "schema_id",
             [](MapSchema const& self) { return std::string(self.schemaId()); },
-            "Exact opaque artifact identity. Local numeric domain IDs require this token.")
+            "Exact opaque artifact identity. Local numeric type IDs require this token.")
         .def_property_readonly(
             "format",
             [](MapSchema const& self) { return self.format(); },
@@ -247,9 +249,43 @@ inline void bindSchema(pybind11::module_& m)
             [](MapSchema const& self) { return py::tuple(py::cast(self.layerNames())); },
             "Tuple of schema root names. Catalog availability and authorization are separate.")
         .def_property_readonly(
-            "domain_count",
-            [](MapSchema const& self) { return self.domainCount(); },
-            "Number of domains in the shared graph, not a maximum valid domain ID.")
+            "type_count",
+            [](MapSchema const& self) { return self.typeCount(); },
+            "Number of type definitions, excluding the unknown sentinel; not a maximum type ID.")
+        .def(
+            "type_reference",
+            [](MapSchema const& self, simfil::TypeId id)
+            {
+                if (!self.type(id))
+                    throw py::key_error(std::to_string(id));
+                return simfil::SchemaReference{self.binding(), id};
+            },
+            py::arg("type_id"),
+            "Return an owner-retaining reference to this exact graph's type; unknown IDs raise "
+            "KeyError.")
+        .def(
+            "type_descriptor",
+            [](MapSchema const& self, simfil::TypeId id)
+            {
+                std::string text;
+                {
+                    py::gil_scoped_release release;
+                    auto node = self.typeNode(id);
+                    if (!node)
+                        throw py::key_error(std::to_string(id));
+                    text = node->toJson().dump();
+                }
+                return py::module_::import("json").attr("loads")(text);
+            },
+            py::arg("type_id"),
+            R"pbdoc(
+            Export a detached native type descriptor, not a JSON Schema document.
+
+            Uses simfil's SchemaModel, including named values, rawValue and exact
+            numeric metadata. $ref values are graph-local type IDs; cycles and native
+            descriptor-budget limits are marked with truncated. Unknown IDs raise
+            KeyError. This explicit expansion may be large; request individual types.
+        )pbdoc")
         .def(
             "layer",
             [](MapSchema const& self, std::string const& name)
@@ -286,7 +322,7 @@ inline void bindSchema(pybind11::module_& m)
         .def_property_readonly(
             "root_schema",
             [](LayerSchema::Ptr const& self) { return self->rootSchema(); },
-            "Layer root's numeric domain ID; zero means unknown, never a fabricated domain.")
+            "Layer root's graph-local numeric type ID; zero means unknown.")
         .def_property_readonly(
             "produced_feature_types",
             [](LayerSchema::Ptr const& self) { return py::tuple(py::cast(self->featureTypes())); },
@@ -320,7 +356,7 @@ inline void bindSchema(pybind11::module_& m)
             [](LayerSchema::Ptr const& self, std::string const& name)
             { return self->featureSchema(name); },
             py::arg("feature_type"),
-            "Return the local feature-root domain ID, or zero when no root exists.")
+            "Return the local feature-root type ID, or zero when no root exists.")
         .def(
             "to_json_schema",
             [](LayerSchema::Ptr const& self)

@@ -128,10 +128,10 @@ public:
     AttributeLayerList() = delete;
 
     /** Return the object schema assigned to the layer-name map. */
-    [[nodiscard]] simfil::SchemaId schema() const override;
+    [[nodiscard]] simfil::TypeId schema() const override;
 
     /** Assign the object schema for the layer-name map stored by this view. */
-    tl::expected<void, simfil::Error> setObjectSchema(simfil::SchemaId schemaId);
+    tl::expected<void, simfil::Error> setObjectSchema(simfil::TypeId schemaId);
 
     [[nodiscard]] nlohmann::json toJson() const override;
     [[nodiscard]] simfil::ValueType type() const override;

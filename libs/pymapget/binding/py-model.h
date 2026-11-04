@@ -239,7 +239,7 @@ ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
     }
     else if (py::isinstance<simfil::Bitmask>(pyValue)) {
         auto const& value = pyValue.cast<simfil::Bitmask const&>();
-        return model.newBitmask(value.bits, value.domain);
+        return model.newBitmask(value.bits, value.type);
     }
     else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.

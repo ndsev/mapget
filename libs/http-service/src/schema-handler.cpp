@@ -1,6 +1,7 @@
 #include "http-service-impl.h"
 #include "mapget/model/mapschema.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 
@@ -69,7 +70,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
 {
     auto inventory = req->path() == "/schemas";
     auto artifact = req->getParameter("mapSchemaId");
-    auto domain = req->getParameter("schemaId");
+    auto typeIdParameter = req->getParameter("typeId");
     auto search = req->parameters().contains("find");
     auto text = req->getParameter("find");
     auto layerName = req->getParameter("layerId");
@@ -85,13 +86,17 @@ void HttpService::Impl::handleSchemaInspectionRequest(
     }
     uint32_t id = 0;
     if (!inventory) {
-        auto parsed = std::from_chars(domain.data(), domain.data() + domain.size(), id);
+        auto parsed = std::from_chars(
+            typeIdParameter.data(),
+            typeIdParameter.data() + typeIdParameter.size(),
+            id);
         if (artifact.empty() || artifact.size() > 256 || parsed.ec != std::errc{} ||
-            parsed.ptr != domain.data() + domain.size() || id == 0 || id > simfil::MaxSchemaId)
+            parsed.ptr != typeIdParameter.data() + typeIdParameter.size() || id == 0 ||
+            id > simfil::MaxTypeId)
         {
             callback(schemaError(
                 drogon::k400BadRequest,
-                "Exact mapSchemaId and positive numeric schemaId are required."));
+                "Exact mapSchemaId and positive numeric typeId are required."));
             return;
         }
     }
@@ -150,14 +155,14 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             else if (search) {
                 owner = service->getSchema({}, artifact, headers);
                 auto layer = owner ? owner->layer(layerName) : LayerSchema::Ptr{};
-                if (!layer || !layer->hasSchema(static_cast<simfil::SchemaId>(id))) {
+                if (!layer || !layer->hasSchema(static_cast<simfil::TypeId>(id))) {
                     callback(
                         schemaError(drogon::k404NotFound, "Schema search root is unavailable."));
                     return;
                 }
                 chargeString(artifact);
                 chargeString(layerName);
-                std::array roots{static_cast<simfil::SchemaId>(id)};
+                std::array roots{static_cast<simfil::TypeId>(id)};
                 // Match MCP's normal scan allowance while bounding browser output and latency.
                 body = layer->find(
                     text,
@@ -168,25 +173,25 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                 body.erase("rootMatches");
                 body["mapSchemaId"] = artifact;
                 body["layerId"] = layerName;
-                body["schemaId"] = id;
+                body["typeId"] = id;
             }
             else {
                 owner = service->getSchema({}, artifact, headers);
                 auto root = owner ?
-                    owner->domainNode(static_cast<simfil::SchemaId>(id)) :
+                    owner->typeNode(static_cast<simfil::TypeId>(id)) :
                     simfil::ModelNode::Ptr{};
                 if (!root) {
-                    callback(schemaError(drogon::k404NotFound, "Schema domain is unavailable."));
+                    callback(schemaError(drogon::k404NotFound, "Schema type is unavailable."));
                     return;
                 }
                 // Traverse metadata, not data edges. The very same SchemaModel descriptors
-                // used by MCP supply explicit references for every child/shared/cyclic domain.
+                // used by MCP supply explicit references for every child/shared/cyclic type.
                 body = {
                     {"mapSchemaId", artifact},
-                    {"schemaId", id},
+                    {"typeId", id},
                     {"descriptor", nlohmann::json::object()}};
                 // Identity/relation contracts belong to mapget's layer, not generic simfil
-                // domains. Discovery and contract allocation share the descriptor budget.
+                // types. Discovery and contract allocation share the descriptor budget.
                 for (auto const& name : owner->layerNames()) {
                     checkpoint();
                     auto layer = owner->layer(name);
@@ -204,7 +209,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                 copyMetadata = [&](simfil::ModelNode const& node, size_t depth) -> nlohmann::json
                 {
                     if (depth > 64)
-                        throw std::length_error("Schema domain exceeds the inspection budget.");
+                        throw std::length_error("Schema type exceeds the inspection budget.");
                     reserve(64);
                     if (node.type() == simfil::ValueType::String) {
                         auto value = simfil::Value::field(node);
@@ -261,8 +266,73 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                                 child->owningModel()->lookupStringId(child->keyAt(j)).value());
                         if (auto reference = entry->get(simfil::StringPool::SchemaRef))
                             link["$ref"] = copyMetadata(*reference, 0);
+                        // Immediate native metadata gives real alternatives useful
+                        // labels without another request or a client-side schema crawl.
+                        // Keep every edge: equal labels are not proof of equal types.
+                        for (auto key :
+                             {simfil::StringPool::SchemaKind,
+                              simfil::StringPool::SchemaTypeName,
+                              simfil::StringPool::SchemaNullable})
+                        {
+                            if (auto value = entry->get(key))
+                                link["descriptor"]
+                                    [copyName(entry->owningModel()->lookupStringId(key).value())] =
+                                        copyMetadata(*value, 0);
+                        }
+                        // Summaries distinguish enum strings from numeric fallbacks
+                        // without copying a potentially large enum onto every edge.
+                        // The complete values and raw ordinals remain on expansion.
+                        if (auto values = entry->get(simfil::StringPool::SchemaEnum)) {
+                            reserve(64);
+                            link["descriptor"]["enumCount"] = values->size();
+                        }
+                        if (auto values = entry->get(simfil::StringPool::SchemaNamedValues)) {
+                            reserve(64);
+                            auto const count = values->size();
+                            link["descriptor"]["namedValueCount"] = count;
+                            auto& names = link["descriptor"]["namedValueNames"] =
+                                nlohmann::json::array();
+                            for (uint32_t index = 0; index < std::min(count, uint32_t{3}); ++index)
+                            {
+                                if (auto name =
+                                        values->at(index)->get(simfil::StringPool::SchemaName))
+                                    names.push_back(copyMetadata(*name, 0));
+                            }
+                        }
+                        // A shared typename does not imply equal numeric meaning.
+                        // Keep scalar constraints and at most two ordinary ranges;
+                        // the preview is bounded independently of the full definition.
+                        if (auto numeric = entry->get(simfil::StringPool::SchemaNumericDomain)) {
+                            auto& preview = link["descriptor"]["numericDomain"] =
+                                nlohmann::json::object();
+                            for (auto key :
+                                 {simfil::StringPool::SchemaEncoding,
+                                  simfil::StringPool::SchemaUnit,
+                                  simfil::StringPool::SchemaMinimum,
+                                  simfil::StringPool::SchemaMaximum,
+                                  simfil::StringPool::SchemaScale,
+                                  simfil::StringPool::SchemaOffset,
+                                  simfil::StringPool::SchemaComplete})
+                            {
+                                if (auto value = numeric->get(key))
+                                    preview[copyName(
+                                        numeric->owningModel()->lookupStringId(key).value())] =
+                                        copyMetadata(*value, 0);
+                            }
+                            if (auto ranges =
+                                    numeric->get(simfil::StringPool::SchemaOrdinaryRanges)) {
+                                reserve(64);
+                                auto const count = ranges->size();
+                                preview["ordinaryRangeCount"] = count;
+                                auto& examples = preview["ordinaryRanges"] =
+                                    nlohmann::json::array();
+                                for (uint32_t index = 0; index < std::min(count, uint32_t{2});
+                                     ++index)
+                                    examples.push_back(copyMetadata(*ranges->at(index), 0));
+                            }
+                        }
                         // Requiredness and context-only lookup are properties of this edge,
-                        // not of the destination domain shared by other fields.
+                        // not of the destination type shared by other fields.
                         if (auto required = entry->get(simfil::StringPool::SchemaRequired))
                             link["required"] = copyMetadata(*required, 0);
                         if (auto role = entry->get(simfil::StringPool::SchemaRole))
@@ -280,7 +350,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             response->addHeader("Cache-Control", "no-store");
             response->setBody(std::move(encoded));
             // Encoding can outlive a reload. Revalidate only after all materialization,
-            // once per response, so no stale consumer rows or domain view are published.
+            // once per response, so no stale consumer rows or type view are published.
             if (inventory && service->sourceCatalogRevision() != revision)
                 response =
                     schemaError(drogon::k409Conflict, "Schema catalog changed; retry inspection.");

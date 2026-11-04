@@ -24,7 +24,7 @@ class CompositionSource : public DataSource
 public:
     DataSourceInfo metadata;
     MapSchema::Ptr graph;
-    simfil::SchemaId valueDomain = 0, flagsDomain = 0, rawDomain = 0;
+    simfil::TypeId valueDomain = 0, flagsDomain = 0, rawDomain = 0;
     std::atomic_size_t featureLoads = 0, rawLoads = 0;
 
     explicit CompositionSource(bool addon = false)
@@ -238,11 +238,13 @@ TEST_CASE(
         REQUIRE(before["features"][0]["id"] == "Thing.1");
         REQUIRE(before["features"][0]["thingId"] == 1);
         auto& maskJson = before["features"][0]["properties"]["flags"];
-        REQUIRE(maskJson == nlohmann::json{
-            {"_bitmask", true},
-            {"bits", "0x8000000000000001"},
-            {"schema", base.graph->schemaId()},
-            {"domain", base.flagsDomain}});
+        REQUIRE(
+            maskJson ==
+            nlohmann::json{
+                {"_bitmask", true},
+                {"bits", "0x8000000000000001"},
+                {"schema", base.graph->schemaId()},
+                {"typeId", base.flagsDomain}});
         auto feature = native->at(0);
         auto featureAddress = feature->addr();
         auto const beforeGeometryErrors = native->checkForErrors();
@@ -255,7 +257,7 @@ TEST_CASE(
         auto maskAddress = feature->attributes()->at(1)->addr();
         native->rebindSchema(metadata.getLayer("Things"));
         maskJson["schema"] = effective->schemaId();
-        maskJson["domain"] = effective->remapSchema(base.graph->schemaId(), base.flagsDomain);
+        maskJson["typeId"] = effective->remapSchema(base.graph->schemaId(), base.flagsDomain);
         CHECK(native->schemaId() == effective->schemaId());
         CHECK(native->toJson() == before);
         CHECK(native->at(0)->addr() == featureAddress);

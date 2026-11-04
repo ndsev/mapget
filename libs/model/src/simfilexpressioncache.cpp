@@ -142,7 +142,7 @@ private:
         std::string query_;
         bool anyMode_ = true;
         simfil::RewriteMode rewriteMode_ = simfil::RewriteMode::None;
-        simfil::SchemaId rootSchema_ = simfil::NoSchemaId;
+        simfil::TypeId rootSchema_ = simfil::NoTypeId;
         // LayerSchema is now a temporary ModelNode view. Pointer identity would alias unrelated
         // layers and dangle; the exact artifact + layer name is stable across readers/reloads.
         std::pair<std::string, std::string> schemaIdentity_;

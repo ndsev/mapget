@@ -7,7 +7,9 @@
 #include <bitsery/bitsery.h>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <nlohmann/json-schema.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <sstream>
@@ -24,9 +26,9 @@ public:
     std::shared_ptr<MapSchema> graph;
     DataSourceInfo info;
     std::shared_ptr<StringPool> strings = std::make_shared<StringPool>("LayerBindings");
-    std::array<simfil::SchemaId, 2> properties{}, values{};
-    simfil::SchemaId concreteFeature = simfil::NoSchemaId;
-    simfil::SchemaId bitmask = simfil::NoSchemaId;
+    std::array<simfil::TypeId, 2> properties{}, values{};
+    simfil::TypeId concreteFeature = simfil::NoTypeId;
+    simfil::TypeId bitmask = simfil::NoTypeId;
 
     explicit LayerSchemaBindingFixture(std::string version = "1", bool unionRoot = false)
         : graph(std::make_shared<MapSchema>(MapFormat{"layer-bindings", std::move(version), {}}))
@@ -130,7 +132,235 @@ public:
     }
 };
 
+/**
+ * Build the native common contracts once, then exercise real model allocations.
+ * Each raw layer is only a validation root for a shared built-in type; the
+ * runtime feature always belongs to Road. Decoding the graph first also checks
+ * that binary publication preserves the factories' runtime-facing contracts.
+ */
+class NativeCommonShapeFixture
+{
+public:
+    MapSchema::ConstPtr graph;
+    PartitionFeatureLayer::Ptr tile;
+    std::shared_ptr<StringPool> strings = std::make_shared<StringPool>("CommonShapes");
+
+    explicit NativeCommonShapeFixture(bool decoded)
+    {
+        using Builtin = MapSchema::Builtin;
+        auto owner = std::make_shared<MapSchema>();
+        auto road = owner->newLayer("Road", LayerType::Features);
+        auto root = road->newFeature(FeatureTypeInfo::fromJson(
+            {{"name", "Road"},
+             {"uniqueIdCompositions", {{{{"partId", "roadId"}, {"datatype", "U32"}}}}}}));
+        REQUIRE(root != simfil::NoTypeId);
+        auto attributes = road->addSchema(simfil::Schema::Kind::Object);
+        road->addFieldSchema(road->attributeLayerMapSchema("Road"), "rules", attributes);
+        auto attribute = owner->newAttribute("access", "AccessAttribute");
+        owner->addFieldSchema(attribute, "value", owner->primitive(simfil::Schema::Kind::Int));
+        owner->addFieldSchema(attribute, "link", owner->builtin(Builtin::RelationReference));
+        road->addFieldSchema(attributes, "access", attribute, true);
+        road->bindAttribute(attribute, "Road", "rules", "access");
+        owner->newLayer("Attribute", LayerType::SourceData)->setRootSchema(attribute);
+        for (auto const& [name, builtin] : std::array{
+                 std::pair{"SourceDataReference", Builtin::SourceDataReference},
+                 std::pair{"SourceDataReferences", Builtin::SourceDataReferences},
+                 std::pair{"Geometry", Builtin::Geometry},
+                 std::pair{"FeatureId", Builtin::FeatureId},
+                 std::pair{"Validity", Builtin::Validity},
+                 std::pair{"Validities", Builtin::Validities},
+                 std::pair{"Relation", Builtin::Relation},
+                 std::pair{"RelationReference", Builtin::RelationReference},
+                 std::pair{"AttrPoint", Builtin::AttrPoint},
+                 std::pair{"AttrPointSequence", Builtin::AttrPointSequence},
+                 std::pair{"AttrPointIndex", Builtin::AttrPointIndex},
+                 std::pair{"AttrPointIndexRange", Builtin::AttrPointIndexRange}})
+            owner->newLayer(name, LayerType::SourceData)->setRootSchema(owner->builtin(builtin));
+        owner->finalize();
+        graph = owner;
+        if (decoded) {
+            std::ostringstream output;
+            REQUIRE(owner->write(output));
+            auto bytes = output.str();
+            graph = MapSchema::read(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+        }
+        DataSourceInfo info;
+        info.mapId_ = "CommonMap";
+        info.stringPoolId_ = "CommonShapes";
+        auto layer = std::make_shared<LayerInfo>();
+        layer->layerId_ = "Road";
+        layer->type_ = LayerType::Features;
+        info.layers_.emplace("Road", layer);
+        info.setMapSchema(graph);
+        tile = std::make_shared<PartitionFeatureLayer>(
+            TileId::fromValue(131073),
+            info.stringPoolId_,
+            info.mapId_,
+            info.getLayer("Road"),
+            strings);
+    }
+
+    /** Real native provenance, shared by features, attributes, geometry and relations. */
+    model_ptr<SourceDataReferenceCollection> sourceLinks() const
+    {
+        QualifiedSourceDataReference reference{
+            .address_ = SourceDataAddress::fromBitPosition(8, 16),
+            .layerId_ = strings->emplace("Raw").value(),
+            .qualifier_ = strings->emplace("payload").value()};
+        return tile->newSourceDataReferenceCollection({&reference, 1});
+    }
+
+    /** Check actual enumerated fields and the emitted JSON against the same native graph. */
+    void accepts(std::string const& contract, simfil::ModelNode::Ptr const& node) const
+    {
+        CAPTURE(contract);
+        REQUIRE(node);
+        auto view = graph->layer(contract);
+        REQUIRE(view);
+        if (node->type() == simfil::ValueType::Object) {
+            for (uint32_t i = 0; i < node->size(); ++i) {
+                auto name = node->owningModel()->lookupStringId(node->keyAt(i));
+                REQUIRE(name);
+                CAPTURE(*name);
+                CHECK(view->childSchema(view->rootSchema(), *name) != simfil::NoTypeId);
+            }
+        }
+        nlohmann::json_schema::json_validator validator;
+        validator.set_root_schema(view->toJsonSchema());
+        CHECK_NOTHROW(validator.validate(node->toJson()));
+    }
+};
+
 }  // namespace
+
+TEST_CASE(
+    "Native common Feature and Attribute contracts accept runtime fields and canonical aliases",
+    "[schema2][layer-binding][common-shapes]")
+{
+    NativeCommonShapeFixture fixture(GENERATE(false, true));
+    auto feature = fixture.tile->newFeature("Road", {{"roadId", int64_t{1}}});
+    fixture.accepts("Road", feature);
+    CHECK_FALSE(feature->toJson().contains("geometry"));
+    auto links = fixture.sourceLinks();
+    feature->setSourceDataReferences(links);
+    fixture.accepts("SourceDataReferences", links);
+    fixture.accepts("SourceDataReference", links->at(0));
+
+    auto rules = feature->attributeLayers()->newLayer("rules");
+    auto access = rules->newAttribute("access");
+    REQUIRE(access->addField("value", int64_t{30}));
+    access->setSourceDataReferences(links);
+    access->validity()->newDirection(Validity::Positive);
+    fixture.accepts("Attribute", fixture.tile->resolve(access->addr()));
+    fixture.accepts("Road", feature);
+    // Repeating one attribute name must remain valid after its JSON value becomes an array.
+    REQUIRE(rules->newAttribute("access")->addField("value", int64_t{50}));
+    fixture.accepts("Road", feature);
+
+    // Consumers enumerate through ModelNode; Feature keeps these overrides protected.
+    simfil::ModelNode const& node = *feature;
+    auto properties = node.get(StringPool::PropertiesStr);
+    auto alias = node.get(StringPool::AttributesStr);
+    REQUIRE(properties);
+    REQUIRE(alias);
+    CHECK(properties->addr() == alias->addr());
+    CHECK(properties->toJson() == alias->toJson());
+    auto view = fixture.graph->layer("Road");
+    CHECK(
+        view->childSchema(node.schema(), "attributes") ==
+        view->childSchema(node.schema(), "properties"));
+    size_t propertyFields = 0;
+    for (uint32_t i = 0; i < node.size(); ++i) {
+        CHECK(node.keyAt(i) != StringPool::AttributesStr);
+        propertyFields += node.keyAt(i) == StringPool::PropertiesStr;
+    }
+    CHECK(propertyFields == 1);
+    CHECK_FALSE(feature->toJson().contains("attributes"));
+    auto fields = view->directFields(node.schema());
+    CHECK(std::ranges::count(fields, "properties") == 1);
+    CHECK(std::ranges::count(fields, "attributes") == 0);
+    CHECK(fixture.tile->checkForErrors().empty());
+}
+
+TEST_CASE(
+    "Native common contracts accept relation validity cardinality and compact references",
+    "[schema2][layer-binding][common-shapes]")
+{
+    NativeCommonShapeFixture fixture(GENERATE(false, true));
+    auto multiple = GENERATE(false, true);
+    auto feature = fixture.tile->newFeature("Road", {{"roadId", int64_t{1}}});
+    auto foreign = fixture.tile->newFeatureId("OtherRoad", {{"key", "external"}}, "OtherMap");
+    fixture.accepts("FeatureId", feature->id());
+    fixture.accepts("FeatureId", foreign);
+    auto relation = feature->addRelation(fixture.tile->newRelation("connectedTo", foreign));
+    relation->sourceValidity()->newRange(Validity::RelativeLengthOffset, 0.25, 0.75);
+    relation->targetValidity()->newFeatureId(foreign, Validity::Negative);
+    if (multiple)
+        relation->sourceValidity()->newDirection(Validity::Positive);
+    relation->setSourceDataReferences(fixture.sourceLinks());
+    auto current = fixture.tile->resolve(relation->addr());
+    auto validity = current->get(StringPool::SourceValidityStr);
+    REQUIRE(validity);
+    CHECK(validity->type() == (multiple ? simfil::ValueType::Array : simfil::ValueType::Object));
+    fixture.accepts("Validities", validity);
+    fixture.accepts("Relation", current);
+
+    auto reference = fixture.tile->newRelationReference(relation);
+    auto attribute = feature->attributeLayers()->newLayer("rules")->newAttribute("access");
+    REQUIRE(attribute->addField("link", reference));
+    fixture.accepts("RelationReference", reference);
+    fixture.accepts("Attribute", fixture.tile->resolve(attribute->addr()));
+    fixture.accepts("Road", feature);
+    auto json = reference->toJson();
+    REQUIRE(json.size() == 1);
+    CHECK(json.at("$mapgetRelation") == 0);
+    REQUIRE(reference->get(StringPool::TargetStr));
+    CHECK(reference->get(StringPool::TargetStr)->toJson() == foreign->toJson());
+    CHECK(fixture.tile->checkForErrors().empty());
+}
+
+TEST_CASE(
+    "Native common contracts accept runtime validity and attribute point representations",
+    "[schema2][layer-binding][common-shapes]")
+{
+    NativeCommonShapeFixture fixture(GENERATE(false, true));
+    auto feature = fixture.tile->newFeature("Road", {{"roadId", int64_t{1}}});
+    auto target = fixture.tile->newFeature("Road", {{"roadId", int64_t{2}}});
+    auto geometry = feature->geom()->newGeometry(GeomType::Line, 2, true);
+    geometry->append({11, 48, 0});
+    geometry->append({11.1, 48.1, 0});
+    geometry->setName("centerline");
+    geometry->setSourceDataReferences(fixture.sourceLinks());
+    auto sequence = fixture.tile->newAttrPointSequence(feature, geometry);
+    auto point = sequence->appendAttrPoint(1, {11.05, 48.05, 0}, fixture.sourceLinks());
+    sequence->setSourceDataReferences(fixture.sourceLinks());
+    fixture.accepts("Geometry", geometry);
+    fixture.accepts("AttrPoint", point);
+    fixture.accepts("AttrPointSequence", sequence);
+
+    auto validities = fixture.tile->newValidityCollection();
+    validities->newComplete();
+    validities->newDirection(Validity::None);
+    validities->newGeometry(geometry);
+    validities->newPoint(Point{11.05, 48.05, 0});
+    validities->newRange(Point{11, 48, 0}, Point{11.1, 48.1, 0});
+    validities->newPoint(Validity::BufferOffset, int32_t{1}, "centerline");
+    validities->newRange(Validity::MetricLengthOffset, 1.0, 10.0);
+    validities->newFeatureId(target->id());
+    validities->newGeomName("centerline");
+    validities->newFeatureTransition(feature, Validity::End, target, Validity::Start, 3);
+    auto index = validities->newAttrPointIndex(sequence, 1);
+    auto range = validities->newAttrPointIndexRange(sequence, 0, 2);
+    fixture.accepts("AttrPointIndex", index->attrPointIndex());
+    fixture.accepts("AttrPointIndexRange", range->attrPointIndexRange());
+    for (uint32_t i = 0; i < validities->size(); ++i) {
+        CAPTURE(i);
+        fixture.accepts("Validity", validities->at(i));
+    }
+    fixture.accepts("Validities", validities);
+    fixture.accepts("Road", feature);
+    CHECK(fixture.tile->checkForErrors().empty());
+}
 
 TEST_CASE("Partition memory reports include qualified scalars, bitmasks and schema bindings", "[schema2][layer-binding][memory]")
 {
@@ -311,12 +541,13 @@ TEST_CASE("Feature binary readers validate explicit domains in native records", 
     REQUIRE(input.adapter().error() == bitsery::ReaderError::NoError);
     auto record = offset + input.adapter().currentReadPos();
     auto domainOffset = record + sizeof(simfil::StringId);
-    REQUIRE(domainOffset + sizeof(simfil::SchemaId) <= bytes.size());
+    REQUIRE(domainOffset + sizeof(simfil::TypeId) <= bytes.size());
     auto declared = fixture.graph->layer("Road")->featureSchema("Road");
-    simfil::SchemaId replacement = simfil::NoSchemaId;
+    simfil::TypeId replacement = simfil::NoTypeId;
     if (std::string_view(mode) == "declared") replacement = declared;
     else if (std::string_view(mode) == "concrete") replacement = fixture.concreteFeature;
-    else if (std::string_view(mode) == "missing") replacement = simfil::MaxSchemaId;
+    else if (std::string_view(mode) == "missing")
+        replacement = simfil::MaxTypeId;
     else if (std::string_view(mode) == "scalar") replacement = fixture.values[0];
     else if (std::string_view(mode) == "object") replacement = fixture.properties[0];
     else if (std::string_view(mode) == "other-feature")

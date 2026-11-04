@@ -51,7 +51,7 @@ public:
         for (auto const& name : schema->layerNames()) {
             auto layer = std::make_shared<LayerInfo>();
             layer->layerId_ = name;
-            layer->type_ = LayerType::Features;
+            layer->type_ = schema->layer(name)->layerType();
             metadata.layers_.emplace(name, std::move(layer));
         }
         metadata.setMapSchema(std::move(schema));
@@ -70,6 +70,53 @@ public:
     DataSourceInfo metadata;
 };
 }  // namespace
+
+TEST_CASE(
+    "Schema inventory categorizes roots without changing their native layer type",
+    "[schema-inventory]")
+{
+    auto owner = std::make_shared<MapSchema>();
+    auto features = owner->newLayer("Metadata-Features", LayerType::Features);
+    auto feature = features->addSchema(LayerSchema::FeatureKind);
+    features->addFeatureType(
+        FeatureTypeInfo::fromJson(
+            {{"name", "Road"},
+             {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "U32"}}}}}}),
+        feature);
+    features->setRootSchema(feature);
+    for (auto const* name : {"Raw-Header", "Metadata-Settings"}) {
+        auto layer = owner->newLayer(name, LayerType::SourceData);
+        auto root = layer->addSchema(simfil::Schema::Kind::Object);
+        layer->addFieldSchema(root, "version", layer->addSchema(simfil::Schema::Kind::Int));
+        layer->setOpen(root, std::string_view(name).starts_with("Metadata-"));
+        layer->setRootSchema(root);
+    }
+    owner->finalize();
+    Service service;
+    service.add(std::make_shared<InventorySource>("Categorized", 0, 0, owner));
+    auto inventory = service.schemaInventory(AuthHeaders{});
+    REQUIRE(inventory.size() == 1);
+    auto const& layers = inventory[0].at("layers");
+    REQUIRE(layers.size() == 3);
+    for (auto const& layer : layers) {
+        auto const name = layer.at("layerId").get<std::string>();
+        auto const definition = owner->layer(name);
+        CHECK(layer.at("typeId") == definition->rootSchema());
+        CHECK_FALSE(layer.contains("schemaId"));
+        if (name == "Metadata-Features") {
+            CHECK(layer.at("type") == "Features");
+            CHECK(layer.at("category") == "Features");
+            REQUIRE(layer.at("featureTypes").size() == 1);
+            CHECK(layer.at("featureTypes")[0].at("typeId") == feature);
+        }
+        else {
+            CHECK(layer.at("type") == "SourceData");
+            CHECK(layer.at("category") == (name == "Raw-Header" ? "SourceData" : "Metadata"));
+            CHECK(layer.at("open") == (name == "Metadata-Settings"));
+            CHECK(layer.at("reachabilityComplete") == (name == "Raw-Header"));
+        }
+    }
+}
 
 TEST_CASE(
     "Schema inventory filters authorized owners before enumerating their roots",

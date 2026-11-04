@@ -397,11 +397,11 @@ PartitionFeatureLayer::PartitionFeatureLayer(
     // Bindings now own every referenced graph; do not retain a transport's borrowed resolver.
     setSchemaResolver({});
     for (auto const& feature : impl_->features_) {
-        if (feature.typeId_.schemaId_ == simfil::NoSchemaId)
+        if (feature.typeId_.schemaId_ == simfil::NoTypeId)
             continue;
         auto type = strings()->resolve(feature.typeId_.typeId_);
-        auto declared = type ? featureSchemaId(*type) : simfil::NoSchemaId;
-        if (declared == simfil::NoSchemaId)
+        auto declared = type ? featureSchemaId(*type) : simfil::NoTypeId;
+        if (declared == simfil::NoTypeId)
             raise("Explicit feature schema has no declared feature type.");
         // Custom feature records are outside ModelPool's generic container-schema columns.
         (void)checkedContainerSchema(feature.typeId_.schemaId_, declared, simfil::ValueType::Object);
@@ -1504,7 +1504,7 @@ tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> PartitionFeature
     bool anyMode,
     bool autoWildcard)
 {
-    auto const rewriteMode = autoWildcard && node.schema() != simfil::NoSchemaId ?
+    auto const rewriteMode = autoWildcard && node.schema() != simfil::NoTypeId ?
         simfil::RewriteMode::Schema :
         simfil::RewriteMode::None;
     simfil::CompileOptions options{
@@ -1549,12 +1549,10 @@ tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error> Partition
     collectQueryDiagnostics(std::string_view query, const simfil::Diagnostics& diag, bool anyMode)
 {
     auto rootResult = root(0);
-    auto rootSchema = rootResult && *rootResult
-        ? (*rootResult)->schema()
-        : simfil::NoSchemaId;
+    auto rootSchema = rootResult && *rootResult ? (*rootResult)->schema() : simfil::NoTypeId;
     simfil::CompileOptions options{
         .any = anyMode,
-        .rewriteMode = rootSchema == simfil::NoSchemaId ?
+        .rewriteMode = rootSchema == simfil::NoTypeId ?
             simfil::RewriteMode::None :
             simfil::RewriteMode::Schema,
         .rootSchema = rootSchema,
@@ -1775,11 +1773,11 @@ void PartitionFeatureLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
         throw std::invalid_argument("Native feature model does not match its schema header.");
     auto owner = info->schemaOwner();
     (void)owner->schemaRemap(schemaId());
-    std::vector<simfil::SchemaId> featureDomains;
+    std::vector<simfil::TypeId> featureDomains;
     featureDomains.reserve(impl_->features_.size());
     for (auto const& feature : impl_->features_) {
         auto id = owner->remapSchema(schemaId(), feature.typeId_.schemaId_);
-        if (id != simfil::NoSchemaId && !owner->domain(id)->hasAffinity(simfil::ValueType::Object))
+        if (id != simfil::NoTypeId && !owner->type(id)->hasAffinity(simfil::ValueType::Object))
             throw std::invalid_argument("Composed feature domain must remain an object.");
         featureDomains.push_back(id);
     }
@@ -1810,54 +1808,55 @@ LayerSchema::Entry const* PartitionFeatureLayer::getSchema(std::string_view type
     return impl_->layerSchema_ ? impl_->layerSchema_->getSchema(typeName) : nullptr;
 }
 
-simfil::SchemaId PartitionFeatureLayer::featureSchemaId(std::string_view featureType) const
+simfil::TypeId PartitionFeatureLayer::featureSchemaId(std::string_view featureType) const
 {
-    return impl_->layerSchema_ ? impl_->layerSchema_->featureSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->featureSchema(featureType) : simfil::NoTypeId;
 }
 
-simfil::SchemaId
-PartitionFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
+simfil::TypeId PartitionFeatureLayer::featurePropertiesSchemaId(std::string_view featureType) const
 {
-    return impl_->layerSchema_ ? impl_->layerSchema_->featurePropertiesSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ?
+        impl_->layerSchema_->featurePropertiesSchema(featureType) :
+        simfil::NoTypeId;
 }
 
-simfil::SchemaId
-PartitionFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
+simfil::TypeId PartitionFeatureLayer::attributeLayerMapSchemaId(std::string_view featureType) const
 {
-    return impl_->layerSchema_ ? impl_->layerSchema_->attributeLayerMapSchema(featureType) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ?
+        impl_->layerSchema_->attributeLayerMapSchema(featureType) :
+        simfil::NoTypeId;
 }
 
-simfil::SchemaId PartitionFeatureLayer::schemaIdForKey(std::string_view key) const
+simfil::TypeId PartitionFeatureLayer::schemaIdForKey(std::string_view key) const
 {
-    return impl_->layerSchema_ ? impl_->layerSchema_->schemaId(key) : simfil::NoSchemaId;
+    return impl_->layerSchema_ ? impl_->layerSchema_->schemaId(key) : simfil::NoTypeId;
 }
 
-simfil::SchemaId PartitionFeatureLayer::childSchemaId(
-    simfil::SchemaId parent,
+simfil::TypeId PartitionFeatureLayer::childSchemaId(
+    simfil::TypeId parent,
     std::string_view fieldName,
     std::optional<simfil::Schema::Kind> preferredKind) const
 {
-    return impl_->layerSchema_
-        ? impl_->layerSchema_->childSchema(parent, fieldName, preferredKind)
-        : simfil::NoSchemaId;
+    return impl_->layerSchema_ ?
+        impl_->layerSchema_->childSchema(parent, fieldName, preferredKind) :
+        simfil::NoTypeId;
 }
 
-simfil::SchemaId PartitionFeatureLayer::childSchemaId(
-    simfil::SchemaId parent,
+simfil::TypeId PartitionFeatureLayer::childSchemaId(
+    simfil::TypeId parent,
     simfil::StringId field,
     std::optional<simfil::Schema::Kind> preferredKind) const
 {
     if (!impl_->layerSchema_) {
-        return simfil::NoSchemaId;
+        return simfil::NoTypeId;
     }
     auto fieldName = strings()->resolve(field);
-    return fieldName
-        ? impl_->layerSchema_->childSchema(parent, *fieldName, preferredKind)
-        : simfil::NoSchemaId;
+    return fieldName ?
+        impl_->layerSchema_->childSchema(parent, *fieldName, preferredKind) :
+        simfil::NoTypeId;
 }
 
-void PartitionFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId)
-    const
+void PartitionFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::TypeId schemaId) const
 {
     if (object.owningModel().get() != this)
         throw std::invalid_argument("Cannot bind a foreign object to this partition's schema.");
@@ -1868,7 +1867,7 @@ void PartitionFeatureLayer::applyObjectSchema(simfil::Object& object, simfil::Sc
         raise(result.error().message);
 }
 
-void PartitionFeatureLayer::applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const
+void PartitionFeatureLayer::applyArraySchema(simfil::Array& array, simfil::TypeId schemaId) const
 {
     if (array.owningModel().get() != this)
         throw std::invalid_argument("Cannot bind a foreign array to this partition's schema.");
@@ -1879,29 +1878,29 @@ void PartitionFeatureLayer::applyArraySchema(simfil::Array& array, simfil::Schem
         raise(result.error().message);
 }
 
-simfil::SchemaId PartitionFeatureLayer::checkedContainerSchema(
-    simfil::SchemaId concrete,
-    simfil::SchemaId declared,
+simfil::TypeId PartitionFeatureLayer::checkedContainerSchema(
+    simfil::TypeId concrete,
+    simfil::TypeId declared,
     simfil::ValueType type) const
 {
     auto const& graph = layerInfo_->schemaOwner();
     for (auto id : {concrete, declared}) {
-        if (id == simfil::NoSchemaId)
+        if (id == simfil::NoTypeId)
             continue;
-        auto domain = graph->domain(id);
+        auto domain = graph->type(id);
         if (!domain || !domain->hasAffinity(type))
             throw std::invalid_argument(
                 "Container schema is absent or has incompatible structure.");
     }
-    if (declared == simfil::NoSchemaId || concrete == declared)
+    if (declared == simfil::NoTypeId || concrete == declared)
         return concrete;
-    if (concrete == simfil::NoSchemaId)
+    if (concrete == simfil::NoTypeId)
         return declared;
 
     // Accept explicit alternatives, not guessed structural subtyping. A broad parent must not
     // erase an exact producer binding, but an unrelated numeric ID is not a valid refinement.
-    std::vector<simfil::SchemaId> pending{declared};
-    std::set<simfil::SchemaId> visited;
+    std::vector<simfil::TypeId> pending{declared};
+    std::set<simfil::TypeId> visited;
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
@@ -1909,7 +1908,7 @@ simfil::SchemaId PartitionFeatureLayer::checkedContainerSchema(
             return concrete;
         if (!visited.insert(id).second)
             continue;
-        auto domain = graph->domain(id);
+        auto domain = graph->type(id);
         if (!domain)
             continue;
         if (domain->kind() == simfil::Schema::Kind::Unknown ||
@@ -2476,7 +2475,7 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     {
         auto reference = otherNode->schemaReference();
         if (!reference)
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         reference = remapSchemaReference(reference);
         auto domain = importSchema(reference);
         if (!domain)

@@ -33,6 +33,13 @@ support:
 - a top-level `responseType` of `binary`, `jsonl`, or `json`; `json` is an
   alias for JSON Lines.
 
+Binary producers and consumers must use the same major/minor stream version.
+The current format, 6.2.0, changes static dictionary IDs to include schema enum
+`rawValue` metadata; readers reject older streams before interpreting their
+payload fields. Rebuild and deploy native servers, binary datasource clients
+and browser WASM together. Its schema artifacts use MapSchema codec 3 and
+SchemaPool codec 2, which likewise reject older encodings.
+
 `/filter` JSON Lines interleaves status records with payload records. Select
 payloads by `type: "PartitionSubsetLayer"`; do not assume the first line is a
 layer. Its `partition` is tagged for tiles and objects. Dependency field
@@ -254,7 +261,7 @@ request, **including a conditional request or an encoded-cache hit**, checks
 source authorization and the current exact token. Unknown and unauthorized
 bindings return the same `404` without an ETag. A source removed or rebound
 while encoding is rechecked before publication. Re-fetch the catalog after a
-stale binding; do not reinterpret old numeric domain IDs under a new schema.
+stale binding; do not reinterpret old numeric type IDs under a new schema.
 
 Encoding runs outside the HTTP event loop and catalog locks on the bounded
 service worker pool. The HTTP representation cache retains at most its most
@@ -313,23 +320,40 @@ independent owners have equal content identities. These capacities are not RSS.
 Retired graphs are weakly observed for aggregate memory accounting, not retained
 or exposed as an authorization-free historical catalog.
 
-`/schema/inspect?mapSchemaId=<exact-artifact>&schemaId=<numeric-domain>` returns
+`statistics.counts.physicalTypes` and `queryContexts` separate stored value
+definitions from generated query contexts; `types` is their total consumption
+of the shared ID namespace, whose maximum is `statistics.limits.typeId`.
+Layer and feature roots use numeric `typeId` and report `open` and
+`reachabilityComplete`. A layer's presentation `category` is `Features`,
+`SourceData`, or `Metadata`; the last category is explicitly a heuristic for
+SourceData layer names beginning with `Metadata-`, not another transport type.
+
+`/schema/inspect?mapSchemaId=<exact-artifact>&typeId=<numeric-type>` returns
 one native descriptor's metadata and `fields`, `elements`, `alternatives` links.
-Children carry `$ref` domain IDs rather than recursively expanded graphs, so
-shared and cyclic domains are safe to explore. Field links retain edge-specific
-`required` and `role` metadata. Opening a produced feature root also returns its
+Children carry `$ref` type IDs rather than recursively expanded graphs, so
+shared and cyclic types are safe to explore. Field links retain edge-specific
+`required` and `role` metadata, plus shallow native `descriptor` facts (`kind`,
+`typename`, `nullable`) for useful labels without fetching descendants. Native
+`enumCount`, `namedValueCount` and up to three `namedValueNames` distinguish
+symbolic values from numeric alternatives without copying large value tables
+onto every edge. Expanding the type returns its complete value metadata.
+Numeric previews retain `numericDomain` bounds, unit, encoding and conversion
+metadata, with at most two `ordinaryRanges` and their full `ordinaryRangeCount`.
+The UI labels these as raw ranges and shows scale/offset separately; it does not
+reinterpret them as converted display values. Exact large integers remain lossless.
+Opening a produced feature root also returns its
 `featureTypes` contracts: ID compositions, production status and source-owned
 forward relation declarations with explicit completeness/locality. An absent
 relation inventory is not an assertion of no possible relations.
-Add `layerId=<layer>&find=<name>` to search descendants of the selected `schemaId`
+Add `layerId=<layer>&find=<name>` to search descendants of the selected `typeId`
 instead of opening its descriptor. This uses the same `LayerSchema::find`
 implementation as MCP `mapget_query_schema(find=...)`: case, spaces, underscores
 and hyphens are ignored; field names, producer type names, enum symbols and named
 constants are ranked together. Lookup-only context edges are not traversed.
 The result contains `items`, `complete`, `reason`, and `discovery`, plus the exact
-artifact/layer/root identity. Items include `schemaId`, kind/type, representative
-path segments and matching symbol previews; a domain can occur on more paths
-than the response lists. Search returns at most 32 domains and is bounded to
+artifact/layer/root identity. Items include `typeId`, kind/type, representative
+path segments and matching symbol previews; a type can occur on more paths
+than the response lists. Search returns at most 32 types and is bounded to
 100,000 work units, two seconds and one MiB. Partial scans or omitted matches
 are explicitly marked; an empty partial response does not establish absence.
 Use a narrower root or search term rather than treating partial results as a
@@ -340,18 +364,26 @@ subsystem name/version pairs and can be filtered by format, module, version or
 consumer. **Explore** opens a focused view with a Back button and a bookmarkable
 `#schemas/<artifact>[/<layer>/<root>]` fragment, hiding the overview and monitoring
 graph while exploring. A searchable layer/type navigator
-selects one root at a time. **Find in root** runs the shared descendant search;
+selects one root at a time. It starts with **Features**; **Raw Source Data** and
+**Metadata** are separate category choices. Open/partial contracts are explicit.
+The inventory and artifact details separate physical types, query contexts and
+remaining type-ID capacity. Equal format labels may have different layer
+inventories, so navigation always retains the exact artifact identity.
+**Find in root** runs the shared descendant search;
 **Filter immediate members** only filters that expanded node's visible children
 and does not fetch descendants. Descriptors, identifier compositions, relations,
 units and named values appear as structured facts/tables, not JSON blocks.
-Ordinary polling never traverses every schema domain or loads map partitions.
-Domain IDs must always be interpreted within the exact artifact returned by the
+Named values retain optional physical `rawValue` ordinals separately from their
+logical values. Nullable types get a compact label; real alternatives remain
+individually navigable even when their labels happen to match.
+Ordinary polling never traverses every schema type or loads map partitions.
+Type IDs must always be interpreted within the exact artifact returned by the
 inventory.
 
 Both endpoints check datasource authorization. Removed, inaccessible or stale
 artifacts return 404; malformed selectors return 400. An inventory changing during
 collection returns 409; retry the snapshot rather than combining generations.
-Inventory traversal has a 16,384-step/two-second budget; non-search domain inspection is bounded to
+Inventory traversal has a 16,384-step/two-second budget; non-search type inspection is bounded to
 16,384 metadata nodes and a one-MiB response, returning 413 with guidance for a
 focused MCP query rather than silently omitting information. Responses are
 `Cache-Control: no-store`. Binary `/schema` remains the source-bound installation

@@ -481,25 +481,24 @@ protected:
     std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
 
     /** Resolve schema IDs used by mapget's custom feature-model nodes. */
-    [[nodiscard]] simfil::SchemaId featureSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId featurePropertiesSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId attributeLayerMapSchemaId(std::string_view featureType) const;
-    [[nodiscard]] simfil::SchemaId schemaIdForKey(std::string_view key) const;
-    [[nodiscard]] simfil::SchemaId childSchemaId(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId featureSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId featurePropertiesSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId attributeLayerMapSchemaId(std::string_view featureType) const;
+    [[nodiscard]] simfil::TypeId schemaIdForKey(std::string_view key) const;
+    [[nodiscard]] simfil::TypeId childSchemaId(
+        simfil::TypeId parent,
         std::string_view fieldName,
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
-    [[nodiscard]] simfil::SchemaId childSchemaId(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId childSchemaId(
+        simfil::TypeId parent,
         simfil::StringId field,
         std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
-    void applyObjectSchema(simfil::Object& object, simfil::SchemaId schemaId) const;
-    void applyArraySchema(simfil::Array& array, simfil::SchemaId schemaId) const;
+    void applyObjectSchema(simfil::Object& object, simfil::TypeId schemaId) const;
+    void applyArraySchema(simfil::Array& array, simfil::TypeId schemaId) const;
     /** Preserve a concrete binding when the containing declaration explicitly admits it. */
-    [[nodiscard]] simfil::SchemaId checkedContainerSchema(
-        simfil::SchemaId concrete,
-        simfil::SchemaId declared,
-        simfil::ValueType type) const;
+    [[nodiscard]] simfil::TypeId
+    checkedContainerSchema(simfil::TypeId concrete, simfil::TypeId declared, simfil::ValueType type)
+        const;
 
     /**
      * Create a new attribute layer collection.

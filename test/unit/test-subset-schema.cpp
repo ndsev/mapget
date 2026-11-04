@@ -23,7 +23,7 @@ public:
     std::array<std::weak_ptr<simfil::ModelPool>, 2> sourceModels;
     std::array<std::weak_ptr<MapSchema const>, 2> originalOwners;
     std::array<std::string, 2> identities;
-    std::array<simfil::SchemaId, 2> scalars{}, masks{}, compounds{};
+    std::array<simfil::TypeId, 2> scalars{}, masks{}, compounds{};
     std::map<std::string, std::vector<uint8_t>, std::less<>> artifacts;
     nlohmann::json metadata;
     std::array<std::string, 2> sourceDictionaryBytes;
@@ -241,8 +241,8 @@ public:
             CHECK(mask->addr().column() == simfil::ModelPool::Bitmask);
             auto bits = std::get<simfil::Bitmask>(mask->value());
             CHECK(bits.bits == UINT64_C(0x8000000000000001));
-            CHECK(bits.domain.binding->identity() == identities[i]);
-            CHECK(bits.domain.id == masks[i]);
+            CHECK(bits.type.binding->identity() == identities[i]);
+            CHECK(bits.type.id == masks[i]);
             CHECK(mask->toJson() == bits.toJson());
             auto compound = sequence->at(i + 4);
             REQUIRE(compound->type() == simfil::ValueType::Object);

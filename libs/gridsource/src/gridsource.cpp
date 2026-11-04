@@ -746,7 +746,7 @@ DataSourceInfo GridDataSource::info() {
                 auto layer = definition.at("schema").is_null() ?
                     owner->newLayer(name, LayerType::Features) :
                     owner->importLayer(name, LayerType::Features, definition.at("schema"));
-                if (layer->rootSchema() == simfil::NoSchemaId) {
+                if (layer->rootSchema() == simfil::NoTypeId) {
                     auto root = layer->addSchema(
                         LayerSchema::FeatureKind,
                         LayerSchema::featureKey(producedType),
@@ -764,7 +764,7 @@ DataSourceInfo GridDataSource::info() {
                     auto const produced = typeName == producedType;
                     layer->addFeatureType(
                         std::move(type),
-                        produced ? layer->rootSchema() : simfil::NoSchemaId,
+                        produced ? layer->rootSchema() : simfil::NoTypeId,
                         produced);
                 }
             }

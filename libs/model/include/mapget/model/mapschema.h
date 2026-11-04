@@ -22,6 +22,22 @@ public:
     using ConstPtr = std::shared_ptr<MapSchema const>;
     using Composition = simfil::Schema::Composition;
 
+    /** Mapget-owned runtime shapes. Numeric type IDs remain artifact-local. */
+    enum class Builtin {
+        SourceDataReference,
+        SourceDataReferences,
+        Geometry,
+        FeatureId,
+        Validity,
+        Validities,
+        Relation,
+        RelationReference,
+        AttrPoint,
+        AttrPointSequence,
+        AttrPointIndex,
+        AttrPointIndexRange
+    };
+
     explicit MapSchema(MapFormat format = {});
     ~MapSchema() override;
     MapSchema(MapSchema const&) = delete;
@@ -54,14 +70,14 @@ public:
     /** Compose compatible immutable contributions into a new effective artifact.
      * Native-to-effective ID translations belong to construction/ingestion only. */
     [[nodiscard]] static ConstPtr compose(MapFormat format, std::span<ConstPtr const> inputs);
-    /** Translate one contributor domain; this artifact's own valid IDs are unchanged. */
-    [[nodiscard]] simfil::SchemaId
-    remapSchema(std::string_view sourceIdentity, simfil::SchemaId id) const;
+    /** Translate one contributor type; this artifact's own valid IDs are unchanged. */
+    [[nodiscard]] simfil::TypeId
+    remapSchema(std::string_view sourceIdentity, simfil::TypeId id) const;
     /** Borrow a construction-only source-ID table. Decoded artifacts do not retain these tables. */
-    [[nodiscard]] std::span<simfil::SchemaId const>
+    [[nodiscard]] std::span<simfil::TypeId const>
     schemaRemap(std::string_view sourceIdentity) const;
 
-    /** Canonical binary envelope, dictionary, domain columns and ModelPool payload. */
+    /** Canonical binary envelope, dictionary, type columns and ModelPool payload. */
     tl::expected<void, simfil::Error> write(std::ostream& output) override;
     tl::expected<void, simfil::Error> write(std::ostream& output) const;
     /** Reject unsupported versions, invalid references, oversized input and identity mismatch. */
@@ -83,58 +99,76 @@ public:
 
     /** Schema-local lookup. The returned binding pins this graph without an owner cycle. */
     [[nodiscard]] std::shared_ptr<simfil::SchemaBinding const> binding() const;
-    [[nodiscard]] simfil::Schema const* domain(simfil::SchemaId id) const;
-    [[nodiscard]] simfil::ModelNode::Ptr domainNode(simfil::SchemaId id) const;
+    using SchemaPool::type;
+    [[nodiscard]] simfil::Schema const* type(simfil::TypeId id) const;
+    [[nodiscard]] simfil::ModelNode::Ptr typeNode(simfil::TypeId id) const;
     using ModelPool::resolve;
     tl::expected<void, simfil::Error>
     resolve(simfil::ModelNode const&, ResolveFn const&) const override;
     std::vector<std::string> checkForErrors() const override;
 
+    /** Canonical unqualified scalar type; returned types cannot be modified.
+     * Use addSchema for declarations with their own units, constraints or annotations. */
+    [[nodiscard]] simfil::TypeId
+    primitive(simfil::Schema::Kind kind, std::span<std::string const> symbols = {});
+    /** Canonical immutable array, retaining a reference to its element type. */
+    [[nodiscard]] simfil::TypeId arrayOf(simfil::TypeId element);
+    /** Nullable variant of a completed type. Seals the original as well as its variant. */
+    [[nodiscard]] simfil::TypeId nullable(simfil::TypeId type);
+    /** One immutable definition per runtime shape, shared across every layer. */
+    [[nodiscard]] simfil::TypeId builtin(Builtin type);
+    /** Create an extensible physical Attribute with mapget's common fields.
+     * Register names/owners separately through LayerSchema::bindAttribute. */
+    [[nodiscard]] simfil::TypeId
+    newAttribute(std::string key = {}, std::string typeName = {}, bool open = false);
+
     /** Graph-global declarations, shared by all layers. All borrowed input is copied. */
-    [[nodiscard]] simfil::SchemaId addSchema(
+    [[nodiscard]] simfil::TypeId addSchema(
         simfil::Schema::Kind kind,
         std::string key = {},
         std::string metaType = {},
         std::string jsonPointer = {});
-    [[nodiscard]] simfil::SchemaId addJsonSchema(nlohmann::json const& schema);
-    void registerSchemaKey(std::string key, simfil::SchemaId id);
-    void setJsonSchemaAnnotations(simfil::SchemaId id, nlohmann::json annotations);
+    [[nodiscard]] simfil::TypeId addJsonSchema(nlohmann::json const& schema);
+    void registerSchemaKey(std::string key, simfil::TypeId id);
+    void setJsonSchemaAnnotations(simfil::TypeId id, nlohmann::json annotations);
     void addFieldSchema(
-        simfil::SchemaId parent,
+        simfil::TypeId parent,
         std::string field,
-        simfil::SchemaId child = simfil::NoSchemaId,
+        simfil::TypeId child = simfil::NoTypeId,
         bool multimap = false);
-    void addElementSchema(simfil::SchemaId parent, simfil::SchemaId child);
-    void addEnumSymbol(simfil::SchemaId id, std::string name);
-    void addEnumSymbols(simfil::SchemaId id, std::span<std::string const> names);
-    void addEnumValue(simfil::SchemaId id, simfil::ScalarValueType value);
-    void setComposition(simfil::SchemaId id, Composition composition);
-    void addAlternative(simfil::SchemaId id, simfil::SchemaId alternative);
-    void setTypeName(simfil::SchemaId id, std::string name);
-    void setOpen(simfil::SchemaId id, bool open);
-    void setNullable(simfil::SchemaId id, std::optional<bool> nullable);
-    void setFieldRequired(simfil::SchemaId id, std::string field, std::optional<bool> required);
+    void addElementSchema(simfil::TypeId parent, simfil::TypeId child);
+    void addEnumSymbol(simfil::TypeId id, std::string name);
+    void addEnumSymbols(simfil::TypeId id, std::span<std::string const> names);
+    void addEnumValue(simfil::TypeId id, simfil::ScalarValueType value);
+    void setComposition(simfil::TypeId id, Composition composition);
+    void addAlternative(simfil::TypeId id, simfil::TypeId alternative);
+    void setTypeName(simfil::TypeId id, std::string name);
+    void setOpen(simfil::TypeId id, bool open);
+    void setNullable(simfil::TypeId id, std::optional<bool> nullable);
+    void setFieldRequired(simfil::TypeId id, std::string field, std::optional<bool> required);
     /** Mark a declared edge as enumerable data or explicit-lookup-only context. */
-    void setFieldRole(simfil::SchemaId id, std::string field, simfil::Schema::FieldRole role);
-    void setZserioType(simfil::SchemaId id, std::string name);
+    void setFieldRole(simfil::TypeId id, std::string field, simfil::Schema::FieldRole role);
+    void setZserioType(simfil::TypeId id, std::string name);
+    /** Discriminator provenance, independent of payload typename and named use sites. */
+    void setAttributeType(simfil::TypeId id, std::string name);
     void setAttributeMetadata(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         LayerSchema::AttributePathOwner owner,
         std::string attributeType,
         std::string zserioType = {});
     /** Copy exact numeric semantics; input views need not outlive this call. */
-    void setNumericDomain(simfil::SchemaId id, simfil::Schema::NumericDomain const& domain);
-    void addNamedValue(simfil::SchemaId id, simfil::Schema::NamedValue const& value);
-    void setBitWidth(simfil::SchemaId id, uint8_t width);
+    void setNumericDomain(simfil::TypeId id, simfil::Schema::NumericDomain const& domain);
+    void addNamedValue(simfil::TypeId id, simfil::Schema::NamedValue const& value);
+    void setBitWidth(simfil::TypeId id, uint8_t width);
     [[nodiscard]] std::optional<simfil::Schema::NumericDomain>
-    numericDomain(simfil::SchemaId id) const;
+    numericDomain(simfil::TypeId id) const;
     void forEachNamedValue(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         std::function<void(simfil::Schema::NamedValue const&)> const& fn) const;
-    [[nodiscard]] uint8_t bitWidth(simfil::SchemaId id) const;
+    [[nodiscard]] uint8_t bitWidth(simfil::TypeId id) const;
 
-    [[nodiscard]] simfil::SchemaId findSchema(std::string_view key) const;
-    [[nodiscard]] size_t domainCount() const;
+    [[nodiscard]] simfil::TypeId findSchema(std::string_view key) const;
+    [[nodiscard]] size_t typeCount() const;
 
 private:
     friend class LayerSchema;
@@ -143,6 +177,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> schema_;
     void requireMutable() const;
+    void requireMutableType(simfil::TypeId id) const;
 };
 
 }  // namespace mapget

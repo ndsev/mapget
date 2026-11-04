@@ -466,7 +466,7 @@ void McpNativeTools::Call::finishItems()
         result["schemaView"] = "shallow_overview";
         result["guidance"] =
             "complete covers this overview only. Open childrenOmitted compounds through "
-            "$ref/schemaId, or use find to search descendant declarations.";
+            "$ref/typeId, or use find to search descendant declarations.";
     }
     if (name == "mapget_query_schema" && arguments.contains("find") && result["items"].empty() &&
         incomplete_.empty() && arguments.value("offset", 0) == 0)
@@ -478,7 +478,7 @@ void McpNativeTools::Call::finishItems()
         result["issues"].push_back(
             {{"phase", "budget"},
              {"message",
-              "Schema discovery exceeded maxWork. Restrict featureType/schemaId or increase "
+              "Schema discovery exceeded maxWork. Restrict featureType/typeId or increase "
               "maxWork; an incomplete result cannot prove absence."}});
     if (name == "mapget_extract_features" &&
         (incomplete_ == "byte_limit" || incomplete_ == "work_limit") &&

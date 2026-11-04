@@ -166,7 +166,7 @@ void McpNativeTools::buildCatalog()
     schemaSelection["mapSchemaId"] = string(256);
     schemaSelection["mapSchemaId"]["description"] =
         "Exact artifact identity from mapget_list_schemas. May qualify mapId or mapFormat; "
-        "alone selects any current authorized provider. Not a numeric domain schemaId.";
+        "alone selects any current authorized provider. Not a numeric typeId.";
     auto inventory = schemaSelection;
     inventory.erase("layerId");
     add("mapget_list_schemas",
@@ -174,7 +174,7 @@ void McpNativeTools::buildCatalog()
         "Shared artifacts appear once with authorized consumers, layer roots, format versions "
         "and retained-capacity statistics. Optional selectors intersect; no pagination, "
         "narrow filters if incomplete. Use mapSchemaId to disambiguate several artifacts for "
-        "one format. Domain IDs are local to that exact artifact.",
+        "one format. Type IDs are local to that exact artifact.",
         inventory);
 
     auto schema = schemaSelection;
@@ -187,11 +187,11 @@ void McpNativeTools::buildCatalog()
         {"description",
          "Substring of one declared field/type/enum name, ignoring case, spaces, underscores and "
          "hyphens (speed limit matches SPEED_LIMIT or speedLimit). Use one keyword/name per call, "
-         "e.g. speed or truck. Returns compact matches with schemaId and representative data path "
+         "e.g. speed or truck. Returns compact matches with typeId and representative data path "
          "segments (* means array element). Not actual feature values or an exhaustive list of "
          "paths through shared definitions. Mutually exclusive with query."}};
-    schema["schemaId"] = integer(1, simfil::MaxSchemaId);
-    schema["schemaId"]["description"] =
+    schema["typeId"] = integer(1, simfil::MaxTypeId);
+    schema["typeId"]["description"] =
         "Open a descriptor's numeric $ref within this layer; mutually exclusive with featureType. "
         "Local to the response's mapSchemaId, not the source catalog's string schemaId.";
     schema["query"]["description"] =
@@ -202,31 +202,33 @@ void McpNativeTools::buildCatalog()
         "or mapSchemaId, always with layerId. A format matching several artifacts returns "
         "ambiguous_schema with exact selectArguments; no arbitrary first match. Unfocused calls "
         "list "
-        "produced feature types and schema IDs, or the SourceData layer root. "
-        "featureType/schemaId opens immediate fields and shallow "
+        "produced feature types and type IDs, or the SourceData layer root. "
+        "featureType/typeId opens immediate fields and shallow "
         "properties; childrenOmitted/$ref identifies unexpanded compounds. Explicit query/find "
         "is not overview-limited. A featureType overview includes its native ID compositions "
         "and forward relation contract; reference-only types have no data root. find groups "
         "field/type and enum-symbol matches, with "
-        "schemaId, owning contexts and grouped enum symbols. Exact symbols rank first. "
+        "typeId, owning contexts and grouped enum symbols. Exact symbols rank first. "
         "No pagination: use expandArguments or narrowing choices for broader results. "
         "fields/elements/alternatives distinguish objects, arrays and logical combinations. "
         "Large enum overviews return enumCount/enumPreview; explicit queries expose exact values.",
         schema,
         {"layerId"});
     actions_["mapget_query_schema"].tool["inputSchema"]["allOf"] = Json::array(
-        {{{"not", {{"required", {"featureType", "schemaId"}}}}},
+        {{{"not", {{"required", {"featureType", "typeId"}}}}},
          {{"not", {{"required", {"query", "find"}}}}}});
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"] = integer(1, 1000);
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"]["default"] = 8;
     actions_["mapget_query_schema"].tool["inputSchema"]["properties"]["limit"]["description"] =
-        "Default 8; overview/find return at most 32 domains. Explicit queries may raise the value "
+        "Default 8; overview/find return at most 32 types. Explicit queries may raise the value "
         "limit to 1000.";
     auto validation = schemaSelection;
     validation["expression"] = string(4096);
     validation["offset"] = integer(0, INT32_MAX);
     validation["featureType"] = string();
-    validation["attributeSchema"] = integer(1, UINT32_MAX);
+    validation["attributeTypeId"] = integer(1, simfil::MaxTypeId);
+    validation["attributeTypeId"]["description"] =
+        "Numeric type ID for a declared attribute context in the selected exact schema.";
     validation["scope"] = {{"enum", {"feature", "attribute", "auto"}}};
     validation["rewrite"] = {{"type", "boolean"}};
     validation["rewrite"]["description"] =

@@ -39,7 +39,7 @@ public:
     std::string textProperty;
     std::string secondaryLocateMode = "canonical";
 
-    /** Attach a small native schema, including a recursive domain. */
+    /** Attach a small native schema, including a recursive type. */
     explicit NativeSource(std::string idDescription = {}, size_t rawLayers = 0)
     {
         auto schema = newSchema(rawLayers);
@@ -321,7 +321,7 @@ TEST_CASE(
         for (auto const& args : NativeJson::parse(R"json([
             {}, {"mapId":"Native","layerId":"Road"},
             {"mapId":"Native","layerId":"Road","partitions":[{"kind":"tile","id":131073}]},
-            {"mapId":"Native","layerId":"Road","featureType":"Road","schemaId":1},
+            {"mapId":"Native","layerId":"Road","featureType":"Road","typeId":1},
             {"mapId":"Native","layerId":"Road","query":"_","find":"speed"},
             {"mapId":"Native","partition":{"kind":"tile","id":131073},
              "reference":{"layerId":"Raw","address":"1"}},
@@ -469,7 +469,7 @@ TEST_CASE("Native metadata and conversions need neither browser nor tile loads",
     CHECK_FALSE(boundedPlace["items"][0].contains("geometry"));
 }
 
-TEST_CASE("Native schema discovery retains every feature type beside deep domains", "[mcp-native]")
+TEST_CASE("Native schema discovery retains every feature type beside deep types", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
     auto schema = NativeSource::newSchema();
@@ -516,18 +516,18 @@ TEST_CASE("Native schema discovery retains every feature type beside deep domain
     CHECK(selected["schemaView"] == "shallow_overview");
     CHECK(selected["guidance"].get<std::string>().find("find") != std::string::npos);
     CHECK_FALSE(descriptor.contains("truncated"));
-    args["schemaId"] = roads;
+    args["typeId"] = roads;
     auto detail = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(detail["complete"] == true);
     CHECK(detail["items"][0]["values"][0]["elements"][0]["kind"] == "integer");
-    args["schemaId"] = properties;
+    args["typeId"] = properties;
     args["query"] = "_";
     auto unionDetail = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(unionDetail["complete"] == true);
     CHECK(
         unionDetail["items"][0]["values"][0]["fields"]["choice"]["$ref"] ==
         NativeJson::array({roads, road}));
-    args.erase("schemaId");
+    args.erase("typeId");
     args["featureType"] = "Intersection";
     args["query"] = "fields.properties.fields.connectedRoads";
     auto focused = fixture.call("mapget_query_schema", args)["result"];
@@ -717,7 +717,7 @@ TEST_CASE(
     NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}};
     auto response = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(response["complete"] == true);
-    CHECK(response["items"][0]["schemaId"] == feature);
+    CHECK(response["items"][0]["typeId"] == feature);
     CHECK_FALSE(response["items"][0]["values"][0].contains("fields"));
     args["featureType"] = "ReferenceOnly";
     auto missing = fixture.call("mapget_query_schema", args)["error"];
@@ -737,7 +737,7 @@ TEST_CASE(
     CHECK_FALSE(layerReference.contains("fields"));
     CHECK_FALSE(fields["geometry"].contains("fields"));
     args.erase("featureType");
-    args["schemaId"] = rules;
+    args["typeId"] = rules;
     response = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(response["complete"] == true);
     auto attribute = response["items"][0]["values"][0]["fields"]["speed"];
@@ -745,11 +745,11 @@ TEST_CASE(
     CHECK(attribute["typename"] == "SpeedLimit");
     CHECK(attribute["$ref"] == speed);
     CHECK_FALSE(attribute.contains("fields"));
-    args["schemaId"] = speed;
+    args["typeId"] = speed;
     auto detail = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(detail["complete"] == true);
     CHECK(detail["items"][0]["values"][0]["fields"]["speedLimitKmh"]["kind"] == "integer");
-    args.erase("schemaId");
+    args.erase("typeId");
     args["query"] = "**.typename";
     auto queried = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(queried["complete"] == true);
@@ -902,7 +902,7 @@ TEST_CASE("Native schema enum previews retain explicit access to all choices", "
     schema->addFieldSchema(root, "category", category);
     source->setSchema(schema);
     NativeFixture fixture(false, source);
-    NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}, {"schemaId", category}};
+    NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}, {"typeId", category}};
     auto response = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(response["complete"] == true);
     auto descriptor = response["items"][0]["values"][0];
@@ -915,7 +915,7 @@ TEST_CASE("Native schema enum previews retain explicit access to all choices", "
     REQUIRE(response["complete"] == true);
     CHECK(response["items"][0]["values"].size() == 40);
     args.erase("query");
-    args.erase("schemaId");
+    args.erase("typeId");
     args["find"] = "category";
     auto discovery = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(discovery["items"].size() == 1);
@@ -993,13 +993,13 @@ TEST_CASE(
 {
     NativeFixture fixture;
     auto schema = fixture.source->metadata.getLayer("Road")->layerSchema();
-    auto typeIdDomain = schema->childSchema(schema->featureSchema("Road"), "typeId");
-    REQUIRE(typeIdDomain != simfil::NoSchemaId);
+    auto featureTypeField = schema->childSchema(schema->featureSchema("Road"), "typeId");
+    REQUIRE(featureTypeField != simfil::NoTypeId);
     NativeJson qualifiedTypeId{
         {"$mapget", "qualified"},
         {"value", "Road"},
         {"schema", fixture.source->metadata.schemaId_},
-        {"domain", typeIdDomain}};
+        {"typeId", featureTypeField}};
     auto args = NativeFixture::selection();
     args["expressions"] = {
         "properties.numbers.*",
@@ -1386,7 +1386,7 @@ TEST_CASE("Native imported schemas preserve aliases in recursive queries", "[mcp
         }}
     })")));
     source->setSchema(schema);
-    REQUIRE(schema->featureSchema("Road") != simfil::NoSchemaId);
+    REQUIRE(schema->featureSchema("Road") != simfil::NoTypeId);
     NativeFixture fixture(false, source);
     for (std::string query :
          {"attributes.numbers",
@@ -1438,29 +1438,29 @@ TEST_CASE(
         NativeJson{{"mapId", "Native"}, {"layerId", "Road"}, {"find", "SpEeD"}, {"limit", 1}};
     auto first = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(first["items"].size() == 1);
-    CHECK(first["items"][0]["schemaId"] == speed);
+    CHECK(first["items"][0]["typeId"] == speed);
     CHECK(first["complete"] == false);
     CHECK(first["reason"] == "matches_omitted");
     CHECK(first["discovery"]["scanComplete"] == true);
-    CHECK(first["discovery"]["matchedDomains"] == 3);
+    CHECK(first["discovery"]["matchedTypes"] == 3);
     CHECK_FALSE(first.contains("nextOffset"));
     REQUIRE_FALSE(first["narrowing"].empty());
     auto expand =
         fixture.call("mapget_query_schema", first["items"][0]["expandArguments"])["result"];
     CHECK(expand["complete"] == true);
-    CHECK(expand["items"][0]["schemaId"] == speed);
+    CHECK(expand["items"][0]["typeId"] == speed);
     args["limit"] = 12;
     auto all = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(all["items"].size() == 3);
     CHECK(
         all["items"][1]["contexts"][0]["path"] ==
         NativeJson::array({"properties", "layer", "rules", "SPEED_LIMIT", "speedLimit"}));
-    CHECK(all["items"][1]["contexts"][0]["attributeContext"]["schemaId"] == speed);
+    CHECK(all["items"][1]["contexts"][0]["attributeContext"]["typeId"] == speed);
     args["find"] = "truck";
     auto symbol = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(symbol["complete"] == true);
     CHECK(symbol["items"][0]["enum"]["matchingSymbols"] == NativeJson::array({"TRUCK"}));
-    CHECK(symbol["items"][0]["schemaId"] == vehicle);
+    CHECK(symbol["items"][0]["typeId"] == vehicle);
     CHECK(symbol["items"][0]["contexts"][0]["path"].back() == "*");
     CHECK(symbol["items"][0]["contexts"][0]["attributeContext"]["name"] == "SPEED_LIMIT");
     auto values = fixture.call(
@@ -1985,15 +1985,15 @@ TEST_CASE(
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
     auto text = schema->addSchema(simfil::Schema::Kind::String);
-    auto domain = schema->addSchema(simfil::Schema::Kind::String);
-    schema->setTypeName(domain, "Direction");
+    auto type = schema->addSchema(simfil::Schema::Kind::String);
+    schema->setTypeName(type, "Direction");
     for (int i = 0; i < 40; ++i) {
         schema->addFieldSchema(root, "forwardField" + std::to_string(i), text);
-        schema->addEnumSymbol(domain, "A_FORWARD_" + std::to_string(i));
+        schema->addEnumSymbol(type, "A_FORWARD_" + std::to_string(i));
     }
-    schema->addEnumSymbol(domain, "FORWARD");
-    schema->addFieldSchema(root, "direction", domain);
-    schema->addFieldSchema(root, "otherDirection", domain);
+    schema->addEnumSymbol(type, "FORWARD");
+    schema->addFieldSchema(root, "direction", type);
+    schema->addFieldSchema(root, "otherDirection", type);
     source->setSchema(schema);
     NativeFixture fixture(false, source);
     auto args =
@@ -2001,7 +2001,7 @@ TEST_CASE(
     auto result = fixture.call("mapget_query_schema", args)["result"];
     REQUIRE(result["items"].size() == 1);
     auto const& item = result["items"][0];
-    CHECK(item["schemaId"] == domain);
+    CHECK(item["typeId"] == type);
     CHECK(item["enum"]["matchingSymbols"][0] == "FORWARD");
     CHECK(item["enum"]["matchingSymbolCount"] == 41);
     CHECK(item["enum"]["matchingSymbols"].size() == 8);
@@ -2025,13 +2025,13 @@ TEST_CASE("Native schema field discovery provides executable feature queries", "
 {
     NativeFixture fixture;
     auto schema = fixture.source->metadata.getLayer("Road")->layerSchema();
-    auto typeIdDomain = schema->childSchema(schema->featureSchema("Road"), "typeId");
-    REQUIRE(typeIdDomain != simfil::NoSchemaId);
+    auto featureTypeField = schema->childSchema(schema->featureSchema("Road"), "typeId");
+    REQUIRE(featureTypeField != simfil::NoTypeId);
     NativeJson qualifiedTypeId{
         {"$mapget", "qualified"},
         {"value", "Road"},
         {"schema", fixture.source->metadata.schemaId_},
-        {"domain", typeIdDomain}};
+        {"typeId", featureTypeField}};
     auto found = fixture.call(
         "mapget_query_schema",
         {{"mapId", "Native"}, {"layerId", "Road"}, {"find", "typeId"}})["result"];

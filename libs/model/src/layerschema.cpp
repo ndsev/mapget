@@ -451,7 +451,7 @@ public:
     BoundSchema(
         LayerSchema::Ptr registry,
         std::shared_ptr<simfil::StringPool const> strings,
-        simfil::SchemaId id,
+        simfil::TypeId id,
         bool materializeSchemaStrings = false)
         : registry_(std::move(registry)), strings_(std::move(strings)), id_(id)
     {
@@ -471,7 +471,7 @@ public:
         registry_->forEachNamedValue(id_, fn);
     }
 
-    /** Return the object/array/value kind for the stable mapget SchemaId. */
+    /** Return the object/array/value kind for the stable mapget TypeId. */
     auto kind() const -> Kind override { return registry_ ? registry_->kind(id_) : Kind::Unknown; }
 
     /** Preserve producer metadata on the same lazy binding used by traversal. */
@@ -479,7 +479,7 @@ public:
     /** Retain the logical operator rather than pretending alternatives are fields. */
     auto composition() const -> Composition override { return registry_->composition(id_); }
     /** Visit alternative definitions at the same value position. */
-    auto alternatives() const& -> std::span<const simfil::SchemaId> override
+    auto alternatives() const& -> std::span<const simfil::TypeId> override
     {
         return registry_->alternatives(id_);
     }
@@ -513,25 +513,25 @@ public:
     }
 
     /** Translate only the requested name; the immutable graph owns member lookup. */
-    auto fieldSchema(simfil::StringId field) const -> simfil::SchemaId override
+    auto fieldSchema(simfil::StringId field) const -> simfil::TypeId override
     {
         auto name = strings_->resolve(field);
         auto owner = registry_->mapSchema();
-        auto domain = owner->domain(id_);
+        auto domain = owner->type(id_);
         if (!name || !domain)
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         auto schemaField = owner->strings()->get(*name);
         // An absent name must not resolve to an explicitly declared empty key.
         if (schemaField == simfil::StringPool::Empty && !name->empty())
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         return domain->fieldSchema(schemaField);
     }
 
     /** Reuse the graph's prepared element domain without materializing alternatives. */
-    auto itemSchema() const -> simfil::SchemaId override
+    auto itemSchema() const -> simfil::TypeId override
     {
-        auto domain = registry_->mapSchema()->domain(id_);
-        return domain ? domain->itemSchema() : simfil::NoSchemaId;
+        auto domain = registry_->mapSchema()->type(id_);
+        return domain ? domain->itemSchema() : simfil::NoTypeId;
     }
 
     /** Match Feature::get's attributes alias while keeping field enumeration canonical. */
@@ -601,10 +601,10 @@ public:
         return std::ranges::find(names, symbol) != names.end();
     }
 
-    /** Return the overlay-name predicate for a matching attribute root. */
+    /** Match a query overlay's use-site names without choosing a physical Attribute owner. */
     auto symbolEqualityPaths(
         simfil::StringId symbolId,
-        const std::function<const simfil::Schema*(simfil::SchemaId)>&) const
+        const std::function<const simfil::Schema*(simfil::TypeId)>&) const
         -> std::vector<simfil::SchemaPath> override
     {
         if (!registry_ || !strings_) {
@@ -612,24 +612,23 @@ public:
         }
 
         auto symbolName = strings_->resolve(symbolId);
-        auto typeCode = registry_->attributeTypeCode(id_);
-        if (typeCode.empty() || !symbolName || typeCode != *symbolName) {
+        auto payload = registry_->mapSchema()->baseSchema(id_);
+        if (!symbolName || symbolName->empty() || !payload) {
             return {};
         }
 
         // Only an owned attribute-query overlay has the runtime $name member.
-        // A matching label on a feature or raw attribute payload is insufficient.
+        // A matching label or similarly named fields on a raw payload are insufficient.
         auto nameId = strings_->get("$name");
-        auto feature = registry_->childSchema(id_, "$feature");
-        if (!nameId || !feature || !registry_->childSchema(id_, "$name")) {
+        if (!nameId || !registry_->childSchema(id_, "$name")) {
             return {};
         }
-        for (auto const& type : registry_->featureTypes()) {
-            if (registry_->featureSchema(type) != feature)
-                continue;
-            auto owner = registry_->ownerForPath(type, id_, {});
-            if (owner.kind_ == LayerSchema::PathOwnerKind::Attribute &&
-                owner.attribute_.attributeName_ == typeCode)
+        for (auto const& owner : registry_->attributeOwners(id_)) {
+            // One physical type may serve several names, layers and features. The
+            // prepared query identity selects the feature; $name selects the use site.
+            if (owner.attributeName_ == *symbolName &&
+                (owner.featureLayer_.empty() || owner.featureLayer_ == registry_->name()) &&
+                registry_->attributeQuerySchema(owner.featureType_, payload) == id_)
             {
                 return {simfil::SchemaPath{{simfil::SchemaPathSegment::Kind::Field, nameId}}};
             }
@@ -637,10 +636,10 @@ public:
         return {};
     }
 
-    /** Return mapget attribute type-code scalar shorthand paths. */
+    /** Return scalar shorthand paths without guessing a shared query payload's owner name. */
     auto scalarFieldPathsForSymbol(
         simfil::StringId symbolId,
-        const std::function<const simfil::Schema*(simfil::SchemaId)>&) const
+        const std::function<const simfil::Schema*(simfil::TypeId)>&) const
         -> std::vector<simfil::SchemaPath> override
     {
         if (!registry_ || !strings_) {
@@ -650,6 +649,19 @@ public:
         auto symbolName = strings_->resolve(symbolId);
         if (!symbolName) {
             return {};
+        }
+
+        if (registry_->mapSchema()->baseSchema(id_)) {
+            auto owners = registry_->attributeOwners(id_);
+            // A path alone cannot guard $name. In a shared query context the
+            // shorthand would read another owner's payload; use an explicit
+            // field or normalizeSearchQuery's guarded feature-root rewrite instead.
+            if (!owners.empty() &&
+                std::ranges::any_of(
+                    owners,
+                    [&](auto const& owner)
+                    { return owner.attributeName_ != owners.front().attributeName_; }))
+                return {};
         }
 
         auto namedPaths = registry_->scalarFieldPathsForAttribute(id_, *symbolName);
@@ -682,7 +694,7 @@ public:
 private:
     /** Visit direct fields using ids from the completion/compile-local pool. */
     auto forEachDirectField(
-        const std::function<void(simfil::StringId, std::span<const simfil::SchemaId>)>& fn) const
+        const std::function<void(simfil::StringId, std::span<const simfil::TypeId>)>& fn) const
         -> void override
     {
         if (!registry_ || !strings_) {
@@ -692,7 +704,7 @@ private:
         auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
         registry_->forEachDirectField(
             id_,
-            [&](std::string_view fieldName, std::span<const simfil::SchemaId> schemas)
+            [&](std::string_view fieldName, std::span<const simfil::TypeId> schemas)
             {
                 auto fieldId = mutableStrings->get(fieldName);
                 if (fieldId != simfil::StringPool::Empty) {
@@ -703,7 +715,7 @@ private:
 
     /** Visit possible array element schemas. */
     auto
-    forEachElementSchema(const std::function<void(simfil::SchemaId)>& fn) const -> void override
+    forEachElementSchema(const std::function<void(simfil::TypeId)>& fn) const -> void override
     {
         if (!registry_) {
             return;
@@ -742,15 +754,15 @@ private:
     /** Runtime pruning calls canHaveField directly, so no recursive StringId cache is built here.
      */
     auto collectNestedFields(
-        const std::function<Schema*(simfil::SchemaId)>&,
-        SchemaIdStack&,
+        const std::function<Schema*(simfil::TypeId)>&,
+        TypeIdStack&,
         std::vector<simfil::StringId>&) const -> void override
     {
     }
 
     LayerSchema::Ptr registry_;
     std::shared_ptr<simfil::StringPool const> strings_;
-    simfil::SchemaId id_ = simfil::NoSchemaId;
+    simfil::TypeId id_ = simfil::NoTypeId;
     std::vector<simfil::StringId> directFields_;
     std::vector<simfil::StringId> nestedFields_;
     std::vector<simfil::StringId> nestedEnumSymbols_;
@@ -989,14 +1001,14 @@ void installLayerSchemaImpl(
     std::shared_ptr<simfil::StringPool const> strings,
     bool materializeSchemaStrings)
 {
-    auto schemas = std::make_shared<std::map<simfil::SchemaId, std::unique_ptr<BoundSchema>>>();
+    auto schemas = std::make_shared<std::map<simfil::TypeId, std::unique_ptr<BoundSchema>>>();
     env.querySchemaCallback =
         [registry = std::move(registry),
          strings = std::move(strings),
          schemas = std::move(schemas),
-         materializeSchemaStrings](simfil::SchemaId schemaId)
+         materializeSchemaStrings](simfil::TypeId schemaId)
     {
-        if (!registry || schemaId == simfil::NoSchemaId) {
+        if (!registry || schemaId == simfil::NoTypeId) {
             return static_cast<simfil::Schema const*>(nullptr);
         }
         auto [it, inserted] = schemas->try_emplace(schemaId);

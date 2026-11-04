@@ -82,7 +82,7 @@ private:
     size_t initialProgress_ = 0;
     std::unique_ptr<simfil::Environment> env_;
     std::unique_ptr<simfil::Function> traceFunction_;
-    std::map<std::tuple<std::string, simfil::SchemaId, bool>, simfil::ASTPtr> expressions_;
+    std::map<std::tuple<std::string, simfil::TypeId, bool>, simfil::ASTPtr> expressions_;
     std::mutex requestMutex_;
     /** Serializes callback state; cancellation itself only changes the atomic token. */
     std::recursive_mutex executionMutex_;
@@ -114,7 +114,7 @@ private:
     nlohmann::json evaluate(
         std::string const& query,
         simfil::ModelNode const& root,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         bool predicate = false);
     /** Report query-local diagnostics separately from administrative operational snapshots. */
     void diagnostics(simfil::Diagnostics const& diagnostics, std::string const& expression);
@@ -137,11 +137,11 @@ private:
     void querySchema();
     /** Find declared fields, producer names and enum symbols without expanding their payloads. */
     void
-    findSchema(std::vector<simfil::SchemaId> const& roots, std::vector<std::string> const& types);
+    findSchema(std::vector<simfil::TypeId> const& roots, std::vector<std::string> const& types);
     /** Project a schema descriptor, expanding only the selected semantic containers. */
     nlohmann::json schemaOverview(
         simfil::ModelNode const& node,
-        std::set<simfil::SchemaId> const& expanded,
+        std::set<simfil::TypeId> const& expanded,
         size_t depth = 0);
     /** Compile and inspect schema references without fetching any map payload. */
     void validateExpression();
@@ -165,7 +165,7 @@ private:
     bool extractRow(
         model_ptr<Feature> const& feature,
         simfil::ModelNode const& context,
-        simfil::SchemaId schema,
+        simfil::TypeId schema,
         nlohmann::json identity,
         model_ptr<Validity> const& validity = {});
     /** Produce packed tile/grid/bounds information through ndslive-math only. */

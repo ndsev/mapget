@@ -122,7 +122,7 @@ public:
     [[nodiscard]] model_ptr<Object> attributesOrNull() const;
     [[nodiscard]] model_ptr<MergedBasicAttributesView> mergedAttributesOrNull() const;
     /** Bind a concrete root admitted by this feature type before populating its containers. */
-    void setSchema(simfil::SchemaId schemaId);
+    void setSchema(simfil::TypeId schemaId);
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
@@ -202,7 +202,7 @@ protected:
      * Simfil Model-Node Functions
      */
     [[nodiscard]] simfil::ValueType type() const override;
-    [[nodiscard]] simfil::SchemaId schema() const override;
+    [[nodiscard]] simfil::TypeId schema() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
     [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -225,7 +225,7 @@ protected:
 
         simfil::StringId typeId_ = 0;
         /** Zero uses the type's declared root; occupies the former two padding bytes. */
-        simfil::SchemaId schemaId_ = simfil::NoSchemaId;
+        simfil::TypeId schemaId_ = simfil::NoTypeId;
     };
 
     /**
@@ -296,7 +296,7 @@ public:
         : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
-        [[nodiscard]] simfil::SchemaId schema() const override;
+        [[nodiscard]] simfil::TypeId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;
@@ -326,7 +326,7 @@ protected:
     struct FeaturePropertyView : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
     {
         [[nodiscard]] simfil::ValueType type() const override;
-        [[nodiscard]] simfil::SchemaId schema() const override;
+        [[nodiscard]] simfil::TypeId schema() const override;
         [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
         [[nodiscard]] uint32_t size() const override;
         [[nodiscard]] ModelNode::Ptr get(const simfil::StringId&) const override;

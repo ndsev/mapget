@@ -326,7 +326,7 @@ th {
 .schema-toolbar input { min-width: 0; flex: 1; }
 .schema-workspace { display: grid; grid-template-columns: minmax(220px, 26%) minmax(0, 1fr); gap: 14px; align-items: start; }
 .schema-navigation { position: sticky; top: 76px; max-height: min(72vh, calc(100vh - 90px)); overflow: auto; }
-.schema-navigation input { width: 100%; margin: 10px 0; }
+.schema-navigation input, .schema-navigation select { width: 100%; margin: 10px 0; }
 .schema-navigation h3 { margin: 16px 0 6px; overflow-wrap: anywhere; }
 .schema-root { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; width: 100%; text-align: left; margin-top: 5px; overflow-wrap: anywhere; }
 .schema-root[aria-current="true"] { color: var(--inverse-ink); background: var(--inverse); }
@@ -663,7 +663,7 @@ pre {
                 <div class="section-head"><div><h2>Loaded Schemas</h2><p>Shared native contracts. Explore an artifact without loading map partitions.</p></div></div>
                 <section class="panel">
                     <label class="schema-toolbar">Filter inventory <input id="schemaInventoryFilter" type="search" placeholder="Format, subsystem, map or version"></label>
-                    <div class="table-wrap"><table id="schemaInventory"><thead><tr><th>Format / version</th><th>Subsystem versions</th><th>Consumers</th><th>Artifact</th><th class="number">Domains</th><th class="number">Names</th><th class="number">Retained capacity</th></tr></thead><tbody></tbody></table></div>
+                    <div class="table-wrap"><table id="schemaInventory"><thead><tr><th>Format / version</th><th>Subsystem versions</th><th>Consumers</th><th>Artifact</th><th class="number">Physical types</th><th class="number">Query contexts</th><th class="number">Type IDs used / limit</th><th class="number">Names</th><th class="number">Retained capacity</th></tr></thead><tbody></tbody></table></div>
                     <p class="panel-subtitle">Retained capacity is not RSS or serialized size. Current shared graphs are counted once; retired pinned graphs are accounted in Memory. Temporary codec allocations remain unmeasured.</p>
                 </section>
             </div>
@@ -673,6 +673,11 @@ pre {
                 <div class="schema-workspace">
                     <nav class="panel schema-navigation" aria-label="Schema layers and types">
                         <h3>Layers &amp; types</h3>
+                        <div class="schema-branch-filter">
+                            <label for="schemaCategory">Layer category</label>
+                            <select id="schemaCategory"><option value="Features">Features</option><option value="SourceData">Raw Source Data</option><option value="Metadata">Metadata</option></select>
+                        </div>
+                        <p class="schema-message">Metadata uses the provider's Metadata-* layer naming convention. Raw and metadata roots remain available for inspection.</p>
                         <label class="schema-branch-filter">Filter layers or feature types<input id="schemaRootFilter" type="search" placeholder="e.g. Road or SourceData"></label>
                         <div id="schemaRoots"></div>
                     </nav>
@@ -683,7 +688,7 @@ pre {
                             <button id="schemaFindSubmit" class="button" type="submit" disabled>Find</button><button id="schemaFindClear" class="button" type="button" hidden>Show root</button>
                         </form>
                         <p id="schemaSearchStatus" class="schema-message" role="status" aria-live="polite">Descendant search shares the MCP schema finder. Context-only links are not searched.</p>
-                        <div id="schemaTree" aria-label="Schema domains"></div>
+                        <div id="schemaTree" aria-label="Schema types"></div>
                     </section>
                 </div>
             </div>
@@ -1457,7 +1462,7 @@ function updateCacheReportStaleness(currentCache) {
 }
 
 )STATUS"
-        R"STATUS(/** Focused schema navigation; only explicitly opened domains or submitted searches do graph work. */
+        R"STATUS(/** Focused schema navigation; only explicitly opened types or submitted searches do graph work. */
 class SchemaExplorer {
     constructor() {
         this.refreshing = false;
@@ -1467,9 +1472,17 @@ class SchemaExplorer {
         this.inventory = [];
         this.inventoryKey = "";
         this.controllers = new Set();
-        this.domains = new Map();
+        this.types = new Map();
         byId("schemaInventoryFilter").addEventListener("input", () => this.renderInventory());
         byId("schemaRootFilter").addEventListener("input", () => this.renderRoots());
+        byId("schemaCategory").addEventListener("change", () => {
+            const root = this.roots().find(root => root.category === byId("schemaCategory").value);
+            if (root) location.hash = `schemas/${encodeURIComponent(this.selection)}/${encodeURIComponent(root.layerId)}/${root.typeId}`;
+            else {
+                this.selectRoot(null);
+                location.hash = `schemas/${encodeURIComponent(this.selection)}`;
+            }
+        });
         byId("schemaBack").addEventListener("click", () => { location.hash = "schemas"; });
         byId("schemaSearch").addEventListener("submit", event => {
             event.preventDefault();
@@ -1486,7 +1499,7 @@ class SchemaExplorer {
         return element;
     }
 
-    /** Match inventory/navigation terms without walking any schema domains. */
+    /** Match inventory/navigation terms without walking any schema types. */
     matches(text, query) {
         const haystack = text.toLocaleLowerCase();
         return query.toLocaleLowerCase().trim().split(/\s+/).every(term => haystack.includes(term));
@@ -1560,14 +1573,16 @@ class SchemaExplorer {
             artifactCell.appendChild(artifact);
             row.append(cell, modules, maps, artifactCell);
             const counts = item.statistics.counts;
-            for (const text of [formatInt(counts.domains), formatInt(counts.internedNames), formatBytes(item.retainedBytes)])
+            const budget = `${formatInt(counts.types)} / ${formatInt(item.statistics.limits.typeId)}`;
+            for (const text of [formatInt(counts.physicalTypes), formatInt(counts.queryContexts), budget,
+                formatInt(counts.internedNames), formatBytes(item.retainedBytes)])
                 row.appendChild(this.element("td", text, "number"));
             body.appendChild(row);
         }
         if (!body.childElementCount) {
             const row = this.element("tr");
             const cell = this.element("td", "No schemas match this inventory filter.", "empty-state");
-            cell.colSpan = 7;
+            cell.colSpan = 9;
             row.appendChild(cell);
             body.appendChild(row);
         }
@@ -1578,7 +1593,7 @@ class SchemaExplorer {
         ++this.generation;
         for (const controller of this.controllers) controller.abort();
         this.controllers.clear();
-        this.domains.clear();
+        this.types.clear();
         byId("schemaFindSubmit").disabled = !this.root;
     }
 
@@ -1619,8 +1634,8 @@ class SchemaExplorer {
         }
         if (this.selection !== item.mapSchemaId) this.select(item);
         if (route[2] && route[3]) {
-            const root = this.roots().find(r => r.layerId === route[2] && String(r.schemaId) === route[3]);
-            if (root && (this.root?.layerId !== root.layerId || this.root?.schemaId !== root.schemaId)) {
+            const root = this.roots().find(r => r.layerId === route[2] && String(r.typeId) === route[3]);
+            if (root && (this.root?.layerId !== root.layerId || this.root?.typeId !== root.typeId)) {
                 this.selectRoot(root);
                 byId("schemaRootTitle").scrollIntoView({block: "start"});
                 byId("schemaRootTitle").focus({preventScroll: true});
@@ -1638,9 +1653,10 @@ class SchemaExplorer {
         qs(".history-graph").hidden = true;
         byId("schemaMetadata").open = false;
         byId("schemaRootFilter").value = "";
+        byId("schemaCategory").value = "Features";
         setText("schemaTitle", `${item.mapFormat.name || "Legacy"} ${item.mapFormat.version || ""}`);
         this.renderMetadata(item);
-        const roots = this.roots();
+        const roots = this.roots().filter(root => root.category === "Features");
         this.selectRoot(roots[0] || null);
         byId("schemaDetails").scrollIntoView({block: "start"});
         byId("schemaTitle").focus({preventScroll: true});
@@ -1649,11 +1665,11 @@ class SchemaExplorer {
     /** Keep the navigation inventory cheap: roots come from /schemas, not descriptor requests. */
     roots() {
         const item = this.inventory.find(candidate => candidate.mapSchemaId === this.selection);
-        // Feature roots are the useful entry point; large SourceData inventories remain searchable.
-        const layers = [...(item?.layers || [])].sort((a, b) => Number(b.type === "Features") - Number(a.type === "Features"));
+        const layers = item?.layers || [];
         return layers.flatMap(layer => {
-            const roots = layer.featureTypes.length ? layer.featureTypes : [{name: "Root", schemaId: layer.schemaId}];
-            return roots.filter(root => root.schemaId).map(root => ({...root, layerId: layer.layerId, type: layer.type}));
+            const roots = layer.featureTypes.length ? layer.featureTypes : [{...layer, name: "Root"}];
+            return roots.filter(root => root.typeId).map(root => ({...root,
+                layerId: layer.layerId, type: layer.type, category: layer.category}));
         });
     }
 
@@ -1663,6 +1679,7 @@ class SchemaExplorer {
         list.replaceChildren();
         let layer;
         for (const root of this.roots()) {
+            if (root.category !== byId("schemaCategory").value) continue;
             if (!this.matches(`${root.layerId} ${root.name} ${root.type}`, byId("schemaRootFilter").value)) continue;
             if (root.layerId !== layer) {
                 list.appendChild(this.element("h3", root.layerId));
@@ -1670,10 +1687,12 @@ class SchemaExplorer {
             }
             const button = this.element("button", "", "button schema-root");
             button.type = "button";
-            button.setAttribute("aria-current", String(this.root?.layerId === root.layerId && this.root?.schemaId === root.schemaId));
+            button.setAttribute("aria-current", String(this.root?.layerId === root.layerId && this.root?.typeId === root.typeId));
             button.append(this.element("span", root.name), this.element("small", root.type));
+            if (root.reachabilityComplete === false) button.appendChild(this.element("small", "Partial contract"));
+            else if (root.open) button.appendChild(this.element("small", "Open contract"));
             button.addEventListener("click", () => {
-                const hash = `schemas/${encodeURIComponent(this.selection)}/${encodeURIComponent(root.layerId)}/${root.schemaId}`;
+                const hash = `schemas/${encodeURIComponent(this.selection)}/${encodeURIComponent(root.layerId)}/${root.typeId}`;
                 if (location.hash === `#${hash}`) this.selectRoot(root);
                 else location.hash = hash;
             });
@@ -1685,6 +1704,7 @@ class SchemaExplorer {
     /** Start one feature/SourceData root, never all roots of a large format. */
     selectRoot(root) {
         this.root = root;
+        if (root) byId("schemaCategory").value = root.category;
         this.renderRoots();
         setText("schemaRootTitle", root ? `${root.layerId} / ${root.name}` : "No declared roots");
         byId("schemaFind").disabled = !root;
@@ -1699,7 +1719,7 @@ class SchemaExplorer {
         setText("schemaSearchStatus", "Find searches descendant field, type and enum names, ignoring case, spaces, underscores and hyphens. Context-only links are excluded.");
         const tree = byId("schemaTree");
         tree.replaceChildren();
-        if (this.root) tree.appendChild(this.domain(this.root.name, this.root.schemaId, new Set(), true));
+        if (this.root) tree.appendChild(this.typeNode(this.root.name, this.root.typeId, new Set(), true));
     }
 
     /** Fetch under the current view generation; repeated references share only this view's request. */
@@ -1729,20 +1749,30 @@ class SchemaExplorer {
         byId("schemaTree").replaceChildren();
         setText("schemaSearchStatus", `Searching ${this.root.layerId} / ${this.root.name}...`);
         try {
-            const result = await this.request({layerId: this.root.layerId, schemaId: this.root.schemaId, find});
+            const result = await this.request({layerId: this.root.layerId, typeId: this.root.typeId, find});
             if (generation !== this.generation) return;
             const count = result.items.length;
             const partial = result.complete === false ? ` Partial results (${result.reason || "budget reached"}); refine the term or search within a narrower root.` : "";
-            setText("schemaSearchStatus", `${count} matching domain(s). Paths are representative, not an exhaustive list of occurrences.${partial}`);
+            setText("schemaSearchStatus", `${count} matching type(s). Paths are representative, not an exhaustive list of occurrences.${partial}`);
             for (const item of result.items) {
                 const context = item.contexts?.[0];
-                const label = context?.fieldName || item.typename || `Domain #${item.schemaId}`;
+                const label = context?.fieldName || item.typename || `Type #${item.typeId}`;
                 const block = this.element("section", "", "schema-search-result");
                 for (const context of item.contexts || [])
                     block.appendChild(this.element("p", (context.path || []).join(" / ") || this.root.name, "schema-path"));
                 const symbols = [...(item.enum?.matchingSymbols || []), ...(item.namedValues?.matchingNames || [])];
                 if (symbols.length) block.appendChild(this.element("p", `Matching symbols: ${symbols.join(", ")}`, "schema-path"));
-                block.appendChild(this.domain(label, item.schemaId, new Set(), false, item.kind));
+                // Finder results summarize enums and named values as counts,
+                // unlike the full descriptor's arrays. Adapt that preview here;
+                // expanding the result still loads its ordinary descriptor.
+                const {enum: enumeration, namedValues, ...metadata} = item;
+                block.appendChild(this.typeNode(label, item.typeId, new Set(), false, {
+                    ...metadata,
+                    enumCount: (enumeration?.literalCount || 0) +
+                        (enumeration?.symbolSemantics === "string_literals" ? enumeration.symbolCount : 0),
+                    namedValueCount: namedValues?.count,
+                    namedValueNames: namedValues?.matchingNames?.slice(0, 3)
+                }));
                 byId("schemaTree").appendChild(block);
             }
 )STATUS"
@@ -1761,6 +1791,12 @@ class SchemaExplorer {
         box.replaceChildren(this.properties({artifact: item.mapSchemaId, format: item.mapFormat.name,
             version: item.mapFormat.version || "Defined by subsystems", retainedCapacity: formatBytes(item.retainedBytes)}));
         box.appendChild(this.versions(item.mapFormat));
+        const counts = item.statistics.counts;
+        const limit = item.statistics.limits.typeId;
+        box.appendChild(this.properties({physicalTypes: counts.physicalTypes,
+            generatedQueryContexts: counts.queryContexts, typeIdsUsed: counts.types,
+            typeIdLimit: limit, typeIdsRemaining: Math.max(0, limit - counts.types)}));
+        box.appendChild(this.element("p", "Physical definitions and generated query contexts share the same type-ID budget. Equal format labels can describe different layer inventories; the artifact identity selects the exact graph.", "schema-message"));
         box.appendChild(this.disclosure("Consuming maps", this.value(item.consumers)));
         box.appendChild(this.disclosure("Counts and retained capacity", this.properties(item.statistics)));
     }
@@ -1774,7 +1810,7 @@ class SchemaExplorer {
 
     /** Display protocol keys as readable labels without changing field/type identifiers. */
     label(key) {
-        const labels = {typename: "Type name", open: "Additional fields allowed", nullable: "Allows null"};
+        const labels = {typename: "Type name", open: "Additional fields allowed", nullable: "Allows null", rawValue: "Raw ordinal"};
         if (labels[key]) return labels[key];
         return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_]/g, " ").replace(/^./, c => c.toUpperCase());
     }
@@ -1831,12 +1867,16 @@ class SchemaExplorer {
     }
 
     /** Put scalar semantics and feature contracts ahead of the navigable child fields. */
-    renderDomain(content, node) {
+    renderType(content, node) {
         const {"$ref": reference, namedValues, enum: literals, numericDomain, ...metadata} = node.descriptor;
         content.appendChild(this.properties(metadata));
         if (numericDomain) content.appendChild(this.disclosure("Numeric encoding and units", this.properties(numericDomain)));
         if (namedValues?.length) content.appendChild(this.disclosure(`Named values (${namedValues.length})`, this.value(namedValues)));
         if (literals?.length) content.appendChild(this.disclosure(`Enum values (${literals.length})`, this.value(literals)));
+        if (node.descriptor.open) content.appendChild(this.element("p",
+            "Open contract: additional fields can occur beyond the declarations shown here.", "schema-message"));
+        if (["any", "unknown"].includes(node.descriptor.kind)) content.appendChild(this.element("p",
+            "The provider has not declared a more specific value contract for this type.", "schema-message"));
         for (const type of node.featureTypes || []) {
             content.appendChild(this.disclosure(`${type.name}: identifier compositions`, this.value(type.uniqueIdCompositions || [])));
             content.appendChild(this.disclosure(`${type.name}: outgoing relations`, type.forwardRelationsKnown
@@ -1844,17 +1884,49 @@ class SchemaExplorer {
         }
     }
 
+    /** Summarize native type facts while retaining every real union/oneOf branch. */
+    typeLabel(descriptor = {}) {
+        const facts = [descriptor.typename];
+        if (descriptor.kind !== descriptor.typename) facts.push(descriptor.kind);
+        const enumCount = descriptor.enumCount ?? descriptor.enum?.length;
+        const namedCount = descriptor.namedValueCount ?? descriptor.namedValues?.length;
+        const names = descriptor.namedValueNames ?? descriptor.namedValues?.slice(0, 3).map(value => value.name) ?? [];
+        if (enumCount) facts.push(`${enumCount} enum ${enumCount === 1 ? "value" : "values"}`);
+        if (namedCount) facts.push(names.length
+            ? `${namedCount} named: ${names.join(", ")}${namedCount > names.length ? ", …" : ""}`
+            : `${namedCount} named ${namedCount === 1 ? "value" : "values"}`);
+        const numeric = descriptor.numericDomain;
+        if (numeric) {
+            // Bounds describe raw encodings. Show conversion metadata separately
+            // so a scaled centimetre value is not presented as an unscaled distance.
+            const exact = value => value && typeof value === "object" ? value.value : value;
+            const range = (min, max) => `${exact(min) ?? "?"}…${exact(max) ?? "?"}`;
+            if (numeric.minimum !== undefined || numeric.maximum !== undefined)
+                facts.push(`raw ${range(numeric.minimum, numeric.maximum)}`);
+            const ranges = numeric.ordinaryRanges?.slice(0, 2) ?? [];
+            const rangeCount = numeric.ordinaryRangeCount ?? numeric.ordinaryRanges?.length ?? 0;
+            if (ranges.length) facts.push(`ordinary raw ${ranges.map(item => range(item.min, item.max)).join(", ")}${rangeCount > ranges.length ? `, … (${rangeCount} ranges)` : ""}`);
+            if (numeric.unit) facts.push(`unit ${numeric.unit}`);
+            if (numeric.encoding) facts.push(`encoding ${numeric.encoding}`);
+            if (numeric.scale !== undefined && numeric.scale !== 1) facts.push(`scale ${numeric.scale}`);
+            if (numeric.offset !== undefined && numeric.offset !== 0) facts.push(`offset ${numeric.offset}`);
+            if (numeric.complete === false) facts.push("partial numeric metadata");
+        }
+        if (descriptor.nullable) facts.push("nullable");
+        return facts.filter(Boolean).join(" · ") || "unspecified type";
+    }
+
     /** Load one descriptor on expansion, preserving cycles, retries and selection generations. */
-    domain(label, id, ancestors, open = false, kind = "") {
+    typeNode(label, id, ancestors, open = false, descriptor = {}) {
         const element = this.element("details", "", "schema-branch");
-        element.dataset.schemaId = id;
+        element.dataset.typeId = id;
         const summary = this.element("summary", label);
-        const badge = this.element("span", `${kind ? kind + " " : ""}#${id}`, "schema-kind");
+        const badge = this.element("span", `${this.typeLabel(descriptor)} / #${id}`, "schema-kind");
         summary.append(document.createTextNode(" "), badge);
         element.appendChild(summary);
         if (ancestors.has(id)) {
             badge.textContent += " / recursive reference";
-            element.appendChild(this.element("p", "This domain already occurs above. Its shared definition is not expanded again on this path.", "schema-message"));
+            element.appendChild(this.element("p", "This type already occurs above. Its shared definition is not expanded again on this path.", "schema-message"));
             return element;
         }
         let loaded = false;
@@ -1864,30 +1936,29 @@ class SchemaExplorer {
         const expand = async () => {
             if (!element.open || loaded || generation !== this.generation) return;
             loaded = true;
-            content.textContent = "Loading domain...";
+            content.textContent = "Loading type...";
             try {
-                if (!this.domains.has(id)) {
-                    const pending = this.request({schemaId: id});
-                    this.domains.set(id, pending);
-                    pending.catch(() => { if (generation === this.generation) this.domains.delete(id); });
+                if (!this.types.has(id)) {
+                    const pending = this.request({typeId: id});
+                    this.types.set(id, pending);
+                    pending.catch(() => { if (generation === this.generation) this.types.delete(id); });
                 }
-                const node = await this.domains.get(id);
+                const node = await this.types.get(id);
                 if (generation !== this.generation) return;
                 content.replaceChildren();
-                badge.textContent = [node.descriptor.kind || "unknown",
-                    node.descriptor.typename !== label ? node.descriptor.typename : "", `#${id}`].filter(Boolean).join(" / ");
-                this.renderDomain(content, node);
+                badge.textContent = `${this.typeLabel(node.descriptor)} / #${id}`;
+                this.renderType(content, node);
                 const next = new Set(ancestors);
                 next.add(id);
                 const members = [];
                 for (const group of ["fields", "elements", "alternatives"]) {
                     for (const [index, edge] of (node[group] || []).entries()) {
                         const refs = Array.isArray(edge.$ref) ? edge.$ref : [edge.$ref];
-                        const field = group === "fields" ? edge.name : `${group === "elements" ? "Element type" : "Alternative"} ${index + 1}`;
+                        const field = group === "fields" ? edge.name : group === "elements" ? "Array elements" : `Choice ${index + 1}:`;
                         const flags = [edge.required === true ? "required" : edge.required === false ? "optional" : "", edge.role || ""].filter(Boolean);
                         const name = flags.length ? `${field} (${flags.join(", ")})` : field;
-                        for (const ref of refs) members.push({name, element: Number.isInteger(ref) && ref > 0
-                            ? this.domain(name, ref, next) : this.element("p", `${name}: unspecified domain`, "schema-message")});
+                        for (const ref of refs) members.push({name: `${name} ${this.typeLabel(edge.descriptor)}`, element: Number.isInteger(ref) && ref > 0
+                            ? this.typeNode(name, ref, next, false, edge.descriptor) : this.element("p", `${name}: unspecified type`, "schema-message")});
                     }
                 }
                 if (members.length) {
@@ -1906,7 +1977,7 @@ class SchemaExplorer {
                 }
             } catch (error) {
                 if (generation !== this.generation) return;
-                content.replaceChildren(this.element("p", `Unable to load domain: ${error}`, "schema-message schema-error"));
+                content.replaceChildren(this.element("p", `Unable to load type: ${error}`, "schema-message schema-error"));
                 const retry = this.element("button", "Retry", "button");
                 retry.type = "button";
                 retry.addEventListener("click", expand);

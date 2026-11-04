@@ -36,8 +36,11 @@ contracts remain usable for GeoJSON/custom sources without invented field facts.
 Remote clients fetch the authorized exact schema separately before using catalog
 metadata. Binary constructors take installed schema resolvers and do no network
 I/O. Missing or mismatched schema identities are errors, including for cached
-partitions. Protocol 6.1 additionally carries self-describing foreign identities
-and the shared SchemaPool contract. Service schema composition, authorized
+partitions. Protocol 6.2 includes self-describing foreign identities, shared
+SchemaPool graphs and the revised static dictionary for enum raw-value metadata.
+It rejects older streams before decoding their differently numbered fields.
+MapSchema codec 3 embeds SchemaPool codec 2; native and WASM consumers must be
+rebuilt together. Service schema composition, authorized
 artifact inventory and weak owner accounting live in `service-schemas.cpp`, as
 methods of the existing datasource registry rather than a separate schema service.
 
@@ -60,7 +63,7 @@ describe owner-retaining access from bindings.
 ### Schema memory measurements
 
 Service statistics count each registered `MapSchema` owner once, including its
-dictionary, domain columns and indexes; small metadata snapshots are counted
+dictionary, type columns and indexes; small metadata snapshots are counted
 separately. Partition counters include qualified scalars, bitmasks and schema
 binding tables. These are capacity-based lower bounds, not a complete heap census:
 binding wrapper/control-block allocations, temporary construction/codec buffers

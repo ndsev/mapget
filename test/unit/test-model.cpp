@@ -63,6 +63,28 @@ TEST_CASE("Static field names resolve to their procedural field IDs", "[model][s
     CHECK(LayerSchema::BitmaskKind == simfil::Schema::Kind::Bitmask);
 }
 
+TEST_CASE("Streams reject the old static field dictionary before dispatch", "[model][stream][schema2]")
+{
+    std::string encoded;
+    TileLayerStream::StringPoolOffsetMap offsets;
+    TileLayerStream::Writer writer([&](std::string frame, auto) { encoded += frame; }, offsets);
+    writer.sendStatus("{}");
+    REQUIRE(encoded.size() >= 11);
+    // Version uses three little-endian uint16 fields. 6.1 predates rawValue's static ID.
+    encoded[0] = 6;
+    encoded[1] = 0;
+    encoded[2] = 1;
+    encoded[3] = 0;
+    bool dispatched = false;
+    TileLayerStream::Reader reader(
+        {},
+        [&](auto) { dispatched = true; },
+        {},
+        [&](auto, auto) { dispatched = true; });
+    CHECK_THROWS(reader.read(encoded));
+    CHECK_FALSE(dispatched);
+}
+
 TEST_CASE("Action-control frames use the ordinary stream control callback", "[interactive-session]")
 {
     auto const payload =

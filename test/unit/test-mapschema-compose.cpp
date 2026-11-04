@@ -16,7 +16,7 @@ class ComposeFixture
 public:
     MapSchema::Ptr graph = std::make_shared<MapSchema>(MapFormat{"compose-test", "1", {}});
     LayerSchema::Ptr layer = graph->newLayer("Things", LayerType::Features);
-    simfil::SchemaId feature, properties, scalar, attribute;
+    simfil::TypeId feature, properties, scalar, attribute;
 
     explicit ComposeFixture(bool addon = false, std::string datatype = "U64")
     {
@@ -113,8 +113,8 @@ TEST_CASE(
             addon.graph->schemaId(),
             addon.layer->attributeQuerySchema("Thing", addon.attribute)) == context);
     for (auto const& owner : owners)
-        for (size_t id = 1; id <= owner->domainCount(); ++id)
-            CHECK(composed->domain(composed->remapSchema(owner->schemaId(), simfil::SchemaId(id))));
+        for (size_t id = 1; id <= owner->typeCount(); ++id)
+            CHECK(composed->type(composed->remapSchema(owner->schemaId(), simfil::TypeId(id))));
     CHECK(composed->checkForErrors().empty());
     CHECK(composed->constituents().size() == 2);
     CHECK(composed->statistics()["constituents"] == composed->constituents());
@@ -225,7 +225,7 @@ TEST_CASE("Composition preserves repeated exclusive alternatives", "[mapschema][
         std::vector<MapSchema::ConstPtr>{source});
     for (auto const& current : {MapSchema::ConstPtr(source), composed, decode(*composed)}) {
         auto view = current->layer("Raw");
-        auto alternatives = current->domain(view->rootSchema())->alternatives();
+        auto alternatives = current->type(view->rootSchema())->alternatives();
         REQUIRE(alternatives.size() == 2);
         CHECK(alternatives[0] == alternatives[1]);
         nlohmann::json_schema::json_validator validator;

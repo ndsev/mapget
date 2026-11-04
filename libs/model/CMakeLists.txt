@@ -53,6 +53,7 @@ add_library(mapget-model STATIC
   src/layerschema.cpp
   src/layerschema-search.cpp
   src/mapschema.cpp
+  src/mapschema-native.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp

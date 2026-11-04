@@ -95,7 +95,7 @@ public:
      * - Version 1.5:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
      * - Version 1.6:
-     *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
+     *   + Added SIMFIL object/array TypeId columns to ModelPool payloads.
      * - Version 1.7:
      *   + Added TileSearchResultLayer Message.
      * - Version 1.8:
@@ -143,9 +143,12 @@ public:
      *   + Schema-bound ModelPool values, persistent bitmasks and qualified scalar projections.
      * - Version 6.1:
      *   + FeatureId parts use tagged array/object addresses; foreign references retain named parts.
-     *   + Shared SchemaPool graphs distinguish contextual edges and composed domain remappings.
+     *   + Shared SchemaPool graphs distinguish contextual edges and composed type remappings.
+     * - Version 6.2:
+     *   + Schema raw-value metadata extends simfil's static dictionary; mapget field IDs shift.
+     *   + MapSchema codec 3 / SchemaPool codec 2 carry native relation contracts and enum ordinals.
      */
-    static constexpr Version CurrentProtocolVersion{6, 1, 0};
+    static constexpr Version CurrentProtocolVersion{6, 2, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

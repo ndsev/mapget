@@ -41,19 +41,19 @@ void SourceDataCompoundNode::setSchemaName(std::string_view name)
     data_->schemaName_ = *res;
 }
 
-void SourceDataCompoundNode::setSchema(simfil::SchemaId id)
+void SourceDataCompoundNode::setSchema(simfil::TypeId id)
 {
     auto owner = model().layerInfo()->schemaOwner();
-    if (id != simfil::NoSchemaId && (!owner || !owner->domain(id)))
+    if (id != simfil::NoTypeId && (!owner || !owner->type(id)))
         throw std::invalid_argument("Source-data domain is not part of the partition's schema.");
     if (auto result = object()->setSchema(id); !result)
         raise(result.error().message);
 }
 
-simfil::SchemaId SourceDataCompoundNode::schema() const
+simfil::TypeId SourceDataCompoundNode::schema() const
 {
     auto value = object();
-    return value ? value->schema() : simfil::NoSchemaId;
+    return value ? value->schema() : simfil::NoTypeId;
 }
 
 std::string_view SourceDataCompoundNode::schemaName() const

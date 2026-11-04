@@ -2,6 +2,7 @@
 // Private transient import/compiler state. Discarded when MapSchema is finalized.
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -15,13 +16,13 @@ using Kind = simfil::Schema::Kind;
 using Composition = simfil::Schema::Composition;
 
 /** Interpret structural affinity without depending on a specialized kind's name. */
-bool hasAffinity(Kind kind, simfil::ValueType type)
+inline bool hasAffinity(Kind kind, simfil::ValueType type)
 {
     return (simfil::Schema::affinities(kind) & simfil::valueTypeAffinity(type)) != 0;
 }
 
 /** Match legacy structural selectors without discarding precise scalar kinds. */
-bool matchesKind(Kind kind, Kind requested)
+inline bool matchesKind(Kind kind, Kind requested)
 {
     if (requested == Kind::Object) {
         return hasAffinity(kind, simfil::ValueType::Object);
@@ -39,7 +40,7 @@ bool matchesKind(Kind kind, Kind requested)
 constexpr size_t kMaxNormalizedAttributeScopes = 8;
 
 /** Escape one JSON Pointer path token. */
-std::string pointerToken(std::string_view token)
+inline std::string pointerToken(std::string_view token)
 {
     std::string result;
     result.reserve(token.size());
@@ -58,7 +59,7 @@ std::string pointerToken(std::string_view token)
 }
 
 /** Return true if a JSON Schema `type` accepts the requested scalar. */
-bool hasType(nlohmann::json const& schema, std::string_view type)
+inline bool hasType(nlohmann::json const& schema, std::string_view type)
 {
     auto typeIt = schema.find("type");
     if (typeIt == schema.end()) {
@@ -78,7 +79,7 @@ bool hasType(nlohmann::json const& schema, std::string_view type)
 }
 
 /** Return the x-mapget metadata object if present. */
-nlohmann::json const* mapgetMetadata(nlohmann::json const& schema)
+inline nlohmann::json const* mapgetMetadata(nlohmann::json const& schema)
 {
     auto it = schema.find("x-mapget");
     if (it == schema.end() || !it->is_object()) {
@@ -88,7 +89,7 @@ nlohmann::json const* mapgetMetadata(nlohmann::json const& schema)
 }
 
 /** Read a string field from a metadata object. */
-std::string metadataString(nlohmann::json const* metadata, std::string_view key)
+inline std::string metadataString(nlohmann::json const* metadata, std::string_view key)
 {
     if (!metadata) {
         return {};
@@ -109,7 +110,7 @@ struct BuildContext
 };
 
 /** Return the first JSON Schema combiner present on the object. */
-std::string_view combinerKey(nlohmann::json const& schema)
+inline std::string_view combinerKey(nlohmann::json const& schema)
 {
     for (std::string_view key : {"oneOf", "anyOf", "allOf"}) {
         auto it = schema.find(std::string(key));
@@ -121,20 +122,20 @@ std::string_view combinerKey(nlohmann::json const& schema)
 }
 
 /** Return whether this schema branch should be treated as an object schema. */
-bool isObjectSchema(nlohmann::json const& schema)
+inline bool isObjectSchema(nlohmann::json const& schema)
 {
     // Type-specific JSON Schema keywords do not change an explicit non-object type.
     return schema.contains("type") ? hasType(schema, "object") : schema.contains("properties");
 }
 
 /** Return whether this schema branch should be treated as an array schema. */
-bool isArraySchema(nlohmann::json const& schema)
+inline bool isArraySchema(nlohmann::json const& schema)
 {
     return schema.contains("type") ? hasType(schema, "array") : schema.contains("items");
 }
 
 /** Return whether this schema branch should be treated as a scalar value schema. */
-bool isValueSchema(nlohmann::json const& schema)
+inline bool isValueSchema(nlohmann::json const& schema)
 {
     return schema.contains("const") || schema.contains("enum") || hasType(schema, "null") ||
         hasType(schema, "boolean") || hasType(schema, "integer") || hasType(schema, "number") ||
@@ -142,14 +143,14 @@ bool isValueSchema(nlohmann::json const& schema)
 }
 
 /** Return whether a root-level Attribute field is metadata, not the shorthand value payload. */
-bool isAttributeScalarShorthandMetadataField(std::string_view fieldName)
+inline bool isAttributeScalarShorthandMetadataField(std::string_view fieldName)
 {
     return fieldName.starts_with("$") || fieldName == "_sourceData" || fieldName == "conditions" ||
         fieldName == "properties" || fieldName == "references" || fieldName == "validity";
 }
 
 /** Stable suffix for memoizing the same JSON branch under different schema kinds. */
-std::string_view kindMemoSuffix(std::optional<Kind> kind)
+inline std::string_view kindMemoSuffix(std::optional<Kind> kind)
 {
     if (!kind) {
         return "n";
@@ -166,7 +167,7 @@ std::string_view kindMemoSuffix(std::optional<Kind> kind)
 }
 
 /** Build a memo key that keeps x-mapget context-sensitive aliases distinct. */
-std::string
+inline std::string
 contextMemoKey(std::string_view pointer, std::optional<Kind> kind, BuildContext const& context)
 {
     auto appendSized = [](std::string& result, std::string_view value)
@@ -189,14 +190,14 @@ contextMemoKey(std::string_view pointer, std::optional<Kind> kind, BuildContext 
 }
 
 /** Identify the JSON projection wrapper whose first branch is the native multimap value. */
-bool isMapgetMultimap(nlohmann::json const& schema)
+inline bool isMapgetMultimap(nlohmann::json const& schema)
 {
     auto it = schema.find("x-mapget-multimap");
     return it != schema.end() && it->is_boolean() && it->get<bool>();
 }
 
 /** Build a registry key from known x-mapget annotations. */
-std::string
+inline std::string
 annotatedKey(nlohmann::json const& schema, std::string_view pointer, BuildContext const& context)
 {
     auto const* metadata = mapgetMetadata(schema);
@@ -237,7 +238,7 @@ annotatedKey(nlohmann::json const& schema, std::string_view pointer, BuildContex
 }
 
 /** Resolve local JSON Schema references of the form `#/...`. */
-nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string const& ref)
+inline nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string const& ref)
 {
     if (ref.empty() || ref.front() != '#') {
         throw std::runtime_error("LayerSchema only supports local JSON Schema references.");
@@ -247,7 +248,7 @@ nlohmann::json const& resolveLocalRef(nlohmann::json const& root, std::string co
 }
 
 /** Convert a local JSON Schema reference into a canonical registry pointer. */
-std::string refToPointer(std::string const& ref)
+inline std::string refToPointer(std::string const& ref)
 {
     if (ref.empty() || ref.front() != '#') {
         throw std::runtime_error("LayerSchema only supports local JSON Schema references.");
@@ -256,19 +257,19 @@ std::string refToPointer(std::string const& ref)
 }
 
 /** Return the deterministic key used by feature schema annotations. */
-std::string featureKey(std::string_view featureType)
+inline std::string featureKey(std::string_view featureType)
 {
     return "Feature:" + std::string(featureType);
 }
 
 /** Return the deterministic key used by Feature.properties annotations. */
-std::string featurePropertiesKey(std::string_view featureType)
+inline std::string featurePropertiesKey(std::string_view featureType)
 {
     return "FeatureProperties:" + std::string(featureType);
 }
 
 /** Return the deterministic key used by Feature.properties.layer annotations. */
-std::string attributeLayerMapKey(std::string_view featureType)
+inline std::string attributeLayerMapKey(std::string_view featureType)
 {
     return "AttributeLayerMap:" + std::string(featureType);
 }
@@ -428,7 +429,7 @@ struct SchemaBuilder
     }
     struct Entry
     {
-        simfil::SchemaId id_ = 0;
+        simfil::TypeId id_ = 0;
         std::string key_, jsonPointer_, metaType_;
     };
     using AttributePathOwner = LayerSchema::AttributePathOwner;
@@ -436,24 +437,27 @@ struct SchemaBuilder
     /** Logical object/array/value schema independent of any StringPool numbering. */
     struct LogicalSchema
     {
-        simfil::SchemaId id_ = simfil::NoSchemaId;
+        simfil::TypeId id_ = simfil::NoTypeId;
         Kind kind_ = Kind::Object;
         Entry entry_;
         std::vector<std::string> directFields_;
         std::vector<std::string> directEnumSymbols_;
-        std::map<std::string, std::vector<simfil::SchemaId>, std::less<>> childSchemas_;
-        std::vector<simfil::SchemaId> elementSchemas_;
+        std::map<std::string, std::vector<simfil::TypeId>, std::less<>> childSchemas_;
+        std::vector<simfil::TypeId> elementSchemas_;
         std::vector<AttributePathOwner> attributeOwners_;
         std::string attributeTypeCode_;
         std::string attributeType_;
         std::string zserioType_;
         std::string typeName_;
         Composition composition_ = Composition::None;
-        std::vector<simfil::SchemaId> alternatives_;
+        std::vector<simfil::TypeId> alternatives_;
         std::vector<simfil::ScalarValueType> enumValues_;
         nlohmann::json annotations_;
         std::set<std::string, std::less<>> multimapFields_;
         std::set<std::string, std::less<>> contextFields_;
+        // Construction-only protection for shared types and mapget-owned members.
+        bool immutable_ = false;
+        std::set<std::string, std::less<>> reservedFields_;
         std::map<std::string, bool, std::less<>> required_;
         std::optional<bool> nullable_;
         bool open_ = false;
@@ -469,8 +473,9 @@ struct SchemaBuilder
 
     std::vector<LogicalSchema> schemas_;
     std::vector<Entry> entriesById_;
-    std::map<std::string, simfil::SchemaId, std::less<>> idsByKey_;
-    std::map<std::pair<simfil::SchemaId, simfil::SchemaId>, simfil::SchemaId> attributeQueryRoots_;
+    std::map<std::string, simfil::TypeId, std::less<>> idsByKey_;
+    std::map<std::pair<simfil::TypeId, simfil::TypeId>, simfil::TypeId> attributeQueryRoots_;
+    std::map<simfil::TypeId, simfil::TypeId> arrayTypes_, nullableTypes_;
 
     /** Keep validation-only constraints and descriptive metadata, never a second schema graph. */
     static nlohmann::json annotations(nlohmann::json const& schema)
@@ -527,6 +532,7 @@ struct SchemaBuilder
             auto extra = *metadata;
             for (auto key :
                  {"schemaId",
+                  "typeId",
                   "kind",
                   "schemaKey",
                   "metaType",
@@ -542,6 +548,7 @@ struct SchemaBuilder
                   "enumBytes",
                   "bitmaskValues",
                   "domainDefinitions",
+                  "typeDefinitions",
                   "edgeAlternatives",
                   "unknownEdge"})
             {
@@ -579,9 +586,9 @@ struct SchemaBuilder
 
     /** Only value alternatives/array elements describe emitted roots. Object fields
      * may reference other feature types but do not declare their production. */
-    std::vector<simfil::SchemaId> featureRoots(simfil::SchemaId root) const
+    std::vector<simfil::TypeId> featureRoots(simfil::TypeId root) const
     {
-        std::vector<simfil::SchemaId> result, pending{root};
+        std::vector<simfil::TypeId> result, pending{root};
         std::vector<bool> seen(schemas_.size());
         while (!pending.empty()) {
             auto id = pending.back();
@@ -604,40 +611,40 @@ struct SchemaBuilder
         return result;
     }
 
-    [[nodiscard]] bool valid(simfil::SchemaId id) const
+    [[nodiscard]] bool valid(simfil::TypeId id) const
     {
-        return id != simfil::NoSchemaId && id < schemas_.size() && schemas_[id].id_ == id;
+        return id != simfil::NoTypeId && id < schemas_.size() && schemas_[id].id_ == id;
     }
 
-    [[nodiscard]] Kind kind(simfil::SchemaId id) const
+    [[nodiscard]] Kind kind(simfil::TypeId id) const
     {
         return valid(id) ? schemas_[id].kind_ : Kind::Unknown;
     }
 
-    [[nodiscard]] std::string_view metaType(simfil::SchemaId id) const
+    [[nodiscard]] std::string_view metaType(simfil::TypeId id) const
     {
-        return valid(id) ? entriesById_[id].metaType_ : std::string_view{};
+        return valid(id) ? schemas_[id].entry_.metaType_ : std::string_view{};
     }
 
-    [[nodiscard]] std::string_view attributeTypeCode(simfil::SchemaId id) const
+    [[nodiscard]] std::string_view attributeTypeCode(simfil::TypeId id) const
     {
         return valid(id) ? schemas_[id].attributeTypeCode_ : std::string_view{};
     }
 
     /** Allocate one domain, preserving a reserved canonical transport identity when supplied. */
-    simfil::SchemaId allocate(
+    simfil::TypeId allocate(
         Kind kind,
         std::string key,
         std::string pointer,
         std::string metaType,
-        simfil::SchemaId requested = simfil::NoSchemaId)
+        simfil::TypeId requested = simfil::NoTypeId)
     {
-        if (requested == simfil::NoSchemaId && schemas_.size() > simfil::MaxSchemaId) {
-            throw std::runtime_error("LayerSchema exhausted the uint16 SchemaId domain.");
+        if (requested == simfil::NoTypeId && schemas_.size() > simfil::MaxTypeId) {
+            throw std::runtime_error("LayerSchema exhausted the uint16 TypeId domain.");
         }
 
-        auto id = requested == simfil::NoSchemaId ?
-            static_cast<simfil::SchemaId>(schemas_.size()) :
+        auto id = requested == simfil::NoTypeId ?
+            static_cast<simfil::TypeId>(schemas_.size()) :
             requested;
         Entry entry{id, key, pointer, std::move(metaType)};
         LogicalSchema schema;
@@ -656,16 +663,16 @@ struct SchemaBuilder
         }
         schemas_[id] = std::move(schema);
         entriesById_[id] = std::move(entry);
-        if (requested == simfil::NoSchemaId) {
+        if (requested == simfil::NoTypeId) {
             // Canonical import restores exact aliases from metadata. A descriptive
-            // key can occur on several context-specific domains without owning its lookup.
+            // key can occur on several context-specific types without owning its lookup.
             registerKey(key, id);
             registerKey(pointer, id);
         }
         return id;
     }
 
-    void registerAttributeOwner(simfil::SchemaId id, AttributePathOwner owner)
+    void registerAttributeOwner(simfil::TypeId id, AttributePathOwner owner)
     {
         if (!valid(id) || owner.featureType_.empty() || owner.attributeLayerName_.empty() ||
             owner.attributeName_.empty())
@@ -679,7 +686,8 @@ struct SchemaBuilder
             owners,
             [&](auto const& existing)
             {
-                return existing.featureType_ == owner.featureType_ &&
+                return existing.featureLayer_ == owner.featureLayer_ &&
+                    existing.featureType_ == owner.featureType_ &&
                     existing.attributeLayerName_ == owner.attributeLayerName_ &&
                     existing.attributeName_ == owner.attributeName_;
             });
@@ -691,7 +699,7 @@ struct SchemaBuilder
     /** Retain producer metadata independently of dictionary IDs and derived reachability indexes.
      */
     void registerSchemaMetadata(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         nlohmann::json const& schema,
         BuildContext const& context,
         std::string_view metaType,
@@ -714,6 +722,9 @@ struct SchemaBuilder
         domain.typeName_ = metadataString(metadata, "typename");
         if (domain.typeName_.empty()) {
             domain.typeName_ = domain.zserioType_;
+        }
+        if (domain.typeName_.empty()) {
+            domain.typeName_ = metadataString(metadata, "sourceType");
         }
         if (domain.typeName_.empty() && metaType == "Feature") {
             domain.typeName_ = context.featureType_;
@@ -785,7 +796,11 @@ struct SchemaBuilder
                 for (auto const& owner : *it) {
                     registerAttributeOwner(
                         id,
-                        {owner.at("featureType"), owner.at("layer"), owner.at("name"), id});
+                        {owner.at("featureType"),
+                         owner.at("layer"),
+                         owner.at("name"),
+                         id,
+                         owner.value("featureLayer", std::string{})});
                 }
             }
             if (auto it = metadata->find("enumBytes"); it != metadata->end()) {
@@ -826,17 +841,20 @@ struct SchemaBuilder
             if (!inserted && found->second != id)
                 throw std::invalid_argument("Conflicting qualified attribute schema key: " + key);
         }
-        registerAttributeOwner(
-            id,
-            AttributePathOwner{
-                context.featureType_,
-                context.attributeLayerName_,
-                std::move(attributeName),
-                id});
+        // Canonical exports already carry the complete use-site inventory. Inferring
+        // an additional unqualified owner would duplicate its layer-qualified entry.
+        if (!metadata || !metadata->contains("attributeOwners"))
+            registerAttributeOwner(
+                id,
+                AttributePathOwner{
+                    context.featureType_,
+                    context.attributeLayerName_,
+                    std::move(attributeName),
+                    id});
     }
 
     [[nodiscard]] std::optional<AttributePathOwner>
-    uniqueAttributeOwner(simfil::SchemaId id, std::string_view featureType) const
+    uniqueAttributeOwner(simfil::TypeId id, std::string_view featureType) const
     {
         if (!valid(id)) {
             return std::nullopt;
@@ -856,10 +874,10 @@ struct SchemaBuilder
     }
 
     [[nodiscard]] std::vector<std::string>
-    constantTypeNames(simfil::SchemaId id, std::string_view symbolName) const
+    constantTypeNames(simfil::TypeId id, std::string_view symbolName) const
     {
         std::vector<std::string> result;
-        std::vector<simfil::SchemaId> visited;
+        std::vector<simfil::TypeId> visited;
         collectConstantTypeNames(id, symbolName, visited, result);
         std::ranges::sort(result);
         auto duplicates = std::ranges::unique(result);
@@ -868,9 +886,9 @@ struct SchemaBuilder
     }
 
     void collectConstantTypeNames(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         std::string_view symbolName,
-        std::vector<simfil::SchemaId>& visited,
+        std::vector<simfil::TypeId>& visited,
         std::vector<std::string>& result) const
     {
         if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
@@ -879,7 +897,12 @@ struct SchemaBuilder
         visited.push_back(id);
 
         auto const& schema = schemas_[id];
-        if (schema.attributeTypeCode_ == symbolName && !schema.attributeType_.empty()) {
+        if (!schema.attributeType_.empty() &&
+            (schema.attributeTypeCode_ == symbolName ||
+             std::ranges::any_of(
+                 schema.attributeOwners_,
+                 [&](auto const& owner) { return owner.attributeName_ == symbolName; })))
+        {
             result.push_back(schema.attributeType_);
         }
         auto const hasDirectEnumSymbol = std::ranges::find(schema.directEnumSymbols_, symbolName) !=
@@ -901,14 +924,14 @@ struct SchemaBuilder
         }
     }
 
-    void registerKey(std::string const& key, simfil::SchemaId id)
+    void registerKey(std::string const& key, simfil::TypeId id)
     {
-        if (!key.empty() && id != simfil::NoSchemaId) {
+        if (!key.empty() && id != simfil::NoTypeId) {
             idsByKey_.emplace(key, id);
         }
     }
 
-    void addDirectField(simfil::SchemaId parent, std::string_view fieldName)
+    void addDirectField(simfil::TypeId parent, std::string_view fieldName)
     {
         if (!valid(parent)) {
             return;
@@ -919,7 +942,7 @@ struct SchemaBuilder
         }
     }
 
-    void addEnumSymbol(simfil::SchemaId parent, std::string_view symbolName)
+    void addEnumSymbol(simfil::TypeId parent, std::string_view symbolName)
     {
         if (!valid(parent)) {
             return;
@@ -930,14 +953,14 @@ struct SchemaBuilder
         }
     }
 
-    void addEnumSymbols(simfil::SchemaId parent, std::span<const std::string> symbolNames)
+    void addEnumSymbols(simfil::TypeId parent, std::span<const std::string> symbolNames)
     {
         for (auto const& symbolName : symbolNames) {
             addEnumSymbol(parent, symbolName);
         }
     }
 
-    void addChild(simfil::SchemaId parent, std::string_view fieldName, simfil::SchemaId child)
+    void addChild(simfil::TypeId parent, std::string_view fieldName, simfil::TypeId child)
     {
         if (!valid(parent) || !valid(child)) {
             return;
@@ -948,7 +971,7 @@ struct SchemaBuilder
         }
     }
 
-    void addElementSchema(simfil::SchemaId parent, simfil::SchemaId child)
+    void addElementSchema(simfil::TypeId parent, simfil::TypeId child)
     {
         if (!valid(parent) || !valid(child)) {
             return;
@@ -959,22 +982,54 @@ struct SchemaBuilder
         }
     }
 
-    /** Encode directly built domains as JSON Schema definitions with stable model IDs. */
-    nlohmann::json exportDomains() const
+    /** Encode directly built types as JSON Schema definitions with stable model IDs. */
+    nlohmann::json exportTypes(std::span<simfil::TypeId const> roots = {}) const
     {
+        std::vector<bool> reachable(schemas_.size(), roots.empty());
+        std::vector<simfil::TypeId> pending(roots.begin(), roots.end());
+        while (!pending.empty()) {
+            auto id = pending.back();
+            pending.pop_back();
+            if (!valid(id) || reachable[id])
+                continue;
+            reachable[id] = true;
+            auto const& type = schemas_[id];
+            for (auto const& [_, children] : type.childSchemas_)
+                pending.insert(pending.end(), children.begin(), children.end());
+            pending.insert(pending.end(), type.elementSchemas_.begin(), type.elementSchemas_.end());
+            pending.insert(pending.end(), type.alternatives_.begin(), type.alternatives_.end());
+            auto annotations = type.annotations_;
+            validationSchemas(
+                annotations,
+                [&](auto const& value, auto const&)
+                {
+                    auto ref = value.at("$ref").template get<std::string>();
+                    constexpr std::string_view prefix = "#/definitions/";
+                    if (!ref.starts_with(prefix))
+                        throw std::invalid_argument("Invalid validation type reference.");
+                    auto digits = std::string_view(ref).substr(prefix.size());
+                    uint32_t target = 0;
+                    auto [end, error] =
+                        std::from_chars(digits.data(), digits.data() + digits.size(), target);
+                    if (error != std::errc{} || end != digits.data() + digits.size() ||
+                        target > simfil::MaxTypeId || !valid(simfil::TypeId(target)))
+                        throw std::invalid_argument("Dangling validation type reference.");
+                    pending.push_back(simfil::TypeId(target));
+                });
+        }
         // Use the dialect understood by our validator, including recursive definitions.
         auto result = nlohmann::json{
             {"$schema", "http://json-schema.org/draft-07/schema#"},
             {"definitions", nlohmann::json::object()}};
-        std::map<simfil::SchemaId, std::vector<std::string_view>> aliases;
+        std::map<simfil::TypeId, std::vector<std::string_view>> aliases;
         for (auto const& [key, id] : idsByKey_) {
             aliases[id].push_back(key);
         }
-        auto reference = [](simfil::SchemaId id)
+        auto reference = [](simfil::TypeId id)
         {
             return nlohmann::json{{"$ref", "#/definitions/" + std::to_string(id)}};
         };
-        auto edges = [&](std::span<simfil::SchemaId const> ids)
+        auto edges = [&](std::span<simfil::TypeId const> ids)
         {
             if (ids.empty()) {
                 return nlohmann::json{{"x-mapget", {{"unknownEdge", true}}}};
@@ -991,7 +1046,7 @@ struct SchemaBuilder
                 {"x-mapget", {{"edgeAlternatives", true}}}};
         };
         for (auto const& domain : schemas_) {
-            if (domain.id_ == simfil::NoSchemaId || domain.queryRoot_) {
+            if (domain.id_ == simfil::NoTypeId || domain.queryRoot_ || !reachable[domain.id_]) {
                 continue;  // Completion overlays are derived, not binary model identities.
             }
             auto& out = result["definitions"][std::to_string(domain.id_)];
@@ -1001,7 +1056,7 @@ struct SchemaBuilder
                 meta = nlohmann::json::object();
             }
             meta.update(
-                {{"schemaId", domain.id_},
+                {{"typeId", domain.id_},
                  {"kind", exportKind(domain.kind_)},
                  {"schemaKey", domain.entry_.key_},
                  {"metaType", domain.entry_.metaType_},
@@ -1023,6 +1078,7 @@ struct SchemaBuilder
             for (auto const& owner : domain.attributeOwners_) {
                 meta["attributeOwners"].push_back(
                     {{"featureType", owner.featureType_},
+                     {"featureLayer", owner.featureLayer_},
                      {"layer", owner.attributeLayerName_},
                      {"name", owner.attributeName_}});
             }
@@ -1084,6 +1140,15 @@ struct SchemaBuilder
                     if (!domain.elementSchemas_.empty()) {
                         out["items"] = edges(domain.elementSchemas_);
                     }
+                    // Native arrays can also support named lookup (e.g. a Point's
+                    // lon/lat/elevation). JSON validation ignores properties on arrays;
+                    // the explicit native kind/field roles retain those lookup edges.
+                    for (auto const& field : domain.directFields_) {
+                        auto children = domain.childSchemas_.find(field);
+                        out["properties"][field] = children == domain.childSchemas_.end() ?
+                            edges({}) :
+                            edges(children->second);
+                    }
                 }
             }
             else {
@@ -1106,20 +1171,20 @@ struct SchemaBuilder
                     // Native masks are lossless tagged scalars, not flag-label strings.
                     // Exact graph identity and encoding-width checks belong to bound import.
                     out["type"] = "object";
-                    out["required"] = {"_bitmask", "bits", "schema", "domain"};
+                    out["required"] = {"_bitmask", "bits", "schema", "typeId"};
                     out["additionalProperties"] = false;
                     out["properties"] = {
                         {"_bitmask", {{"const", true}}},
                         {"bits", {{"type", "string"}, {"pattern", "^0x[0-9a-f]{16}$"}}},
                         {"schema", {{"type", "string"}, {"minLength", 1}}},
-                        {"domain",
-                         {{"type", "integer"}, {"minimum", 1}, {"maximum", simfil::MaxSchemaId}}}};
+                        {"typeId",
+                         {{"type", "integer"}, {"minimum", 1}, {"maximum", simfil::MaxTypeId}}}};
                 }
                 else if (name == simfil::Schema::kindNameId(LayerSchema::BitmaskKind)) {
                     // Individual flags are not an exhaustive enum of rendered combinations.
                     out["type"] = "string";
                 }
-                if (domain.kind_ == Kind::Bytes) {
+                if (name == simfil::Schema::kindNameId(Kind::Bytes)) {
                     // The generic ModelNode JSON codec projects binary scalars to this object.
                     out["type"] = "object";
                     out["required"] = {"_bytes", "hex", "number"};
@@ -1146,14 +1211,21 @@ struct SchemaBuilder
                 }
             }
             for (auto const& value : domain.enumValues_) {
+                if (auto bytes = std::get_if<simfil::ByteArray>(&value))
+                    meta["enumBytes"].push_back(bytes->toHex());
                 if (literalEnum)
-                    break;
+                    continue;
                 std::visit(
                     [&](auto const& literal)
                     {
                         using T = std::decay_t<decltype(literal)>;
                         if constexpr (std::is_same_v<T, simfil::ByteArray>) {
-                            meta["enumBytes"].push_back(literal.toHex());
+                            auto number = literal.decodeBigEndianI64();
+                            out["enum"].push_back(
+                                {{"_bytes", true},
+                                 {"hex", literal.toHex(false)},
+                                 {"number",
+                                  number ? nlohmann::json(*number) : nlohmann::json(nullptr)}});
                         }
                         else if constexpr (std::is_same_v<T, simfil::Bitmask>) {
                             throw std::invalid_argument(
@@ -1170,9 +1242,10 @@ struct SchemaBuilder
             }
         }
         // An envelope introduces no extra schema identity before the producer's IDs.
-        result["x-mapget"] = {{"domainDefinitions", true}};
+        result["x-mapget"] = {{"typeDefinitions", true}};
         for (auto const& domain : schemas_) {
-            if (!domain.queryRoot_ && domain.entry_.metaType_ == "Feature") {
+            if (!domain.queryRoot_ && reachable[domain.id_] && domain.entry_.metaType_ == "Feature")
+            {
                 result["anyOf"].push_back(reference(domain.id_));
             }
         }
@@ -1180,8 +1253,8 @@ struct SchemaBuilder
     }
 
     void forEachDirectField(
-        simfil::SchemaId id,
-        const std::function<void(std::string_view, std::span<const simfil::SchemaId>)>& fn) const
+        simfil::TypeId id,
+        const std::function<void(std::string_view, std::span<const simfil::TypeId>)>& fn) const
     {
         if (!valid(id)) {
             return;
@@ -1200,7 +1273,7 @@ struct SchemaBuilder
     }
 
     void
-    forEachElementSchema(simfil::SchemaId id, const std::function<void(simfil::SchemaId)>& fn) const
+    forEachElementSchema(simfil::TypeId id, const std::function<void(simfil::TypeId)>& fn) const
     {
         if (!valid(id)) {
             return;
@@ -1211,49 +1284,49 @@ struct SchemaBuilder
         }
     }
 
-    [[nodiscard]] simfil::SchemaId childSchema(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId childSchema(
+        simfil::TypeId parent,
         std::string_view fieldName,
         std::optional<Kind> preferredKind) const
     {
-        std::vector<simfil::SchemaId> visited;
+        std::vector<simfil::TypeId> visited;
         return childSchema(parent, fieldName, preferredKind, visited);
     }
 
-    [[nodiscard]] simfil::SchemaId childSchema(
-        simfil::SchemaId parent,
+    [[nodiscard]] simfil::TypeId childSchema(
+        simfil::TypeId parent,
         std::string_view fieldName,
         std::optional<Kind> preferredKind,
-        std::vector<simfil::SchemaId>& visited) const
+        std::vector<simfil::TypeId>& visited) const
     {
         if (!valid(parent)) {
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         }
         if (std::ranges::find(visited, parent) != visited.end()) {
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         }
         visited.push_back(parent);
 
         auto const& schema = schemas_[parent];
         for (auto alternative : schema.alternatives_) {
             auto resolved = childSchema(alternative, fieldName, preferredKind, visited);
-            if (resolved != simfil::NoSchemaId) {
+            if (resolved != simfil::NoTypeId) {
                 return resolved;
             }
         }
         if (hasAffinity(schema.kind_, simfil::ValueType::Array)) {
             for (auto child : schema.elementSchemas_) {
                 auto resolved = childSchema(child, fieldName, preferredKind, visited);
-                if (resolved != simfil::NoSchemaId) {
+                if (resolved != simfil::NoTypeId) {
                     return resolved;
                 }
             }
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         }
 
         auto fieldIt = schema.childSchemas_.find(fieldName);
         if (fieldIt == schema.childSchemas_.end()) {
-            return simfil::NoSchemaId;
+            return simfil::NoTypeId;
         }
 
         for (auto id : fieldIt->second) {
@@ -1261,20 +1334,20 @@ struct SchemaBuilder
                 return id;
             }
         }
-        return fieldIt->second.empty() ? simfil::NoSchemaId : fieldIt->second.front();
+        return fieldIt->second.empty() ? simfil::NoTypeId : fieldIt->second.front();
     }
 
     [[nodiscard]] std::optional<LayerSchema::NamedSchemaPath>
-    firstScalarFieldPath(simfil::SchemaId id, bool skipRootAttributeMetadataFields = false) const
+    firstScalarFieldPath(simfil::TypeId id, bool skipRootAttributeMetadataFields = false) const
     {
-        std::vector<simfil::SchemaId> visited;
+        std::vector<simfil::TypeId> visited;
         LayerSchema::NamedSchemaPath current;
         return firstScalarFieldPath(id, visited, current, skipRootAttributeMetadataFields, true);
     }
 
     [[nodiscard]] std::optional<LayerSchema::NamedSchemaPath> firstScalarFieldPath(
-        simfil::SchemaId id,
-        std::vector<simfil::SchemaId>& visited,
+        simfil::TypeId id,
+        std::vector<simfil::TypeId>& visited,
         LayerSchema::NamedSchemaPath& current,
         bool skipRootAttributeMetadataFields,
         bool isRoot) const
@@ -1356,13 +1429,19 @@ struct SchemaBuilder
     }
 
     [[nodiscard]] std::vector<LayerSchema::NamedSchemaPath>
-    scalarFieldPathsForAttribute(simfil::SchemaId rootSchema, std::string_view attributeTypeCode)
+    scalarFieldPathsForAttribute(simfil::TypeId rootSchema, std::string_view attributeTypeCode)
         const
     {
         std::vector<LayerSchema::NamedSchemaPath> paths;
-        std::vector<simfil::SchemaId> visited;
+        std::vector<simfil::TypeId> visited;
         LayerSchema::NamedSchemaPath current;
-        collectScalarFieldPathsForAttribute(rootSchema, attributeTypeCode, visited, current, paths);
+        collectScalarFieldPathsForAttribute(
+            rootSchema,
+            attributeTypeCode,
+            visited,
+            current,
+            paths,
+            {});
         std::ranges::sort(paths);
         auto duplicates = std::ranges::unique(paths);
         paths.erase(duplicates.begin(), duplicates.end());
@@ -1370,18 +1449,28 @@ struct SchemaBuilder
     }
 
     void collectScalarFieldPathsForAttribute(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         std::string_view attributeTypeCode,
-        std::vector<simfil::SchemaId>& visited,
+        std::vector<simfil::TypeId>& visited,
         LayerSchema::NamedSchemaPath& current,
-        std::vector<LayerSchema::NamedSchemaPath>& paths) const
+        std::vector<LayerSchema::NamedSchemaPath>& paths,
+        std::string_view boundName) const
     {
         if (!valid(id) || std::ranges::find(visited, id) != visited.end()) {
             return;
         }
 
         auto const& schema = schemas_[id];
-        if (schema.attributeTypeCode_ == attributeTypeCode) {
+        bool matches = boundName.empty() ?
+            schema.attributeTypeCode_ == attributeTypeCode :
+            boundName == attributeTypeCode && schema.entry_.metaType_ == "Attribute";
+        if (visited.empty() && boundName.empty())
+            matches =
+                matches ||
+                std::ranges::any_of(
+                    schema.attributeOwners_,
+                    [&](auto const& owner) { return owner.attributeName_ == attributeTypeCode; });
+        if (matches) {
             if (auto suffix = firstScalarFieldPath(id, true)) {
                 auto path = current;
                 path.insert(path.end(), suffix->begin(), suffix->end());
@@ -1397,7 +1486,8 @@ struct SchemaBuilder
                 attributeTypeCode,
                 visited,
                 current,
-                paths);
+                paths,
+                boundName);
         }
         if (hasAffinity(schema.kind_, simfil::ValueType::Object)) {
             for (auto const& fieldName : schema.directFields_) {
@@ -1419,7 +1509,8 @@ struct SchemaBuilder
                         attributeTypeCode,
                         visited,
                         current,
-                        paths);
+                        paths,
+                        schema.entry_.metaType_ == "AttributeContainer" ? fieldName : boundName);
                 }
                 current.pop_back();
             }
@@ -1432,7 +1523,8 @@ struct SchemaBuilder
                     attributeTypeCode,
                     visited,
                     current,
-                    paths);
+                    paths,
+                    boundName);
             }
             current.pop_back();
         }
@@ -1451,25 +1543,28 @@ public:
 
     /** Reserve canonical IDs before following references; ordinary input uses deterministic
      * traversal. */
-    simfil::SchemaId buildAll()
+    simfil::TypeId buildAll()
     {
         auto metadata = mapgetMetadata(root_);
-        if (metadata && metadata->value("domainDefinitions", false)) {
+        if (metadata &&
+            metadata->value("typeDefinitions", metadata->value("domainDefinitions", false))) {
             auto const* keyword = root_.contains("definitions") ? "definitions" : "$defs";
             auto const& definitions = root_.at(keyword);
             auto prefix = "/" + std::string(keyword) + "/";
             size_t highest = 0;
             for (auto const& [name, definition] : definitions.items()) {
-                auto const& encodedId = definition.at("x-mapget").at("schemaId");
+                auto const& encodedId =
+                    definition.at("x-mapget")
+                        .at(definition.at("x-mapget").contains("typeId") ? "typeId" : "schemaId");
                 if (!encodedId.is_number_integer() ||
                     (!encodedId.is_number_unsigned() && encodedId.get<int64_t>() < 0))
                     throw std::invalid_argument("Invalid transported schema ID.");
                 auto id = encodedId.get<uint64_t>();
-                if (id == 0 || id > simfil::MaxSchemaId || !reservedIds_.insert(id).second) {
+                if (id == 0 || id > simfil::MaxTypeId || !reservedIds_.insert(id).second) {
                     throw std::invalid_argument("Invalid or duplicate transported schema ID.");
                 }
                 highest = std::max(highest, size_t(id));
-                transportedIds_[prefix + pointerToken(name)] = static_cast<simfil::SchemaId>(id);
+                transportedIds_[prefix + pointerToken(name)] = static_cast<simfil::TypeId>(id);
             }
             registry_.schemas_.resize(highest + 1);
             registry_.entriesById_.resize(highest + 1);
@@ -1483,7 +1578,7 @@ public:
     }
 
     /** Append an input fragment without confusing its local references with another fragment. */
-    simfil::SchemaId append()
+    simfil::TypeId append()
     {
         pointerPrefix_ = "#/import/" + std::to_string(registry_.schemas_.size());
         return build(root_, pointerPrefix_, {}, std::nullopt);
@@ -1491,7 +1586,7 @@ public:
 
 private:
     void compileValidation(
-        simfil::SchemaId id,
+        simfil::TypeId id,
         nlohmann::json const& schema,
         std::string const& pointer,
         BuildContext const& context)
@@ -1514,16 +1609,16 @@ private:
     }
 
     /** Honor stable IDs only in the canonical transport envelope, never arbitrary annotations. */
-    simfil::SchemaId allocate(Kind kind, std::string key, std::string pointer, std::string metaType)
+    simfil::TypeId allocate(Kind kind, std::string key, std::string pointer, std::string metaType)
     {
         auto found = transportedIds_.find(pointer);
-        auto requested = found == transportedIds_.end() ? simfil::NoSchemaId : found->second;
+        auto requested = found == transportedIds_.end() ? simfil::NoTypeId : found->second;
         return registry_
             .allocate(kind, std::move(key), std::move(pointer), std::move(metaType), requested);
     }
 
     /** A plural field edge is not an extra union definition in the producer's namespace. */
-    std::vector<simfil::SchemaId> buildEdges(
+    std::vector<simfil::TypeId> buildEdges(
         nlohmann::json const& schema,
         std::string const& pointer,
         BuildContext const& context)
@@ -1538,7 +1633,7 @@ private:
             return {};
         }
         if (metadata && metadata->value("edgeAlternatives", false)) {
-            std::vector<simfil::SchemaId> result;
+            std::vector<simfil::TypeId> result;
             auto const& branches = schema.at("anyOf");
             for (size_t i = 0; i < branches.size(); ++i) {
                 result.push_back(build(
@@ -1553,7 +1648,7 @@ private:
     }
 
     /** Give a shared physical Attribute a lightweight named owner, retaining shared payloads. */
-    simfil::SchemaId contextualAttribute(simfil::SchemaId source, BuildContext const& context)
+    simfil::TypeId contextualAttribute(simfil::TypeId source, BuildContext const& context)
     {
         auto copy = registry_.schemas_.at(source);
         if (!reservedIds_.empty() || copy.entry_.metaType_ != "Attribute" ||
@@ -1571,7 +1666,7 @@ private:
         if (auto found = registry_.idsByKey_.find(key); found != registry_.idsByKey_.end())
             return found->second;
         // Only this Attribute root is contextual. Its payload edges continue
-        // referencing the shared physical domains, and the generic pointer alias
+        // referencing the shared physical types, and the generic pointer alias
         // remains bound to the unqualified root for unknown runtime names.
         auto id = registry_.allocate(copy.kind_, key, {}, "Attribute");
         copy.id_ = id;
@@ -1587,8 +1682,8 @@ private:
         return id;
     }
 
-    /** Compile domains without flattening logical alternatives into a selected branch. */
-    simfil::SchemaId build(
+    /** Compile types without flattening logical alternatives into a selected branch. */
+    simfil::TypeId build(
         nlohmann::json const& schema,
         std::string pointer,
         BuildContext context,
@@ -1663,7 +1758,7 @@ private:
             if (terms.size() == 1 && !hasBase && terms.front().first == "$ref") {
                 auto ref = terms.front().second.get<std::string>();
                 if (!pointerPrefix_.empty()) {
-                    // Converter fragments may refer to shared domains already in this graph.
+                    // Converter fragments may refer to shared types already in this graph.
                     if (auto found = registry_.idsByKey_.find(ref);
                         found != registry_.idsByKey_.end())
                     {
@@ -1793,7 +1888,7 @@ private:
             memoKey);
     }
 
-    simfil::SchemaId buildObject(
+    simfil::TypeId buildObject(
         nlohmann::json const& schema,
         std::string pointer,
         BuildContext context,
@@ -1846,7 +1941,7 @@ private:
         return id;
     }
 
-    simfil::SchemaId buildArray(
+    simfil::TypeId buildArray(
         nlohmann::json const& schema,
         std::string pointer,
         BuildContext context,
@@ -1859,6 +1954,18 @@ private:
         memo_[memoKey] = id;
         compileValidation(id, schema, pointer, context);
 
+        // Ordinary JSON Schema properties on an array impose no value contract.
+        // Interpret named lookup only when the input explicitly declares a native type.
+        if (SchemaBuilder::jsonKind(mapgetMetadata(schema))) {
+            if (auto properties = schema.find("properties");
+                properties != schema.end() && properties->is_object())
+                for (auto const& [name, value] : properties->items()) {
+                    registry_.addDirectField(id, name);
+                    for (auto child :
+                         buildEdges(value, pointer + "/properties/" + pointerToken(name), context))
+                        registry_.addChild(id, name, child);
+                }
+        }
         auto itemsIt = schema.find("items");
         if (itemsIt == schema.end()) {
             return id;
@@ -1870,7 +1977,7 @@ private:
         return id;
     }
 
-    simfil::SchemaId buildValue(
+    simfil::TypeId buildValue(
         nlohmann::json const& schema,
         std::string pointer,
         BuildContext context,
@@ -1971,10 +2078,10 @@ private:
 
     SchemaBuilder& registry_;
     nlohmann::json const& root_;
-    std::map<std::string, simfil::SchemaId> memo_;
+    std::map<std::string, simfil::TypeId> memo_;
     std::set<std::string> activeRefs_;
-    std::set<simfil::SchemaId> reservedIds_;
-    std::map<std::string, simfil::SchemaId> transportedIds_;
+    std::set<simfil::TypeId> reservedIds_;
+    std::map<std::string, simfil::TypeId> transportedIds_;
     std::string pointerPrefix_;
     size_t depth_ = 0, work_ = 0;
 };

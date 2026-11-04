@@ -59,6 +59,296 @@ MapSchema::Ptr simpleSchema()
 }
 
 TEST_CASE(
+    "Native feature IDs preserve unsigned 64-bit projection metadata",
+    "[mapschema][schema-native]")
+{
+    auto schema = std::make_shared<MapSchema>();
+    auto layer = schema->newLayer("Objects", LayerType::Features);
+    REQUIRE(layer->newFeature(identity("Object", "objectId")) != simfil::NoTypeId);
+    auto signedIdentity = identity("Signed", "objectId");
+    signedIdentity.uniqueIdCompositions_[0][0].datatype_ = IdPartDataType::I64;
+    REQUIRE(layer->newFeature(std::move(signedIdentity)) != simfil::NoTypeId);
+    schema->finalize();
+    auto binary = MapSchema::read(bytes(*schema));
+    auto json = LayerSchema::fromJsonSchema(layer->toJsonSchema());
+    for (auto current : {layer, binary->layer("Objects"), json}) {
+        auto exported = current->toJsonSchema();
+        for (auto name : {"Object", "Signed"}) {
+            CAPTURE(name);
+            auto type = current->childSchema(current->featureSchema(name), "objectId");
+            REQUIRE(type != simfil::NoTypeId);
+            auto const& definition = exported.at("definitions").at(std::to_string(type));
+            CHECK(definition.at("minimum") == INT64_MIN);
+            CHECK(definition.at("maximum") == INT64_MAX);
+            auto const& metadata = definition.at("x-mapget");
+            if (std::string_view(name) == "Object") {
+                CHECK(metadata.at("datatype") == "U64");
+                CHECK(metadata.at("encoding") == "signed-64-bit-pattern");
+            }
+            else {
+                CHECK(metadata.at("datatype") == "I64");
+                CHECK_FALSE(metadata.contains("encoding"));
+            }
+        }
+    }
+}
+
+TEST_CASE(
+    "Native mapget construction shares common shapes and protects their contracts",
+    "[mapschema][schema-native]")
+{
+    using Kind = simfil::Schema::Kind;
+    using Builtin = MapSchema::Builtin;
+    auto schema = std::make_shared<MapSchema>();
+    auto road = schema->newLayer("Road", LayerType::Features);
+    auto lane = schema->newLayer("Lane", LayerType::Features);
+    auto root = road->newFeature(identity("Road", "roadId"));
+    auto laneRoot = lane->newFeature(identity("Lane", "laneId"));
+    auto integer = schema->primitive(Kind::Int);
+    auto refs = schema->builtin(Builtin::SourceDataReferences);
+    auto validity = schema->builtin(Builtin::Validities);
+    auto geometry = schema->builtin(Builtin::Geometry);
+    auto attribute = schema->newAttribute("accuracy", "AdasAccuracy");
+    schema->addFieldSchema(attribute, "value", integer);
+    CHECK(road->childSchema(root, "_sourceData") == refs);
+    CHECK(lane->childSchema(laneRoot, "_sourceData") == refs);
+    CHECK(road->childSchema(attribute, "_sourceData") == refs);
+    CHECK(road->childSchema(attribute, "validity") == validity);
+    CHECK(schema->arrayOf(schema->builtin(Builtin::SourceDataReference)) == refs);
+    auto before = schema->typeCount();
+    for (int i = 0; i < 100; ++i) {
+        CHECK(schema->primitive(Kind::Int) == integer);
+        CHECK(schema->builtin(Builtin::SourceDataReferences) == refs);
+        CHECK(road->childSchema(root, "geometry") == schema->nullable(geometry));
+    }
+    CHECK(schema->typeCount() == before);
+    CHECK_THROWS(schema->addFieldSchema(attribute, "_sourceData", integer));
+    CHECK_THROWS(schema->addFieldSchema(root, "attributes", road->featurePropertiesSchema("Road")));
+    CHECK_THROWS(schema->addFieldSchema(refs, "unexpected", integer));
+    CHECK_THROWS(schema->setOpen(geometry, true));
+    CHECK_THROWS(schema->addNamedValue(integer, {"SENTINEL", int64_t{255}}));
+    CHECK_THROWS(schema->setFieldRequired(root, "typeId", false));
+    CHECK_THROWS(schema->setFieldRole(root, "properties", simfil::Schema::FieldRole::Context));
+    CHECK_NOTHROW(schema->addFieldSchema(attribute, "_sourceData", refs));
+    road->setRelationDeclarations(
+        {{"Road",
+          "lane",
+          {"Lane"},
+          true,
+          LayerSchema::RelationDeclaration::Locality::SameContainer}});
+    lane->setRelationDeclarations({});
+    schema->finalize();
+    CHECK_FALSE(schema->type(geometry)->nullable().value_or(true));
+    CHECK(schema->type(road->childSchema(root, "geometry"))->nullable() == true);
+    CHECK(road->childSchema(root, "attributes") == road->childSchema(root, "properties"));
+    CHECK(
+        std::ranges::find(road->directFields(root), "attributes") ==
+        road->directFields(root).end());
+    CHECK(road->hasRelationDeclarations());
+    CHECK(road->relationsTo("Lane").size() == 1);
+    CHECK(lane->hasRelationDeclarations());
+    CHECK(lane->relationDeclarations().empty());
+    auto copy = MapSchema::read(bytes(*schema));
+    CHECK(copy->layer("Road")->relationsTo("Lane").size() == 1);
+    CHECK(copy->layer("Lane")->hasRelationDeclarations());
+    CHECK(copy->layer("Lane")->relationDeclarations().empty());
+    CHECK(
+        copy->layer("Road")->childSchema(root, "attributes") ==
+        road->childSchema(root, "properties"));
+}
+
+TEST_CASE(
+    "Shared Attribute types retain use-site selection without per-name type allocation",
+    "[mapschema][schema-native]")
+{
+    using Kind = simfil::Schema::Kind;
+    auto schema = std::make_shared<MapSchema>();
+    auto layer = schema->newLayer("Road", LayerType::Features);
+    auto root = layer->newFeature(identity("Road", "roadId"));
+    auto container = layer->addSchema(Kind::Object, {}, "AttributeContainer");
+    layer->addFieldSchema(layer->attributeLayerMapSchema("Road"), "rules", container, true);
+    auto attribute = schema->newAttribute("shared", "PhysicalSpeed");
+    schema->addFieldSchema(attribute, "speed", schema->primitive(Kind::Int));
+    auto before = schema->typeCount();
+    for (std::string name : {"SPEED_LIMIT", "ADVISORY_SPEED"}) {
+        layer->bindAttribute(attribute, "Road", "rules", name);
+        layer->addFieldSchema(container, name, attribute, true);
+    }
+    CHECK(schema->typeCount() == before);
+    CHECK(layer->ownerForPath("Road", attribute, {}).kind_ == LayerSchema::PathOwnerKind::Unknown);
+    for (std::string name : {"SPEED_LIMIT", "ADVISORY_SPEED"}) {
+        std::vector<std::string> path{"properties", "layer", "rules", name, "speed"};
+        auto owner = layer->ownerForPath("Road", root, path);
+        REQUIRE(owner.kind_ == LayerSchema::PathOwnerKind::Attribute);
+        CHECK(owner.attribute_.attributeName_ == name);
+        CHECK(owner.attribute_.attributeSchema_ == attribute);
+        auto paths = layer->scalarFieldPathsForAttribute(root, name);
+        REQUIRE(paths.size() == 1);
+        REQUIRE(paths.front().size() == 5);
+        CHECK(paths.front()[3].field_ == name);
+    }
+    schema->finalize();
+    auto copy = MapSchema::read(bytes(*schema));
+    for (auto const& candidate : {MapSchema::ConstPtr(schema), copy}) {
+        auto view = candidate->layer("Road");
+        CHECK(view->attributeScopes().size() == 2);
+        CHECK(candidate->statistics()["counts"]["queryContexts"] == 1);
+        auto query = view->attributeQuerySchema("Road", attribute);
+        REQUIRE(query != simfil::NoTypeId);
+        CHECK(view->childSchema(query, "$feature") == root);
+        for (std::string name : {"SPEED_LIMIT", "ADVISORY_SPEED"}) {
+            std::vector<std::string> path{"properties", "layer", "rules", name, "speed"};
+            CHECK(view->ownerForPath("Road", root, path).attribute_.attributeName_ == name);
+            auto paths = view->scalarFieldPathsForAttribute(root, name);
+            REQUIRE(paths.size() == 1);
+            CHECK(paths.front()[3].field_ == name);
+        }
+    }
+}
+
+TEST_CASE(
+    "Native named values preserve raw ordinals across binary and JSON boundaries",
+    "[mapschema][schema-native]")
+{
+    auto schema = std::make_shared<MapSchema>();
+    auto layer = schema->newLayer("Road", LayerType::Features);
+    auto code = layer->addJsonSchema(
+        {{"type", "string"},
+         {"enum", {"UNKNOWN", "HIGH"}},
+         {"x-mapget",
+          {{"sourceType", "AdasAccuracy"},
+           {"namedValues",
+            {{{"name", "UNKNOWN"}, {"value", "UNKNOWN"}, {"rawValue", uint64_t{0}}},
+             {{"name", "HIGH"}, {"value", "HIGH"}, {"rawValue", UINT64_MAX}}}}}}});
+    layer->setRootSchema(code);
+    schema->finalize();
+    CHECK(schema->type(code)->typeName() == "AdasAccuracy");
+    auto copy = MapSchema::read(bytes(*schema));
+    for (auto const& owner : {MapSchema::ConstPtr(schema), copy}) {
+        size_t index = 0;
+        owner->forEachNamedValue(
+            code,
+            [&](auto const& value)
+            {
+                REQUIRE(value.rawValue);
+                CHECK(std::get<uint64_t>(*value.rawValue) == (index++ ? UINT64_MAX : 0));
+            });
+        CHECK(index == 2);
+        auto json = owner->layer("Road")->toJsonSchema();
+        auto const& values = json["definitions"][std::to_string(code)]["x-mapget"]["namedValues"];
+        CHECK(values[0]["rawValue"] == 0);
+        CHECK(values[1]["rawValue"] == UINT64_MAX);
+        auto reimport = LayerSchema::fromJsonSchema(json);
+        size_t count = 0;
+        reimport->mapSchema()->forEachNamedValue(
+            reimport->rootSchema(),
+            [&](auto const& value)
+            {
+                REQUIRE(value.rawValue);
+                ++count;
+            });
+        CHECK(count == 2);
+    }
+}
+
+TEST_CASE(
+    "Native nullable variants preserve validation and exclusive branch multiplicity",
+    "[mapschema][schema-native]")
+{
+    using Kind = simfil::Schema::Kind;
+    auto schema = std::make_shared<MapSchema>();
+    auto layer = schema->newLayer("Values", LayerType::Features);
+    auto object = layer->addSchema(Kind::Object);
+    layer->setRootSchema(object);
+    auto enumeration = schema->primitive(Kind::String, std::vector<std::string>{"X"});
+    auto literal = schema->addSchema(Kind::Int);
+    schema->setJsonSchemaAnnotations(literal, {{"const", 7}});
+    auto excluded = schema->addSchema(Kind::Int);
+    schema->setJsonSchemaAnnotations(excluded, {{"not", {{"const", nullptr}}}});
+    auto bytesType = schema->addSchema(Kind::Bytes);
+    schema->addEnumValue(bytesType, *simfil::ByteArray::fromHex("ff"));
+    auto exclusive = schema->addSchema(Kind::OneOf);
+    schema->setComposition(exclusive, simfil::Schema::Composition::OneOf);
+    schema->addAlternative(exclusive, enumeration);
+    schema->addAlternative(exclusive, enumeration);
+    for (auto const& [name, type] : std::vector<std::pair<std::string, simfil::TypeId>>{
+             {"enum", enumeration},
+             {"const", literal},
+             {"bytes", schema->primitive(Kind::Bytes)},
+             {"notNull", excluded},
+             {"exclusive", exclusive},
+             {"byteEnum", bytesType},
+             {"never", schema->addSchema(Kind::Never)}})
+        schema->addFieldSchema(object, name, schema->nullable(type));
+    auto nullable = schema->addSchema(Kind::String);
+    schema->setNullable(nullable, true);
+    CHECK(schema->nullable(nullable) == nullable);
+    CHECK_THROWS(schema->addEnumSymbol(nullable, "X"));
+    CHECK_THROWS(schema->setAttributeMetadata(enumeration, {}, "Wrong", "Wrong"));
+    schema->finalize();
+    REQUIRE(schema->type(exclusive)->alternatives().size() == 2);
+
+    auto binary = MapSchema::read(bytes(*schema));
+    for (auto const& view :
+         {layer, binary->layer("Values"), LayerSchema::fromJsonSchema(layer->toJsonSchema())})
+    {
+        nlohmann::json_schema::json_validator validator;
+        validator.set_root_schema(view->toJsonSchema());
+        CHECK_NOTHROW(validator.validate(
+            {{"enum", nullptr},
+             {"const", nullptr},
+             {"bytes", nullptr},
+             {"notNull", nullptr},
+             {"exclusive", nullptr},
+             {"byteEnum", nullptr},
+             {"never", nullptr}}));
+        CHECK_NOTHROW(validator.validate(
+            {{"enum", "X"},
+             {"const", 7},
+             {"bytes", {{"_bytes", true}, {"hex", "ff"}, {"number", 255}}},
+             {"notNull", 42},
+             {"byteEnum", {{"_bytes", true}, {"hex", "ff"}, {"number", 255}}}}));
+        CHECK_THROWS(validator.validate({{"enum", "Y"}}));
+        CHECK_THROWS(validator.validate({{"const", 8}}));
+        CHECK_THROWS(validator.validate({{"bytes", "ff"}}));
+        CHECK_THROWS(validator.validate({{"exclusive", "X"}}));
+        CHECK_THROWS(validator.validate({{"never", false}}));
+        CHECK_THROWS(
+            validator.validate({{"byteEnum", {{"_bytes", true}, {"hex", "fe"}, {"number", 254}}}}));
+    }
+}
+
+TEST_CASE(
+    "Native layer JSON export includes only its reachable contracts",
+    "[mapschema][schema-native]")
+{
+    auto schema = std::make_shared<MapSchema>();
+    auto road = schema->newLayer("Road", LayerType::Features);
+    auto lane = schema->newLayer("Lane", LayerType::Features);
+    road->newFeature(identity("Road", "roadId"));
+    auto laneRoot = lane->newFeature(identity("Lane", "laneId"));
+    road->setRelationDeclarations(
+        {{"Road",
+          "lanes",
+          {"Lane"},
+          true,
+          LayerSchema::RelationDeclaration::Locality::SameContainer}});
+    schema->finalize();
+    auto json = road->toJsonSchema();
+    CHECK_FALSE(json["definitions"].contains(std::to_string(laneRoot)));
+    auto importedOwner = std::make_shared<MapSchema>();
+    auto imported = importedOwner->importLayer(
+        "Road",
+        LayerType::Features,
+        json,
+        std::vector<FeatureTypeInfo>{identity("Road", "roadId")});
+    importedOwner->finalize();
+    REQUIRE(imported->hasRelationDeclarations());
+    REQUIRE(imported->relationsTo("Lane").size() == 1);
+    CHECK(imported->relationsTo("Lane").front().name_ == "lanes");
+}
+
+TEST_CASE(
     "Layer schema search shares ranked representative discovery without transport policy",
     "[mapschema][schema-search]")
 {
@@ -118,14 +408,14 @@ TEST_CASE(
     auto result = layer->find("FoR-wa_rd", roots, types, {.maxResults = 1}, 1024 * 1024, &summary);
     REQUIRE(result["items"].size() == 1);
     auto const& item = result["items"][0];
-    CHECK(item["schemaId"] == direction);
+    CHECK(item["typeId"] == direction);
     CHECK(item["enum"]["matchingSymbols"][0] == "FORWARD");
     CHECK(item["enum"]["matchingSymbolCount"] == 13);
     CHECK(item["enum"]["matchingSymbols"].size() == 8);
     CHECK(result["complete"] == false);
     CHECK(result["reason"] == "matches_omitted");
     CHECK(result["discovery"]["scanComplete"] == true);
-    CHECK(result["discovery"]["matchedDomains"] == 2);
+    CHECK(result["discovery"]["matchedTypes"] == 2);
     CHECK(summary.reason == simfil::EvaluationSummary::Reason::ResultLimit);
     CHECK(summary.work > 0);
     REQUIRE(item["contexts"].size() == 2);
@@ -150,7 +440,7 @@ TEST_CASE(
     CHECK(
         exact["items"][0]["enum"]["literalPreview"][0] ==
         nlohmann::json({{"$mapget", "int64"}, {"value", "9223372036854775807"}}));
-    CHECK(exact["items"][0]["contexts"][0]["relativeToSchemaId"] == root);
+    CHECK(exact["items"][0]["contexts"][0]["relativeToTypeId"] == root);
     CHECK_FALSE(exact["items"][0]["contexts"][0].contains("featureQuery"));
     auto absent = layer->find("context secret", roots, {}, {}, 1024 * 1024);
     CHECK(absent["complete"] == true);
@@ -164,9 +454,9 @@ TEST_CASE(
     auto grouped = layer->find("forward", allRoots, allTypes, {}, 1024 * 1024);
     REQUIRE(grouped["rootMatches"].size() == 2);
     CHECK(grouped["rootMatches"][0]["featureType"] == "Road");
-    CHECK(grouped["rootMatches"][0]["matchedDomains"] == 2);
+    CHECK(grouped["rootMatches"][0]["matchedTypes"] == 2);
     CHECK(grouped["rootMatches"][1]["featureType"] == "Ramp");
-    CHECK(grouped["rootMatches"][1]["matchedDomains"] == 1);
+    CHECK(grouped["rootMatches"][1]["matchedTypes"] == 1);
 }
 
 TEST_CASE(
@@ -238,14 +528,14 @@ TEST_CASE(
     auto complete = layer->find("target", roots, {}, {.maxDepth = 64}, 65536);
     REQUIRE(complete["items"].size() == 1);
     CHECK(complete["complete"] == true);
-    CHECK(complete["items"][0]["schemaId"] == value);
+    CHECK(complete["items"][0]["typeId"] == value);
     CHECK(complete["items"][0]["contexts"][0]["path"].empty());
     CHECK_THROWS_AS(
         layer->find(std::string(129, 'x'), roots, {}, {}, 65536),
         std::invalid_argument);
 }
 
-/** Mutate the map metadata column in a checksum-valid codec-v2 payload, so
+/** Mutate the map metadata column in a checksum-valid codec-v3 payload, so
  * malformed-graph tests reach the structural reader rather than the digest check. */
 std::vector<uint8_t>
 mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)> const& change)
@@ -259,7 +549,7 @@ mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)>
     input.value4b(version);
     input.text1b(identity, 128);
     input.text1b(payload, 64 * 1024 * 1024);
-    REQUIRE(version == 2);
+    REQUIRE(version == 3);
     REQUIRE(input.adapter().isCompletedSuccessfully());
     std::vector<uint8_t> body(payload.begin(), payload.end());
     bitsery::Deserializer<Adapter> content(Adapter(body.begin(), body.end()));
@@ -277,7 +567,7 @@ mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)>
         });
     uint64_t length = 0;
     content.value8b(length);
-    REQUIRE(length == (schema.domainCount() + 1) * 40);
+    REQUIRE(length == (schema.typeCount() + 1) * 40);
     change(payload, content.adapter().currentReadPos());
     identity = "mapget-schema:sha256:" + picosha2::hash256_hex_string(payload);
     std::ostringstream stream(std::ios::binary);
@@ -311,8 +601,8 @@ std::vector<uint8_t> mutateGenericDomains(
     uint64_t length = 0;
     input.value4b(version);
     input.value8b(length);
-    REQUIRE(version == 1);
-    REQUIRE(length == (schema.domainCount() + 1) * 76);
+    REQUIRE(version == 2);
+    REQUIRE(length == (schema.typeCount() + 1) * 76);
     change(generic, input.adapter().currentReadPos());
 
     return mutateDomains(
@@ -368,9 +658,7 @@ TEST_CASE("MapSchema owns domains shared by layer views, not per-layer graphs", 
     CHECK(weak.expired());
 }
 
-TEST_CASE(
-    "Layer JSON roundtrip retains local aliases and no projection-only domains",
-    "[mapschema]")
+TEST_CASE("Layer JSON roundtrip retains local aliases and only reachable types", "[mapschema]")
 {
     auto graph = std::make_shared<MapSchema>();
     auto a = graph->newLayer("A", LayerType::Features);
@@ -386,12 +674,18 @@ TEST_CASE(
     auto restored = std::make_shared<MapSchema>();
     auto copy = restored->importLayer("B", LayerType::Features, exported, b->featureTypeInfos());
     restored->finalize();
-    CHECK(copy->featureSchema("Road") == b->featureSchema("Road"));
-    CHECK(copy->featureSchema("Road") != a->featureSchema("Road"));
-    CHECK(restored->domainCount() == graph->domainCount());
-    CHECK(copy->toJsonSchema() == exported);
-    CHECK(copy->enumValues(boolean).size() == 1);
-    CHECK(copy->kind(never) == simfil::Schema::Kind::Never);
+    // A standalone layer gets a new compact type-ID namespace, not holes for A.
+    REQUIRE(copy->featureSchema("Road"));
+    CHECK(restored->typeCount() == graph->typeCount() - 1);
+    REQUIRE(copy->featureTypeInfos().size() == 1);
+    CHECK(copy->featureTypeInfos().front().toJson() == b->featureTypeInfos().front().toJson());
+    auto enabled = copy->childSchema(copy->featureSchema("Road"), "enabled");
+    auto impossible = copy->childSchema(copy->featureSchema("Road"), "impossible");
+    REQUIRE(copy->enumValues(enabled).size() == 1);
+    CHECK(std::get<bool>(copy->enumValues(enabled).front()));
+    CHECK(copy->kind(impossible) == simfil::Schema::Kind::Never);
+    auto canonical = copy->toJsonSchema();
+    CHECK(LayerSchema::fromJsonSchema(canonical)->toJsonSchema() == canonical);
 }
 
 TEST_CASE("Const and enum restrictions intersect without duplicating literals", "[mapschema]")
@@ -487,7 +781,7 @@ TEST_CASE("Feature property aliases survive native and JSON schema transport", "
         CAPTURE(declaredAttributes, variant);
         ++variant;
         auto graph = view->mapSchema();
-        auto feature = graph->domain(view->featureSchema("Road"));
+        auto feature = graph->type(view->featureSchema("Road"));
         REQUIRE(feature);
         REQUIRE(feature->canHaveField(StringPool::AttributesStr));
         CHECK(
@@ -495,14 +789,14 @@ TEST_CASE("Feature property aliases survive native and JSON schema transport", "
             (declaredAttributes ? StringPool::AttributesStr : StringPool::PropertiesStr));
         auto attributes = feature->fieldSchema(StringPool::AttributesStr);
         auto properties = feature->fieldSchema(StringPool::PropertiesStr);
-        REQUIRE(attributes != simfil::NoSchemaId);
-        REQUIRE(properties != simfil::NoSchemaId);
+        REQUIRE(attributes != simfil::NoTypeId);
+        REQUIRE(properties != simfil::NoTypeId);
         CHECK((attributes == properties) == !declaredAttributes);
         CHECK(
             std::ranges::count(feature->directFields(), StringPool::AttributesStr) ==
             (declaredAttributes ? 1 : 0));
         CHECK(std::ranges::count(feature->directFields(), StringPool::PropertiesStr) == 1);
-        auto root = graph->domain(view->rootSchema());
+        auto root = graph->type(view->rootSchema());
         REQUIRE(root);
         CHECK(root->canHaveField(StringPool::AttributesStr));
     }
@@ -534,7 +828,7 @@ TEST_CASE(
         CHECK(view->canHaveField(root, "context"));
         CHECK(view->childSchema(root, "context") == hidden);
         CHECK(view->childSchema(hidden, "secret") == scalar);
-        auto node = view->mapSchema()->domainNode(root)->toJson();
+        auto node = view->mapSchema()->typeNode(root)->toJson();
         CHECK(node["fields"]["context"]["role"] == "context");
         CHECK(node["fields"]["context"]["$ref"] == hidden);
         CHECK_FALSE(node["fields"]["$data"].contains("role"));
@@ -581,15 +875,15 @@ TEST_CASE("Historical packed JSON kinds migrate by the legacy-v1 layout", "[maps
     CHECK(layer->kind(1) == LayerSchema::FeatureKind);
     CHECK(layer->kind(2) == Kind::Object);
     CHECK(layer->kind(3) == Kind::Array);
-    std::vector<simfil::SchemaId> elements;
-    layer->mapSchema()->domain(3)->forEachElementSchema([&](auto id) { elements.push_back(id); });
-    CHECK(elements == std::vector<simfil::SchemaId>{2});
+    std::vector<simfil::TypeId> elements;
+    layer->mapSchema()->type(3)->forEachElementSchema([&](auto id) { elements.push_back(id); });
+    CHECK(elements == std::vector<simfil::TypeId>{2});
     CHECK(layer->kind(4) == Kind::Bytes);
     CHECK(layer->directFields(4).empty());
     REQUIRE(layer->enumValues(4).size() == 1);
     CHECK(std::get<simfil::ByteArray>(layer->enumValues(4).front()).toHex(false) == "abcd");
     CHECK(layer->kind(6) == LayerSchema::AttributeKind);
-    auto flags = layer->mapSchema()->domain(5);
+    auto flags = layer->mapSchema()->type(5);
     CHECK(
         simfil::Schema::kindNameId(flags->kind()) ==
         simfil::Schema::kindNameId(LayerSchema::BitmaskKind));
@@ -712,7 +1006,7 @@ TEST_CASE(
              {"x-mapget", {{"kind", annotation}}},
              {"properties", {{"label", {{"type", "string"}}}}}});
         auto graph = layer->mapSchema();
-        auto root = graph->domain(layer->rootSchema());
+        auto root = graph->type(layer->rootSchema());
         REQUIRE(root);
         CHECK(root->hasAffinity(simfil::ValueType::Object));
         CHECK(root->hasAffinity(simfil::ValueType::Null));
@@ -734,7 +1028,7 @@ TEST_CASE(
         canonical["definitions"][std::to_string(mask)]["x-mapget"]["kind"] ==
         nlohmann::json{{"name", "bitmask"}, {"affinities", {"bitmask"}}});
     auto restored = LayerSchema::fromJsonSchema(canonical);
-    auto domain = restored->mapSchema()->domain(restored->rootSchema());
+    auto domain = restored->mapSchema()->type(restored->rootSchema());
     CHECK(domain->isBitmask());
     CHECK(domain->bitWidth() == 8);
     REQUIRE(domain->namedValue("LEFT"));
@@ -797,14 +1091,14 @@ TEST_CASE(
     auto encoded = bytes(*graph);
     auto restored = MapSchema::read(encoded);
     for (auto const& owner : {std::shared_ptr<MapSchema const>(graph), restored}) {
-        auto definition = owner->domain(choice);
+        auto definition = owner->type(choice);
         REQUIRE(definition);
         CHECK(definition->composition() == Composition::OneOf);
         CHECK(definition->alternatives().size() == 2);
         CHECK(definition->directFields().empty());
         CHECK(definition->fieldSchema(owner->strings()->get("speed")) == speed);
         CHECK(definition->fieldSchema(owner->strings()->get("count")) == count);
-        CHECK(owner->domain(array)->itemSchema() == speed);
+        CHECK(owner->type(array)->itemSchema() == speed);
 
         // Runtime and schema dictionaries deliberately assign different IDs.
         auto strings = std::make_shared<simfil::StringPool>();
@@ -836,7 +1130,7 @@ TEST_CASE(
         CHECK(env->querySchema(emptyMember)->fieldSchema(completionStrings->get("")) == count);
         CHECK(
             env->querySchema(emptyMember)->fieldSchema(completionStrings->get("not-in-graph")) ==
-            simfil::NoSchemaId);
+            simfil::NoTypeId);
     }
     CHECK(bytes(*restored) == encoded);
     CHECK(restored->layer("Members")->toJsonSchema() == layer->toJsonSchema());
@@ -882,10 +1176,9 @@ TEST_CASE("MapSchema preflights inner dictionary and model lengths before alloca
     }
 }
 
-TEST_CASE("MapSchema codec v2 deliberately rejects the committed v1 artifact", "[mapschema]")
+TEST_CASE("MapSchema codec v3 rejects earlier artifacts", "[mapschema]")
 {
-    // V2 replaces monolithic domain records with map metadata and a generic
-    // SchemaPool payload. The incompatible V1 artifact must never be reinterpreted.
+    // Keep the released fixtures as rejection evidence, not regenerated snapshots.
     std::ifstream input(MAPGET_TEST_DATA_DIR "/mapschema-v1.bin", std::ios::binary);
     REQUIRE(input.is_open());
     std::vector<uint8_t>
@@ -895,27 +1188,35 @@ TEST_CASE("MapSchema codec v2 deliberately rejects the committed v1 artifact", "
         picosha2::hash256_hex_string(legacy) ==
         "707951a44c9504e2c6a2bc60e8966d0a0d077ea7847cb1020af885880bf08daa");
     CHECK_THROWS_WITH(MapSchema::read(legacy), "Unsupported MapSchema binary format.");
+    std::ifstream v2Input(MAPGET_TEST_DATA_DIR "/mapschema-v2.bin", std::ios::binary);
+    REQUIRE(v2Input.is_open());
+    std::vector<uint8_t>
+        v2(std::istreambuf_iterator<char>{v2Input}, std::istreambuf_iterator<char>{});
+    REQUIRE(v2.size() == 3124);
+    REQUIRE(
+        picosha2::hash256_hex_string(v2) ==
+        "95f42f060e6d5c856fba7142838a5c53d0e3b54496fdf5f2420b4a846bca3d5c");
+    CHECK_THROWS_WITH(MapSchema::read(v2), "Unsupported MapSchema binary format.");
 }
 
-TEST_CASE("MapSchema codec v2 matches the committed binary golden fixture", "[mapschema]")
+TEST_CASE("MapSchema codec v3 matches the committed binary golden fixture", "[mapschema]")
 {
-    // This fixes codec V2, including generic SchemaPool V1 and the empty provenance
-    // list. Replacing these bytes requires an explicit codec/cache-identity decision,
-    // not routine snapshot regeneration. The V1 fixture above guards rejection.
+    // V3 includes generic SchemaPool V2 (optional raw enum ordinals), layer-qualified
+    // Attribute owners and native relation declarations. It is an explicit wire cutover.
     constexpr auto expectedId =
-        "mapget-schema:sha256:1c54b7cff7e4731babb03de06bef2980cddfe77eb4e7c026a585bc972552a292";
-    constexpr auto expectedSha = "95f42f060e6d5c856fba7142838a5c53d0e3b54496fdf5f2420b4a846bca3d5c";
-    std::ifstream input(MAPGET_TEST_DATA_DIR "/mapschema-v2.bin", std::ios::binary);
+        "mapget-schema:sha256:18703cca93ebf12af993710840f19db38827a5e5296be23d8d8cb7c944984a08";
+    constexpr auto expectedSha = "6d7d50afefea92ec22b13a6dd952e2066d360f45a5420caef6b49ccce656f8a4";
+    std::ifstream input(MAPGET_TEST_DATA_DIR "/mapschema-v3.bin", std::ios::binary);
     REQUIRE(input.is_open());
     std::vector<uint8_t>
         golden(std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{});
-    REQUIRE(golden.size() == 3124);
+    REQUIRE(golden.size() == 3155);
     REQUIRE(picosha2::hash256_hex_string(golden) == expectedSha);
 
     // Decode the fixed artifact before constructing any graph with today's writer.
     auto decoded = MapSchema::read(golden, expectedId);
     CHECK(decoded->schemaId() == expectedId);
-    CHECK(decoded->domainCount() == 4);
+    CHECK(decoded->typeCount() == 4);
     MapFormat format{"mapget-codec-fixture", "1", {{"values", "1"}}};
     CHECK(decoded->format() == format);
     auto layer = decoded->layer("Values");
@@ -943,16 +1244,16 @@ TEST_CASE("MapSchema codec v2 matches the committed binary golden fixture", "[ma
     CHECK(numeric->scale == 1);
     CHECK(numeric->offset == 0);
     CHECK(numeric->complete);
-    auto special = decoded->domain(4)->namedValue("UNLIMITED");
+    auto special = decoded->type(4)->namedValue("UNLIMITED");
     REQUIRE(special);
     CHECK(std::get<uint64_t>(special->value) == 255);
     CHECK(special->role == simfil::Schema::NamedValue::Role::Special);
     CHECK(special->meaning == simfil::Schema::NamedValue::Meaning::Unbounded);
-    CHECK(decoded->domain(4)->enumValues().empty());
+    CHECK(decoded->type(4)->enumValues().empty());
     CHECK(layer->directEnumSymbols(4).empty());
-    REQUIRE(decoded->domain(3)->isBitmask());
+    REQUIRE(decoded->type(3)->isBitmask());
     CHECK(layer->bitWidth(3) == 8);
-    auto flag = decoded->domain(3)->namedValue("LEFT");
+    auto flag = decoded->type(3)->namedValue("LEFT");
     REQUIRE(flag);
     CHECK(std::get<uint64_t>(flag->value) == 1);
     CHECK(flag->role == simfil::Schema::NamedValue::Role::Flag);
@@ -1025,7 +1326,7 @@ TEST_CASE("Attribute source aliases preserve definition and owner context", "[ma
     auto canonical = layer->toJsonSchema();
     auto restored = LayerSchema::fromJsonSchema(canonical);
     auto binary = MapSchema::read(bytes(*layer->mapSchema()))->layer("legacy");
-    std::set<simfil::SchemaId> distinct;
+    std::set<simfil::TypeId> distinct;
     for (auto feature : {"Link", "GeoLine"})
         for (auto definition : {"numeric", "mask"}) {
             auto key = LayerSchema::attributeKey(
@@ -1045,7 +1346,7 @@ TEST_CASE("Attribute source aliases preserve definition and owner context", "[ma
                 CHECK_FALSE(current->attributeQuerySchema(
                     feature == std::string_view("Link") ? "GeoLine" : "Link",
                     id));
-                auto value = current->mapSchema()->domain(current->childSchema(id, "value"));
+                auto value = current->mapSchema()->type(current->childSchema(id, "value"));
                 REQUIRE(value);
                 CHECK(value->isBitmask() == (definition == std::string_view("mask")));
                 CHECK(
@@ -1125,14 +1426,14 @@ TEST_CASE("Raw bitmask JSON schemas validate native tags without inventing field
     auto imported = LayerSchema::fromJsonSchema(exported);
     auto binary = MapSchema::read(bytes(*graph))->layer("Masks");
     for (auto current : {layer, binary, imported}) {
-        REQUIRE(current->mapSchema()->domainCount() == 3);
+        REQUIRE(current->mapSchema()->typeCount() == 3);
         CHECK(current->schemaId("Mask") == mask);
         CHECK(current->schemaId("NullableMask") == nullable);
         CHECK(current->schemaId("LegacyMask") == legacy);
         CHECK(current->toJsonSchema() == exported);
         for (auto id : {mask, nullable}) {
             auto owner = current->mapSchema();
-            REQUIRE(owner->domain(id)->isBitmask());
+            REQUIRE(owner->type(id)->isBitmask());
             auto width = id == mask ? 57 : 64;
             CHECK(current->bitWidth(id) == width);
             CHECK(current->directFields(id).empty());
@@ -1172,13 +1473,13 @@ TEST_CASE("Raw bitmask JSON schemas validate native tags without inventing field
             }
             auto tagged = simfil::Bitmask{2, {binding, id}}.toJson();
             auto invalidFields =
-                nlohmann::json{{"_bitmask", false}, {"bits", 2}, {"domain", "1"}, {"schema", ""}};
+                nlohmann::json{{"_bitmask", false}, {"bits", 2}, {"typeId", "1"}, {"schema", ""}};
             for (auto const& [field, value] : invalidFields.items()) {
                 auto invalid = tagged;
                 invalid[field] = value;
                 CHECK_THROWS(validator.validate(invalid));
             }
-            for (auto const& field : {"_bitmask", "bits", "schema", "domain"}) {
+            for (auto const& field : {"_bitmask", "bits", "schema", "typeId"}) {
                 auto invalid = tagged;
                 invalid.erase(field);
                 CHECK_THROWS(validator.validate(invalid));
@@ -1192,7 +1493,7 @@ TEST_CASE("Raw bitmask JSON schemas validate native tags without inventing field
             else
                 CHECK_THROWS(validator.validate(nullptr));
         }
-        CHECK_FALSE(current->mapSchema()->domain(legacy)->isBitmask());
+        CHECK_FALSE(current->mapSchema()->type(legacy)->isBitmask());
         CHECK(current->bitWidth(legacy) == 0);
         auto definition = exported;
         definition["$ref"] = "#/definitions/" + std::to_string(legacy);
@@ -1210,8 +1511,8 @@ TEST_CASE("Only concrete raw mask domains carry a bit width", "[mapschema]")
     auto layer = graph->newLayer("Values", LayerType::SourceData);
     auto number = layer->addSchema(simfil::Schema::Kind::Int);
     layer->setJsonSchemaAnnotations(number, {{"x-mapget", {{"sourceType", "example.Count"}}}});
-    auto mask = layer->addSchema(LayerSchema::BitmaskKind);
-    auto nullable = layer->addSchema(LayerSchema::BitmaskKind);
+    auto mask = layer->addSchema(LayerSchema::BitmaskKind, "Mask");
+    auto nullable = layer->addSchema(LayerSchema::BitmaskKind, "NullableMask");
     layer->setNullable(nullable, true);
     layer->setBitWidth(nullable, 8);
     layer->setRootSchema(number);
@@ -1223,8 +1524,8 @@ TEST_CASE("Only concrete raw mask domains carry a bit width", "[mapschema]")
     }
     auto roundtrip = LayerSchema::fromJsonSchema(layer->toJsonSchema());
     CHECK(roundtrip->bitWidth(number) == 0);
-    CHECK(roundtrip->bitWidth(mask) == 64);
-    CHECK(roundtrip->bitWidth(nullable) == 8);
+    CHECK(roundtrip->bitWidth(roundtrip->schemaId("Mask")) == 64);
+    CHECK(roundtrip->bitWidth(roundtrip->schemaId("NullableMask")) == 8);
     CHECK_THROWS(
         LayerSchema::fromJsonSchema({{"type", "integer"}, {"x-mapget", {{"bitWidth", 8}}}}));
     for (auto [id, width] : {std::pair{number, 8u}, std::pair{mask, 0u}, std::pair{mask, 65u}}) {
@@ -1349,7 +1650,7 @@ TEST_CASE(
             *graph,
             [&](auto& payload, size_t start)
             {
-                uint32_t base = uint32_t(graph->domainCount() + 1);
+                uint32_t base = uint32_t(graph->typeCount() + 1);
                 std::memcpy(payload.data() + start + size_t(object) * 76 + 16, &base, sizeof(base));
             });
         CHECK_THROWS_AS(MapSchema::read(invalid), std::invalid_argument);
@@ -1360,7 +1661,7 @@ TEST_CASE(
             *graph,
             [](auto& payload, size_t)
             {
-                uint32_t version = 2;
+                uint32_t version = 3;
                 std::memcpy(payload.data(), &version, sizeof(version));
             });
         CHECK_THROWS_AS(MapSchema::read(invalid), std::invalid_argument);
@@ -1389,11 +1690,11 @@ TEST_CASE("MapSchema rejects aliased numeric storage and invalid flag declaratio
     // payload offset or a compiler-dependent sizeof of the native records.
     auto column = [&](std::string& payload, size_t domains, size_t index)
     {
-        constexpr std::array<size_t, 8> widths{12, 2, 2, 4, 16, 16, 72, 4};
+        constexpr std::array<size_t, 8> widths{12, 2, 2, 4, 25, 16, 72, 4};
         REQUIRE(index < widths.size());
         using Adapter = bitsery::InputBufferAdapter<std::string>;
         bitsery::Deserializer<Adapter> input(Adapter(payload.begin(), payload.end()));
-        input.adapter().currentReadPos(domains + (graph->domainCount() + 1) * 76);
+        input.adapter().currentReadPos(domains + (graph->typeCount() + 1) * 76);
         for (size_t i = 0; i < index; ++i) {
             size_t count = 0;
             bitsery::details::readSize(input.adapter(), count, 4 * 1024 * 1024, std::true_type{});
@@ -1417,7 +1718,7 @@ TEST_CASE("MapSchema rejects aliased numeric storage and invalid flag declaratio
             });
         CHECK_THROWS_WITH(
             MapSchema::read(invalid),
-            "Numeric rows must have one canonical domain owner");
+            "Numeric rows must have one canonical type owner");
     }
     SECTION("Numeric rows must not expand overlapping interval slices")
     {
@@ -1478,7 +1779,7 @@ TEST_CASE("MapSchema bounds repeated byte enum materialization before indexing",
         {
             using Adapter = bitsery::InputBufferAdapter<std::string>;
             bitsery::Deserializer<Adapter> input(Adapter(payload.begin(), payload.end()));
-            input.adapter().currentReadPos(domains + (graph->domainCount() + 1) * 76);
+            input.adapter().currentReadPos(domains + (graph->typeCount() + 1) * 76);
             for (auto width : {12u, 2u, 2u}) {
                 size_t count = 0;
                 bitsery::details::readSize(
@@ -1516,14 +1817,14 @@ TEST_CASE("MapSchema remaps legacy IDs and rejects conflicting imports atomicall
     CHECK(a->schemaId("legacy.value") != global);
     CHECK(a->schemaId("legacy.value") != b->schemaId("legacy.value"));
     CHECK(schema->importLayer("A", LayerType::SourceData, legacy)->addr() == a->addr());
-    auto before = schema->domainCount();
+    auto before = schema->typeCount();
     legacy["definitions"]["1"]["type"] = "string";
     CHECK_THROWS(schema->importLayer("A", LayerType::SourceData, legacy));
-    CHECK(schema->domainCount() == before);
+    CHECK(schema->typeCount() == before);
     std::vector<FeatureTypeInfo> duplicate{identity("Road"), identity("Road", "different")};
     CHECK_THROWS(schema->importLayer("Broken", LayerType::Features, nullptr, duplicate));
     CHECK_FALSE(schema->layer("Broken"));
-    CHECK(schema->domainCount() == before);
+    CHECK(schema->typeCount() == before);
     schema->finalize();
     CHECK(schema->layerNames().size() == 2);
 }
@@ -1544,7 +1845,7 @@ TEST_CASE(
     CHECK(layer->canHaveField(a, "previous"));
     CHECK_FALSE(layer->canHaveField(a, "absent"));
     CHECK(layer->nestedFields(a).data() == layer->nestedFields(b).data());
-    auto descriptor = graph->domainNode(a);
+    auto descriptor = graph->typeNode(a);
     REQUIRE(descriptor);
     CHECK(descriptor->type() == simfil::ValueType::Object);
     auto unknown = std::make_shared<MapSchema>();
@@ -1617,13 +1918,13 @@ TEST_CASE(
     CHECK(numeric->unit == "km/h");
     CHECK(numeric->ordinaryRanges.size() == 1);
     CHECK(std::get<int64_t>(numeric->ordinaryRanges[0].max) == 253);
-    auto special = restored->domain(speed)->namedValue("UNLIMITED");
+    auto special = restored->type(speed)->namedValue("UNLIMITED");
     REQUIRE(special);
     CHECK(std::get<int64_t>(special->value) == 255);
-    auto mask = restored->domain(flags)->namedValue("TOP");
+    auto mask = restored->type(flags)->namedValue("TOP");
     REQUIRE(mask);
     CHECK(std::get<uint64_t>(mask->value) == uint64_t{1} << 63);
-    CHECK(restored->domain(speed)->enumValues().empty());
+    CHECK(restored->type(speed)->enumValues().empty());
 }
 
 TEST_CASE(
@@ -1665,7 +1966,7 @@ TEST_CASE(
     CHECK(bounds->unit.empty());
     CHECK(bounds->ordinaryRanges.empty());
     CHECK_FALSE(bounds->complete);
-    CHECK(graph->domainNode(count)->toJson()["numericDomain"]["minimum"] == 0);
+    CHECK(graph->typeNode(count)->toJson()["numericDomain"]["minimum"] == 0);
     auto distance = layer->childSchema(layer->rootSchema(), "distance");
     auto metres = layer->numericDomain(distance);
     REQUIRE(metres);
@@ -1723,7 +2024,7 @@ TEST_CASE("Named numeric values never become exhaustive JSON enums", "[mapschema
         CHECK(std::ranges::equal(
             current->nestedEnumSymbols(current->rootSchema()),
             std::vector<std::string>{"ACTIVE", "WAITING"}));
-        auto descriptor = current->mapSchema()->domainNode(speed)->toJson();
+        auto descriptor = current->mapSchema()->typeNode(speed)->toJson();
         CHECK_FALSE(descriptor.contains("enum"));
         CHECK(descriptor["namedValues"].size() == 2);
         CHECK_FALSE(exported["definitions"][std::to_string(speed)].contains("enum"));
@@ -1800,7 +2101,7 @@ TEST_CASE("Only owned attribute query roots rewrite type-code symbols", "[mapsch
     // fields; their recursive enumeration policy is a separate concern.
     CHECK(lookup(query)->fieldSchema(strings->get("limit")) == limit);
     CHECK(lookup(query)->fieldSchema(strings->get("$feature")) == feature);
-    CHECK(graph->domain(query)->fieldSchema(graph->strings()->get("limit")) == limit);
+    CHECK(graph->type(query)->fieldSchema(graph->strings()->get("limit")) == limit);
     auto paths = lookup(query)->symbolEqualityPaths(code, lookup);
     REQUIRE(paths.size() == 1);
     REQUIRE(paths[0].size() == 1);
@@ -1828,7 +2129,7 @@ TEST_CASE(
     layer->addFeatureType(identity("Road"));
     auto root = layer->featureSchema("Road");
     auto number = layer->addSchema(Kind::Int);
-    auto sharedDag = [&](simfil::SchemaId leaf)
+    auto sharedDag = [&](simfil::TypeId leaf)
     {
         // Only 18 nodes, but more than 100k distinct path prefixes without pruning.
         for (size_t i = 0; i < 18; ++i) {
@@ -2040,10 +2341,10 @@ TEST_CASE(
     layer->setRootSchema(value);
     graph->finalize();
     auto restored = MapSchema::read(bytes(*graph));
-    auto values = restored->domain(value)->enumValues();
+    auto values = restored->type(value)->enumValues();
     REQUIRE(values.size() == 1);
     CHECK(std::holds_alternative<std::monostate>(values[0]));
-    auto symbols = restored->domain(value)->directEnumSymbols();
+    auto symbols = restored->type(value)->directEnumSymbols();
     REQUIRE(symbols.size() == 1);
     CHECK(restored->strings()->resolve(symbols[0]).value().empty());
 }

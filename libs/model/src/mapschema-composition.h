@@ -7,16 +7,16 @@ class MapSchema::Impl::CompositionBuilder
     std::span<ConstPtr const> inputs_;
     std::vector<schema_detail::SchemaBuilder> graphs_;
     std::vector<size_t> offsets_;
-    std::vector<std::pair<size_t, SchemaId>> origins_{{0, 0}};
+    std::vector<std::pair<size_t, TypeId>> origins_{{0, 0}};
     std::vector<size_t> parents_{0};
     std::vector<std::vector<size_t>> members_{{}};
-    std::vector<SchemaId> mapped_{0};
+    std::vector<TypeId> mapped_{0};
     std::vector<std::tuple<size_t, size_t, std::string>> pending_;
     std::map<std::string, std::vector<std::pair<size_t, size_t>>, std::less<>> layers_;
     size_t work_ = 0;
 
     /** Qualify a local identity only in construction scratch space. */
-    size_t slot(size_t source, SchemaId id) const
+    size_t slot(size_t source, TypeId id) const
     {
         if (!id)
             return 0;
@@ -50,7 +50,7 @@ class MapSchema::Impl::CompositionBuilder
     {
         if (!left || !right) {
             if (left != right)
-                conflict(path, "known and unknown domains differ");
+                conflict(path, "known and unknown types differ");
             return;
         }
         if (++work_ > 64 * 1024 * 1024)
@@ -61,8 +61,8 @@ class MapSchema::Impl::CompositionBuilder
     void edges(
         size_t left,
         size_t right,
-        std::span<SchemaId const> a,
-        std::span<SchemaId const> b,
+        std::span<TypeId const> a,
+        std::span<TypeId const> b,
         std::string const& path)
     {
         if (a.size() != b.size())
@@ -71,7 +71,7 @@ class MapSchema::Impl::CompositionBuilder
             pair(slot(origins_[left].first, a[i]), slot(origins_[right].first, b[i]), path);
     }
     /** Decode references already validated by the native/imported artifact. */
-    static SchemaId reference(nlohmann::json const& value)
+    static TypeId reference(nlohmann::json const& value)
     {
         auto text = value.at("$ref").get<std::string>();
         constexpr std::string_view prefix = "#/definitions/";
@@ -81,9 +81,9 @@ class MapSchema::Impl::CompositionBuilder
         auto digits = std::string_view(text).substr(prefix.size());
         auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), id);
         if (error != std::errc{} || end != digits.data() + digits.size() || !id ||
-            id > simfil::MaxSchemaId)
-            throw std::invalid_argument("Invalid validation domain reference.");
-        return SchemaId(id);
+            id > simfil::MaxTypeId)
+            throw std::invalid_argument("Invalid validation type reference.");
+        return TypeId(id);
     }
     /** Merge descriptive maps, rejecting contradictory values instead of first-wins. */
     static void mergeJson(nlohmann::json& out, nlohmann::json const& input, std::string const& path)
@@ -189,14 +189,14 @@ class MapSchema::Impl::CompositionBuilder
             edges(
                 left,
                 right,
-                ac == a.childSchemas_.end() ? std::span<SchemaId const>{} : ac->second,
-                bc == b.childSchemas_.end() ? std::span<SchemaId const>{} : bc->second,
+                ac == a.childSchemas_.end() ? std::span<TypeId const>{} : ac->second,
+                bc == b.childSchemas_.end() ? std::span<TypeId const>{} : bc->second,
                 fieldPath);
         }
         // Validation-only references are still graph edges. Compare their layout
         // without confusing independently allocated numeric identities.
         auto aa = a.annotations_, ba = b.annotations_;
-        std::map<std::string, SchemaId> ar, br;
+        std::map<std::string, TypeId> ar, br;
         auto normalize = [&](auto& json, auto& refs)
         {
             schema_detail::SchemaBuilder::validationSchemas(
@@ -244,7 +244,7 @@ class MapSchema::Impl::CompositionBuilder
         }
     }
     /** Translate a value-domain edge after final construction identities are assigned. */
-    SchemaId mapped(size_t source, SchemaId id) const
+    TypeId mapped(size_t source, TypeId id) const
     {
         auto result = mapped_[slot(source, id)];
         if (id && !result)
@@ -321,7 +321,7 @@ public:
                 if (origins_.size() >= MaxEdges)
                     throw std::length_error("Composition input graph budget exceeded.");
                 auto index = origins_.size();
-                origins_.emplace_back(s, SchemaId(id));
+                origins_.emplace_back(s, TypeId(id));
                 parents_.push_back(index);
                 members_.push_back({index});
                 mapped_.push_back(0);
@@ -391,16 +391,34 @@ public:
                 mapped_[root] = target_.builder->allocate(node(i).kind_, {}, {}, {});
             mapped_[i] = mapped_[root];
         }
-        std::set<SchemaId> initialized;
+        std::set<TypeId> initialized;
         for (size_t i = 1; i < origins_.size(); ++i)
             if (!node(i).queryRoot_)
                 materialize(i, initialized.insert(mapped_[i]).second);
         for (auto const& [name, sources] : layers_) {
             Layer layer;
             layer.name = name;
+            layer.relationsDeclared = true;
+            layer.relationsKnown = true;
             for (auto [s, l] : sources) {
                 auto const& source = inputs_[s]->schema_->layers[l];
                 layer.type = source.type;
+                layer.relationsKnown = layer.relationsKnown && source.relationsKnown;
+                for (auto const& relation : source.relations) {
+                    auto previous = std::ranges::find_if(
+                        layer.relations,
+                        [&](auto const& value) {
+                            return value.ownerType_ == relation.ownerType_ &&
+                                value.name_ == relation.name_;
+                        });
+                    if (previous == layer.relations.end())
+                        layer.relations.push_back(relation);
+                    else if (
+                        previous->targetTypes_ != relation.targetTypes_ ||
+                        previous->complete_ != relation.complete_ ||
+                        previous->locality_ != relation.locality_)
+                        conflict(name, "forward relation contract differs");
+                }
                 if (source.features.empty())
                     layer.root = mapped(s, source.root);
                 for (size_t f = 0; f < source.features.size(); ++f) {
@@ -429,21 +447,21 @@ public:
                 mapped_[slot(s, query)] =
                     target_.queryRoots.at({mapped(s, context.first), mapped(s, context.second)});
             for (size_t id = 1; id < graphs_[s].schemas_.size(); ++id)
-                if (graphs_[s].schemas_[id].queryRoot_ && !mapped_[slot(s, SchemaId(id))]) {
+                if (graphs_[s].schemas_[id].queryRoot_ && !mapped_[slot(s, TypeId(id))]) {
                     auto const& source = graphs_[s].schemas_[id];
                     for (auto const& candidate : target_.builder->schemas_)
                         if (candidate.queryRoot_ && candidate.kind_ == source.kind_ &&
                             candidate.entry_.metaType_.empty()) {
-                            mapped_[slot(s, SchemaId(id))] = candidate.id_;
+                            mapped_[slot(s, TypeId(id))] = candidate.id_;
                             break;
                         }
-                    if (!mapped_[slot(s, SchemaId(id))])
+                    if (!mapped_[slot(s, TypeId(id))])
                         throw std::invalid_argument("Unmapped generated query scalar.");
                 }
             auto& remap = target_.contributorRemaps[std::string(inputs_[s]->schemaId())];
             remap.resize(graphs_[s].schemas_.size());
             for (size_t id = 1; id < remap.size(); ++id)
-                remap[id] = mapped(s, SchemaId(id));
+                remap[id] = mapped(s, TypeId(id));
         }
         // Reference IDs are final now. Keep annotations only on canonical rows;
         // overlay annotations are inherited from the merged payload below.

@@ -1,5 +1,5 @@
 #include "mapget/model/mapschema.h"
-#include "mapschema-builder.h"
+#include "mapschema-impl.h"
 
 #include <bit>
 #include <charconv>
@@ -27,277 +27,8 @@ using schema_detail::hasAffinity;
 using schema_detail::Kind;
 using schema_detail::matchesKind;
 using simfil::ModelNodeAddress;
-using simfil::SchemaId;
 using simfil::StringId;
-
-/** Canonical graph columns and their borrowed query indexes. The compiler is
- * transient; neither JSON trees nor flattened owning strings survive freeze.
- */
-struct MapSchema::Impl
-{
-    static constexpr uint8_t Domains = simfil::ModelPool::FirstCustomColumnId;
-    static constexpr uint8_t Layers = Domains + 1;
-    static constexpr uint8_t FieldMaps = Domains + 2;
-    static constexpr uint8_t DomainLists = Domains + 3;
-    static constexpr uint32_t CodecVersion = 2;
-    static constexpr size_t MaxEdges = 4 * 1024 * 1024;
-
-    /** A slice into an owner-wide canonical array, never a per-domain allocation. */
-    struct Range
-    {
-        uint32_t begin = 0, count = 0;
-        template <class S>
-        void serialize(S& s)
-        {
-            s.value4b(begin);
-            s.value4b(count);
-        }
-        template <class T>
-        std::span<T const> in(std::vector<T> const& data) const
-        {
-            if (begin > data.size() || count > data.size() - begin)
-                throw std::invalid_argument("MapSchema array range exceeds its column.");
-            return std::span<T const>(data).subspan(begin, count);
-        }
-    };
-    /** Map-specific metadata indexed by the generic pool's domain identity. */
-    struct DomainData
-    {
-        MODEL_COLUMN_TYPE(40);
-        uint32_t flags = 0;
-        ModelNodeAddress key, pointer, metaType, zserioType, attributeType, attributeCode,
-            annotations;
-        Range owners;
-    };
-    struct OwnerData
-    {
-        MODEL_COLUMN_TYPE(8);
-        StringId feature = 0, layer = 0, name = 0;
-        uint16_t reserved = 0;
-        template <class S>
-        void serialize(S& s)
-        {
-            s.value2b(feature);
-            s.value2b(layer);
-            s.value2b(name);
-            s.value2b(reserved);
-        }
-    };
-    struct AliasData
-    {
-        MODEL_COLUMN_TYPE(8);
-        ModelNodeAddress key;
-        SchemaId id = 0;
-        uint16_t layer = 0;  // 0 global, otherwise layer index + 1
-        template <class S>
-        void serialize(S& s)
-        {
-            s.value4b(key.value_);
-            s.value2b(id);
-            s.value2b(layer);
-        }
-    };
-    struct Layer
-    {
-        std::string name;
-        std::string importedFingerprint;
-        LayerType type = LayerType::Features;
-        SchemaId root = 0;
-        std::vector<FeatureTypeInfo> features;
-        std::vector<SchemaId> featureRoots;
-        std::vector<uint8_t> produced;
-        std::map<std::string, SchemaId, std::less<>> buildAliases;
-        std::map<std::string_view, SchemaId, std::less<>> aliases;
-        bool relationsKnown = false;
-        std::vector<LayerSchema::RelationDeclaration> relations;
-        std::map<std::string, std::vector<size_t>, std::less<>> relationsByTarget;
-    };
-    /** Bound concurrent construction and retain only weak published owners. */
-    struct BuildCache
-    {
-        std::mutex mutex;
-        std::condition_variable changed;
-        std::map<std::string, std::weak_ptr<MapSchema const>, std::less<>> ready;
-        std::map<std::string, std::shared_future<ConstPtr>, std::less<>> running;
-    };
-    /** Initialize worker-local reentrancy state before any capture accesses it. */
-    static std::vector<std::string>& activeBuildKeys()
-    {
-        static thread_local std::vector<std::string> keys;
-        return keys;
-    }
-    /** Only definite-length, bounded CBOR is emitted by our annotation codec. */
-    class AnnotationReader : public nlohmann::detail::json_sax_dom_parser<nlohmann::json>
-    {
-        using Base = nlohmann::detail::json_sax_dom_parser<nlohmann::json>;
-        size_t depth_ = 0, nodes_ = 0;
-        bool enter(size_t count)
-        {
-            if (count >= MaxEdges - nodes_ || depth_ == 256)
-                return false;
-            nodes_ += count + 1;
-            ++depth_;
-            return true;
-        }
-
-    public:
-        explicit AnnotationReader(nlohmann::json& result) : Base(result, false) {}
-        bool start_object(size_t size) { return enter(size) && Base::start_object(size); }
-        bool start_array(size_t size) { return enter(size) && Base::start_array(size); }
-        bool end_object()
-        {
-            --depth_;
-            return Base::end_object();
-        }
-        bool end_array()
-        {
-            --depth_;
-            return Base::end_array();
-        }
-    };
-
-    explicit Impl(MapSchema& owner, MapFormat f) : pool(owner), format(std::move(f)) {}
-    MapSchema& pool;
-    MapFormat format;
-    std::string identity;
-    bool frozen = false;
-    std::optional<MemoryUsageBreakdown> memorySummary;
-    nlohmann::json statistics;
-    std::vector<std::pair<std::string, MapFormat>> constituents;
-    std::map<std::string, std::vector<SchemaId>, std::less<>> contributorRemaps;
-    class CompositionBuilder;
-    std::unique_ptr<schema_detail::SchemaBuilder> builder =
-        std::make_unique<schema_detail::SchemaBuilder>();
-    std::vector<Layer> layers;
-    simfil::ModelColumn<DomainData> domains;
-    std::vector<OwnerData> owners;
-    std::vector<AliasData> aliases;
-    std::map<std::string_view, SchemaId, std::less<>> globalAliases;
-    std::map<std::pair<SchemaId, SchemaId>, SchemaId> queryRoots;
-    std::vector<LayerSchema::Entry> entries;
-    std::unordered_map<std::string, ModelNodeAddress> textIndex;  // discarded at publication
-    std::array<StringId, 12> descriptorKeys{};
-
-    StringId intern(std::string_view name)
-    {
-        auto id = pool.strings()->emplace(name);
-        if (!id)
-            throw std::length_error(id.error().message);
-        return *id;
-    }
-    ModelNodeAddress text(std::string_view value)
-    {
-        if (value.empty())
-            return {};
-        auto [it, inserted] = textIndex.try_emplace(std::string(value));
-        if (inserted) {
-            auto node = pool.tryNewValue(value);
-            if (!node)
-                throw std::length_error(node.error().message);
-            it->second = (*node)->addr();
-        }
-        return it->second;
-    }
-    std::string_view text(ModelNodeAddress address) const
-    {
-        if (!address)
-            return {};
-        auto value = pool.resolve(address)->value();
-        if (auto v = std::get_if<std::string_view>(&value))
-            return *v;
-        // ModelPool strings must always be buffer views, never a temporary owning value.
-        throw std::invalid_argument("MapSchema text reference is not a string-buffer value.");
-    }
-    std::string_view name(StringId id) const
-    {
-        auto value = pool.strings()->resolve(id);
-        if (!value)
-            throw std::invalid_argument("MapSchema contains an unknown dictionary ID.");
-        return *value;
-    }
-    bool valid(SchemaId id) const
-    {
-        return id && (builder ? builder->valid(id) : id < domains.size());
-    }
-    void requireDomain(SchemaId id) const
-    {
-        if (!valid(id))
-            throw std::invalid_argument("MapSchema references an unknown domain.");
-    }
-    Layer& layerAt(size_t index)
-    {
-        if (index >= layers.size())
-            throw std::invalid_argument("Invalid LayerSchema address.");
-        return layers[index];
-    }
-    Layer const& layerAt(size_t index) const
-    {
-        if (index >= layers.size())
-            throw std::invalid_argument("Invalid LayerSchema address.");
-        return layers[index];
-    }
-    template <class T>
-    static Range append(std::vector<T>& target, std::span<T const> values)
-    {
-        if (values.size() > MaxEdges - target.size())
-            throw std::length_error("MapSchema edge budget exceeded.");
-        Range range{uint32_t(target.size()), uint32_t(values.size())};
-        target.insert(target.end(), values.begin(), values.end());
-        return range;
-    }
-    ModelNodeAddress annotation(nlohmann::json const& value)
-    {
-        if (value.is_null() || value.empty())
-            return {};
-        auto bytes = nlohmann::json::to_cbor(value);
-        auto node = pool.tryNewValue(simfil::ByteArray{std::string(bytes.begin(), bytes.end())});
-        if (!node)
-            throw std::length_error(node.error().message);
-        return (*node)->addr();
-    }
-    nlohmann::json annotation(ModelNodeAddress address) const
-    {
-        if (!address)
-            return nlohmann::json::object();
-        auto value = pool.resolve(address)->value();
-        auto const* bytes = std::get_if<simfil::ByteArray>(&value);
-        if (!bytes)
-            throw std::invalid_argument("MapSchema annotation reference is not binary.");
-        nlohmann::json result;
-        AnnotationReader reader(result);
-        if (!nlohmann::json::sax_parse(bytes->bytes, &reader, nlohmann::json::input_format_t::cbor))
-            throw std::invalid_argument("Malformed or oversized MapSchema annotation.");
-        return result;
-    }
-    void compile();
-    void compileScalarMetadata(
-        SchemaId,
-        schema_detail::SchemaBuilder::LogicalSchema const&,
-        nlohmann::json&);
-    void index();
-    void validate() const;
-    void validatePool() const;
-    void prepareQueryRoots();
-    /** Cache immutable status diagnostics after all indexes and owners have been installed. */
-    void summarize();
-    template <class S>
-    void readWrite(S& archive, size_t budget);
-    template <class S, class T, class F>
-    static void
-    container(S& archive, std::vector<T>& values, size_t limit, size_t& memory, F&& item);
-    template <class S>
-    static void string(S& archive, std::string& value, size_t limit, size_t& memory);
-    void writeBody(std::ostream& output) const;
-    void readBody(std::vector<uint8_t> const& input, size_t budget);
-    schema_detail::SchemaBuilder exportBuilder() const;
-    SchemaId import(schema_detail::SchemaBuilder const&, size_t layerIndex, SchemaId root);
-    std::vector<LayerSchema::AttributePathOwner> attributeOwners(SchemaId id) const;
-    std::string_view metaType(SchemaId id) const;
-    SchemaId childSchema(SchemaId root, std::string_view field, std::optional<Kind> kind) const;
-    std::vector<LayerSchema::NamedSchemaPath>
-    scalarPaths(SchemaId root, std::string_view attribute) const;
-    std::vector<SchemaId> producedRoots(Layer const& layer) const;
-};
+using simfil::TypeId;
 
 #include "mapschema-composition.h"
 
@@ -326,9 +57,9 @@ std::string_view MapSchema::schemaId() const
         throw std::logic_error("MapSchema identity is unavailable before finalization.");
     return schema_->identity;
 }
-size_t MapSchema::domainCount() const
+size_t MapSchema::typeCount() const
 {
-    return (schema_->builder ? schema_->builder->schemas_.size() : schema_->domains.size()) - 1;
+    return (schema_->builder ? schema_->builder->schemas_.size() : schema_->types.size()) - 1;
 }
 
 LayerSchema::Ptr MapSchema::newLayer(std::string_view name, LayerType type)
@@ -367,7 +98,7 @@ std::vector<std::string> MapSchema::layerNames() const
     return names;
 }
 
-SchemaId MapSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
+TypeId MapSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
 {
     requireMutable();
     if (!key.empty() && schema_->builder->idsByKey_.contains(key))
@@ -375,15 +106,15 @@ SchemaId MapSchema::addSchema(Kind kind, std::string key, std::string metaType, 
     return schema_->builder
         ->allocate(kind, std::move(key), std::move(pointer), std::move(metaType));
 }
-void MapSchema::registerSchemaKey(std::string key, SchemaId id)
+void MapSchema::registerSchemaKey(std::string key, TypeId id)
 {
     requireMutable();
-    schema_->requireDomain(id);
+    schema_->requireType(id);
     auto [it, inserted] = schema_->builder->idsByKey_.emplace(std::move(key), id);
     if (!inserted && it->second != id)
         throw std::invalid_argument("A global schema key has conflicting declarations.");
 }
-SchemaId MapSchema::findSchema(std::string_view key) const
+TypeId MapSchema::findSchema(std::string_view key) const
 {
     if (schema_->builder) {
         auto it = schema_->builder->idsByKey_.find(key);
@@ -392,51 +123,55 @@ SchemaId MapSchema::findSchema(std::string_view key) const
     auto it = schema_->globalAliases.find(key);
     return it == schema_->globalAliases.end() ? 0 : it->second;
 }
-void MapSchema::addFieldSchema(SchemaId parent, std::string field, SchemaId child, bool multimap)
+void MapSchema::addFieldSchema(TypeId parent, std::string field, TypeId child, bool multimap)
 {
-    requireMutable();
-    schema_->requireDomain(parent);
+    requireMutableType(parent);
     if (child)
-        schema_->requireDomain(child);
+        schema_->requireType(child);
     auto& builder = *schema_->builder;
+    auto const& definition = builder.schemas_[parent];
+    if (definition.reservedFields_.contains(field)) {
+        auto found = definition.childSchemas_.find(field);
+        if (found == definition.childSchemas_.end() ||
+            found->second != std::vector<TypeId>{child} ||
+            definition.multimapFields_.contains(field) != multimap)
+            throw std::invalid_argument("Cannot redefine reserved mapget field: " + field);
+        return;
+    }
     builder.addDirectField(parent, field);
     if (child)
         builder.addChild(parent, field, child);
     if (multimap)
         builder.schemas_[parent].multimapFields_.insert(std::move(field));
 }
-void MapSchema::addElementSchema(SchemaId parent, SchemaId child)
+void MapSchema::addElementSchema(TypeId parent, TypeId child)
 {
-    requireMutable();
-    schema_->requireDomain(parent);
-    schema_->requireDomain(child);
+    requireMutableType(parent);
+    schema_->requireType(child);
     schema_->builder->addElementSchema(parent, child);
 }
-void MapSchema::addEnumSymbol(SchemaId id, std::string name)
+void MapSchema::addEnumSymbol(TypeId id, std::string name)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     schema_->builder->addEnumSymbol(id, name);
 }
-void MapSchema::addEnumSymbols(SchemaId id, std::span<std::string const> names)
+void MapSchema::addEnumSymbols(TypeId id, std::span<std::string const> names)
 {
     for (auto const& name : names)
         addEnumSymbol(id, name);
 }
-void MapSchema::addEnumValue(SchemaId id, simfil::ScalarValueType value)
+void MapSchema::addEnumValue(TypeId id, simfil::ScalarValueType value)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     if (std::holds_alternative<std::string>(value) ||
         std::holds_alternative<std::string_view>(value) ||
         std::holds_alternative<simfil::Bitmask>(value))
         throw std::invalid_argument("Use symbol/named-mask declarations for strings and bitmasks.");
     schema_->builder->schemas_[id].enumValues_.push_back(std::move(value));
 }
-void MapSchema::setComposition(SchemaId id, Composition op)
+void MapSchema::setComposition(TypeId id, Composition op)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     auto& d = schema_->builder->schemas_[id];
     d.composition_ = op;
     if (op != Composition::None)
@@ -446,95 +181,124 @@ void MapSchema::setComposition(SchemaId id, Composition op)
             Kind::OneOf :
             Kind::Union;
 }
-void MapSchema::addAlternative(SchemaId id, SchemaId other)
+void MapSchema::addAlternative(TypeId id, TypeId other)
 {
-    requireMutable();
-    schema_->requireDomain(id);
-    schema_->requireDomain(other);
+    requireMutableType(id);
+    schema_->requireType(other);
     auto& ids = schema_->builder->schemas_[id].alternatives_;
-    if (std::ranges::find(ids, other) == ids.end())
+    if (schema_->builder->schemas_[id].composition_ == Composition::OneOf ||
+        std::ranges::find(ids, other) == ids.end())
         ids.push_back(other);
 }
-void MapSchema::setTypeName(SchemaId id, std::string name)
+void MapSchema::setTypeName(TypeId id, std::string name)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     schema_->builder->schemas_[id].typeName_ = std::move(name);
 }
-void MapSchema::setOpen(SchemaId id, bool open)
+void MapSchema::setOpen(TypeId id, bool open)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     schema_->builder->schemas_[id].open_ = open;
 }
-void MapSchema::setNullable(SchemaId id, std::optional<bool> value)
+void MapSchema::setNullable(TypeId id, std::optional<bool> value)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     schema_->builder->schemas_[id].nullable_ = value;
 }
-void MapSchema::setFieldRequired(SchemaId id, std::string field, std::optional<bool> required)
+void MapSchema::setFieldRequired(TypeId id, std::string field, std::optional<bool> required)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     auto& values = schema_->builder->schemas_[id].required_;
+    if (schema_->builder->schemas_[id].reservedFields_.contains(field)) {
+        auto found = values.find(field);
+        if (found == values.end() ? required.has_value() : required != found->second)
+            throw std::invalid_argument("Cannot change reserved field presence: " + field);
+        return;
+    }
     if (required)
         values[std::move(field)] = *required;
     else
         values.erase(field);
 }
-void MapSchema::setZserioType(SchemaId id, std::string name)
+void MapSchema::setZserioType(TypeId id, std::string name)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     auto& d = schema_->builder->schemas_[id];
     d.zserioType_ = std::move(name);
     if (d.typeName_.empty())
         d.typeName_ = d.zserioType_;
 }
 
-void MapSchema::setFieldRole(SchemaId id, std::string field, simfil::Schema::FieldRole role)
+void MapSchema::setFieldRole(TypeId id, std::string field, simfil::Schema::FieldRole role)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     auto& fields = schema_->builder->schemas_[id].contextFields_;
+    if (schema_->builder->schemas_[id].reservedFields_.contains(field) &&
+        (role == simfil::Schema::FieldRole::Context) != fields.contains(field))
+        throw std::invalid_argument("Cannot change reserved field role: " + field);
     if (role == simfil::Schema::FieldRole::Context)
         fields.insert(std::move(field));
     else
         fields.erase(field);
 }
 void MapSchema::setAttributeMetadata(
-    SchemaId id,
+    TypeId id,
     LayerSchema::AttributePathOwner owner,
     std::string type,
     std::string zserio)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     auto& d = schema_->builder->schemas_[id];
-    d.attributeTypeCode_ = owner.attributeName_;
     d.attributeType_ = std::move(type);
     if (!zserio.empty())
         d.zserioType_ = std::move(zserio);
     if (d.typeName_.empty())
         d.typeName_ = d.zserioType_.empty() ? d.attributeType_ : d.zserioType_;
     schema_->builder->registerAttributeOwner(id, std::move(owner));
+    if (!d.attributeOwners_.empty()) {
+        auto const& first = d.attributeOwners_.front().attributeName_;
+        d.attributeTypeCode_ =
+            std::ranges::all_of(
+                d.attributeOwners_,
+                [&](auto const& site) { return site.attributeName_ == first; }) ?
+            first :
+            std::string{};
+    }
 }
-void MapSchema::setJsonSchemaAnnotations(SchemaId id, nlohmann::json annotations)
+void MapSchema::setJsonSchemaAnnotations(TypeId id, nlohmann::json annotations)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     if (!annotations.is_object() ||
         schema_detail::SchemaBuilder::annotations(annotations) != annotations)
         throw std::invalid_argument(
-            "Schema annotations cannot replace structural domain declarations.");
-    schema_->builder->schemas_[id].annotations_ = std::move(annotations);
+            "Schema annotations cannot replace structural type declarations.");
+    auto& builder = *schema_->builder;
+    auto start = builder.schemas_.size();
+    std::optional<decltype(builder.idsByKey_)> aliases;
+    try {
+        schema_detail::SchemaBuilder::validationSchemas(
+            annotations,
+            [&](auto& constraint, auto const&)
+            {
+                if (!aliases)
+                    aliases = builder.idsByKey_;
+                auto child = addJsonSchema(constraint);
+                constraint = {{"$ref", "#/definitions/" + std::to_string(child)}};
+            });
+        builder.schemas_[id].annotations_ = std::move(annotations);
+    }
+    catch (...) {
+        builder.schemas_.resize(start);
+        builder.entriesById_.resize(start);
+        if (aliases)
+            builder.idsByKey_ = std::move(*aliases);
+        throw;
+    }
 }
 
-void MapSchema::setNumericDomain(SchemaId id, simfil::Schema::NumericDomain const& value)
+void MapSchema::setNumericDomain(TypeId id, simfil::Schema::NumericDomain const& value)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     nlohmann::json json{
         {"encoding", value.encoding},
         {"unit", value.unit},
@@ -554,10 +318,9 @@ void MapSchema::setNumericDomain(SchemaId id, simfil::Schema::NumericDomain cons
             .push_back({{"minimum", numeric(range.min)}, {"maximum", numeric(range.max)}});
     schema_->builder->schemas_[id].annotations_["x-mapget"]["numericDomain"] = std::move(json);
 }
-void MapSchema::addNamedValue(SchemaId id, simfil::Schema::NamedValue const& value)
+void MapSchema::addNamedValue(TypeId id, simfil::Schema::NamedValue const& value)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     static constexpr std::string_view roles[]{"constant", "special", "flag"};
     static constexpr std::string_view
         meanings[]{"ordinary", "unknown", "variable", "unbounded", "saturated"};
@@ -571,6 +334,9 @@ void MapSchema::addNamedValue(SchemaId id, simfil::Schema::NamedValue const& val
         {"meaning", meanings[unsigned(value.meaning)]},
         {"deprecated", value.deprecated},
         {"removed", value.removed}};
+    if (value.rawValue)
+        json["rawValue"] =
+            std::visit([](auto raw) { return nlohmann::json(raw); }, *value.rawValue);
     auto& values = schema_->builder->schemas_[id].annotations_["x-mapget"]["namedValues"];
     if (!values.is_null())
         for (auto const& old : values)
@@ -581,58 +347,57 @@ void MapSchema::addNamedValue(SchemaId id, simfil::Schema::NamedValue const& val
             }
     values.push_back(std::move(json));
 }
-void MapSchema::setBitWidth(SchemaId id, uint8_t width)
+void MapSchema::setBitWidth(TypeId id, uint8_t width)
 {
-    requireMutable();
-    schema_->requireDomain(id);
+    requireMutableType(id);
     if (width == 0 || width > 64)
         throw std::invalid_argument("Bitmask width must be 1..64.");
     schema_->builder->schemas_[id].annotations_["x-mapget"]["bitWidth"] = width;
 }
-std::optional<simfil::Schema::NumericDomain> MapSchema::numericDomain(SchemaId id) const
+std::optional<simfil::Schema::NumericDomain> MapSchema::numericDomain(TypeId id) const
 {
-    auto d = domain(id);
+    auto d = type(id);
     return d ? d->numericDomain() : std::nullopt;
 }
 void MapSchema::forEachNamedValue(
-    SchemaId id,
+    TypeId id,
     std::function<void(simfil::Schema::NamedValue const&)> const& fn) const
 {
-    if (auto d = domain(id))
+    if (auto d = type(id))
         d->forEachNamedValue(fn);
 }
-uint8_t MapSchema::bitWidth(SchemaId id) const
+uint8_t MapSchema::bitWidth(TypeId id) const
 {
-    auto d = domain(id);
+    auto d = type(id);
     return d ? d->bitWidth() : 0;
 }
 
-SchemaId MapSchema::Impl::import(
-    schema_detail::SchemaBuilder const& source,
-    size_t layerIndex,
-    SchemaId root)
+TypeId
+MapSchema::Impl::import(schema_detail::SchemaBuilder const& source, size_t layerIndex, TypeId root)
 {
-    std::vector<SchemaId> remap(source.schemas_.size());
-    if (source.schemas_.size() - 1 > simfil::MaxSchemaId + 1u - builder->schemas_.size())
-        throw std::length_error("Combined MapSchema exceeds its 16-bit domain namespace.");
+    std::vector<TypeId> remap(source.schemas_.size());
+    auto importedCount =
+        std::ranges::count_if(source.schemas_, [](auto const& value) { return value.id_ != 0; });
+    if (importedCount > simfil::MaxTypeId + 1u - builder->schemas_.size())
+        throw std::length_error("Combined MapSchema exceeds its 16-bit type namespace.");
     auto start = builder->schemas_.size();
     auto aliasesBefore = builder->idsByKey_;
     auto& layer = layers.at(layerIndex);
     auto localBefore = layer.buildAliases;
     try {
         for (size_t i = 1; i < source.schemas_.size(); ++i) {
-            if (!source.valid(SchemaId(i)))
+            if (!source.valid(TypeId(i)))
                 continue;
             auto const& d = source.schemas_[i];
             // Never reinterpret transported local IDs as graph-global IDs.
             remap[i] = builder->allocate(d.kind_, {}, {}, d.entry_.metaType_);
         }
-        auto mapped = [&](SchemaId id)
+        auto mapped = [&](TypeId id)
         {
             if (id == 0)
-                return SchemaId{0};
+                return TypeId{0};
             if (id >= remap.size() || !remap[id])
-                throw std::invalid_argument("Dangling domain reference in imported schema.");
+                throw std::invalid_argument("Dangling type reference in imported schema.");
             return remap[id];
         };
         for (size_t i = 1; i < source.schemas_.size(); ++i)
@@ -651,9 +416,9 @@ SchemaId MapSchema::Impl::import(
                         auto [end, error] =
                             std::from_chars(digits.data(), digits.data() + digits.size(), id);
                         if (error != std::errc{} || end != digits.data() + digits.size() ||
-                            id > simfil::MaxSchemaId)
+                            id > simfil::MaxTypeId)
                             throw std::invalid_argument("Invalid schema validation reference.");
-                        value["$ref"] = "#/definitions/" + std::to_string(mapped(SchemaId(id)));
+                        value["$ref"] = "#/definitions/" + std::to_string(mapped(TypeId(id)));
                     });
                 copy.id_ = remap[i];
                 copy.entry_.id_ = remap[i];
@@ -664,10 +429,15 @@ SchemaId MapSchema::Impl::import(
                     c = mapped(c);
                 for (auto& c : copy.alternatives_)
                     c = mapped(c);
-                for (auto& owner : copy.attributeOwners_)
-                    owner.attributeSchema_ = remap[i];
+                auto owners = std::move(copy.attributeOwners_);
+                copy.attributeOwners_.clear();
                 builder->entriesById_[remap[i]] = copy.entry_;
                 builder->schemas_[remap[i]] = std::move(copy);
+                for (auto& owner : owners) {
+                    owner.attributeSchema_ = remap[i];
+                    owner.featureLayer_ = layer.name;
+                    builder->registerAttributeOwner(remap[i], std::move(owner));
+                }
             }
         for (auto const& [key, id] : source.idsByKey_) {
             auto [it, inserted] = layer.buildAliases.emplace(key, mapped(id));
@@ -707,7 +477,7 @@ LayerSchema::Ptr MapSchema::importLayer(
             "Conflicting declarations for schema layer '" + std::string(name) + "'.");
     }
     schema_detail::SchemaBuilder imported;
-    SchemaId importedRoot = 0;
+    TypeId importedRoot = 0;
     if (!json.is_null())
         importedRoot = schema_detail::LayerSchemaCompiler(imported, json).buildAll();
     auto start = schema_->builder->schemas_.size();
@@ -744,7 +514,7 @@ LayerSchema::Ptr MapSchema::importLayer(
     return result;
 }
 
-SchemaId MapSchema::addJsonSchema(nlohmann::json const& json)
+TypeId MapSchema::addJsonSchema(nlohmann::json const& json)
 {
     requireMutable();
     schema_detail::SchemaBuilder::validateInput(json);
@@ -787,14 +557,14 @@ LayerType LayerSchema::layerType() const
 {
     return mapSchema()->schema_->layerAt(addr_.index()).type;
 }
-void LayerSchema::setRootSchema(SchemaId root)
+void LayerSchema::setRootSchema(TypeId root)
 {
     auto& owner = mutableOwner();
     if (root)
-        owner.schema_->requireDomain(root);
+        owner.schema_->requireType(root);
     owner.schema_->layerAt(addr_.index()).root = root;
 }
-SchemaId LayerSchema::rootSchema() const
+TypeId LayerSchema::rootSchema() const
 {
     return mapSchema()->schema_->layerAt(addr_.index()).root;
 }
@@ -852,7 +622,7 @@ std::vector<std::string> LayerSchema::featureTypes() const
     }
     return result;
 }
-void LayerSchema::addFeatureType(FeatureTypeInfo info, SchemaId root, bool produced)
+void LayerSchema::addFeatureType(FeatureTypeInfo info, TypeId root, bool produced)
 {
     auto& owner = mutableOwner();
     info = FeatureTypeInfo::fromJson(info.toJson());
@@ -860,7 +630,7 @@ void LayerSchema::addFeatureType(FeatureTypeInfo info, SchemaId root, bool produ
     if (!root)
         root = schemaId(featureKey(info.name_));
     if (root)
-        owner.schema_->requireDomain(root);
+        owner.schema_->requireType(root);
     for (size_t i = 0; i < layer.features.size(); ++i)
         if (layer.features[i].name_ == info.name_) {
             if (layer.features[i].toJson() != info.toJson() || layer.produced[i] != produced ||
@@ -879,8 +649,7 @@ void LayerSchema::addFeatureType(FeatureTypeInfo info, SchemaId root, bool produ
     layer.featureRoots.push_back(root);
     layer.produced.push_back(produced);
 }
-SchemaId
-LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
+TypeId LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
 {
     auto& owner = mutableOwner();
     auto id = owner.addSchema(kind, {}, std::move(metaType), std::move(pointer));
@@ -890,16 +659,16 @@ LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, std::st
         registerSchemaKey(std::move(key), id);
     return id;
 }
-void LayerSchema::registerSchemaKey(std::string key, SchemaId id)
+void LayerSchema::registerSchemaKey(std::string key, TypeId id)
 {
     auto& owner = mutableOwner();
-    owner.schema_->requireDomain(id);
+    owner.schema_->requireType(id);
     auto& aliases = owner.schema_->layerAt(addr_.index()).buildAliases;
     auto [it, inserted] = aliases.emplace(std::move(key), id);
     if (!inserted && it->second != id)
         throw std::invalid_argument("Conflicting layer-local schema key: " + it->first);
 }
-SchemaId LayerSchema::schemaId(std::string_view key) const
+TypeId LayerSchema::schemaId(std::string_view key) const
 {
     auto owner = mapSchema();
     auto const& layer = owner->schema_->layerAt(addr_.index());
@@ -911,7 +680,7 @@ SchemaId LayerSchema::schemaId(std::string_view key) const
         return it->second;
     return owner->findSchema(key);
 }
-SchemaId LayerSchema::addJsonSchema(nlohmann::json const& json)
+TypeId LayerSchema::addJsonSchema(nlohmann::json const& json)
 {
     auto& owner = mutableOwner();
     auto& graph = *owner.schema_;
@@ -949,9 +718,9 @@ LayerSchema::Ptr LayerSchema::fromJsonSchema(nlohmann::json json)
     return layer;
 }
 
-std::vector<SchemaId> MapSchema::Impl::producedRoots(Layer const& layer) const
+std::vector<TypeId> MapSchema::Impl::producedRoots(Layer const& layer) const
 {
-    std::vector<SchemaId> result;
+    std::vector<TypeId> result;
     if (!layer.features.empty()) {
         for (size_t i = 0; i < layer.features.size(); ++i)
             if (layer.produced[i])
@@ -960,8 +729,8 @@ std::vector<SchemaId> MapSchema::Impl::producedRoots(Layer const& layer) const
     }
     // Schema-only readers may discover produced roots without inventing feature ID
     // compositions. This does not make such a graph a valid feature creation contract.
-    std::vector<SchemaId> pending{layer.root};
-    std::vector<bool> seen(builder ? builder->schemas_.size() : domains.size());
+    std::vector<TypeId> pending{layer.root};
+    std::vector<bool> seen(builder ? builder->schemas_.size() : types.size());
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
@@ -969,12 +738,12 @@ std::vector<SchemaId> MapSchema::Impl::producedRoots(Layer const& layer) const
             continue;
         seen[id] = true;
         if (metaType(id) == "Feature" ||
-            (builder ? builder->schemas_[id].kind_ : pool.domain(id)->kind()) ==
+            (builder ? builder->schemas_[id].kind_ : pool.type(id)->kind()) ==
                 LayerSchema::FeatureKind)
         {
             auto extra = builder ?
                 builder->schemas_[id].annotations_ :
-                annotation(domains[id].annotations);
+                annotation(types[id].annotations);
             auto metadata = schema_detail::mapgetMetadata(extra);
             if (!metadata || metadata->value("produced", true))
                 result.push_back(id);
@@ -989,7 +758,7 @@ std::vector<SchemaId> MapSchema::Impl::producedRoots(Layer const& layer) const
                 domain.elementSchemas_.end());
         }
         else {
-            auto const& domain = *pool.domain(id);
+            auto const& domain = *pool.type(id);
             auto alternatives = domain.alternatives();
             pending.insert(pending.end(), alternatives.begin(), alternatives.end());
             domain.forEachElementSchema([&](auto child) { pending.push_back(child); });
@@ -1001,10 +770,24 @@ std::vector<SchemaId> MapSchema::Impl::producedRoots(Layer const& layer) const
 
 void MapSchema::Impl::prepareQueryRoots()
 {
-    std::set<std::pair<SchemaId, SchemaId>> contexts;
+    std::set<std::pair<TypeId, TypeId>> contexts;
+    std::map<TypeId, std::pair<std::string, std::string>> featureNames;
+    for (auto const& layer : layers)
+        for (size_t i = 0; i < layer.features.size(); ++i)
+            featureNames
+                .emplace(layer.featureRoots[i], std::pair{layer.name, layer.features[i].name_});
     for (auto const& layer : layers)
         for (auto feature : producedRoots(layer)) {
-            std::vector<SchemaId> pending{feature};
+            // Legacy schema-only inputs can declare Feature roots without an ID
+            // composition. Query contexts still need their layer/name ownership.
+            auto const& source = builder->schemas_[feature];
+            auto metadata = schema_detail::mapgetMetadata(source.annotations_);
+            auto name = schema_detail::metadataString(metadata, "featureType");
+            featureNames.try_emplace(
+                feature,
+                layer.name,
+                name.empty() ? source.typeName_ : std::move(name));
+            std::vector<TypeId> pending{feature};
             std::vector<bool> seen(builder->schemas_.size());
             while (!pending.empty()) {
                 auto id = pending.back();
@@ -1027,20 +810,32 @@ void MapSchema::Impl::prepareQueryRoots()
         contexts.erase(context);
     if (contexts.empty())
         return;
-    auto string = builder->allocate(Kind::String, {}, {}, {});
-    auto integer = builder->allocate(Kind::Int, {}, {}, {});
-    auto boolean = builder->allocate(Kind::Bool, {}, {}, {});
-    for (auto id : {string, integer, boolean}) {
-        builder->schemas_[id].queryRoot_ = true;
-        builder->schemas_[id].nullable_ = false;
-    }
+    auto string = pool.primitive(Kind::String);
+    auto integer = pool.primitive(Kind::Int);
+    auto boolean = pool.primitive(Kind::Bool);
     for (auto [feature, attribute] : contexts) {
         auto copy = builder->schemas_[attribute];
         auto id = builder->allocate(LayerSchema::AttributeKind, {}, {}, "Attribute");
         copy.id_ = id;
         copy.entry_ = builder->entriesById_[id];
         copy.queryRoot_ = true;
-        // Only overlay edges are stored; the payload is referenced by DomainData::base.
+        auto const& [featureLayer, featureName] = featureNames.at(feature);
+        std::erase_if(
+            copy.attributeOwners_,
+            [&](auto const& owner)
+            {
+                return owner.featureType_ != featureName ||
+                    (!owner.featureLayer_.empty() && owner.featureLayer_ != featureLayer);
+            });
+        copy.attributeTypeCode_.clear();
+        if (!copy.attributeOwners_.empty()) {
+            auto const& name = copy.attributeOwners_.front().attributeName_;
+            if (std::ranges::all_of(
+                    copy.attributeOwners_,
+                    [&](auto const& owner) { return owner.attributeName_ == name; }))
+                copy.attributeTypeCode_ = name;
+        }
+        // Only overlay edges are stored; the payload is referenced by TypeData::base.
         copy.directFields_.clear();
         copy.childSchemas_.clear();
         copy.required_.clear();
@@ -1051,7 +846,7 @@ void MapSchema::Impl::prepareQueryRoots()
         // A named Attribute may describe several physical branches. Its query
         // context must retain those alternatives rather than hide their fields.
         builder->schemas_[id] = std::move(copy);
-        auto overlay = [&](std::string_view name, SchemaId child)
+        auto overlay = [&](std::string_view name, TypeId child)
         {
             builder->addDirectField(id, name);
             builder->addChild(id, name, child);
@@ -1070,7 +865,7 @@ void MapSchema::Impl::prepareQueryRoots()
 }
 
 void MapSchema::Impl::compileScalarMetadata(
-    SchemaId id,
+    TypeId id,
     schema_detail::SchemaBuilder::LogicalSchema const& source,
     nlohmann::json& extra)
 {
@@ -1111,7 +906,7 @@ void MapSchema::Impl::compileScalarMetadata(
         }
     }
     if (metadata->contains("bitWidth") && !isMask)
-        throw std::invalid_argument("bitWidth requires a concrete raw-bitmask domain.");
+        throw std::invalid_argument("bitWidth requires a concrete raw-bitmask type.");
     auto width = metadata->value("bitWidth", isMask ? 64u : 0u);
     if ((isMask && !width) || width > 64)
         throw std::invalid_argument("Bitmask width must be 1..64.");
@@ -1162,6 +957,14 @@ void MapSchema::Impl::compileScalarMetadata(
             named.meaning = simfil::Schema::NamedValue::Meaning(found - meanings.begin());
             named.deprecated = value.value("deprecated", false);
             named.removed = value.value("removed", false);
+            if (auto raw = value.find("rawValue"); raw != value.end()) {
+                if (raw->is_number_unsigned())
+                    named.rawValue = raw->get<uint64_t>();
+                else if (raw->is_number_integer())
+                    named.rawValue = raw->get<int64_t>();
+                else
+                    throw std::invalid_argument("Named-value rawValue must be an integer.");
+            }
             generic.addNamedValue(id, named);
         }
         metadata->erase("namedValues");
@@ -1195,7 +998,7 @@ void MapSchema::Impl::compile()
 {
     for (auto& layer : layers)
         if (!layer.root) {
-            std::vector<SchemaId> roots;
+            std::vector<TypeId> roots;
             for (size_t i = 0; i < layer.featureRoots.size(); ++i)
                 if (layer.produced[i])
                     roots.push_back(layer.featureRoots[i]);
@@ -1212,14 +1015,16 @@ void MapSchema::Impl::compile()
         }
     prepareQueryRoots();
     auto& generic = static_cast<simfil::SchemaPool&>(pool);
-    domains.resize(builder->schemas_.size());
+    types.resize(builder->schemas_.size());
     for (size_t id = 1; id < builder->schemas_.size(); ++id) {
-        if (!builder->valid(SchemaId(id)) || generic.addSchema(builder->schemas_[id].kind_) != id)
-            throw std::invalid_argument("MapSchema has a hole in its domain namespace.");
+        if (!builder->valid(TypeId(id)) || generic.addSchema(builder->schemas_[id].kind_) != id)
+            throw std::invalid_argument("MapSchema has a hole in its type namespace.");
     }
+    for (auto [context, query] : queryRoots)
+        generic.setBaseSchema(query, context.second);
     for (size_t id = 1; id < builder->schemas_.size(); ++id) {
         auto const& source = builder->schemas_[id];
-        DomainData row{};
+        TypeData row{};
         row.flags = uint32_t(source.queryRoot_) << 3;
         row.key = text(source.entry_.key_);
         row.pointer = text(source.entry_.jsonPointer_);
@@ -1227,32 +1032,29 @@ void MapSchema::Impl::compile()
         row.zserioType = text(source.zserioType_);
         row.attributeType = text(source.attributeType_);
         row.attributeCode = text(source.attributeTypeCode_);
-        generic.setTypeName(SchemaId(id), source.typeName_);
-        generic.setOpen(SchemaId(id), source.open_);
-        generic.setNullable(SchemaId(id), source.nullable_);
-        generic.setComposition(SchemaId(id), source.composition_);
-        for (auto [context, query] : queryRoots)
-            if (query == id)
-                generic.setBaseSchema(SchemaId(id), context.second);
+        generic.setTypeName(TypeId(id), source.typeName_);
+        generic.setOpen(TypeId(id), source.open_);
+        generic.setNullable(TypeId(id), source.nullable_);
+        generic.setComposition(TypeId(id), source.composition_);
         for (auto const& name : source.directFields_) {
             auto children = source.childSchemas_.find(name);
             if (children == source.childSchemas_.end() || children->second.empty())
                 generic.addFieldSchema(
-                    SchemaId(id),
+                    TypeId(id),
                     name,
-                    simfil::NoSchemaId,
+                    simfil::NoTypeId,
                     source.multimapFields_.contains(name));
             else
                 for (auto child : children->second)
                     generic.addFieldSchema(
-                        SchemaId(id),
+                        TypeId(id),
                         name,
                         child,
                         source.multimapFields_.contains(name));
             if (auto it = source.required_.find(name); it != source.required_.end())
-                generic.setFieldRequired(SchemaId(id), name, it->second);
+                generic.setFieldRequired(TypeId(id), name, it->second);
             if (source.contextFields_.contains(name))
-                generic.setFieldRole(SchemaId(id), name, simfil::Schema::FieldRole::Context);
+                generic.setFieldRole(TypeId(id), name, simfil::Schema::FieldRole::Context);
         }
         // Legacy imports also keep the implicit alias in childSchemas_, but only
         // an actual declared field may override the native lookup-only alias.
@@ -1260,27 +1062,27 @@ void MapSchema::Impl::compile()
                 simfil::Schema::kindNameId(LayerSchema::FeatureKind) &&
             source.childSchemas_.contains("properties") &&
             std::ranges::find(source.directFields_, "attributes") == source.directFields_.end())
-            generic.addFieldAlias(SchemaId(id), "attributes", "properties");
+            generic.addFieldAlias(TypeId(id), "attributes", "properties");
         for (auto child : source.elementSchemas_)
-            generic.addElementSchema(SchemaId(id), child);
+            generic.addElementSchema(TypeId(id), child);
         for (auto child : source.alternatives_)
-            generic.addAlternative(SchemaId(id), child);
+            generic.addAlternative(TypeId(id), child);
         for (auto const& symbol : source.directEnumSymbols_)
-            generic.addEnumSymbol(SchemaId(id), symbol);
+            generic.addEnumSymbol(TypeId(id), symbol);
         for (auto const& value : source.enumValues_)
-            generic.addEnumValue(SchemaId(id), value);
+            generic.addEnumValue(TypeId(id), value);
         row.owners.begin = owners.size();
         for (auto const& owner : source.attributeOwners_)
             owners.push_back(
                 {intern(owner.featureType_),
                  intern(owner.attributeLayerName_),
                  intern(owner.attributeName_),
-                 0});
+                 owner.featureLayer_.empty() ? StringId{0} : intern(owner.featureLayer_)});
         row.owners.count = owners.size() - row.owners.begin;
         auto extra = source.annotations_.is_null() ? nlohmann::json::object() : source.annotations_;
-        compileScalarMetadata(SchemaId(id), source, extra);
+        compileScalarMetadata(TypeId(id), source, extra);
         row.annotations = annotation(extra);
-        domains[id] = row;
+        types[id] = row;
     }
     for (auto const& [key, id] : builder->idsByKey_)
         aliases.push_back({text(key), id, 0});
@@ -1333,43 +1135,62 @@ void MapSchema::Impl::index()
     }
     for (auto& layer : layers)
         layer.aliases.clear();
-    entries.resize(domains.size());
+    entries.resize(types.size());
     for (auto const& alias : aliases) {
         auto& index = alias.layer ? layers.at(alias.layer - 1).aliases : globalAliases;
         auto [it, inserted] = index.emplace(text(alias.key), alias.id);
         if (!inserted && it->second != alias.id)
             throw std::invalid_argument("Conflicting stored schema aliases.");
     }
-    for (size_t id = 1; id < domains.size(); ++id) {
-        auto const& row = domains[id];
-        entries[id] = {SchemaId(id), text(row.key), text(row.pointer), text(row.metaType)};
+    for (size_t id = 1; id < types.size(); ++id) {
+        auto const& row = types[id];
+        entries[id] = {TypeId(id), text(row.key), text(row.pointer), text(row.metaType)};
     }
     // Resolve forward contracts once for each produced layer. Referenced-only
     // identity types do not make that layer a source of incoming relations.
     size_t work = 0;
     for (auto& layer : layers) {
+        if (layer.relationsDeclared) {
+            layer.relationsByTarget.clear();
+            std::set<std::pair<std::string, std::string>> names;
+            for (size_t i = 0; i < layer.relations.size(); ++i) {
+                auto const& value = layer.relations[i];
+                if (!pool.layer(layer.name)->producesFeatureType(value.ownerType_) ||
+                    value.name_.empty() || value.targetTypes_.empty() ||
+                    !names.emplace(value.ownerType_, value.name_).second ||
+                    unsigned(value.locality_) >
+                        unsigned(LayerSchema::RelationDeclaration::Locality::MayCrossContainer))
+                    throw std::invalid_argument("Invalid native forward relation declaration.");
+                for (auto const& target : value.targetTypes_) {
+                    if (target.empty())
+                        throw std::invalid_argument("Empty relation target type.");
+                    layer.relationsByTarget[target].push_back(i);
+                }
+            }
+            continue;
+        }
         layer.relations.clear();
         layer.relationsByTarget.clear();
         layer.relationsKnown = false;
-        std::vector<SchemaId> pending{layer.root};
+        std::vector<TypeId> pending{layer.root};
         auto produced = producedRoots(layer);
-        auto hasInventory = [&](SchemaId id)
+        auto hasInventory = [&](TypeId id)
         {
             if (!valid(id))
                 return false;
-            auto value = annotation(domains[id].annotations);
+            auto value = annotation(types[id].annotations);
             auto meta = schema_detail::mapgetMetadata(value);
             return meta && meta->contains("relationDeclarations") &&
                 meta->value("relationDeclarationsKnown", true);
         };
         bool layerWide = valid(layer.root) && metaType(layer.root) != "Feature" &&
-            simfil::Schema::kindNameId(pool.domain(layer.root)->kind()) !=
+            simfil::Schema::kindNameId(pool.type(layer.root)->kind()) !=
                 simfil::Schema::kindNameId(LayerSchema::FeatureKind) &&
             hasInventory(layer.root);
         layer.relationsKnown = layerWide ||
             (!produced.empty() && std::ranges::all_of(produced, hasInventory));
         pending.insert(pending.end(), produced.begin(), produced.end());
-        std::vector<bool> seen(domains.size());
+        std::vector<bool> seen(types.size());
         while (!pending.empty()) {
             auto id = pending.back();
             pending.pop_back();
@@ -1379,7 +1200,7 @@ void MapSchema::Impl::index()
             ++work;
             if (work > 64 * 1024 * 1024)
                 throw std::length_error("MapSchema relation-index work budget exceeded.");
-            auto annotations = annotation(domains[id].annotations);
+            auto annotations = annotation(types[id].annotations);
             auto meta = annotations.find("x-mapget");
             if (meta != annotations.end())
                 if (auto declarations = meta->find("relationDeclarations");
@@ -1423,13 +1244,13 @@ void MapSchema::Impl::index()
                         layer.relations.push_back(std::move(value));
                     }
                 }
-            auto append = [&](SchemaId child)
+            auto append = [&](TypeId child)
             {
                 if (++work > 64 * 1024 * 1024)
                     throw std::length_error("MapSchema relation-index work budget exceeded.");
                 pending.push_back(child);
             };
-            auto const& domain = *pool.domain(id);
+            auto const& domain = *pool.type(id);
             domain.forEachEnumerableField(
                 [&](auto, auto children)
                 {
@@ -1455,18 +1276,18 @@ void MapSchema::Impl::validate() const
             throw std::invalid_argument("Invalid or duplicate constituent schema identity.");
         (void)MapFormat::fromJson(format.toJson());
     }
-    if (domains.size() != pool.simfil::SchemaPool::domainCount() + 1)
-        throw std::invalid_argument("Map metadata and generic domain namespaces disagree.");
-    auto domain = [&](SchemaId id)
+    if (types.size() != pool.simfil::SchemaPool::typeCount() + 1)
+        throw std::invalid_argument("Map metadata and generic type namespaces disagree.");
+    auto type = [&](TypeId id)
     {
-        if (!id || id >= domains.size() || !pool.domain(id))
-            throw std::invalid_argument("Dangling MapSchema domain reference.");
+        if (!id || id >= types.size() || !pool.type(id))
+            throw std::invalid_argument("Dangling MapSchema type reference.");
     };
     size_t ownerEnd = 0;
-    for (size_t id = 1; id < domains.size(); ++id) {
-        auto const& d = domains[id];
+    for (size_t id = 1; id < types.size(); ++id) {
+        auto const& d = types[id];
         if (d.flags & ~8u)
-            throw std::invalid_argument("Invalid map-domain flags.");
+            throw std::invalid_argument("Invalid map-type flags.");
         for (auto address :
              {d.key, d.pointer, d.metaType, d.zserioType, d.attributeType, d.attributeCode})
             text(address);
@@ -1476,16 +1297,15 @@ void MapSchema::Impl::validate() const
             name(owner.feature);
             name(owner.layer);
             name(owner.name);
-            if (owner.reserved)
-                throw std::invalid_argument("Invalid attribute owner flags.");
+            if (owner.featureLayer)
+                name(owner.featureLayer);
         }
         ownerEnd += d.owners.count;
         if (d.annotations)
             (void)annotation(d.annotations);
-        if (auto base = pool.baseSchema(SchemaId(id))) {
-            if (base >= id || !(d.flags & 8) || pool.baseSchema(base) ||
-                (domains[base].flags & 8) ||
-                simfil::Schema::kindNameId(pool.domain(base)->kind()) !=
+        if (auto base = pool.baseSchema(TypeId(id))) {
+            if (base >= id || !(d.flags & 8) || pool.baseSchema(base) || (types[base].flags & 8) ||
+                simfil::Schema::kindNameId(pool.type(base)->kind()) !=
                     simfil::Schema::kindNameId(LayerSchema::AttributeKind))
                 throw std::invalid_argument(
                     "Query overlays must refer directly to a non-overlay attribute payload.");
@@ -1494,23 +1314,23 @@ void MapSchema::Impl::validate() const
     if (ownerEnd != owners.size())
         throw std::invalid_argument("Unreferenced attribute ownership storage.");
     for (auto const& alias : aliases) {
-        domain(alias.id);
+        type(alias.id);
         text(alias.key);
         if (alias.layer > layers.size())
             throw std::invalid_argument("Unknown schema alias layer.");
     }
-    std::set<SchemaId> overlays;
+    std::set<TypeId> overlays;
     for (auto const& [context, root] : queryRoots) {
-        domain(context.first);
-        domain(context.second);
-        domain(root);
+        type(context.first);
+        type(context.second);
+        type(root);
         if (pool.baseSchema(root) != context.second || !overlays.insert(root).second ||
-            simfil::Schema::kindNameId(pool.domain(context.first)->kind()) !=
+            simfil::Schema::kindNameId(pool.type(context.first)->kind()) !=
                 simfil::Schema::kindNameId(LayerSchema::FeatureKind))
             throw std::invalid_argument("Invalid query overlay binding.");
     }
-    for (size_t id = 1; id < domains.size(); ++id)
-        if (bool(pool.baseSchema(SchemaId(id))) != overlays.contains(SchemaId(id)))
+    for (size_t id = 1; id < types.size(); ++id)
+        if (bool(pool.baseSchema(TypeId(id))) != overlays.contains(TypeId(id)))
             throw std::invalid_argument(
                 "Query overlay bindings must cover every overlay exactly once.");
     std::set<std::string> names;
@@ -1519,7 +1339,7 @@ void MapSchema::Impl::validate() const
             unsigned(layer.type) > unsigned(LayerType::SourceData))
             throw std::invalid_argument("Invalid or duplicate schema layer.");
         if (layer.root)
-            domain(layer.root);
+            type(layer.root);
         if (layer.features.size() != layer.featureRoots.size() ||
             layer.features.size() != layer.produced.size())
             throw std::invalid_argument("Invalid feature identity column lengths.");
@@ -1529,7 +1349,7 @@ void MapSchema::Impl::validate() const
             (void)FeatureTypeInfo::fromJson(feature.toJson());
             if (!types.insert(feature.name_).second || layer.produced[i] > 1)
                 throw std::invalid_argument("Invalid or duplicate feature declaration.");
-            domain(layer.featureRoots[i]);
+            type(layer.featureRoots[i]);
         }
     }
 }
@@ -1611,7 +1431,7 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
             {
                 if constexpr (std::is_same_v<T, uint8_t>)
                     b.value1b(v);
-                else if constexpr (std::is_same_v<T, SchemaId>)
+                else if constexpr (std::is_same_v<T, TypeId>)
                     b.value2b(v);
                 else
                     b.object(v);
@@ -1644,15 +1464,15 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
     if constexpr (simfil::detail::bitsery_input_archive<S>) {
         uint64_t length = 0;
         s.value8b(length);
-        if (length > (size_t(simfil::MaxSchemaId) + 1) * sizeof(DomainData) || length > budget ||
-            length > memory || length % sizeof(DomainData))
-            throw std::length_error("MapSchema domain column exceeds its namespace/byte budget.");
+        if (length > (size_t(simfil::MaxTypeId) + 1) * sizeof(TypeData) || length > budget ||
+            length > memory || length % sizeof(TypeData))
+            throw std::length_error("MapSchema type column exceeds its namespace/byte budget.");
         memory -= length;
-        if (!domains.read_payload_from_bitsery(s.adapter(), size_t(length)))
-            throw std::invalid_argument("Truncated MapSchema domain column.");
+        if (!types.read_payload_from_bitsery(s.adapter(), size_t(length)))
+            throw std::invalid_argument("Truncated MapSchema type column.");
     }
     else
-        s.object(domains);
+        s.object(types);
     vector(s, owners, std::min(MaxEdges, budget / sizeof(OwnerData)));
     vector(s, aliases, std::min(MaxEdges, budget / sizeof(AliasData)));
     container(
@@ -1697,8 +1517,29 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
                 });
             vector(a, layer.featureRoots, UINT16_MAX);
             vector(a, layer.produced, UINT16_MAX);
+            a.boolValue(layer.relationsKnown);
+            container(
+                a,
+                layer.relations,
+                MaxEdges,
+                memory,
+                [&](auto& b, LayerSchema::RelationDeclaration& relation)
+                {
+                    text(b, relation.ownerType_);
+                    text(b, relation.name_);
+                    container(
+                        b,
+                        relation.targetTypes_,
+                        UINT16_MAX,
+                        memory,
+                        [&](auto& c, std::string& target) { text(c, target); });
+                    b.boolValue(relation.complete_);
+                    b.value4b(relation.locality_);
+                });
+            if constexpr (simfil::detail::bitsery_input_archive<S>)
+                layer.relationsDeclared = true;
         });
-    std::vector<std::array<SchemaId, 3>> queries;
+    std::vector<std::array<TypeId, 3>> queries;
     if constexpr (!simfil::detail::bitsery_input_archive<S>)
         for (auto [context, root] : queryRoots)
             queries.push_back({context.first, context.second, root});
@@ -1960,11 +1801,11 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
     return future.get();
 }
 
-simfil::Schema const* MapSchema::domain(SchemaId id) const
+simfil::Schema const* MapSchema::type(TypeId id) const
 {
     if (!simfil::SchemaPool::finalized())
         throw std::logic_error("Schema query requires a finalized graph.");
-    return simfil::SchemaPool::domain(id);
+    return simfil::SchemaPool::type(id);
 }
 std::shared_ptr<simfil::SchemaBinding const> MapSchema::binding() const
 {
@@ -1972,11 +1813,11 @@ std::shared_ptr<simfil::SchemaBinding const> MapSchema::binding() const
         throw std::logic_error("Schema binding requires a finalized graph.");
     return simfil::SchemaPool::binding(std::string(schemaId()));
 }
-simfil::ModelNode::Ptr MapSchema::domainNode(SchemaId id) const
+simfil::ModelNode::Ptr MapSchema::typeNode(TypeId id) const
 {
-    if (!domain(id))
+    if (!type(id))
         return {};
-    return simfil::SchemaPool::domainNode(id);
+    return simfil::SchemaPool::typeNode(id);
 }
 std::vector<std::string> MapSchema::checkForErrors() const
 {
@@ -2016,20 +1857,20 @@ resolveInternal(simfil::res::tag<LayerSchema>, MapSchema const& pool, simfil::Mo
 schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
 {
     schema_detail::SchemaBuilder result;
-    result.schemas_.resize(domains.size());
-    result.entriesById_.resize(domains.size());
+    result.schemas_.resize(types.size());
+    result.entriesById_.resize(types.size());
     auto scalarJson = [](simfil::Schema::NumericValue const& value)
     {
         return std::visit([](auto v) { return nlohmann::json(v); }, value);
     };
-    for (size_t i = 1; i < domains.size(); ++i) {
-        auto const& row = domains[i];
-        auto const& view = *pool.domain(i);
+    for (size_t i = 1; i < types.size(); ++i) {
+        auto const& row = types[i];
+        auto const& view = *pool.type(i);
         auto& out = result.schemas_[i];
-        out.id_ = SchemaId(i);
+        out.id_ = TypeId(i);
         out.kind_ = view.kind();
         out.entry_ = {
-            SchemaId(i),
+            TypeId(i),
             std::string(text(row.key)),
             std::string(text(row.pointer)),
             std::string(text(row.metaType))};
@@ -2044,7 +1885,7 @@ schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
         out.composition_ = view.composition();
         for (auto alternative : view.alternatives())
             out.alternatives_.push_back(alternative);
-        view.forEachElementSchema([&](SchemaId child) { out.elementSchemas_.push_back(child); });
+        view.forEachElementSchema([&](TypeId child) { out.elementSchemas_.push_back(child); });
         view.forEachDirectField(
             [&](StringId field, auto children)
             {
@@ -2053,9 +1894,9 @@ schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
                 out.childSchemas_[n] = {children.begin(), children.end()};
                 // The generic pool represents an unknown declaration as a zero
                 // edge; legacy JSON uses unknownEdge rather than a dangling ref 0.
-                if (children.size() == 1 && children.front() == simfil::NoSchemaId)
+                if (children.size() == 1 && children.front() == simfil::NoTypeId)
                     out.childSchemas_[n].clear();
-                if (pool.fieldMultimap(SchemaId(i), field))
+                if (pool.fieldMultimap(TypeId(i), field))
                     out.multimapFields_.insert(n);
                 if (auto required = view.fieldRequired(field))
                     out.required_[n] = *required;
@@ -2065,7 +1906,7 @@ schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
         for (auto symbol : view.directEnumSymbols())
             out.directEnumSymbols_.push_back(std::string(name(symbol)));
         out.enumValues_ = {view.enumValues().begin(), view.enumValues().end()};
-        out.attributeOwners_ = attributeOwners(SchemaId(i));
+        out.attributeOwners_ = attributeOwners(TypeId(i));
         out.annotations_ = annotation(row.annotations);
         if (auto numeric = view.numericDomain()) {
             auto& json = out.annotations_["x-mapget"]["numericDomain"];
@@ -2096,6 +1937,9 @@ schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
                      {"meaning", meanings[unsigned(value.meaning)]},
                      {"deprecated", value.deprecated},
                      {"removed", value.removed}});
+                if (value.rawValue)
+                    out.annotations_["x-mapget"]["namedValues"].back()["rawValue"] =
+                        std::visit([](auto raw) { return nlohmann::json(raw); }, *value.rawValue);
             });
         if (view.isBitmask())
             out.annotations_["x-mapget"]["bitWidth"] = view.bitWidth();
@@ -2110,13 +1954,53 @@ nlohmann::json LayerSchema::toJsonSchema() const
     auto const& graph = *mapSchema()->schema_;
     auto compiled = graph.builder ? *graph.builder : graph.exportBuilder();
     auto const& layer = graph.layerAt(addr_.index());
+    for (auto& type : compiled.schemas_)
+        std::erase_if(
+            type.attributeOwners_,
+            [&](auto const& owner)
+            { return !owner.featureLayer_.empty() && owner.featureLayer_ != layer.name; });
     if (graph.builder)
         for (auto const& [key, id] : layer.buildAliases)
             compiled.idsByKey_[key] = id;
     else
         for (auto const& [key, id] : layer.aliases)
             compiled.idsByKey_[std::string(key)] = id;
-    auto json = compiled.exportDomains();
+    std::vector<TypeId> roots = layer.featureRoots;
+    if (layer.root)
+        roots.push_back(layer.root);
+    // Layer-local aliases can name converter-only or reference-only contracts.
+    if (graph.builder)
+        for (auto const& [_, id] : layer.buildAliases)
+            roots.push_back(id);
+    else
+        for (auto const& [_, id] : layer.aliases)
+            roots.push_back(id);
+    auto json = compiled.exportTypes(roots);
+    // Native forward declarations are encoded only at the JSON interchange boundary.
+    if (layer.relationsDeclared) {
+        auto declarations = nlohmann::json::array();
+        for (auto const& relation : layer.relations) {
+            static constexpr std::string_view locality[]{
+                "unknown",
+                "same-container",
+                "may-cross-container"};
+            declarations.push_back(
+                {{"ownerType", relation.ownerType_},
+                 {"name", relation.name_},
+                 {"targetTypes", relation.targetTypes_},
+                 {"complete", relation.complete_},
+                 {"locality", locality[unsigned(relation.locality_)]}});
+        }
+        for (size_t i = 0; i < layer.featureRoots.size(); ++i) {
+            auto root = layer.featureRoots[i];
+            auto& metadata = json["definitions"][std::to_string(root)]["x-mapget"];
+            metadata["relationDeclarations"] = nlohmann::json::array();
+            for (auto const& declaration : declarations)
+                if (declaration["ownerType"] == layer.features[i].name_)
+                    metadata["relationDeclarations"].push_back(declaration);
+            metadata["relationDeclarationsKnown"] = layer.relationsKnown;
+        }
+    }
     json.erase("anyOf");
     if (layer.root)
         json["$ref"] = "#/definitions/" + std::to_string(layer.root);
@@ -2137,70 +2021,68 @@ LayerSchema::Entry const* LayerSchema::getSchema(std::string_view key) const
             "getSchema() requires finalization; use schemaId() during construction.");
     return id && id < graph.entries.size() ? &graph.entries[id] : nullptr;
 }
-bool LayerSchema::hasSchema(SchemaId id) const
+bool LayerSchema::hasSchema(TypeId id) const
 {
     return mapSchema()->schema_->valid(id);
 }
-Kind LayerSchema::kind(SchemaId id) const
+Kind LayerSchema::kind(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (graph.builder)
         return graph.builder->kind(id);
-    return graph.valid(id) ? graph.pool.domain(id)->kind() : Kind::Unknown;
+    return graph.valid(id) ? graph.pool.type(id)->kind() : Kind::Unknown;
 }
-std::string_view LayerSchema::typeName(SchemaId id) const
+std::string_view LayerSchema::typeName(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return {};
     return graph.builder ?
         std::string_view(graph.builder->schemas_[id].typeName_) :
-        graph.pool.domain(id)->typeName();
+        graph.pool.type(id)->typeName();
 }
-Composition LayerSchema::composition(SchemaId id) const
+Composition LayerSchema::composition(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return Composition::None;
     return graph.builder ?
         graph.builder->schemas_[id].composition_ :
-        graph.pool.domain(id)->composition();
+        graph.pool.type(id)->composition();
 }
-std::span<SchemaId const> LayerSchema::alternatives(SchemaId id) const
+std::span<TypeId const> LayerSchema::alternatives(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return {};
     return graph.builder ?
-        std::span<SchemaId const>(graph.builder->schemas_[id].alternatives_) :
-        graph.pool.domain(id)->alternatives();
+        std::span<TypeId const>(graph.builder->schemas_[id].alternatives_) :
+        graph.pool.type(id)->alternatives();
 }
-std::span<simfil::ScalarValueType const> LayerSchema::enumValues(SchemaId id) const
+std::span<simfil::ScalarValueType const> LayerSchema::enumValues(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return {};
     return graph.builder ?
         std::span<simfil::ScalarValueType const>(graph.builder->schemas_[id].enumValues_) :
-        graph.pool.domain(id)->enumValues();
+        graph.pool.type(id)->enumValues();
 }
-bool LayerSchema::open(SchemaId id) const
+bool LayerSchema::open(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return true;
-    return graph.builder ? graph.builder->schemas_[id].open_ : graph.pool.domain(id)->open();
+    return graph.builder ? graph.builder->schemas_[id].open_ : graph.pool.type(id)->open();
 }
-std::optional<bool> LayerSchema::nullable(SchemaId id) const
+std::optional<bool> LayerSchema::nullable(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
         return {};
-    return graph.builder ?
-        graph.builder->schemas_[id].nullable_ :
-        graph.pool.domain(id)->nullable();
+    return graph.builder ? graph.builder->schemas_[id].nullable_ : graph.pool.type(id)->nullable();
 }
-std::optional<bool> LayerSchema::fieldRequired(SchemaId id, std::string_view field) const
+std::optional<bool> LayerSchema::fieldRequired(TypeId id, std::string_view field) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
@@ -2211,15 +2093,15 @@ std::optional<bool> LayerSchema::fieldRequired(SchemaId id, std::string_view fie
             return it->second;
         return {};
     }
-    return graph.pool.domain(id)->fieldRequired(graph.pool.strings()->get(field));
+    return graph.pool.type(id)->fieldRequired(graph.pool.strings()->get(field));
 }
-bool LayerSchema::reachabilityComplete(SchemaId id) const
+bool LayerSchema::reachabilityComplete(TypeId id) const
 {
     auto const& graph = *mapSchema()->schema_;
-    return !graph.builder && graph.valid(id) && graph.pool.domain(id)->reachabilityComplete();
+    return !graph.builder && graph.valid(id) && graph.pool.type(id)->reachabilityComplete();
 }
 
-simfil::Schema::FieldRole LayerSchema::fieldRole(SchemaId id, std::string_view field) const
+simfil::Schema::FieldRole LayerSchema::fieldRole(TypeId id, std::string_view field) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (!graph.valid(id))
@@ -2228,58 +2110,58 @@ simfil::Schema::FieldRole LayerSchema::fieldRole(SchemaId id, std::string_view f
         return graph.builder->schemas_[id].contextFields_.contains(field) ?
             simfil::Schema::FieldRole::Context :
             simfil::Schema::FieldRole::Data;
-    return graph.pool.domain(id)->fieldRole(graph.pool.strings()->get(field));
+    return graph.pool.type(id)->fieldRole(graph.pool.strings()->get(field));
 }
-bool LayerSchema::canHaveField(SchemaId id, std::string_view field) const
+bool LayerSchema::canHaveField(TypeId id, std::string_view field) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (graph.builder || !graph.valid(id))
         return true;
-    return graph.pool.domain(id)->canHaveField(graph.pool.strings()->get(field));
+    return graph.pool.type(id)->canHaveField(graph.pool.strings()->get(field));
 }
-bool LayerSchema::canHaveEnumSymbol(SchemaId id, std::string_view symbol) const
+bool LayerSchema::canHaveEnumSymbol(TypeId id, std::string_view symbol) const
 {
     auto const& graph = *mapSchema()->schema_;
     if (graph.builder || !graph.valid(id))
         return false;
-    return graph.pool.domain(id)->canHaveEnumSymbol(graph.pool.strings()->get(symbol));
+    return graph.pool.type(id)->canHaveEnumSymbol(graph.pool.strings()->get(symbol));
 }
-std::span<std::string_view const> LayerSchema::directFields(SchemaId id) const
+std::span<std::string_view const> LayerSchema::directFields(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     return !g.builder && g.valid(id) ? g.pool.fieldNames(id) : std::span<std::string_view const>{};
 }
-std::span<std::string_view const> LayerSchema::nestedFields(SchemaId id) const
+std::span<std::string_view const> LayerSchema::nestedFields(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     return !g.builder && g.valid(id) ?
         g.pool.fieldNames(id, true) :
         std::span<std::string_view const>{};
 }
-std::span<std::string_view const> LayerSchema::directEnumSymbols(SchemaId id) const
+std::span<std::string_view const> LayerSchema::directEnumSymbols(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     return !g.builder && g.valid(id) ? g.pool.enumNames(id) : std::span<std::string_view const>{};
 }
-std::span<std::string_view const> LayerSchema::nestedEnumSymbols(SchemaId id) const
+std::span<std::string_view const> LayerSchema::nestedEnumSymbols(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     return !g.builder && g.valid(id) ?
         g.pool.enumNames(id, true) :
         std::span<std::string_view const>{};
 }
-std::string_view LayerSchema::attributeTypeCode(SchemaId id) const
+std::string_view LayerSchema::attributeTypeCode(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     if (!g.valid(id))
         return {};
     return g.builder ?
         std::string_view(g.builder->schemas_[id].attributeTypeCode_) :
-        g.text(g.domains[id].attributeCode);
+        g.text(g.types[id].attributeCode);
 }
 void LayerSchema::forEachDirectField(
-    SchemaId id,
-    std::function<void(std::string_view, std::span<SchemaId const>)> const& fn) const
+    TypeId id,
+    std::function<void(std::string_view, std::span<TypeId const>)> const& fn) const
 {
     auto const& g = *mapSchema()->schema_;
     if (!g.valid(id))
@@ -2287,10 +2169,10 @@ void LayerSchema::forEachDirectField(
     if (g.builder)
         g.builder->forEachDirectField(id, fn);
     else
-        g.pool.domain(id)
+        g.pool.type(id)
             ->forEachDirectField([&](StringId name, auto children) { fn(g.name(name), children); });
 }
-void LayerSchema::forEachElementSchema(SchemaId id, std::function<void(SchemaId)> const& fn) const
+void LayerSchema::forEachElementSchema(TypeId id, std::function<void(TypeId)> const& fn) const
 {
     auto const& g = *mapSchema()->schema_;
     if (!g.valid(id))
@@ -2298,59 +2180,60 @@ void LayerSchema::forEachElementSchema(SchemaId id, std::function<void(SchemaId)
     if (g.builder)
         g.builder->forEachElementSchema(id, fn);
     else
-        g.pool.domain(id)->forEachElementSchema(fn);
+        g.pool.type(id)->forEachElementSchema(fn);
 }
-SchemaId LayerSchema::attributeQuerySchema(std::string_view feature, SchemaId attribute) const
+TypeId LayerSchema::attributeQuerySchema(std::string_view feature, TypeId attribute) const
 {
     auto const& roots = mapSchema()->schema_->queryRoots;
     auto it = roots.find({featureSchema(feature), attribute});
     return it == roots.end() ? 0 : it->second;
 }
-SchemaId LayerSchema::featureSchema(std::string_view feature) const
+TypeId LayerSchema::featureSchema(std::string_view feature) const
 {
     return schemaId(featureKey(feature));
 }
-SchemaId LayerSchema::featurePropertiesSchema(std::string_view feature) const
+TypeId LayerSchema::featurePropertiesSchema(std::string_view feature) const
 {
     return schemaId(featurePropertiesKey(feature));
 }
-SchemaId LayerSchema::attributeLayerMapSchema(std::string_view feature) const
+TypeId LayerSchema::attributeLayerMapSchema(std::string_view feature) const
 {
     return schemaId(attributeLayerMapKey(feature));
 }
 
-std::string_view MapSchema::Impl::metaType(SchemaId id) const
+std::string_view MapSchema::Impl::metaType(TypeId id) const
 {
     if (!valid(id))
         return {};
     return builder ?
-        std::string_view(builder->entriesById_[id].metaType_) :
-        text(domains[id].metaType);
+        std::string_view(builder->schemas_[id].entry_.metaType_) :
+        text(types[id].metaType);
 }
-std::vector<LayerSchema::AttributePathOwner> MapSchema::Impl::attributeOwners(SchemaId id) const
+std::vector<LayerSchema::AttributePathOwner> MapSchema::Impl::attributeOwners(TypeId id) const
 {
     if (!valid(id))
         return {};
     if (builder)
         return builder->schemas_[id].attributeOwners_;
     std::vector<LayerSchema::AttributePathOwner> result;
-    for (auto const& owner : domains[id].owners.in(owners))
+    for (auto const& owner : types[id].owners.in(owners))
         result.push_back(
             {std::string(name(owner.feature)),
              std::string(name(owner.layer)),
              std::string(name(owner.name)),
-             id});
+             id,
+             owner.featureLayer ? std::string(name(owner.featureLayer)) : std::string{}});
     return result;
 }
-SchemaId
-MapSchema::Impl::childSchema(SchemaId root, std::string_view field, std::optional<Kind> preferred)
+TypeId
+MapSchema::Impl::childSchema(TypeId root, std::string_view field, std::optional<Kind> preferred)
     const
 {
     if (builder)
         return builder->childSchema(root, field, preferred);
-    std::vector<SchemaId> pending{root};
-    std::vector<bool> seen(domains.size());
-    SchemaId fallback = 0;
+    std::vector<TypeId> pending{root};
+    std::vector<bool> seen(types.size());
+    TypeId fallback = 0;
     auto fieldId = pool.strings()->get(field);
     while (!pending.empty()) {
         auto id = pending.back();
@@ -2358,13 +2241,13 @@ MapSchema::Impl::childSchema(SchemaId root, std::string_view field, std::optiona
         if (!valid(id) || seen[id])
             continue;
         seen[id] = true;
-        auto const& view = *pool.domain(id);
+        auto const& view = *pool.type(id);
         for (auto alternate : view.alternatives())
             pending.push_back(alternate);
         if (hasAffinity(view.kind(), simfil::ValueType::Array) &&
             view.composition() == Composition::None)
-            view.forEachElementSchema([&](SchemaId item) { pending.push_back(item); });
-        SchemaId selected = 0;
+            view.forEachElementSchema([&](TypeId item) { pending.push_back(item); });
+        TypeId selected = 0;
         view.forEachDirectField(
             [&](StringId name, auto children)
             {
@@ -2376,7 +2259,7 @@ MapSchema::Impl::childSchema(SchemaId root, std::string_view field, std::optiona
                     if (!fallback)
                         fallback = child;
                     if (!selected &&
-                        (!preferred || matchesKind(pool.domain(child)->kind(), *preferred)))
+                        (!preferred || matchesKind(pool.type(child)->kind(), *preferred)))
                         selected = child;
                 }
             });
@@ -2385,24 +2268,29 @@ MapSchema::Impl::childSchema(SchemaId root, std::string_view field, std::optiona
     }
     return 0;
 }
-SchemaId
-LayerSchema::childSchema(SchemaId root, std::string_view field, std::optional<Kind> preferred) const
+TypeId
+LayerSchema::childSchema(TypeId root, std::string_view field, std::optional<Kind> preferred) const
 {
     return mapSchema()->schema_->childSchema(root, field, preferred);
 }
 
+std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeOwners(TypeId type) const
+{
+    return mapSchema()->schema_->attributeOwners(type);
+}
+
 LayerSchema::PathOwner LayerSchema::ownerForPath(
     std::string_view featureType,
-    simfil::SchemaId rootSchema,
+    simfil::TypeId rootSchema,
     std::span<const std::string> fieldPath) const
 {
     auto const& graph = *mapSchema()->schema_;
-    auto uniqueOwner =
-        [&](SchemaId id, std::string_view feature) -> std::optional<AttributePathOwner>
+    auto uniqueOwner = [&](TypeId id, std::string_view feature) -> std::optional<AttributePathOwner>
     {
         std::optional<AttributePathOwner> result;
         for (auto const& owner : graph.attributeOwners(id))
-            if (owner.featureType_ == feature) {
+            if (owner.featureType_ == feature &&
+                (owner.featureLayer_.empty() || owner.featureLayer_ == name())) {
                 if (result)
                     return std::nullopt;
                 result = owner;
@@ -2442,7 +2330,7 @@ LayerSchema::PathOwner LayerSchema::ownerForPath(
         }
 
         currentSchema = graph.childSchema(currentSchema, fieldName, std::nullopt);
-        if (currentSchema == simfil::NoSchemaId) {
+        if (currentSchema == simfil::NoTypeId) {
             return {};
         }
 
@@ -2452,26 +2340,22 @@ LayerSchema::PathOwner LayerSchema::ownerForPath(
         }
         if (currentMetaType == "Attribute") {
             enteredAttributeBranch = true;
-            if (auto owner = uniqueOwner(currentSchema, featureType)) {
-                attributeOwner = *owner;
-                continue;
-            }
-
             // If the schema id is intentionally shared, the path edge still
             // contains enough context to identify the selected attribute.
-            auto attributeName = std::string(attributeTypeCode(currentSchema));
-            if (attributeName.empty() && pendingAttributeName) {
-                attributeName = *pendingAttributeName;
-            }
+            auto attributeName =
+                pendingAttributeName.value_or(std::string(attributeTypeCode(currentSchema)));
             if (currentLayerName && !attributeName.empty()) {
                 attributeOwner = AttributePathOwner{
                     std::string(featureType),
                     *currentLayerName,
                     std::move(attributeName),
-                    currentSchema};
+                    currentSchema,
+                    std::string(name())};
             }
+            else if (!attributeOwner)
+                attributeOwner = uniqueOwner(currentSchema, featureType);
         }
-        else if (auto owner = uniqueOwner(currentSchema, featureType)) {
+        else if (auto owner = uniqueOwner(currentSchema, featureType); !attributeOwner && owner) {
             attributeOwner = *owner;
         }
     }
@@ -2493,82 +2377,80 @@ LayerSchema::PathOwner LayerSchema::ownerForPath(
     return {};
 }
 
-void LayerSchema::setJsonSchemaAnnotations(simfil::SchemaId id, nlohmann::json annotations)
+void LayerSchema::setJsonSchemaAnnotations(simfil::TypeId id, nlohmann::json annotations)
 {
     mutableOwner().setJsonSchemaAnnotations(id, std::move(annotations));
 }
 
 void LayerSchema::addFieldSchema(
-    simfil::SchemaId parent,
+    simfil::TypeId parent,
     std::string fieldName,
-    simfil::SchemaId child,
+    simfil::TypeId child,
     bool multimap)
 {
     mutableOwner().addFieldSchema(parent, std::move(fieldName), child, multimap);
 }
 
-void LayerSchema::addElementSchema(simfil::SchemaId parent, simfil::SchemaId child)
+void LayerSchema::addElementSchema(simfil::TypeId parent, simfil::TypeId child)
 {
     mutableOwner().addElementSchema(parent, child);
 }
 
-void LayerSchema::addEnumSymbol(simfil::SchemaId schemaId, std::string symbolName)
+void LayerSchema::addEnumSymbol(simfil::TypeId schemaId, std::string symbolName)
 {
     mutableOwner().addEnumSymbol(schemaId, std::move(symbolName));
 }
 
-void LayerSchema::addEnumSymbols(
-    simfil::SchemaId schemaId,
-    std::span<const std::string> symbolNames)
+void LayerSchema::addEnumSymbols(simfil::TypeId schemaId, std::span<const std::string> symbolNames)
 {
     mutableOwner().addEnumSymbols(schemaId, symbolNames);
 }
 
-void LayerSchema::addEnumValue(simfil::SchemaId schemaId, simfil::ScalarValueType value)
+void LayerSchema::addEnumValue(simfil::TypeId schemaId, simfil::ScalarValueType value)
 {
     mutableOwner().addEnumValue(schemaId, std::move(value));
 }
 
-void LayerSchema::setComposition(simfil::SchemaId schemaId, Composition composition)
+void LayerSchema::setComposition(simfil::TypeId schemaId, Composition composition)
 {
     mutableOwner().setComposition(schemaId, composition);
 }
 
-void LayerSchema::addAlternative(simfil::SchemaId schemaId, simfil::SchemaId alternative)
+void LayerSchema::addAlternative(simfil::TypeId schemaId, simfil::TypeId alternative)
 {
     mutableOwner().addAlternative(schemaId, alternative);
 }
 
-void LayerSchema::setTypeName(simfil::SchemaId schemaId, std::string name)
+void LayerSchema::setTypeName(simfil::TypeId schemaId, std::string name)
 {
     mutableOwner().setTypeName(schemaId, std::move(name));
 }
 
-void LayerSchema::setOpen(simfil::SchemaId schemaId, bool open)
+void LayerSchema::setOpen(simfil::TypeId schemaId, bool open)
 {
     mutableOwner().setOpen(schemaId, open);
 }
 
-void LayerSchema::setNullable(simfil::SchemaId schemaId, std::optional<bool> nullable)
+void LayerSchema::setNullable(simfil::TypeId schemaId, std::optional<bool> nullable)
 {
     mutableOwner().setNullable(schemaId, nullable);
 }
 
 void LayerSchema::setFieldRequired(
-    simfil::SchemaId schemaId,
+    simfil::TypeId schemaId,
     std::string field,
     std::optional<bool> required)
 {
     mutableOwner().setFieldRequired(schemaId, std::move(field), required);
 }
 
-void LayerSchema::setZserioType(simfil::SchemaId schemaId, std::string zserioType)
+void LayerSchema::setZserioType(simfil::TypeId schemaId, std::string zserioType)
 {
     mutableOwner().setZserioType(schemaId, std::move(zserioType));
 }
 
 void LayerSchema::setFieldRole(
-    simfil::SchemaId schemaId,
+    simfil::TypeId schemaId,
     std::string field,
     simfil::Schema::FieldRole role)
 {
@@ -2576,11 +2458,12 @@ void LayerSchema::setFieldRole(
 }
 
 void LayerSchema::setAttributeMetadata(
-    simfil::SchemaId schemaId,
+    simfil::TypeId schemaId,
     AttributePathOwner owner,
     std::string attributeType,
     std::string zserioType)
 {
+    owner.featureLayer_ = name();
     mutableOwner().setAttributeMetadata(
         schemaId,
         std::move(owner),
@@ -2637,35 +2520,44 @@ std::string LayerSchema::attributeKey(
 }
 
 std::vector<LayerSchema::NamedSchemaPath>
-MapSchema::Impl::scalarPaths(SchemaId root, std::string_view attribute) const
+MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
 {
     if (builder)
         return builder->scalarFieldPathsForAttribute(root, attribute);
     if (!valid(root) ||
         std::ranges::none_of(
-            domains,
-            [&](auto const& row) { return text(row.attributeCode) == attribute; }))
+            types,
+            [&](auto const& row)
+            {
+                return text(row.attributeCode) == attribute ||
+                    std::ranges::any_of(
+                           row.owners.in(owners),
+                           [&](auto const& owner) { return name(owner.name) == attribute; });
+            }))
         return {};
 
     // Probe each node once before enumerating paths. Bare query operands often
     // are not attribute codes; a shared DAG must not expand exponentially merely
     // to prove that a code (or a selected payload scalar) is absent.
     constexpr uint8_t hasAttribute = 1, hasScalar = 2;
-    std::vector<std::vector<SchemaId>> parents(domains.size());
-    std::vector<bool> seen(domains.size());
-    std::vector<uint8_t> reachable(domains.size());
-    std::vector<SchemaId> pending{root};
+    std::vector<std::vector<TypeId>> parents(types.size());
+    std::vector<bool> seen(types.size());
+    std::vector<uint8_t> reachable(types.size());
+    std::vector<TypeId> pending{root};
     seen[root] = true;
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
-        auto const& row = domains[id];
-        if (text(row.attributeCode) == attribute)
+        auto const& row = types[id];
+        if (text(row.attributeCode) == attribute ||
+            std::ranges::any_of(
+                row.owners.in(owners),
+                [&](auto const& owner) { return name(owner.name) == attribute; }))
             reachable[id] |= hasAttribute;
-        auto const& domain = *pool.domain(id);
+        auto const& domain = *pool.type(id);
         if (matchesKind(domain.kind(), Kind::Value))
             reachable[id] |= hasScalar;
-        auto addChild = [&](SchemaId child)
+        auto addChild = [&](TypeId child)
         {
             if (!valid(child))
                 return;
@@ -2685,9 +2577,9 @@ MapSchema::Impl::scalarPaths(SchemaId root, std::string_view attribute) const
         for (auto child : domain.alternatives())
             addChild(child);
     }
-    for (size_t id = 1; id < domains.size(); ++id)
+    for (size_t id = 1; id < types.size(); ++id)
         if (reachable[id])
-            pending.push_back(SchemaId(id));
+            pending.push_back(TypeId(id));
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
@@ -2702,17 +2594,26 @@ MapSchema::Impl::scalarPaths(SchemaId root, std::string_view attribute) const
 
     std::vector<LayerSchema::NamedSchemaPath> result;
     LayerSchema::NamedSchemaPath path;
-    std::vector<bool> active(domains.size());
+    std::vector<bool> active(types.size());
     size_t work = 0;
     // An attribute shorthand chooses its first payload scalar, not every scalar
     // in the record. Keep this precedence identical to the transient compiler.
-    std::function<bool(SchemaId, bool, bool)> visit = [&](SchemaId id, bool selected, bool first)
+    std::function<bool(TypeId, bool, bool, std::string_view)> visit =
+        [&](TypeId id, bool selected, bool first, std::string_view boundName)
     {
         if (!valid(id) || active[id])
             return false;
-        auto const& row = domains[id];
-        auto const& view = *pool.domain(id);
-        auto matches = text(row.attributeCode) == attribute;
+        auto const& row = types[id];
+        auto const& view = *pool.type(id);
+        auto matches =
+            (boundName.empty() ?
+                 text(row.attributeCode) == attribute :
+                 boundName == attribute && metaType(id) == "Attribute");
+        if (id == root && boundName.empty())
+            matches = matches ||
+                std::ranges::any_of(
+                          row.owners.in(owners),
+                          [&](auto const& owner) { return name(owner.name) == attribute; });
         selected = selected || matches;
         // Reachability deliberately includes data metadata edges: only the original
         // path-local walk below decides exclusions and first-payload precedence.
@@ -2727,7 +2628,7 @@ MapSchema::Impl::scalarPaths(SchemaId root, std::string_view attribute) const
         active[id] = true;
         bool found = false;
         for (auto child : view.alternatives()) {
-            found = visit(child, selected, first || matches) || found;
+            found = visit(child, selected, first || matches, boundName) || found;
             if (selected && found)
                 break;
         }
@@ -2742,31 +2643,32 @@ MapSchema::Impl::scalarPaths(SchemaId root, std::string_view attribute) const
                     return;
                 path.push_back({simfil::SchemaPathSegment::Kind::Field, std::string(name)});
                 for (auto child : children) {
-                    found = visit(child, selected, false) || found;
+                    auto useSite = metaType(id) == "AttributeContainer" ? name : boundName;
+                    found = visit(child, selected, false, useSite) || found;
                     if (selected && found)
                         break;
                 }
                 path.pop_back();
             });
         view.forEachElementSchema(
-            [&](SchemaId child)
+            [&](TypeId child)
             {
                 if (selected && found)
                     return;
                 path.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
-                found = visit(child, selected, false) || found;
+                found = visit(child, selected, false, boundName) || found;
                 path.pop_back();
             });
         active[id] = false;
         return found;
     };
-    visit(root, false, false);
+    visit(root, false, false, {});
     std::ranges::sort(result);
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
 std::vector<LayerSchema::NamedSchemaPath>
-LayerSchema::scalarFieldPathsForAttribute(SchemaId root, std::string_view attribute) const
+LayerSchema::scalarFieldPathsForAttribute(TypeId root, std::string_view attribute) const
 {
     if (attribute.empty())
         return {};
@@ -2776,17 +2678,18 @@ std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() cons
 {
     auto const& g = *mapSchema()->schema_;
     std::vector<AttributePathOwner> result;
-    std::vector<SchemaId> pending;
+    std::vector<TypeId> pending;
     for (auto const& feature : featureTypes())
         pending.push_back(featureSchema(feature));
-    std::set<SchemaId> seen;
+    std::set<TypeId> seen;
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
         if (!g.valid(id) || !seen.insert(id).second)
             continue;
         for (auto const& owner : g.attributeOwners(id))
-            if (producesFeatureType(owner.featureType_))
+            if (producesFeatureType(owner.featureType_) &&
+                (owner.featureLayer_.empty() || owner.featureLayer_ == name()))
                 result.push_back(owner);
         forEachDirectField(
             id,
@@ -2816,29 +2719,32 @@ std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() cons
         result.end());
     return result;
 }
-std::vector<std::string>
-LayerSchema::constantTypeNames(SchemaId root, std::string_view symbol) const
+std::vector<std::string> LayerSchema::constantTypeNames(TypeId root, std::string_view symbol) const
 {
     auto const& g = *mapSchema()->schema_;
     if (g.builder)
         return g.builder->constantTypeNames(root, symbol);
     std::vector<std::string> result;
-    std::vector<SchemaId> pending{root};
-    std::vector<bool> seen(g.domains.size());
+    std::vector<TypeId> pending{root};
+    std::vector<bool> seen(g.types.size());
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
         if (!g.valid(id) || seen[id])
             continue;
         seen[id] = true;
-        auto const& d = g.domains[id];
-        if (g.text(d.attributeCode) == symbol && d.attributeType)
+        auto const& d = g.types[id];
+        if (d.attributeType &&
+            (g.text(d.attributeCode) == symbol ||
+             std::ranges::any_of(
+                 g.attributeOwners(id),
+                 [&](auto const& owner) { return owner.attributeName_ == symbol; })))
             result.emplace_back(g.text(d.attributeType));
-        auto typeName = g.pool.domain(id)->typeName();
+        auto typeName = g.pool.type(id)->typeName();
         if (std::ranges::find(directEnumSymbols(id), symbol) != directEnumSymbols(id).end() &&
             !typeName.empty())
             result.emplace_back(typeName);
-        g.pool.domain(id)->forEachNamedValue(
+        g.pool.type(id)->forEachNamedValue(
             [&](auto const& value)
             {
                 if (value.name == symbol && !typeName.empty())
@@ -2859,29 +2765,29 @@ LayerSchema::constantTypeNames(SchemaId root, std::string_view symbol) const
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
-void LayerSchema::setNumericDomain(SchemaId id, simfil::Schema::NumericDomain const& d)
+void LayerSchema::setNumericDomain(TypeId id, simfil::Schema::NumericDomain const& d)
 {
     mutableOwner().setNumericDomain(id, d);
 }
-void LayerSchema::addNamedValue(SchemaId id, simfil::Schema::NamedValue const& v)
+void LayerSchema::addNamedValue(TypeId id, simfil::Schema::NamedValue const& v)
 {
     mutableOwner().addNamedValue(id, v);
 }
-void LayerSchema::setBitWidth(SchemaId id, uint8_t width)
+void LayerSchema::setBitWidth(TypeId id, uint8_t width)
 {
     mutableOwner().setBitWidth(id, width);
 }
-std::optional<simfil::Schema::NumericDomain> LayerSchema::numericDomain(SchemaId id) const
+std::optional<simfil::Schema::NumericDomain> LayerSchema::numericDomain(TypeId id) const
 {
     return mapSchema()->numericDomain(id);
 }
 void LayerSchema::forEachNamedValue(
-    SchemaId id,
+    TypeId id,
     std::function<void(simfil::Schema::NamedValue const&)> const& fn) const
 {
     mapSchema()->forEachNamedValue(id, fn);
 }
-uint8_t LayerSchema::bitWidth(SchemaId id) const
+uint8_t LayerSchema::bitWidth(TypeId id) const
 {
     return mapSchema()->bitWidth(id);
 }
@@ -2915,7 +2821,7 @@ LayerSchema::featureTypeContract(std::string_view name, std::function<void(size_
         {"name", identity.name_},
         {"uniqueIdCompositions", nlohmann::json::array()},
         {"produced", producesFeatureType(name)},
-        {"schemaId", featureSchema(name)},
+        {"typeId", featureSchema(name)},
         {"forwardRelationsKnown", layer.relationsKnown},
         {"forwardRelations", nlohmann::json::array()}};
     for (auto const& composition : identity.uniqueIdCompositions_) {
@@ -3005,7 +2911,7 @@ simfil::ModelNode::Ptr LayerSchema::at(int64_t i) const
             simfil::ScalarValueType{int64_t(layerType())},
             model_);
     if (i == 2)
-        return rootSchema() ? mapSchema()->domainNode(rootSchema()) : simfil::ModelNode::Ptr{};
+        return rootSchema() ? mapSchema()->typeNode(rootSchema()) : simfil::ModelNode::Ptr{};
     return {};
 }
 simfil::ModelNode::Ptr LayerSchema::get(StringId const& field) const
@@ -3048,7 +2954,7 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
     result.add("object", {sizeof(*this) + sizeof(Impl), sizeof(*this) + sizeof(Impl)});
     result.add("model-pool", memoryUsageStats().total());
     result.add("dictionary", strings()->memoryUsage());
-    result.add("domain-column", schema_->domains.memory_usage());
+    result.add("type-column", schema_->types.memory_usage());
     result.add("attribute-owners", vectorMemoryUsage(schema_->owners));
     result.add("aliases", vectorMemoryUsage(schema_->aliases));
     result.add("entries", vectorMemoryUsage(schema_->entries));
@@ -3136,7 +3042,9 @@ void MapSchema::Impl::summarize()
     memorySummary = pool.memoryUsage();
     statistics = {
         {"counts",
-         {{"domains", domains.empty() ? 0 : domains.size() - 1},
+         {{"types", types.empty() ? 0 : types.size() - 1},
+          {"physicalTypes", types.empty() ? 0 : types.size() - 1 - queryRoots.size()},
+          {"queryContexts", queryRoots.size()},
           {"fields", counts.fields},
           {"fieldEdges", counts.fieldEdges},
           {"contextFields", counts.contextFields},
@@ -3147,7 +3055,7 @@ void MapSchema::Impl::summarize()
           {"relationDeclarations", relations},
           {"internedNames", pool.strings()->size()}}},
         {"limits",
-         {{"domainId", simfil::MaxSchemaId}, {"nameId", std::numeric_limits<StringId>::max()}}},
+         {{"typeId", simfil::MaxTypeId}, {"nameId", std::numeric_limits<StringId>::max()}}},
         {"memory", memorySummary->toJson()},
         {"constituents", pool.constituents()}};
 }
@@ -3167,7 +3075,7 @@ nlohmann::json MapSchema::statistics() const
     return schema_->statistics;
 }
 
-std::span<SchemaId const> MapSchema::schemaRemap(std::string_view sourceIdentity) const
+std::span<TypeId const> MapSchema::schemaRemap(std::string_view sourceIdentity) const
 {
     if (!finalized())
         throw std::logic_error("Schema translations require a finalized artifact.");
@@ -3209,16 +3117,16 @@ MapSchema::ConstPtr MapSchema::compose(MapFormat format, std::span<ConstPtr cons
         });
 }
 
-SchemaId MapSchema::remapSchema(std::string_view sourceIdentity, SchemaId id) const
+TypeId MapSchema::remapSchema(std::string_view sourceIdentity, TypeId id) const
 {
     if (sourceIdentity == schemaId()) {
         if (id && !schema_->valid(id))
-            throw std::invalid_argument("Source domain is absent from the effective artifact.");
+            throw std::invalid_argument("Source type is absent from the effective artifact.");
         return id;
     }
     auto remap = schemaRemap(sourceIdentity);
     if (id >= remap.size() || (id && !remap[id]))
-        throw std::invalid_argument("Source domain is absent from the contributor translation.");
+        throw std::invalid_argument("Source type is absent from the contributor translation.");
     return remap[id];
 }
 MemoryUsageBreakdown LayerSchema::memoryUsage() const

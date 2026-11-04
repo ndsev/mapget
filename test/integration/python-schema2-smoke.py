@@ -132,6 +132,93 @@ class Schema2PythonTest(unittest.TestCase):
         gc.collect()
         self.assertEqual(part.name, "variant")
 
+    def test_type_references_and_inspection_are_read_only(self) -> None:
+        schema = mapget.MapSchema.from_metadata(legacy_metadata())
+        type_id = schema.layer("Raw").root_schema
+        self.assertGreater(schema.type_count, 0)
+        self.assertGreater(type_id, 0)
+        reference = schema.type_reference(type_id)
+        self.assertTrue(reference)
+        self.assertEqual(reference.type_id, type_id)
+        self.assertEqual(reference.schema_id, schema.schema_id)
+        self.assertEqual(schema.type_descriptor(type_id)["$ref"], type_id)
+        self.assertFalse(hasattr(reference, "domain"))
+        self.assertFalse(hasattr(schema, "domain_count"))
+        self.assertTrue(hasattr(mapget.Bitmask, "type"))
+        self.assertFalse(hasattr(mapget.Bitmask, "domain"))
+        with self.assertRaises(AttributeError):
+            reference.type_id = 0
+        with self.assertRaises(AttributeError):
+            schema.type_count = 0
+        with self.assertRaises(TypeError):
+            mapget.MapSchema()
+        for invalid in (0, 65535):
+            with self.subTest(type_id=invalid):
+                with self.assertRaises(KeyError):
+                    schema.type_reference(invalid)
+                with self.assertRaises(KeyError):
+                    schema.type_descriptor(invalid)
+        schema_id = schema.schema_id
+        del schema
+        gc.collect()
+        self.assertEqual(reference.schema_id, schema_id)
+        self.assertEqual(reference.type_id, type_id)
+        self.assertTrue(reference)
+
+    def test_native_descriptors_preserve_named_values_and_exact_references(self) -> None:
+        metadata = legacy_metadata()
+        metadata["layers"]["Raw"]["featureModelSchema"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "definitions": {
+                "phase": {
+                    "type": "string",
+                    "enum": ["ACTIVE", "WAITING"],
+                    "x-mapget": {"namedValues": [
+                        {"name": "ACTIVE", "value": "ACTIVE", "rawValue": 2**53 + 7},
+                        {"name": "WAITING", "value": "WAITING", "rawValue": -7},
+                    ]},
+                },
+            },
+            "properties": {
+                "phase": {"$ref": "#/definitions/phase"},
+                "phaseAlias": {"$ref": "#/definitions/phase"},
+                "next": {"$ref": "#"},
+                "flags": {"x-mapget": {
+                    "kind": {"name": "bitmask", "affinities": ["bitmask"]},
+                    "bitWidth": 64,
+                    "namedValues": [{"name": "HIGH", "value": 2**63, "role": "flag"}],
+                }},
+            },
+        }
+        schema = mapget.MapSchema.from_metadata(metadata)
+        restored = mapget.MapSchema.read(schema.write(), expected_id=schema.schema_id)
+        self.assertEqual(restored.type_count, schema.type_count)
+        type_id = schema.layer("Raw").root_schema
+        self.assertEqual(restored.layer("Raw").root_schema, type_id)
+        expected = schema.type_descriptor(type_id)
+        self.assertEqual(restored.type_descriptor(type_id), expected)
+        for owner in (schema, restored):
+            descriptor = owner.type_descriptor(type_id)
+            fields = descriptor["fields"]
+            phase_id = fields["phase"]["$ref"]
+            self.assertEqual(fields["phaseAlias"]["$ref"], phase_id)
+            phase = owner.type_descriptor(phase_id)
+            self.assertEqual(phase["enum"], ["ACTIVE", "WAITING"])
+            self.assertEqual(
+                {value["name"]: (value["value"], value["rawValue"])
+                 for value in phase["namedValues"]},
+                {"ACTIVE": ("ACTIVE", 2**53 + 7), "WAITING": ("WAITING", -7)},
+            )
+            self.assertEqual(fields["next"]["$ref"], type_id)
+            self.assertEqual(fields["next"]["truncated"], "cycle")
+            flags = owner.type_descriptor(fields["flags"]["$ref"])
+            self.assertEqual(flags["kind"], "bitmask")
+            self.assertEqual(flags["bitWidth"], 64)
+            self.assertEqual(flags["namedValues"][0]["value"], "0x8000000000000000")
+            phase["namedValues"][0]["rawValue"] = 0
+            self.assertEqual(owner.type_descriptor(type_id), expected)
+
     def test_exact_binary_roundtrip_and_failures(self) -> None:
         schema = mapget.MapSchema.from_metadata(legacy_metadata())
         wire = schema.write()

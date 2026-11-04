@@ -77,6 +77,13 @@ public:
         }
     }
 
+    /** Install a purpose-built native graph before the fixture registers the source. */
+    SchemaTestSource(std::string map, MapSchema::Ptr schema) : SchemaTestSource(std::move(map))
+    {
+        info_.schemaId_.clear();
+        info_.setMapSchema(std::move(schema));
+    }
+
     DataSourceInfo info() override { return info_; }
     void fill(PartitionFeatureLayer::Ptr const&) override {}
     void fill(PartitionSourceDataLayer::Ptr const&) override {}
@@ -118,6 +125,11 @@ public:
             producedFeatureRoot);
         if (gated)
             source->requireAuthHeaderRegexMatchOption("x-schema-access", std::regex("^allowed$"));
+        return add(std::move(source));
+    }
+
+    std::shared_ptr<SchemaTestSource> add(std::shared_ptr<SchemaTestSource> source)
+    {
         service_.add(source);
         sources_.push_back(source);
         return source;
@@ -396,7 +408,7 @@ TEST_CASE("HTTP clients retain distinct source IDs for primary and add-on schema
     }
 }
 
-TEST_CASE("Schema explorer serves authorized inventory and lazy domain links", "[HttpSchema]")
+TEST_CASE("Schema explorer serves authorized inventory and lazy type links", "[HttpSchema]")
 {
     SchemaHttpFixture fixture;
     auto source = fixture.add("SchemaExplorer");
@@ -410,14 +422,26 @@ TEST_CASE("Schema explorer serves authorized inventory and lazy domain links", "
         [&](auto const& item) { return item["mapSchemaId"] == source->info().schemaId_; });
     REQUIRE(found != inventory["schemas"].end());
     CHECK(found->at("ownerInstances") == 1);
+    auto const& counts = found->at("statistics").at("counts");
+    CHECK(
+        counts.at("types").get<uint64_t>() ==
+        counts.at("physicalTypes").get<uint64_t>() + counts.at("queryContexts").get<uint64_t>());
+    CHECK(found->at("statistics").at("limits").at("typeId") == simfil::MaxTypeId);
+    REQUIRE(found->at("layers").size() == 1);
+    auto const& layer = found->at("layers")[0];
+    CHECK(layer.at("category") == "Features");
+    CHECK(layer.contains("typeId"));
+    CHECK(layer.at("open").is_boolean());
+    CHECK(layer.at("reachabilityComplete").is_boolean());
+    CHECK_FALSE(layer.contains("schemaId"));
     auto id = source->info().mapSchema_->layer("Road")->featureSchema("Road");
     std::vector<std::pair<std::string, std::string>> parameters{
         {"mapSchemaId", source->info().schemaId_},
-        {"schemaId", std::to_string(id)}};
+        {"typeId", std::to_string(id)}};
     auto node = fixture.get("/schema/inspect", parameters);
     REQUIRE(node->statusCode() == drogon::k200OK);
     auto json = nlohmann::json::parse(node->body());
-    CHECK(json["schemaId"] == id);
+    CHECK(json["typeId"] == id);
     CHECK(json["descriptor"].is_object());
     CHECK_FALSE(json["descriptor"].contains("fields"));
     REQUIRE(json["featureTypes"].size() == 1);
@@ -429,13 +453,97 @@ TEST_CASE("Schema explorer serves authorized inventory and lazy domain links", "
         CHECK(field.contains("name"));
         CHECK(field.contains("$ref"));
         CHECK_FALSE(field.contains("fields"));
+        CHECK(field.at("descriptor").contains("kind"));
+        CHECK_FALSE(field.at("descriptor").contains("fields"));
     }
+    auto legacyParameters = parameters;
+    legacyParameters[1].first = "schemaId";
+    CHECK(fixture.get("/schema/inspect", legacyParameters)->statusCode() == drogon::k400BadRequest);
     parameters[0].second = hidden->info().schemaId_;
     CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k404NotFound);
     parameters[1].second = "1junk";
     CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k400BadRequest);
     parameters[1].second = "65536";
     CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k400BadRequest);
+}
+
+TEST_CASE(
+    "Schema explorer previews native named values without expanding alternatives",
+    "[HttpSchema]")
+{
+    using Schema = simfil::Schema;
+    auto owner = std::make_shared<MapSchema>(MapFormat{"schema-http-test", "1", {}});
+    auto layer = owner->newLayer("Road", LayerType::Features);
+    auto root = layer->addSchema(LayerSchema::FeatureKind);
+    layer->addFeatureType(
+        FeatureTypeInfo::fromJson(
+            {{"name", "Road"},
+             {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "U32"}}}}}}),
+        root);
+    auto choice = layer->addSchema(Schema::Kind::OneOf);
+    layer->setComposition(choice, Schema::Composition::OneOf);
+    auto symbols = layer->addSchema(Schema::Kind::String);
+    auto fallback = layer->addSchema(Schema::Kind::Int);
+    layer->setTypeName(symbols, "Accuracy");
+    layer->setTypeName(fallback, "Accuracy");
+    std::array<Schema::NumericRange, 3> ranges{
+        {{int64_t{0}, int64_t{9}}, {int64_t{20}, int64_t{29}}, {int64_t{40}, int64_t{49}}}};
+    layer->setNumericDomain(
+        fallback,
+        {.encoding = "uint64",
+         .unit = "cm",
+         .minimum = int64_t{0},
+         .maximum = UINT64_MAX,
+         .ordinaryRanges = ranges,
+         .scale = 0.1,
+         .offset = 2,
+         .complete = true});
+    for (auto name : {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}) {
+        layer->addEnumSymbol(symbols, name);
+        layer->addNamedValue(symbols, {.name = name, .value = std::string_view{name}});
+    }
+    layer->addAlternative(choice, symbols);
+    layer->addAlternative(choice, fallback);
+    layer->addFieldSchema(root, "accuracy", choice);
+    owner->finalize();
+
+    SchemaHttpFixture fixture;
+    auto source = fixture.add(std::make_shared<SchemaTestSource>("SchemaChoices", owner));
+    auto response = fixture.get(
+        "/schema/inspect",
+        {{"mapSchemaId", source->info().schemaId_}, {"typeId", std::to_string(choice)}});
+    REQUIRE(response->statusCode() == drogon::k200OK);
+    auto json = nlohmann::json::parse(response->body());
+    auto const& alternatives = json.at("alternatives");
+    REQUIRE(alternatives.size() == 2);
+    auto const& stringType = alternatives[0].at("descriptor");
+    auto const& numericType = alternatives[1].at("descriptor");
+    CHECK(stringType.at("typename") == numericType.at("typename"));
+    CHECK(stringType.at("kind") == "string");
+    CHECK(numericType.at("kind") == "integer");
+    CHECK(stringType.at("enumCount") == 4);
+    CHECK(stringType.at("namedValueCount") == 4);
+    CHECK(stringType.at("namedValueNames") == nlohmann::json::array({"LOW", "MEDIUM", "HIGH"}));
+    CHECK_FALSE(stringType.contains("namedValues"));
+    CHECK_FALSE(numericType.contains("namedValueCount"));
+    auto const& numeric = numericType.at("numericDomain");
+    CHECK(numeric.at("encoding") == "uint64");
+    CHECK(numeric.at("unit") == "cm");
+    CHECK(numeric.at("minimum") == 0);
+    CHECK(numeric.at("maximum") == "18446744073709551615");
+    CHECK(numeric.at("scale") == 0.1);
+    CHECK(numeric.at("offset") == 2);
+    CHECK(numeric.at("ordinaryRangeCount") == 3);
+    REQUIRE(numeric.at("ordinaryRanges").size() == 2);
+    CHECK(numeric.at("ordinaryRanges")[1].at("max") == 29);
+    CHECK(alternatives[0].at("$ref") == symbols);
+    CHECK(alternatives[1].at("$ref") == fallback);
+    auto expanded = fixture.get(
+        "/schema/inspect",
+        {{"mapSchemaId", source->info().schemaId_}, {"typeId", std::to_string(fallback)}});
+    REQUIRE(expanded->statusCode() == drogon::k200OK);
+    auto definition = nlohmann::json::parse(expanded->body());
+    CHECK(definition.at("descriptor").at("numericDomain").at("ordinaryRanges").size() == 3);
 }
 
 TEST_CASE(
@@ -450,13 +558,13 @@ TEST_CASE(
     auto root = layer->featureSchema("Road");
     REQUIRE(layer->producesFeatureType("Road"));
     auto properties = layer->childSchema(root, "properties");
-    REQUIRE(properties != simfil::NoSchemaId);
-    REQUIRE(layer->childSchema(properties, "speed_limit") != simfil::NoSchemaId);
+    REQUIRE(properties != simfil::NoTypeId);
+    REQUIRE(layer->childSchema(properties, "speed_limit") != simfil::NoTypeId);
     AuthHeaders headers{{"x-schema-access", "allowed"}};
     std::vector<std::pair<std::string, std::string>> parameters{
         {"mapSchemaId", info.schemaId_},
         {"layerId", "Road"},
-        {"schemaId", std::to_string(root)},
+        {"typeId", std::to_string(root)},
         {"find", "SPEED-LIMIT"}};
     CHECK(fixture.get("/schema/inspect", parameters)->statusCode() == drogon::k404NotFound);
     auto response = fixture.get("/schema/inspect", parameters, headers);
@@ -492,7 +600,7 @@ TEST_CASE(
         "mapget_query_schema",
         {{"mapSchemaId", info.schemaId_},
          {"layerId", "Road"},
-         {"schemaId", root},
+         {"typeId", root},
          {"find", "SPEED-LIMIT"},
          {"limit", 32}},
         [promise](auto reply) { promise->set_value(std::move(reply)); });
@@ -545,7 +653,7 @@ TEST_CASE(
         auto response = fixture.get(
             "/schema/inspect",
             {{"mapSchemaId", metadata.schemaId_},
-             {"schemaId", std::to_string(schema->featureSchema("Road"))}});
+             {"typeId", std::to_string(schema->featureSchema("Road"))}});
         CHECK(response->getHeader("cache-control") == "no-store");
         if (size == 32) {
             REQUIRE(response->statusCode() == drogon::k200OK);

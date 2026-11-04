@@ -130,7 +130,7 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
         auto result = model().newAttributeLayers();
         if (auto schemaId =
                 model().childSchemaId(model().childSchemaId(schema(), "properties"), "layer");
-            schemaId != simfil::NoSchemaId)
+            schemaId != simfil::NoTypeId)
         {
             if (auto schemaResult = result->setObjectSchema(schemaId); !schemaResult) {
                 log().warn("Failed to set attribute-layer-list schema: {}", schemaResult.error().message);
@@ -248,14 +248,14 @@ simfil::ValueType Feature::type() const
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::schema() const
+simfil::TypeId Feature::schema() const
 {
     return basicData_->typeId_.schemaId_ ?
         basicData_->typeId_.schemaId_ :
         model().featureSchemaId(typeId());
 }
 
-void Feature::setSchema(simfil::SchemaId schemaId)
+void Feature::setSchema(simfil::TypeId schemaId)
 {
     auto checked = model().checkedContainerSchema(
         schemaId,
@@ -810,14 +810,14 @@ simfil::ValueType Feature::MergedBasicAttributesView::type() const
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::MergedBasicAttributesView::schema() const
+simfil::TypeId Feature::MergedBasicAttributesView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
         if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
             return attrs->schema();
         return model().childSchemaId(feature->schema(), "properties");
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
 simfil::ModelNode::Ptr Feature::MergedBasicAttributesView::at(int64_t i) const
@@ -882,14 +882,14 @@ simfil::ValueType Feature::FeaturePropertyView::type() const
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::FeaturePropertyView::schema() const
+simfil::TypeId Feature::FeaturePropertyView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
         if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
             return attrs->schema();
         return model().childSchemaId(feature->schema(), "properties");
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const

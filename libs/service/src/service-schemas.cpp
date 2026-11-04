@@ -205,17 +205,36 @@ nlohmann::json DataSourceRegistry::schemaInventory(
                     if (checkpoint)
                         checkpoint();
                     auto layer = owner->layer(name);
+                    // LayerType controls loading. This presentation category follows
+                    // the existing provider Metadata-* naming convention; it never
+                    // invents another transport layer type or hides a declared root.
+                    auto category = layer->layerType() == LayerType::Features ?
+                        "Features" :
+                        layer->layerType() == LayerType::SourceData &&
+                            name.starts_with("Metadata-") ?
+                        "Metadata" :
+                        "SourceData";
+                    auto rootMetadata = [&](simfil::TypeId id)
+                    {
+                        return nlohmann::json{
+                            {"typeId", id},
+                            {"open", layer->open(id)},
+                            {"reachabilityComplete", layer->reachabilityComplete(id)}};
+                    };
                     auto types = nlohmann::json::array();
                     for (auto const& type : layer->featureTypes()) {
                         if (checkpoint)
                             checkpoint();
-                        types.push_back({{"name", type}, {"schemaId", layer->featureSchema(type)}});
+                        auto root = rootMetadata(layer->featureSchema(type));
+                        root["name"] = type;
+                        types.push_back(std::move(root));
                     }
-                    layers.push_back(
-                        {{"layerId", name},
-                         {"type", layer->layerType()},
-                         {"schemaId", layer->rootSchema()},
-                         {"featureTypes", std::move(types)}});
+                    auto entry = rootMetadata(layer->rootSchema());
+                    entry["layerId"] = name;
+                    entry["type"] = layer->layerType();
+                    entry["category"] = category;
+                    entry["featureTypes"] = std::move(types);
+                    layers.push_back(std::move(entry));
                 }
                 result.push_back(
                     {{"mapSchemaId", owner->schemaId()},

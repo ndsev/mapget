@@ -419,13 +419,13 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
 
     auto const* carrierSchema = registry->getSchema("Carrier");
     REQUIRE(carrierSchema != nullptr);
-    REQUIRE(carrierSchema->id_ != simfil::NoSchemaId);
+    REQUIRE(carrierSchema->id_ != simfil::NoTypeId);
     REQUIRE(registry->schemaId("Feature:Carrier") == carrierSchema->id_);
 
     auto const propertiesId = registry->featurePropertiesSchema("Carrier");
     auto const layerMapId = registry->attributeLayerMapSchema("Carrier");
-    REQUIRE(propertiesId != simfil::NoSchemaId);
-    REQUIRE(layerMapId != simfil::NoSchemaId);
+    REQUIRE(propertiesId != simfil::NoTypeId);
+    REQUIRE(layerMapId != simfil::NoTypeId);
 
     auto const limitsId = registry->childSchema(
         layerMapId,
@@ -435,8 +435,8 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
         limitsId,
         "speed",
         simfil::Schema::Kind::Object);
-    REQUIRE(limitsId != simfil::NoSchemaId);
-    REQUIRE(speedId != simfil::NoSchemaId);
+    REQUIRE(limitsId != simfil::NoTypeId);
+    REQUIRE(speedId != simfil::NoTypeId);
 
     REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
     REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
@@ -451,8 +451,8 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
         speedId,
         "unit",
         simfil::Schema::Kind::Value);
-    REQUIRE(typeIdId != simfil::NoSchemaId);
-    REQUIRE(unitId != simfil::NoSchemaId);
+    REQUIRE(typeIdId != simfil::NoTypeId);
+    REQUIRE(unitId != simfil::NoTypeId);
     REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::String);
     REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::String);
     REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
@@ -629,10 +629,10 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
         schema->addFieldSchema(attribute, "conditions", condition);
         schema->finalize();
         // The produced feature alias, not an optional descriptor type name, identifies Link.
-        REQUIRE(schema->mapSchema()->domain(feature)->typeName().empty());
+        REQUIRE(schema->mapSchema()->type(feature)->typeName().empty());
         schema = LayerSchema::fromJsonSchema(schema->toJsonSchema());
         REQUIRE(schema->featureSchema("Link") == feature);
-        REQUIRE(schema->mapSchema()->domain(feature)->typeName().empty());
+        REQUIRE(schema->mapSchema()->type(feature)->typeName().empty());
         REQUIRE(schema->featureTypes() == std::vector<std::string>{"Link"});
     }
     schema->finalize();
@@ -852,7 +852,7 @@ TEST_CASE("LayerSchema classifies feature and attribute path owners", "[DataSour
     REQUIRE(attributeOwner.attribute_.featureType_ == "Carrier");
     REQUIRE(attributeOwner.attribute_.attributeLayerName_ == "limits");
     REQUIRE(attributeOwner.attribute_.attributeName_ == "speed");
-    REQUIRE(attributeOwner.attribute_.attributeSchema_ != simfil::NoSchemaId);
+    REQUIRE(attributeOwner.attribute_.attributeSchema_ != simfil::NoTypeId);
 
     auto const advisorySpeedUnitPath = std::vector<std::string>{"properties", "layer", "advisoryLimits", "speed", "unit"};
     auto const advisoryAttributeOwner = registry->ownerForPath(
@@ -862,7 +862,7 @@ TEST_CASE("LayerSchema classifies feature and attribute path owners", "[DataSour
     REQUIRE(advisoryAttributeOwner.kind_ == LayerSchema::PathOwnerKind::Attribute);
     REQUIRE(advisoryAttributeOwner.attribute_.attributeLayerName_ == "advisoryLimits");
     REQUIRE(advisoryAttributeOwner.attribute_.attributeName_ == "speed");
-    REQUIRE(advisoryAttributeOwner.attribute_.attributeSchema_ != simfil::NoSchemaId);
+    REQUIRE(advisoryAttributeOwner.attribute_.attributeSchema_ != simfil::NoTypeId);
 
     auto const propertiesSchema = registry->featurePropertiesSchema("Carrier");
     auto const propertiesRootAttributeOwner = registry->ownerForPath(
@@ -1111,7 +1111,7 @@ TEST_CASE(
         [layer](auto const&, auto const&) { return layer; },
         [strings](auto const&) { return strings; });
     CHECK(restored->find("Carrier.7"));
-    CHECK(restored->layerSchema()->featureSchema("Carrier") != simfil::NoSchemaId);
+    CHECK(restored->layerSchema()->featureSchema("Carrier") != simfil::NoTypeId);
 }
 
 TEST_CASE(
@@ -1128,17 +1128,17 @@ TEST_CASE(
     values->append(source->newValue(int64_t{42}));
     REQUIRE(dynamic->addField("items", values));
     REQUIRE(feature->attributes()->addField("dynamic", dynamic));
-    REQUIRE(dynamic->schema() == simfil::NoSchemaId);
-    REQUIRE(values->schema() == simfil::NoSchemaId);
+    REQUIRE(dynamic->schema() == simfil::NoTypeId);
+    REQUIRE(values->schema() == simfil::NoTypeId);
     auto snapshot = cloneInspectionFeatures(source, std::vector<std::string>{"Carrier.7"});
     auto cloned = snapshot->find("Carrier.7");
     REQUIRE(cloned);
     auto object = cloned->attributesOrNull()->get(strings->get("dynamic"));
     REQUIRE(object);
-    CHECK(object->schema() == simfil::NoSchemaId);
+    CHECK(object->schema() == simfil::NoTypeId);
     auto array = object->get(strings->get("items"));
     REQUIRE(array);
-    CHECK(array->schema() == simfil::NoSchemaId);
+    CHECK(array->schema() == simfil::NoTypeId);
     CHECK(array->at(0)->value() == simfil::ScalarValueType{int64_t{42}});
 }
 
