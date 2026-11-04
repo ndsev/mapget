@@ -10,9 +10,9 @@ The core browser tools are:
 | Tool | Purpose | Permission |
 | --- | --- | --- |
 | `viewer_list_sessions` | List the caller's connected, compatible tabs | `viewer-read` |
-| `viewer_describe_app_state` | Discover supported application-state channels | `viewer-read` |
-| `viewer_get_app_state` | Read bounded state summaries | `viewer-read` |
-| `viewer_set_app_state` | Assign supported application-state channels | `viewer-control` |
+| `viewer_describe_controls` | Discover supported controls and selectors | `viewer-read` |
+| `viewer_get_controls` | Read bounded control values, including logical view IDs | `viewer-read` |
+| `viewer_set_control` | Assign one control using its explicit target and value | `viewer-control` |
 
 Browser tools are described by the installed catalog, not by C++ copies of
 frontend schemas. Native `mapget_*` tools are independent of browser registration
@@ -137,7 +137,7 @@ keywords: ["OAuth", "login", "authenticated session", "permissions", "JWT", "pro
 
 Hosted deployments configure mapget as an OAuth **resource server**. Login,
 consent, user groups, and client registration belong to the authorization
-server and deployment, not mapget. All MCP POSTs require a validated bearer
+server and deployment, not mapget. All POSTs to `/mcp` require a validated bearer
 token; browser cookies and proxy identity headers do not authenticate them.
 
 ```yaml
@@ -370,12 +370,14 @@ session. Sources, documentation and validation contexts also support stateless
 
 Clients accept both JSON and SSE. Immediate results may use JSON; a browser
 call returns one terminal JSON-RPC response on its POST's SSE stream and then
-closes it. `structuredContent` carries the application result and `content`
-also contains its JSON text. Application failures use `isError: true` rather
-than pretending to be successful state. This includes invalid arguments to a
-known tool, with field-level validation issues where available. Unknown tools
-and malformed protocol parameters remain JSON-RPC errors. Errors without a
-known request ID omit `id`, rather than emitting `id: null`. Modern successes
+closes it. Successful `structuredContent` matches the tool's `outputSchema`,
+and `content` also contains its JSON text. Application failures set `isError: true`
+and return a JSON error object in one text content block, without `structuredContent`.
+This keeps errors separate from the success schema that strict hosts validate.
+Decode the text JSON to read `error.code`, `error.message`, and any field-level
+`issues`, `reason`, or mutation `outcome`. This includes invalid arguments to a
+known tool. Unknown tools and malformed protocol parameters remain JSON-RPC errors.
+Errors without a known request ID omit `id`, rather than emitting `id: null`. Modern successes
 include `resultType: "complete"` and server implementation metadata in `_meta`;
 neither is added to 2025 results.
 
@@ -403,6 +405,10 @@ method-specific results and tool schemas against pinned, unmodified official
 schemas for all three revisions in `test/integration/data/mcp`. Negative
 controls remove or corrupt caching hints to prove that the guard catches this
 class of regression.
+
+Captured tool failures are checked for text-only JSON errors with retained repair details.
+Representative native, viewer and session-list successes, plus screenshot metadata, are
+validated against the advertised output schemas in every supported protocol revision.
 
 The test also uses the official Python MCP SDK (pinned in
 `test/integration/mcp-requirements.txt`) for automatic discovery, explicit
@@ -525,7 +531,7 @@ keywords: [schema discovery, query, feature type, attributes, filtering, cardina
 -->
 ### Designing Search Filters
 
-Start with `viewer_get_app_state` and its active `view.layers` map/layer identities.
+Start with `viewer_get_controls` and its active `view.layers` map/layer identities.
 Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
 and indirect attribute features. Use `mapget_list_sources` filtered to that layer
 for compact type names. `featureTypes` advertises identifier compositions, which
@@ -610,8 +616,9 @@ Success is an object in `structuredContent`, with the same JSON in a text conten
 {"items": [], "complete": true, "reason": null, "issues": [], "traces": {}}
 ```
 
-Failures use `isError: true` and a structured error. A partial enumeration is a successful
-bounded response with `complete: false` and a reason such as `item_limit`,
+Failures use `isError: true` with `{"error":{"code":"…","message":"…"}}`
+encoded in a text content block; `structuredContent` is omitted. A partial enumeration is
+a successful bounded response with `complete: false` and a reason such as `item_limit`,
 `expression_result_limit`, `work_limit`, `schema_node_limit`, `byte_limit`, `query_error`, or
 `load_failed_or_cancelled`. Follow `nextCursor` for feature extraction, or a returned
 `nextOffset` for tools supporting offset paging. Schema discovery offers `narrowing`

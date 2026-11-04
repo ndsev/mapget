@@ -27,6 +27,16 @@ PROTOCOL_SCHEMAS = {
 }
 
 
+def tool_error(result):
+    """Keep repair details in error text without violating a tool's success output schema."""
+    assert result["isError"] is True, result
+    assert "structuredContent" not in result, result
+    assert len(result["content"]) == 1 and result["content"][0]["type"] == "text", result
+    error = json.loads(result["content"][0]["text"])["error"]
+    assert isinstance(error["code"], str) and isinstance(error["message"], str), error
+    return error
+
+
 def validate_response(message, protocol, method):
     """Check unmodified upstream envelopes AND concrete results; generic Result is too permissive."""
     if method == "initialize" and "result" in message:
@@ -48,6 +58,8 @@ def validate_response(message, protocol, method):
         }[method]))
     for value, name in checks:
         validator_for(schema)({**schema, "$ref": f"#/{definitions}/{name}"}).validate(value)
+    if "result" in message and method == "tools/call" and message["result"].get("isError"):
+        tool_error(message["result"])
     if "result" in message and method == "tools/list":
         # The protocol's Tool schema intentionally treats these as JSON schemas, not instances.
         for tool in message["result"]["tools"]:
@@ -357,7 +369,8 @@ class NativeMcpTest(unittest.TestCase):
                 self.assertEqual(converted.structured_content["items"][0]["tileId"], 131073)
                 invalid = await client.call_tool("mapget_convert_tile_id", {"tileId": "not-a-tile"})
                 self.assertTrue(invalid.is_error)
-                self.assertEqual(invalid.structured_content["error"]["code"], "invalid_arguments")
+                self.assertIsNone(invalid.structured_content)
+                self.assertEqual(json.loads(invalid.content[0].text)["error"]["code"], "invalid_arguments")
                 # No forced refresh: the server's cache hints must keep SDK discovery live.
                 changed = json.loads(original)
                 changed["catalogId"] = "sha256:" + "a" * 64
@@ -447,8 +460,7 @@ class NativeMcpTest(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 result = self.rpc_result(response)["result"]
                 self.assertTrue(result["isError"])
-                self.assertEqual(result["structuredContent"]["error"]["code"], "invalid_arguments")
-                self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+                self.assertEqual(tool_error(result)["code"], "invalid_arguments")
             for params in ({"name": "unknown"}, {"name": "viewer_list_sessions", "arguments": []}):
                 _, response = self.begin_rpc("tools/call", params, protocol=protocol)
                 self.assertEqual(response.status, 400)
@@ -463,6 +475,43 @@ class NativeMcpTest(unittest.TestCase):
                 protocol="2025-11-25", headers={"MCP-Protocol-Version": ""})
             self.assertEqual(response.status, 200)
             self.assertEqual(self.rpc_result(response)["result"]["protocolVersion"], "2025-11-25")
+
+    def test_success_output_schemas_and_error_text(self):
+        """Strict output consumers accept successful data and retain model-visible error details."""
+        viewer = self.viewer()
+        for protocol in PROTOCOL_SCHEMAS:
+            with self.subTest(protocol=protocol):
+                _, response = self.begin_rpc("tools/list", protocol=protocol)
+                schemas = {tool["name"]: tool["outputSchema"]
+                           for tool in self.rpc_result(response)["result"]["tools"]}
+                for name, arguments in (("mapget_convert_tile_id", {"tileId": 131073}),
+                                        ("viewer_list_sessions", {}),
+                                        ("viewer_resize", self.arguments(viewer, "viewer_resize"))):
+                    _, response = self.begin_rpc("tools/call", {"name": name, "arguments": arguments},
+                                                 protocol=protocol)
+                    if name == "viewer_resize":
+                        self.finish(viewer, viewer.receive())
+                    result = self.rpc_result(response)["result"]
+                    self.assertFalse(result["isError"])
+                    validator_for(schemas[name])(schemas[name]).validate(result["structuredContent"])
+                    self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
+
+                _, response = self.begin_rpc("tools/call", {
+                    "name": "mapget_convert_tile_id", "arguments": {"tileId": "wrong"}}, protocol=protocol)
+                error = tool_error(self.rpc_result(response)["result"])
+                self.assertEqual(error["code"], "invalid_arguments")
+                self.assertTrue(error["issues"])
+
+                # Browser execution failures retain outcome/reason, which prevent unsafe retries.
+                _, response = self.begin_rpc("tools/call", {
+                    "name": "viewer_resize", "arguments": self.arguments(viewer, "viewer_resize")},
+                    protocol=protocol)
+                invocation = viewer.receive()
+                error = {"code": "not_available", "message": "Selected view changed.",
+                         "reason": "stale_revision", "outcome": "not_applied"}
+                viewer.send({"type": "mapget.actions.result", "version": 1,
+                             "callId": invocation["callId"], "error": error})
+                self.assertEqual(tool_error(self.rpc_result(response)["result"]), error)
 
     def test_catalog_reload_without_restart(self):
         """A rebuild changes discovery/registration on the same process and interactive socket."""
@@ -728,7 +777,7 @@ class NativeMcpTest(unittest.TestCase):
 
         self.assertIn("preserve-me", self.config_path.read_text())
         conflict = self.call("mapget_set_config", {"model": model, "expectedRevision": current["revision"]})
-        self.assertEqual(conflict["structuredContent"]["error"]["code"], "conflict")
+        self.assertEqual(tool_error(conflict)["code"], "conflict")
         latest = self.call("mapget_get_config", {})["structuredContent"]["items"][0]
         denied = self.call("mapget_set_config", {"model": {"mapget": {"serve": {"mcp": "off"}}},
                                                "expectedRevision": latest["revision"]})
@@ -772,6 +821,7 @@ class NativeMcpTest(unittest.TestCase):
             result = self.rpc_result(response)["result"]
             self.assertFalse(result.get("isError", False), result.get("structuredContent"))
             self.assertEqual(result["structuredContent"], payload["metadata"])
+            validator_for(tool["outputSchema"])(tool["outputSchema"]).validate(result["structuredContent"])
             self.assertEqual(len(result["content"]), 2)
             image = next(c for c in result["content"] if c["type"] == "image")
             self.assertEqual(image, {"type": "image", **payload["image"]})
@@ -793,7 +843,7 @@ class NativeMcpTest(unittest.TestCase):
             self.finish(viewer, invocation, payload)
             result = self.rpc_result(response)["result"]
             self.assertTrue(result["isError"])
-            self.assertEqual(result["structuredContent"]["error"]["code"], "internal_error")
+            self.assertEqual(tool_error(result)["code"], "internal_error")
             self.assertFalse(any(c["type"] == "image" for c in result["content"]))
 
     def test_screenshot_complete_output_budget(self):
@@ -811,7 +861,7 @@ class NativeMcpTest(unittest.TestCase):
         self.assertLess(len(json.dumps(message).encode()), 8192)
         result = self.rpc_result(response)["result"]
         self.assertTrue(result["isError"])
-        self.assertEqual(result["structuredContent"]["error"]["code"], "result_too_large")
+        self.assertEqual(tool_error(result)["code"], "result_too_large")
         self.assertFalse(any(c["type"] == "image" for c in result["content"]))
 
     def test_real_routing_duplicate_and_reconnect(self):
@@ -842,7 +892,7 @@ class NativeMcpTest(unittest.TestCase):
         while time.monotonic() < deadline:
             result = self.call("viewer_get_app_state", arguments)
             if result["isError"]:
-                self.assertEqual(result["structuredContent"]["error"]["code"], "not_available")
+                self.assertEqual(tool_error(result)["code"], "not_available")
                 break
         else:
             self.fail("Disconnected UUID remained routable")
@@ -884,7 +934,7 @@ class NativeMcpTest(unittest.TestCase):
             # An ignored cancellation must neither unlock the mutation nor manufacture a
             # cancellation control for a potentially different client using the same RPC ID.
             blocked = self.call("viewer_set_app_state", self.arguments(viewer, "viewer_set_app_state"))
-            self.assertEqual(blocked["structuredContent"]["error"]["code"], "busy")
+            self.assertEqual(tool_error(blocked)["code"], "busy")
             self.finish(viewer, invocation)
             result = self.rpc_result(response)["result"]
             self.assertNotIn("resultType", result)
@@ -904,10 +954,10 @@ class NativeMcpTest(unittest.TestCase):
         _, response = self.begin_rpc("tools/call", {"name": "viewer_set_app_state", "arguments": args})
         invocation = viewer.receive()
         result = self.rpc_result(response)["result"]
-        self.assertEqual(result["structuredContent"]["error"]["code"], "timeout")
+        self.assertEqual(tool_error(result)["code"], "timeout")
         self.assertEqual(viewer.receive()["type"], "mapget.actions.cancel")
         blocked = self.call("viewer_set_app_state", args)
-        self.assertEqual(blocked["structuredContent"]["error"]["code"], "busy")
+        self.assertEqual(tool_error(blocked)["code"], "busy")
         self.finish(viewer, invocation)
         # A registration update is an ordering barrier after the terminal acknowledgement.
         viewer.send({"type": "mapget.actions.update", "version": 1,
@@ -932,7 +982,7 @@ class NativeMcpTest(unittest.TestCase):
         cancelled = viewer.receive()
         self.assertEqual(cancelled["type"], "mapget.actions.cancel")
         blocked = self.call("viewer_set_app_state", args)
-        self.assertEqual(blocked["structuredContent"]["error"]["code"], "busy")
+        self.assertEqual(tool_error(blocked)["code"], "busy")
         self.finish(viewer, invocation)
 
 
@@ -1184,7 +1234,7 @@ class NativeMcpConfigTest(unittest.TestCase):
             args = selection if name == "mapget_extract_features" else {}
             denied = call(name, args, "viewer-control")["result"]
             self.assertTrue(denied["isError"], denied)
-            self.assertEqual(denied["structuredContent"]["error"]["code"], "not_available")
+            self.assertEqual(tool_error(denied)["code"], "not_available")
 
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         for changes in [{"test-expiry": "1"}, {"test-issuer": "https://attacker.example"},
