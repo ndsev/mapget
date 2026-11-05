@@ -27,7 +27,9 @@ public:
     simfil::TypeId valueDomain = 0, flagsDomain = 0, rawDomain = 0;
     std::atomic_size_t featureLoads = 0, rawLoads = 0;
 
-    explicit CompositionSource(bool addon = false)
+    explicit CompositionSource(
+        bool addon = false,
+        std::vector<std::string> const& additionalLayers = {})
         : graph(std::make_shared<MapSchema>(MapFormat{"composition", "1", {}}))
     {
         auto identity = FeatureTypeInfo::fromJson(nlohmann::json::parse(R"({
@@ -59,6 +61,11 @@ public:
             rawDomain = raw->addSchema(simfil::Schema::Kind::Object);
             raw->addFieldSchema(rawDomain, "count", valueDomain);
             raw->setRootSchema(rawDomain);
+        }
+        for (auto const& name : additionalLayers) {
+            auto additional = graph->newLayer(name, LayerType::Features);
+            additional->addFeatureType(identity, root);
+            additional->setRootSchema(root);
         }
         graph->finalize();
         metadata.mapId_ = "CompositionMap";
@@ -376,6 +383,57 @@ TEST_CASE(
     CHECK(raw->schemaId() == primary->schemaId_);
     CHECK(base->rawLoads == 1);
     CHECK(addon->rawLoads == 0);
+}
+
+TEST_CASE(
+    "Partial add-ons do not participate in unadvertised base layers",
+    "[schema2][composition][Service][MAPV-1152]")
+{
+    auto addonFirst = GENERATE(false, true);
+    Service service(std::make_shared<MemCache>(16), false);
+    auto base = std::make_shared<CompositionSource>(
+        false,
+        std::vector<std::string>{"Road", "Lane", "Display2D", "POI", "Landmark"});
+    auto addon =
+        std::make_shared<CompositionSource>(true, std::vector<std::string>{"Road", "Lane"});
+    service.add(addonFirst ? addon : base);
+    service.add(addonFirst ? base : addon);
+
+    auto load = [&](std::string const& name)
+    {
+        PartitionFeatureLayer::Ptr result;
+        auto request = std::make_shared<LayerTilesRequest>(
+            "CompositionMap",
+            name,
+            std::vector<PartitionId>{TileId::fromTileXY(1, 1, 2)});
+        request->onFeatureLayer([&](auto tile) { result = std::move(tile); });
+        REQUIRE(service.request(std::vector{request}));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        REQUIRE_FALSE(result->error());
+        REQUIRE(result->size() == 1);
+        CHECK(result->checkForErrors().empty());
+        return result->at(0)->attributesOrNull()->toJson();
+    };
+    for (auto const* name : {"Display2D", "POI", "Landmark"}) {
+        CAPTURE(name);
+        auto properties = load(name);
+        CHECK(properties["count"] == 255);
+        CHECK_FALSE(properties.contains("label"));
+        CHECK(load(name) == properties);
+        CHECK(addon->featureLoads == 0);
+    }
+    CHECK(base->featureLoads == 3);
+    for (auto const* name : {"Road", "Lane"}) {
+        CAPTURE(name);
+        auto properties = load(name);
+        CHECK(properties["count"] == 255);
+        CHECK(properties["label"] == "overlay");
+        CHECK(load(name) == properties);
+    }
+    CHECK(base->featureLoads == 5);
+    CHECK(addon->featureLoads == 2);
 }
 
 TEST_CASE(
