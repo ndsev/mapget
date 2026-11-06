@@ -989,23 +989,38 @@ TEST_CASE(
         });
 
     REQUIRE(service.request(request));
-    REQUIRE(dataSource->waitForSecondCompletion(2s));
-
     bool secondEmittedBeforeFirstCompleted = false;
-    {
-        std::unique_lock lock(resultMutex);
-        secondEmittedBeforeFirstCompleted =
-            resultChanged.wait_for(lock, 2s, [&] {
-                return !resultOrder.empty();
-            }) &&
-            resultOrder.front() == secondTile();
+    try {
+        REQUIRE(dataSource->waitForSecondCompletion(2s));
+        {
+            std::unique_lock lock(resultMutex);
+            secondEmittedBeforeFirstCompleted =
+                resultChanged.wait_for(lock, 2s, [&] { return !resultOrder.empty(); }) &&
+                resultOrder.front() == secondTile();
+        }
+        // Sampling uses try_lock and may initially return the unsampled zero gauge.
+        // Retry while the first source remains blocked, rather than require one lucky poll.
+        nlohmann::json activeMemory;
+        for (size_t attempt = 0; attempt < 200; ++attempt) {
+            activeMemory = service.getMemoryStatistics();
+            auto const& filters = activeMemory["active-filters"];
+            if (filters.size() == 1 &&
+                filters[0]["orchestration"]["current-bytes"].get<uint64_t>() > 0)
+                break;
+            std::this_thread::sleep_for(5ms);
+        }
+        REQUIRE(activeMemory["active-filters"].size() == 1);
+        auto const& filterMemory = activeMemory["active-filters"][0];
+        REQUIRE(filterMemory["filter-id"] == "style:roads");
+        REQUIRE(filterMemory["orchestration"]["current-bytes"].get<uint64_t>() > 0);
+        REQUIRE(filterMemory["output-subset-models"]["peak-bytes"].get<uint64_t>() > 0);
     }
-    auto const activeMemory = service.getMemoryStatistics();
-    REQUIRE(activeMemory["active-filters"].size() == 1);
-    auto const& filterMemory = activeMemory["active-filters"][0];
-    REQUIRE(filterMemory["filter-id"] == "style:roads");
-    REQUIRE(filterMemory["orchestration"]["current-bytes"].get<uint64_t>() > 0);
-    REQUIRE(filterMemory["output-subset-models"]["peak-bytes"].get<uint64_t>() > 0);
+    catch (...) {
+        // Fatal test assertions must not leave a blocked worker for Service's destructor.
+        dataSource->releaseFirst();
+        request->wait();
+        throw;
+    }
     dataSource->releaseFirst();
     request->wait();
 
