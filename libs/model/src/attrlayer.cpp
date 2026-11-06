@@ -101,10 +101,8 @@ AttributeLayer::newAttribute(
 void AttributeLayer::addAttribute(model_ptr<Attribute> a)
 {
     if (a) {
-        auto schemaId = model().childSchemaId(
-            schema(),
-            a->name(),
-            simfil::Schema::Kind::Object);
+        auto schemaId =
+            model().childSchemaId(schema(), a->name(), simfil::SchemaType::Kind::Object);
         model().applyObjectSchema(*a, schemaId);
     }
     addField(a->name(), a);
@@ -160,10 +158,7 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
         raise("Cannot mutate a feature-scoped AttributeLayerList view.");
     }
     if (l) {
-        auto schemaId = model().childSchemaId(
-            schema(),
-            name,
-            simfil::Schema::Kind::Object);
+        auto schemaId = model().childSchemaId(schema(), name, simfil::SchemaType::Kind::Object);
         if (schemaId != simfil::NoTypeId) {
             auto const target =
                 model().checkedContainerSchema(l->schema(), schemaId, simfil::ValueType::Object);

@@ -134,7 +134,7 @@ class ViewerConnection:
             assert opcode == 2
             major, minor, patch, message_type, length = struct.unpack_from("<HHHBI", payload)
             # Native TileLayerStream version; independent of the MCP specification revision.
-            assert (major, minor) == (6, 1), (major, minor, patch)
+            assert (major, minor) == (6, 3), (major, minor, patch)
             assert len(payload) == 11 + length
             if message_type == kind:
                 return json.loads(payload[11:])

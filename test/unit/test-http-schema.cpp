@@ -68,9 +68,15 @@ public:
             layer->addFeatureType(
                 FeatureTypeInfo::fromJson(metadata["layers"]["Road"]["featureTypes"][0]),
                 root);
-            auto properties = layer->addSchema(simfil::Schema::Kind::Object);
-            layer->addFieldSchema(root, "properties", properties);
-            layer->addFieldSchema(properties, field, layer->addSchema(simfil::Schema::Kind::Int));
+            auto properties = layer->addSchema(simfil::SchemaType::Kind::Object);
+            owner->schemaType(root)
+                .asObject()
+                .addField("properties", owner->schemaType(properties));
+            owner->schemaType(properties)
+                .asObject()
+                .addField(
+                    field,
+                    owner->schemaType(layer->addSchema(simfil::SchemaType::Kind::Int)));
             owner->finalize();
             info_.schemaId_.clear();
             info_.setMapSchema(std::move(owner));
@@ -270,7 +276,7 @@ TEST_CASE("HTTP schema RPC binds compact catalogs to exact binary artifacts", "[
     CHECK(schema->format() == info.mapFormat_);
     REQUIRE(schema->layer("Road"));
     REQUIRE(schema->layer("Road")->getTypeInfo("Road"));
-    CHECK(schema->layer("Road")->getTypeInfo("Road")->name_ == "Road");
+    CHECK(schema->layer("Road")->getTypeInfo("Road").name() == "Road");
     CHECK_THROWS(MapSchema::read(bytes, "not-the-expected-contract"));
     auto corrupted = std::string(body);
     REQUIRE_FALSE(corrupted.empty());
@@ -471,7 +477,7 @@ TEST_CASE(
     "Schema explorer previews native named values without expanding alternatives",
     "[HttpSchema]")
 {
-    using Schema = simfil::Schema;
+    using Type = simfil::SchemaType;
     auto owner = std::make_shared<MapSchema>(MapFormat{"schema-http-test", "1", {}});
     auto layer = owner->newLayer("Road", LayerType::Features);
     auto root = layer->addSchema(LayerSchema::FeatureKind);
@@ -480,31 +486,31 @@ TEST_CASE(
             {{"name", "Road"},
              {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "U32"}}}}}}),
         root);
-    auto choice = layer->addSchema(Schema::Kind::OneOf);
-    layer->setComposition(choice, Schema::Composition::OneOf);
-    auto symbols = layer->addSchema(Schema::Kind::String);
-    auto fallback = layer->addSchema(Schema::Kind::Int);
-    layer->setTypeName(symbols, "Accuracy");
-    layer->setTypeName(fallback, "Accuracy");
-    std::array<Schema::NumericRange, 3> ranges{
+    auto choice = layer->addSchema(Type::Kind::OneOf);
+    owner->schemaType(choice).setComposition(Type::Composition::OneOf);
+    auto symbols = layer->addSchema(Type::Kind::String);
+    auto fallback = layer->addSchema(Type::Kind::Int);
+    owner->schemaType(symbols).setTypeName("Accuracy");
+    owner->schemaType(fallback).setTypeName("Accuracy");
+    std::array<Type::NumericRange, 3> ranges{
         {{int64_t{0}, int64_t{9}}, {int64_t{20}, int64_t{29}}, {int64_t{40}, int64_t{49}}}};
-    layer->setNumericDomain(
-        fallback,
+    owner->schemaType(fallback).asScalar().setNumericDomain(
         {.encoding = "uint64",
          .unit = "cm",
          .minimum = int64_t{0},
          .maximum = UINT64_MAX,
-         .ordinaryRanges = ranges,
+         .ordinaryRanges = simfil::SchemaType::NumericRanges(std::span(ranges)),
          .scale = 0.1,
          .offset = 2,
          .complete = true});
     for (auto name : {"LOW", "MEDIUM", "HIGH", "UNKNOWN"}) {
-        layer->addEnumSymbol(symbols, name);
-        layer->addNamedValue(symbols, {.name = name, .value = std::string_view{name}});
+        owner->schemaType(symbols).asEnum().addSymbol(name);
+        owner->schemaType(symbols).asScalar().addNamedValue(
+            {.name = name, .value = std::string_view{name}});
     }
-    layer->addAlternative(choice, symbols);
-    layer->addAlternative(choice, fallback);
-    layer->addFieldSchema(root, "accuracy", choice);
+    owner->schemaType(choice).asComposition().addAlternative(owner->schemaType(symbols));
+    owner->schemaType(choice).asComposition().addAlternative(owner->schemaType(fallback));
+    owner->schemaType(root).asObject().addField("accuracy", owner->schemaType(choice));
     owner->finalize();
 
     SchemaHttpFixture fixture;
@@ -689,9 +695,10 @@ TEST_CASE(
     auto owner = std::make_shared<MapSchema>(MapFormat{"contract-budget", "1", {}});
     auto layer = owner->newLayer("Road", LayerType::Features);
     SchemaTestSource source("ContractIdentity");
-    auto identity = *source.info().mapSchema_->layer("Road")->getTypeInfo("Road");
-    auto root = layer->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"));
-    layer->addFeatureType(identity, root);
+    auto identity = source.info().mapSchema_->layer("Road")->getTypeInfo("Road");
+    owner->addFeatureType(identity);
+    layer->addFeatureType(identity.name());
+    auto root = layer->featureSchema(identity.name());
     auto declarations = nlohmann::json::array();
     for (size_t i = 0; i < 32; ++i)
         declarations.push_back(
@@ -844,8 +851,8 @@ TEST_CASE("HTTP-decoded layers outlive the client without retaining its schema r
         REQUIRE(request->getStatus() == RequestStatus::Success);
         REQUIRE(escaped);
     }
-    REQUIRE(escaped->schemaBinding(escaped->schemaId()));
-    CHECK_FALSE(escaped->schemaBinding("uninstalled-after-client-destruction"));
+    REQUIRE(escaped->schemaPool(escaped->schemaId()));
+    CHECK_FALSE(escaped->schemaPool("uninstalled-after-client-destruction"));
 }
 
 TEST_CASE("Remote datasource cancellation is checked before connection setup", "[HttpSchema]")

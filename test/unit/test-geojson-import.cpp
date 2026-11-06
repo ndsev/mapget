@@ -11,6 +11,7 @@
 #include "mapget/model/featureid.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/json-compare.h"
+#include "mapget/model/mapschema.h"
 #include "nlohmann/json.hpp"
 #include "simfil/byte-array.h"
 
@@ -387,7 +388,7 @@ TEST_CASE(
         "x-mapget": {"metaType": "Feature", "featureType": "Road"}
       }
     })json"_json);
-    REQUIRE(layerInfo->featureTypes().size() == 2);
+    REQUIRE(layerInfo->schemaOwner()->featureIdentities().size() == 2);
     REQUIRE(layerInfo->layerSchema()->featureTypes() == std::vector<std::string>{"Road"});
     REQUIRE_FALSE(layerInfo->layerSchema()->producesFeatureType("Target"));
 

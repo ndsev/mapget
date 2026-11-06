@@ -18,6 +18,7 @@
 #include "fmt/format.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/simfilexpressioncache.h"
 #include "mapget/model/simfilutil.h"
 #include "simfil/overlay.h"
@@ -217,7 +218,7 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
 
     std::set<std::string> channelIds;
     auto const layerInfo = sourceLayer.layerInfo();
-    auto const canValidateTypes = layerInfo && !layerInfo->featureTypes().empty();
+    auto const canValidateTypes = layerInfo && !layerInfo->layerSchema()->featureTypes().empty();
     for (auto const& channel : channels_) {
         if (channel.relation_ && channel.relation_->incoming_) {
             return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
@@ -321,7 +322,7 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
                         channel.channelId_),
                 });
             }
-            if (canValidateTypes && !layerInfo->getTypeInfo(featureType, false)) {
+            if (canValidateTypes && !layerInfo->layerSchema()->producesFeatureType(featureType)) {
                 return tl::unexpected(simfil::Error{
                     simfil::Error::InvalidArguments,
                     fmt::format(
@@ -550,7 +551,7 @@ public:
 
         auto strings = std::make_shared<StringPool>(*sourceStrings);
         auto environment = makeEnvironment(strings);
-        installCompletionLayerSchema(*environment, sourceLayer.layerSchema(), strings);
+        environment->setSchema(sourceLayer.layerSchema()->rootType());
 
         std::vector<std::pair<simfil::StringId, simfil::Value>> fields;
         fields.reserve(bindings.size());
@@ -725,7 +726,9 @@ private:
             simfil::CompileOptions options{
                 .any = anyMode,
                 .rewriteMode = simfil::RewriteMode::Schema,
-                .rootSchema = rootSchema,
+                .rootSchema = schemaIdentity_ ?
+                    schemaIdentity_->mapSchema()->schemaType(rootSchema) :
+                    simfil::SchemaType{},
             };
             auto ast = expressionCache_.getOrCompile(
                 expression,
@@ -2794,7 +2797,7 @@ PartitionFeatureLayer::find(
     }
     auto evaluatorStrings = std::make_shared<StringPool>(*sourceStrings);
     auto environment = makeEnvironment(evaluatorStrings);
-    installCompletionLayerSchema(*environment, layerSchema(), evaluatorStrings);
+    environment->setSchema(layerSchema()->rootType());
 
     std::vector<model_ptr<Feature>> allFeatures;
     allFeatures.reserve(size());
@@ -2860,7 +2863,7 @@ PartitionFeatureLayer::find(
         }
 
         auto const rootSchema =
-            static_cast<simfil::ModelNode const&>(*representative->second).schema();
+            static_cast<simfil::ModelNode const&>(*representative->second).schemaType();
         auto const& expression = selector.featureFilter_ ?
             *selector.featureFilter_ :
             *selector.featureIdExpression_;

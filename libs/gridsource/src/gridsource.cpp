@@ -741,6 +741,11 @@ DataSourceInfo GridDataSource::info() {
         [contract, allFeatureTypes]
         {
             auto owner = std::make_shared<MapSchema>();
+            for (auto const& typeName : allFeatureTypes)
+                owner->addFeatureType(
+                    {typeName,
+                     {{{"tileId", "Tile identifier", IdPartDataType::I64},
+                       {typeName + "Id", "Per-tile unique ID", IdPartDataType::U32}}}});
             for (auto const& [name, definition] : contract.items()) {
                 auto const producedType = definition.at("featureType").get<std::string>();
                 auto layer = definition.at("schema").is_null() ?
@@ -751,22 +756,11 @@ DataSourceInfo GridDataSource::info() {
                         LayerSchema::FeatureKind,
                         LayerSchema::featureKey(producedType),
                         "Feature");
-                    layer->setOpen(root, true);
-                    layer->setTypeName(root, producedType);
+                    owner->schemaType(root).asObject().setOpen(true);
+                    owner->schemaType(root).setTypeName(producedType);
                     layer->setRootSchema(root);
                 }
-                for (auto const& typeName : allFeatureTypes) {
-                    FeatureTypeInfo type{
-                        typeName,
-                        {{{"tileId", "Tile identifier", IdPartDataType::I64},
-                          {typeName + "Id", "Per-tile unique ID", IdPartDataType::U32}}}};
-                    // Other layers' identities are reference targets, not selectable roots.
-                    auto const produced = typeName == producedType;
-                    layer->addFeatureType(
-                        std::move(type),
-                        produced ? layer->rootSchema() : simfil::NoTypeId,
-                        produced);
-                }
+                layer->addFeatureType(producedType, layer->rootSchema());
             }
             owner->finalize();
             return owner;

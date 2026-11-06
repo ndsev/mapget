@@ -28,61 +28,71 @@ public:
         std::string typeName = "fixture.Speed",
         bool declareRelations = false,
         std::string layerName = "Road",
-        size_t extraRawLayers = 0)
+        size_t extraRawLayers = 0,
+        bool recursive = false)
     {
         auto owner = std::make_shared<MapSchema>(MapFormat{"fixture", "2", {{"roads", "1"}}});
         auto layer = owner->newLayer(layerName, LayerType::Features);
-        auto root = layer->addSchema(simfil::Schema::Kind::Object, LayerSchema::featureKey("Road"));
+        auto root =
+            layer->addSchema(simfil::SchemaType::Kind::Object, LayerSchema::featureKey("Road"));
         properties = layer->addSchema(
-            simfil::Schema::Kind::Object,
+            simfil::SchemaType::Kind::Object,
             LayerSchema::featurePropertiesKey("Road"));
-        speed = layer->addSchema(simfil::Schema::Kind::Int);
-        count = layer->addSchema(simfil::Schema::Kind::Int);
-        flags = layer->addSchema(simfil::Schema::Kind::Bitmask);
-        enabled = layer->addSchema(simfil::Schema::Kind::Bool);
-        payload = layer->addSchema(simfil::Schema::Kind::Bytes);
-        layer->setTypeName(speed, std::move(typeName));
-        layer->setTypeName(count, "fixture.Count");
-        layer->setTypeName(flags, "fixture.Access");
-        simfil::Schema::NumericRange ordinary{int64_t{1}, int64_t{253}};
-        layer->setNumericDomain(
-            speed,
+        speed = layer->addSchema(simfil::SchemaType::Kind::Int);
+        count = layer->addSchema(simfil::SchemaType::Kind::Int);
+        flags = layer->addSchema(simfil::SchemaType::Kind::Bitmask);
+        enabled = layer->addSchema(simfil::SchemaType::Kind::Bool);
+        payload = layer->addSchema(simfil::SchemaType::Kind::Bytes);
+        owner->schemaType(speed).setTypeName(std::move(typeName));
+        owner->schemaType(count).setTypeName("fixture.Count");
+        owner->schemaType(flags).setTypeName("fixture.Access");
+        simfil::SchemaType::NumericRange ordinary{int64_t{1}, int64_t{253}};
+        owner->schemaType(speed).asScalar().setNumericDomain(
             {.encoding = "uint8",
              .unit = "km/h",
              .minimum = int64_t{0},
              .maximum = int64_t{255},
-             .ordinaryRanges = {&ordinary, 1},
+             .ordinaryRanges = std::span<simfil::SchemaType::NumericRange const>(&ordinary, 1),
              .complete = true});
-        layer->addNamedValue(
-            speed,
+        owner->schemaType(count).asScalar().setNumericDomain(
+            {.encoding = "int64", .minimum = INT64_MIN, .maximum = INT64_MAX});
+        owner->schemaType(speed).asScalar().addNamedValue(
             {.name = "UNLIMITED",
              .value = int64_t{255},
-             .role = simfil::Schema::NamedValue::Role::Special,
-             .meaning = simfil::Schema::NamedValue::Meaning::Unbounded,
+             .role = simfil::SchemaType::NamedValue::Role::Special,
+             .meaning = simfil::SchemaType::NamedValue::Meaning::Unbounded,
              .rawValue = int64_t{255}});
-        layer->addNamedValue(
-            count,
+        owner->schemaType(count).asScalar().addNamedValue(
             {.name = "UNKNOWN_COUNT",
              .value = int64_t{255},
-             .role = simfil::Schema::NamedValue::Role::Special,
-             .meaning = simfil::Schema::NamedValue::Meaning::Unknown,
+             .role = simfil::SchemaType::NamedValue::Role::Special,
+             .meaning = simfil::SchemaType::NamedValue::Meaning::Unknown,
              .rawValue = UINT64_MAX});
-        layer->setBitWidth(flags, 64);
-        layer->addNamedValue(
-            flags,
-            {.name = "CAR", .value = uint64_t{1}, .role = simfil::Schema::NamedValue::Role::Flag});
-        layer->setOpen(properties, true);
-        layer->addFieldSchema(root, "properties", properties);
-        layer->addFieldSchema(properties, "speed", speed);
-        layer->addFieldSchema(properties, "count", count);
-        layer->addFieldSchema(properties, "flags", flags);
-        layer->addFieldSchema(properties, "enabled", enabled);
-        layer->addFieldSchema(properties, "payload", payload);
-        auto contextOnly = layer->addSchema(simfil::Schema::Kind::Int);
-        layer->setTypeName(contextOnly, "fixture.ContextOnly");
-        layer->addFieldSchema(properties, "$context", contextOnly);
-        layer->setFieldRole(properties, "$context", simfil::Schema::FieldRole::Context);
-        layer->addFieldSchema(properties, "$ordinary", enabled);
+        owner->schemaType(flags).asBitmask().setBitWidth(64);
+        owner->schemaType(flags).asScalar().addNamedValue(
+            {.name = "CAR",
+             .value = uint64_t{1},
+             .role = simfil::SchemaType::NamedValue::Role::Flag});
+        owner->schemaType(properties).asObject().setOpen(true);
+        owner->schemaType(root).asObject().addField("properties", owner->schemaType(properties));
+        owner->schemaType(properties).asObject().addField("speed", owner->schemaType(speed));
+        owner->schemaType(properties).asObject().addField("count", owner->schemaType(count));
+        owner->schemaType(properties).asObject().addField("flags", owner->schemaType(flags));
+        owner->schemaType(properties).asObject().addField("enabled", owner->schemaType(enabled));
+        owner->schemaType(properties).asObject().addField("payload", owner->schemaType(payload));
+        if (recursive)
+            owner->schemaType(properties)
+                .asObject()
+                .addField("recursive", owner->schemaType(properties));
+        auto contextOnly = layer->addSchema(simfil::SchemaType::Kind::Int);
+        owner->schemaType(contextOnly).setTypeName("fixture.ContextOnly");
+        owner->schemaType(properties)
+            .asObject()
+            .addField("$context", owner->schemaType(contextOnly));
+        owner->schemaType(properties)
+            .field("$context")
+            .setRole(simfil::SchemaType::FieldRole::Context);
+        owner->schemaType(properties).asObject().addField("$ordinary", owner->schemaType(enabled));
         layer->addFeatureType(
             FeatureTypeInfo::fromJson(Schema2Json::parse(R"({
             "name":"Road","uniqueIdCompositions":[[
@@ -91,15 +101,12 @@ public:
             ],[{"partId":"alias","datatype":"STR"}]]
         })")),
             root);
-        layer->addFeatureType(
-            FeatureTypeInfo::fromJson(Schema2Json::parse(R"({
+        owner->addFeatureType(FeatureTypeInfo::fromJson(Schema2Json::parse(R"({
             "name":"Target","uniqueIdCompositions":[[{"partId":"id","datatype":"U64"}]]
-        })")),
-            simfil::NoTypeId,
-            false);
+        })")));
         layer->setRootSchema(root);
         if (declareRelations)
-            layer->setJsonSchemaAnnotations(
+            owner->setJsonSchemaAnnotations(
                 root,
                 {{"x-mapget",
                   {{"relationDeclarations",
@@ -136,17 +143,20 @@ public:
         ++fills;
         auto feature = tile->newFeature("Road", {{"id", int64_t{1}}});
         auto values = feature->attributes();
-        auto binding = metadata.mapSchema_->binding();
+        auto const& owner = metadata.mapSchema_;
         values->addField("speed", tile->newValue(int64_t{255}));
         values->addField("count", tile->newValue(int64_t{255}));
-        values->addField("detached", tile->newQualifiedValue(int64_t{255}, {binding, speed}));
+        values
+            ->addField("detached", tile->newQualifiedValue(int64_t{255}, owner->schemaType(speed)));
         values->addField("plain", tile->newValue(int64_t{255}));
-        values->addField("flags", tile->newBitmask(UINT64_C(0x8000000000000001), {binding, flags}));
-        values->addField("zeroFlags", tile->newBitmask(0, {binding, flags}));
-        values->addField("allFlags", tile->newBitmask(UINT64_MAX, {binding, flags}));
-        values->addField("enabled", tile->newQualifiedValue(true, {binding, enabled}));
+        values->addField(
+            "flags",
+            tile->newBitmask(UINT64_C(0x8000000000000001), owner->schemaType(flags)));
+        values->addField("zeroFlags", tile->newBitmask(0, owner->schemaType(flags)));
+        values->addField("allFlags", tile->newBitmask(UINT64_MAX, owner->schemaType(flags)));
+        values->addField("enabled", tile->newQualifiedValue(true, owner->schemaType(enabled)));
         simfil::ByteArray bytes(std::string("\x00\x01\xff", 3));
-        values->addField("payload", tile->newQualifiedValue(bytes, {binding, payload}));
+        values->addField("payload", tile->newQualifiedValue(bytes, owner->schemaType(payload)));
         values->addField("plainPayload", tile->newValue(bytes));
         auto compound = tile->newObject();
         if (auto result = compound->setSchema(properties); !result)
@@ -168,9 +178,7 @@ public:
         object->addField("speed", tile->newValue(int64_t{255}));
         object->addField(
             "flags",
-            tile->newBitmask(
-                UINT64_C(0x8000000000000001),
-                {metadata.mapSchema_->binding(), flags}));
+            tile->newBitmask(UINT64_C(0x8000000000000001), metadata.mapSchema_->schemaType(flags)));
         tile->addRoot(object);
     }
 };
@@ -181,15 +189,17 @@ class Schema2NativeFixture
 {
 public:
     Service service{std::make_shared<MemCache>(8), false, 0ms, 1};
-    std::shared_ptr<Schema2NativeSource> source = std::make_shared<Schema2NativeSource>();
+    std::shared_ptr<Schema2NativeSource> source;
     detail::McpNativeTools::Principal
         principal{"schema2", "reader", std::chrono::system_clock::now() + 1h, true, false};
     std::shared_ptr<detail::McpNativeTools> tools;
 
     /** Register the already-ready source before native discovery. */
-    Schema2NativeFixture()
+    explicit Schema2NativeFixture(
+        std::shared_ptr<Schema2NativeSource> source = std::make_shared<Schema2NativeSource>())
+        : source(std::move(source))
     {
-        service.add(source);
+        service.add(this->source);
         tools = std::make_shared<detail::McpNativeTools>(
             service,
             McpConfig{},
@@ -243,21 +253,17 @@ TEST_CASE(
     REQUIRE(item["layers"].size() == 2);
     auto road = item["layers"][1];  // Canonical layer IDs are sorted: Raw, Road.
     REQUIRE(road["layerId"] == "Road");
-    REQUIRE(road["featureTypes"].size() == 2);
+    REQUIRE(road["featureTypes"].size() == 1);
     CHECK(road["hasSchema"] == true);
-    for (auto const& type : road["featureTypes"]) {
-        if (type["name"] == "Road") {
-            CHECK(type["produced"] == true);
-            CHECK(type["uniqueIdCompositions"][0][0]["datatype"] == "U64");
-            CHECK(type["uniqueIdCompositions"][0][1]["isOptional"] == true);
-            CHECK(type["uniqueIdCompositions"][0][1]["isSynthetic"] == true);
-            CHECK(type["uniqueIdCompositions"][1][0]["partId"] == "alias");
-        }
-        else {
-            CHECK(type["name"] == "Target");
-            CHECK(type["produced"] == false);
-        }
-    }
+    auto const& type = road["featureTypes"][0];
+    CHECK(type["name"] == "Road");
+    CHECK(type["produced"] == true);
+    CHECK(type["uniqueIdCompositions"][0][0]["datatype"] == "U64");
+    CHECK(type["uniqueIdCompositions"][0][1]["isOptional"] == true);
+    CHECK(type["uniqueIdCompositions"][0][1]["isSynthetic"] == true);
+    CHECK(type["uniqueIdCompositions"][1][0]["partId"] == "alias");
+    CHECK(before->getTypeInfo("Target"));
+    CHECK_FALSE(before->layer("Road")->producesFeatureType("Target"));
     CHECK(item.dump().find("featureModelSchema") == std::string::npos);
     CHECK(item.dump().find("schemaFeatureTypes") == std::string::npos);
     CHECK(item.dump().find("NotAdvertised") == std::string::npos);
@@ -316,6 +322,12 @@ TEST_CASE("Schema2 MCP exposes native numeric and named-value descriptors", "[mc
     args["typeId"] = fixture.source->count;
     auto wideOrdinal = fixture.call("mapget_query_schema", args).at("result");
     CHECK(wideOrdinal["items"][0]["values"][0]["rawValue"] == "18446744073709551615");
+    args["query"] = "numericDomain";
+    auto wideDomain = fixture.call("mapget_query_schema", args).at("result");
+    CHECK(wideDomain["complete"] == true);
+    CHECK(
+        wideDomain["items"][0]["values"][0]["maximum"] ==
+        Schema2Json({{"$mapget", "int64"}, {"value", "9223372036854775807"}}));
     args.erase("typeId");
     args.erase("query");
     args["find"] = "UNLIMITED";
@@ -327,6 +339,53 @@ TEST_CASE("Schema2 MCP exposes native numeric and named-value descriptors", "[mc
     args["typeId"] = fixture.source->flags;
     args["query"] = "bitWidth";
     CHECK(fixture.call("mapget_query_schema", args)["result"]["items"][0]["values"][0] == 64);
+    CHECK(fixture.source->fills == 0);
+}
+
+TEST_CASE(
+    "Schema2 MCP descriptors use native field IDs without mutating their shared dictionary",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture;
+    auto owner = fixture.source->metadata.mapSchema_;
+    auto count = owner->strings()->size();
+    Schema2Json arguments{
+        {"mapId", "Schema2"},
+        {"layerId", "Raw"},
+        {"query", "fields.speed.typename"}};
+    auto reply = fixture.call("mapget_query_schema", arguments).at("result");
+    REQUIRE(reply["complete"] == true);
+    REQUIRE(reply["items"].size() == 1);
+    CHECK(reply["items"][0]["values"] == Schema2Json::array({"fixture.Speed"}));
+    CHECK(owner->strings()->size() == count);
+
+    arguments["query"] = "fields.__mcp_private_dictionary_probe";
+    auto missing = fixture.call("mapget_query_schema", arguments).at("result");
+    REQUIRE(missing["items"].size() == 1);
+    CHECK(missing["items"][0]["values"] == Schema2Json::array({nullptr}));
+    CHECK(owner->strings()->size() == count);
+    CHECK_FALSE(owner->strings()->get("__mcp_private_dictionary_probe"));
+    CHECK(fixture.source->fills == 0);
+}
+
+TEST_CASE(
+    "Schema2 MCP serialization bounds cycles without changing descriptor navigation",
+    "[mcp-native][schema2]")
+{
+    Schema2NativeFixture fixture(
+        std::make_shared<Schema2NativeSource>("Schema2", "fixture.Speed", false, "Road", 0, true));
+    Schema2Json arguments{{"mapId", "Schema2"}, {"layerId", "Raw"}, {"query", "_"}};
+    auto result = fixture.call("mapget_query_schema", arguments).at("result");
+    REQUIRE(result["complete"] == true);
+    REQUIRE(result["items"].size() == 1);
+    auto cycle = result["items"][0]["values"][0]["fields"]["recursive"];
+    CHECK(cycle["truncated"] == "cycle");
+    CHECK(cycle["$ref"] == fixture.source->properties);
+
+    arguments["query"] = "fields.recursive.fields.speed.typename";
+    auto navigation = fixture.call("mapget_query_schema", arguments).at("result");
+    REQUIRE(navigation["complete"] == true);
+    CHECK(navigation["items"][0]["values"] == Schema2Json::array({"fixture.Speed"}));
     CHECK(fixture.source->fills == 0);
 }
 

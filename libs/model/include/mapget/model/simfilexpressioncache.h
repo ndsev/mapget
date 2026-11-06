@@ -56,7 +56,9 @@ public:
      * Return one shared AST, compiling on a miss and retaining the result while
      * capacity permits. Deterministic compilation failures are retained too.
      *
-     * `schemaIdentity` must be finalized; keys use its exact artifact identity and layer name.
+     * `schemaIdentity` must be finalized; keys use the root's exact artifact identity and
+     * this layer name. Generic non-MapSchema roots are compiled without retention: their
+     * caller-supplied identity strings do not establish equivalent schema content.
      * `compileContext` must distinguish every other compile-affecting input,
      * including constants, bindings, and custom compiler environment state. It
      * need only be stable for this cache's lifetime.

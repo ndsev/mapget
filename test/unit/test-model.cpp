@@ -60,7 +60,7 @@ TEST_CASE("Static field names resolve to their procedural field IDs", "[model][s
     }
     CHECK(strings.get("name") == StringPool::NameStr);
     CHECK(strings.get("bitmask") == StringPool::SchemaBitmaskStr);
-    CHECK(LayerSchema::BitmaskKind == simfil::Schema::Kind::Bitmask);
+    CHECK(LayerSchema::BitmaskKind == simfil::SchemaType::Kind::Bitmask);
 }
 
 TEST_CASE("Streams reject the old static field dictionary before dispatch", "[model][stream][schema2]")
@@ -70,10 +70,12 @@ TEST_CASE("Streams reject the old static field dictionary before dispatch", "[mo
     TileLayerStream::Writer writer([&](std::string frame, auto) { encoded += frame; }, offsets);
     writer.sendStatus("{}");
     REQUIRE(encoded.size() >= 11);
-    // Version uses three little-endian uint16 fields. 6.1 predates rawValue's static ID.
+    // Version uses three little-endian uint16 fields. 6.1 predates rawValue and
+    // 6.2 predates field multiplicity; both have incompatible static field IDs.
+    auto const oldMinor = GENERATE(1, 2);
     encoded[0] = 6;
     encoded[1] = 0;
-    encoded[2] = 1;
+    encoded[2] = static_cast<char>(oldMinor);
     encoded[3] = 0;
     bool dispatched = false;
     TileLayerStream::Reader reader(

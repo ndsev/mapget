@@ -12,6 +12,8 @@ add_library(mapget-model STATIC
   include/mapget/model/json-compare.h
   include/mapget/model/layerschema.h
   include/mapget/model/mapschema.h
+  include/mapget/model/featureidentity.h
+  include/mapget/model/featureschema.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
@@ -53,7 +55,12 @@ add_library(mapget-model STATIC
   src/layerschema.cpp
   src/layerschema-search.cpp
   src/mapschema.cpp
+  src/mapschema-descriptor.cpp
+  src/mapschema-query.cpp
+  src/mapschema-json.cpp
+  src/mapschema-metadata.cpp
   src/mapschema-native.cpp
+  src/featureidentity.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp

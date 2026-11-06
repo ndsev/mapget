@@ -2,10 +2,8 @@
  * is included after MapSchema::Impl so none of its scratch state is public ABI. */
 class MapSchema::Impl::CompositionBuilder
 {
-    using LogicalSchema = schema_detail::SchemaBuilder::LogicalSchema;
     Impl& target_;
     std::span<ConstPtr const> inputs_;
-    std::vector<schema_detail::SchemaBuilder> graphs_;
     std::vector<size_t> offsets_;
     std::vector<std::pair<size_t, TypeId>> origins_{{0, 0}};
     std::vector<size_t> parents_{0};
@@ -20,15 +18,34 @@ class MapSchema::Impl::CompositionBuilder
     {
         if (!id)
             return 0;
-        if (id >= graphs_[source].schemas_.size())
+        if (id > inputs_[source]->typeCount())
             throw std::invalid_argument("Dangling constituent schema reference.");
         return offsets_[source] + id - 1;
     }
-    /** Read the native declaration without a JSON graph projection. */
-    LogicalSchema const& node(size_t index) const
+    /** Borrow the canonical declaration; source owners outlive this construction. */
+    simfil::SchemaType node(size_t index) const
     {
         auto [source, id] = origins_[index];
-        return graphs_[source].schemas_[id];
+        return inputs_[source]->schemaType(id);
+    }
+    /** Mapget metadata stays in its owner's column, never in a copied generic graph. */
+    Impl const& source(size_t index) const { return *inputs_[origins_[index].first]->schema_; }
+    /** Generated contexts are reconstructed after producer declarations have been merged. */
+    bool queryRoot(size_t index) const
+    {
+        return source(index).data(origins_[index].second).flags & QueryRootFlag;
+    }
+    /** Name IDs belong to their input dictionary, including application-specific kinds. */
+    std::string_view kindName(size_t index) const
+    {
+        return source(index).name(simfil::SchemaType::kindNameId(node(index).kind()));
+    }
+    /** Translate an open kind vocabulary without copying source dictionary IDs. */
+    Kind targetKind(size_t index)
+    {
+        return simfil::SchemaType::makeKind(
+            target_.intern(kindName(index)),
+            simfil::SchemaType::affinities(node(index).kind()));
     }
     /** Compress equivalence paths; frozen artifacts never retain this union-find. */
     size_t representative(size_t index)
@@ -58,12 +75,8 @@ class MapSchema::Impl::CompositionBuilder
         pending_.emplace_back(left, right, std::move(path));
     }
     /** Pair declared alternatives in order; changing their meaning is not an additive field. */
-    void edges(
-        size_t left,
-        size_t right,
-        std::span<TypeId const> a,
-        std::span<TypeId const> b,
-        std::string const& path)
+    template <class A, class B>
+    void edges(size_t left, size_t right, A const& a, B const& b, std::string const& path)
     {
         if (a.size() != b.size())
             conflict(path, "alternative cardinality differs");
@@ -152,54 +165,117 @@ class MapSchema::Impl::CompositionBuilder
         }
         return a;
     }
+    /** Compare scalar declarations directly, preserving full-width encodings and source order. */
+    void scalarMetadata(simfil::SchemaType a, simfil::SchemaType b, std::string const& path)
+    {
+        std::vector<std::string_view> as, bs;
+        a.forEachEnumSymbol([&](auto id)
+                            { as.push_back(a.pool()->strings()->resolve(id).value()); });
+        b.forEachEnumSymbol([&](auto id)
+                            { bs.push_back(b.pool()->strings()->resolve(id).value()); });
+        std::vector<simfil::SchemaType::EnumValue> av, bv;
+        a.forEachEnumValue([&](auto const& value) { av.push_back(value); });
+        b.forEachEnumValue([&](auto const& value) { bv.push_back(value); });
+        if (as != bs || av != bv || a.bitWidth() != b.bitWidth())
+            conflict(path, "enum or bitmask contract differs");
+        auto ad = a.numericDomain(), bd = b.numericDomain();
+        if (bool(ad) != bool(bd))
+            conflict(path, "numeric interpretation differs");
+        if (ad) {
+            if (ad->encoding != bd->encoding || ad->unit != bd->unit ||
+                ad->minimum != bd->minimum || ad->maximum != bd->maximum ||
+                ad->scale != bd->scale || ad->offset != bd->offset ||
+                ad->complete != bd->complete ||
+                ad->ordinaryRanges.size() != bd->ordinaryRanges.size())
+                conflict(path, "numeric interpretation differs");
+            for (size_t i = 0; i < ad->ordinaryRanges.size(); ++i)
+                if (ad->ordinaryRanges[i].min != bd->ordinaryRanges[i].min ||
+                    ad->ordinaryRanges[i].max != bd->ordinaryRanges[i].max)
+                    conflict(path, "ordinary measurement ranges differ");
+        }
+        std::vector<simfil::SchemaType::NamedValue> an, bn;
+        a.forEachNamedValue([&](auto const& value) { an.push_back(value); });
+        b.forEachNamedValue([&](auto const& value) { bn.push_back(value); });
+        if (an.size() != bn.size())
+            conflict(path, "named value contract differs");
+        for (size_t i = 0; i < an.size(); ++i) {
+            auto const& x = an[i];
+            auto const& y = bn[i];
+            if (x.name != y.name || x.value != y.value || x.rawValue != y.rawValue ||
+                x.role != y.role || x.meaning != y.meaning || x.deprecated != y.deprecated ||
+                x.removed != y.removed)
+                conflict(path, "named value contract differs");
+        }
+    }
     /** Check shared meaning and discover child correspondences. New object fields are additive. */
     void compare(size_t left, size_t right, std::string const& path)
     {
-        auto const& a = node(left);
-        auto const& b = node(right);
-        if (a.queryRoot_ || b.queryRoot_)
+        auto a = node(left), b = node(right);
+        auto const& am = source(left).data(a.id());
+        auto const& bm = source(right).data(b.id());
+        if (queryRoot(left) || queryRoot(right))
             conflict(path, "generated query contexts are not producer declarations");
-        if (a.kind_ != b.kind_ || a.composition_ != b.composition_ || a.nullable_ != b.nullable_)
+        if (kindName(left) != kindName(right) ||
+            simfil::SchemaType::affinities(a.kind()) != simfil::SchemaType::affinities(b.kind()) ||
+            a.composition() != b.composition() || a.nullable() != b.nullable())
             conflict(path, "kind, composition or nullability differs");
-        auto text = [&](auto const& x, auto const& y)
+        auto text = [&](auto x, auto y)
         {
             if (!x.empty() && !y.empty() && x != y)
                 conflict(path, "declared type meaning differs");
         };
-        text(a.typeName_, b.typeName_);
-        text(a.zserioType_, b.zserioType_);
-        text(a.entry_.metaType_, b.entry_.metaType_);
-        text(a.attributeType_, b.attributeType_);
-        text(a.attributeTypeCode_, b.attributeTypeCode_);
-        if (a.directEnumSymbols_ != b.directEnumSymbols_ || a.enumValues_ != b.enumValues_)
-            conflict(path, "enum contract differs");
-        edges(left, right, a.elementSchemas_, b.elementSchemas_, path + "/items");
-        edges(left, right, a.alternatives_, b.alternatives_, path + "/alternatives");
-        for (auto const& field : a.directFields_) {
-            if (!b.childSchemas_.contains(field))
-                continue;
-            auto fieldPath = path + "/" + field;
-            auto ar = a.required_.find(field), br = b.required_.find(field);
-            if ((ar == a.required_.end()) != (br == b.required_.end()) ||
-                (ar != a.required_.end() && ar->second != br->second) ||
-                a.multimapFields_.contains(field) != b.multimapFields_.contains(field) ||
-                a.contextFields_.contains(field) != b.contextFields_.contains(field))
-                conflict(fieldPath, "presence, multiplicity or enumeration role differs");
-            auto ac = a.childSchemas_.find(field), bc = b.childSchemas_.find(field);
-            edges(
-                left,
-                right,
-                ac == a.childSchemas_.end() ? std::span<TypeId const>{} : ac->second,
-                bc == b.childSchemas_.end() ? std::span<TypeId const>{} : bc->second,
-                fieldPath);
-        }
-        // Validation-only references are still graph edges. Compare their layout
-        // without confusing independently allocated numeric identities.
-        auto aa = a.annotations_, ba = b.annotations_;
+        text(a.typeName(), b.typeName());
+        text(source(left).text(am.zserioType), source(right).text(bm.zserioType));
+        text(source(left).text(am.metaType), source(right).text(bm.metaType));
+        text(source(left).text(am.attributeType), source(right).text(bm.attributeType));
+        text(source(left).text(am.attributeCode), source(right).text(bm.attributeCode));
+        scalarMetadata(a, b, path);
+        edges(left, right, a.elements(), b.elements(), path + "/items");
+        edges(left, right, a.alternatives(), b.alternatives(), path + "/alternatives");
+        pair(
+            slot(origins_[left].first, a.baseType().id()),
+            slot(origins_[right].first, b.baseType().id()),
+            path + "/base");
+        auto fields = [&](simfil::SchemaType x, simfil::SchemaType y, size_t xs, size_t ys)
+        {
+            x.forEachDirectField(
+                [&](auto const& field)
+                {
+                    auto other = y.field(field.name());
+                    if (!other)
+                        return;
+                    auto fieldPath = path + "/" + std::string(field.name());
+                    if (other.name() != field.name())
+                        conflict(fieldPath, "lookup alias and enumerable field differ");
+                    if (field.required() != other.required() ||
+                        field.multimap() != other.multimap() || field.role() != other.role())
+                        conflict(fieldPath, "presence, multiplicity or enumeration role differs");
+                    edges(xs, ys, field.types(), other.types(), fieldPath);
+                });
+        };
+        fields(a, b, left, right);
+        fields(b, a, right, left);
+        auto aliases = [&](simfil::SchemaType x, simfil::SchemaType y, size_t origin)
+        {
+            x.forEachFieldAlias(
+                [&](auto alias, auto canonical)
+                {
+                    auto aliasName = source(origin).name(alias);
+                    auto other = y.field(aliasName);
+                    if (other && other.name() != source(origin).name(canonical))
+                        conflict(path + "/" + std::string(aliasName), "field alias target differs");
+                });
+        };
+        aliases(a, b, left);
+        aliases(b, a, right);
+        // Validation-only references are graph edges too, but numeric namespaces
+        // differ. Normalize references only for comparison, never literal values.
+        auto aa = source(left).annotation(am.annotations),
+             ba = source(right).annotation(bm.annotations);
         std::map<std::string, TypeId> ar, br;
         auto normalize = [&](auto& json, auto& refs)
         {
-            schema_detail::SchemaBuilder::validationSchemas(
+            schema_detail::forEachValidationSchema(
                 json,
                 [&](auto& value, auto const& location)
                 {
@@ -215,7 +291,7 @@ class MapSchema::Impl::CompositionBuilder
                     slot(origins_[left].first, id),
                     slot(origins_[right].first, other->second),
                     path + location);
-        if (!hasAffinity(a.kind_, simfil::ValueType::Object) && aa != ba)
+        if (!a.hasAffinity(simfil::ValueType::Object) && aa != ba)
             conflict(path, "scalar or array metadata differs");
         (void)mergeAnnotations(std::move(aa), std::move(ba), path);
     }
@@ -243,7 +319,7 @@ class MapSchema::Impl::CompositionBuilder
             members_[right].clear();
         }
     }
-    /** Translate a value-domain edge after final construction identities are assigned. */
+    /** Translate a type edge after final construction identities are assigned. */
     TypeId mapped(size_t source, TypeId id) const
     {
         auto result = mapped_[slot(source, id)];
@@ -251,73 +327,103 @@ class MapSchema::Impl::CompositionBuilder
             throw std::invalid_argument("Producer data refers to a generated query context.");
         return result;
     }
-    /** Copy one native declaration into its merged output row. */
+    /** Write merged declarations directly into canonical columns and arenas. */
     void materialize(size_t index, bool first)
     {
-        auto const& source = node(index);
-        auto origin = origins_[index].first;
+        auto sourceType = node(index);
+        auto const& origin = source(index);
+        auto originIndex = origins_[index].first;
         auto id = mapped_[index];
-        auto& out = target_.builder->schemas_[id];
+        // Keep the derived owner: this canonical copier preserves arbitrary source
+        // declarations through its protected primitives, never a public ID facade.
+        auto& graph = target_.pool;
+        auto out = graph.schemaType(id);
+        auto const& metadata = origin.data(sourceType.id());
+        auto& outMetadata = target_.data(id);
         if (first) {
-            out = source;
-            out.id_ = out.entry_.id_ = id;
-            out.directFields_.clear();
-            out.childSchemas_.clear();
-            out.elementSchemas_.clear();
-            out.alternatives_.clear();
-            out.attributeOwners_.clear();
-            out.annotations_ = nlohmann::json::object();
+            out.setComposition(sourceType.composition());
+            out.setNullable(sourceType.nullable());
+            if (auto base = sourceType.baseType().id())
+                graph.setBaseSchema(id, mapped(originIndex, base));
+            for (auto child : sourceType.elements())
+                graph.addElementSchema(id, mapped(originIndex, child));
+            // Keep order and multiplicity: oneOf(A, A) must not turn into oneOf(A).
+            for (auto child : sourceType.alternatives())
+                graph.addAlternative(id, mapped(originIndex, child));
+            sourceType.forEachEnumSymbol(
+                [&](auto symbol) { graph.addEnumSymbol(id, origin.name(symbol)); });
+            sourceType.forEachEnumValue([&](auto const& value) { graph.addEnumValue(id, value); });
+            if (sourceType.isBitmask())
+                out.asBitmask().setBitWidth(sourceType.bitWidth());
+            if (auto numeric = sourceType.numericDomain())
+                out.asScalar().setNumericDomain(*numeric);
+            sourceType.forEachNamedValue([&](auto const& value) { out.addNamedValue(value); });
         }
-        auto text = [](auto& value, auto const& other)
+        if (out.typeName().empty())
+            out.setTypeName(sourceType.typeName());
+        auto text = [&](ModelNodeAddress& address, ModelNodeAddress other)
         {
-            if (value.empty())
-                value = other;
+            if (!address)
+                address = target_.text(origin.text(other));
         };
-        text(out.typeName_, source.typeName_);
-        text(out.zserioType_, source.zserioType_);
-        text(out.attributeType_, source.attributeType_);
-        text(out.attributeTypeCode_, source.attributeTypeCode_);
-        text(out.entry_.metaType_, source.entry_.metaType_);
-        text(out.entry_.key_, source.entry_.key_);
-        text(out.entry_.jsonPointer_, source.entry_.jsonPointer_);
-        out.open_ = out.open_ || source.open_;
-        out.required_.insert(source.required_.begin(), source.required_.end());
-        out.multimapFields_.insert(source.multimapFields_.begin(), source.multimapFields_.end());
-        out.contextFields_.insert(source.contextFields_.begin(), source.contextFields_.end());
-        for (auto const& name : source.directFields_) {
-            auto [children, inserted] = out.childSchemas_.try_emplace(name);
-            if (inserted) {
-                out.directFields_.push_back(name);
-                if (auto found = source.childSchemas_.find(name);
-                    found != source.childSchemas_.end())
-                    for (auto child : found->second)
-                        children->second.push_back(mapped(origin, child));
-            }
-        }
-        // Ordered alternatives were paired during compatibility checking. Keep
-        // their multiplicity: oneOf(A, A) is not equivalent to oneOf(A).
-        if (first) {
-            for (auto child : source.elementSchemas_)
-                out.elementSchemas_.push_back(mapped(origin, child));
-            for (auto child : source.alternatives_)
-                out.alternatives_.push_back(mapped(origin, child));
-        }
-        for (auto owner : source.attributeOwners_) {
+        text(outMetadata.zserioType, metadata.zserioType);
+        text(outMetadata.attributeType, metadata.attributeType);
+        text(outMetadata.attributeCode, metadata.attributeCode);
+        text(outMetadata.metaType, metadata.metaType);
+        text(outMetadata.key, metadata.key);
+        text(outMetadata.pointer, metadata.pointer);
+        graph.setOpen(id, out.open() || sourceType.open());
+        sourceType.forEachDirectField(
+            [&](auto const& field)
+            {
+                auto previous = out.field(field.name());
+                if (previous && previous.parentType() == out)
+                    return;
+                // Generic setters append edges, including explicit unknown targets.
+                for (auto child : field.types())
+                    graph.addFieldSchema(
+                        id,
+                        field.name(),
+                        mapped(originIndex, child),
+                        field.multimap());
+                graph.setFieldRequired(id, field.name(), field.required());
+                graph.setFieldRole(id, field.name(), field.role());
+            });
+        sourceType.forEachFieldAlias(
+            [&](auto alias, auto canonical)
+            {
+                auto name = origin.name(alias), target = origin.name(canonical);
+                bool present = false;
+                out.forEachFieldAlias(
+                    [&](auto existing, auto destination)
+                    {
+                        if (target_.name(existing) != name)
+                            return;
+                        present = true;
+                        if (target_.name(destination) != target)
+                            conflict(std::string(name), "field alias target differs");
+                    });
+                if (!present)
+                    graph.addFieldAlias(id, name, target);
+            });
+        for (auto owner : origin.attributeOwners(sourceType.id())) {
             owner.attributeSchema_ = id;
-            target_.builder->registerAttributeOwner(id, std::move(owner));
+            target_.pool.setAttributeMetadata(
+                id,
+                std::move(owner),
+                std::string(origin.text(metadata.attributeType)),
+                std::string(origin.text(metadata.zserioType)));
         }
-        target_.builder->entriesById_[id] = out.entry_;
     }
 
 public:
-    /** Snapshot only transient native declarations; published graphs remain untouched. */
+    /** Retain only source IDs and transient equivalence state; source graphs remain untouched. */
     CompositionBuilder(Impl& target, std::span<ConstPtr const> inputs)
         : target_(target), inputs_(inputs)
     {
         for (size_t s = 0; s < inputs.size(); ++s) {
-            graphs_.push_back(inputs[s]->schema_->exportBuilder());
             offsets_.push_back(origins_.size());
-            for (size_t id = 1; id < graphs_.back().schemas_.size(); ++id) {
+            for (size_t id = 1; id <= inputs[s]->typeCount(); ++id) {
                 if (origins_.size() >= MaxEdges)
                     throw std::length_error("Composition input graph budget exceeded.");
                 auto index = origins_.size();
@@ -327,7 +433,8 @@ public:
                 mapped_.push_back(0);
             }
             for (size_t l = 0; l < inputs[s]->schema_->layers.size(); ++l)
-                layers_[inputs[s]->schema_->layers[l].name].emplace_back(s, l);
+                layers_[std::string(inputs[s]->schema_->name(inputs[s]->schema_->layers[l].name))]
+                    .emplace_back(s, l);
             target_.constituents
                 .emplace_back(std::string(inputs[s]->schemaId()), inputs[s]->format());
         }
@@ -335,156 +442,170 @@ public:
     /** Merge contracts, rebuild query overlays, and retain ingestion-only translation tables. */
     void build()
     {
+        for (auto const& input : inputs_)
+            for (auto const& identity : input->featureIdentities())
+                target_.pool.addFeatureType(identity);
         std::map<std::string_view, size_t, std::less<>> globalKeys;
         for (size_t s = 0; s < inputs_.size(); ++s)
-            for (auto const& [key, id] : inputs_[s]->schema_->globalAliases) {
-                auto [it, inserted] = globalKeys.emplace(key, slot(s, id));
-                if (!inserted)
-                    pair(it->second, slot(s, id), std::string(key));
-            }
+            inputs_[s]->schema_->forEachAlias(
+                GlobalLayer,
+                [&](std::string_view key, TypeId id)
+                {
+                    auto [it, inserted] = globalKeys.emplace(key, slot(s, id));
+                    if (!inserted)
+                        pair(it->second, slot(s, id), std::string(key));
+                });
         for (auto const& [name, sources] : layers_) {
             auto const& first =
                 inputs_[sources.front().first]->schema_->layers[sources.front().second];
-            std::map<std::string_view, std::pair<FeatureTypeInfo const*, size_t>, std::less<>>
-                features;
+            std::map<std::string_view, size_t, std::less<>> features;
             std::map<std::string_view, size_t, std::less<>> aliases;
             for (auto [s, l] : sources) {
                 auto const& layer = inputs_[s]->schema_->layers[l];
                 if (first.type != layer.type)
                     conflict(name, "layer kind differs");
-                if (layer.features.empty() || first.features.empty())
+                if (inputs_[s]->schema_->featureRoots(layer).empty() ||
+                    inputs_[sources.front().first]->schema_->featureRoots(first).empty())
                     pair(
                         slot(sources.front().first, first.root),
                         slot(s, layer.root),
                         name + "/root");
-                for (size_t f = 0; f < layer.features.size(); ++f) {
-                    auto const& feature = layer.features[f];
-                    auto [it, inserted] = features.emplace(
-                        feature.name_,
-                        std::pair{&feature, slot(s, layer.featureRoots[f])});
+                for (auto const& [featureId, root] : inputs_[s]->schema_->featureRoots(layer)) {
+                    auto feature = inputs_[s]->schema_->name(featureId);
+                    auto [it, inserted] = features.emplace(feature, slot(s, root));
                     if (!inserted) {
-                        if (it->second.first->toJson() != feature.toJson())
-                            conflict(
-                                name + "/" + feature.name_,
-                                "feature identity composition differs");
-                        pair(
-                            it->second.second,
-                            slot(s, layer.featureRoots[f]),
-                            name + "/" + feature.name_);
+                        pair(it->second, slot(s, root), name + "/" + std::string(feature));
                     }
                 }
-                for (auto const& [key, id] : layer.aliases) {
-                    auto [it, inserted] = aliases.emplace(key, slot(s, id));
-                    if (!inserted)
-                        pair(it->second, slot(s, id), name + "/" + std::string(key));
-                }
+                inputs_[s]->schema_->forEachAlias(
+                    l,
+                    [&](std::string_view key, TypeId id)
+                    {
+                        auto [it, inserted] = aliases.emplace(key, slot(s, id));
+                        if (!inserted)
+                            pair(it->second, slot(s, id), name + "/" + std::string(key));
+                    });
             }
         }
         unify();
         // Assign only effective IDs, not the sum of contributor namespaces. Shared
         // recursive graphs can therefore compose without exhausting uint16_t early.
         for (size_t i = 1; i < origins_.size(); ++i) {
-            if (node(i).queryRoot_)
+            if (queryRoot(i))
                 continue;
             auto root = representative(i);
             if (!mapped_[root])
-                mapped_[root] = target_.builder->allocate(node(i).kind_, {}, {}, {});
+                mapped_[root] = target_.pool.newType(targetKind(i)).id();
             mapped_[i] = mapped_[root];
         }
         std::set<TypeId> initialized;
         for (size_t i = 1; i < origins_.size(); ++i)
-            if (!node(i).queryRoot_)
+            if (!queryRoot(i))
                 materialize(i, initialized.insert(mapped_[i]).second);
         for (auto const& [name, sources] : layers_) {
-            Layer layer;
-            layer.name = name;
-            layer.relationsDeclared = true;
-            layer.relationsKnown = true;
+            auto const& first =
+                inputs_[sources.front().first]->schema_->layers[sources.front().second];
+            auto output = target_.pool.newLayer(name, LayerType(first.type));
+            std::map<std::string, TypeId, std::less<>> localAliases;
+            std::map<std::string_view, TypeId, std::less<>> produced;
+            // These declaration inputs exist only during composition; the owner stores rows
+            // immediately.
+            std::vector<LayerSchema::RelationDeclaration> relations;
+            bool known = true;
             for (auto [s, l] : sources) {
-                auto const& source = inputs_[s]->schema_->layers[l];
-                layer.type = source.type;
-                layer.relationsKnown = layer.relationsKnown && source.relationsKnown;
-                for (auto const& relation : source.relations) {
+                auto const& origin = *inputs_[s]->schema_;
+                auto const& source = origin.layers[l];
+                known = known && origin.relationsKnown(source);
+                for (auto const& row : origin.relationsOf(source)) {
+                    auto declaration = origin.relationDeclaration(row);
                     auto previous = std::ranges::find_if(
-                        layer.relations,
+                        relations,
                         [&](auto const& value) {
-                            return value.ownerType_ == relation.ownerType_ &&
-                                value.name_ == relation.name_;
+                            return value.ownerType_ == declaration.ownerType_ &&
+                                value.name_ == declaration.name_;
                         });
-                    if (previous == layer.relations.end())
-                        layer.relations.push_back(relation);
+                    if (previous == relations.end())
+                        relations.push_back(std::move(declaration));
                     else if (
-                        previous->targetTypes_ != relation.targetTypes_ ||
-                        previous->complete_ != relation.complete_ ||
-                        previous->locality_ != relation.locality_)
+                        previous->targetTypes_ != declaration.targetTypes_ ||
+                        previous->complete_ != declaration.complete_ ||
+                        previous->locality_ != declaration.locality_)
                         conflict(name, "forward relation contract differs");
                 }
-                if (source.features.empty())
-                    layer.root = mapped(s, source.root);
-                for (size_t f = 0; f < source.features.size(); ++f) {
-                    auto found = std::ranges::find(
-                        layer.features,
-                        source.features[f].name_,
-                        &FeatureTypeInfo::name_);
-                    if (found == layer.features.end()) {
-                        layer.features.push_back(source.features[f]);
-                        layer.featureRoots.push_back(mapped(s, source.featureRoots[f]));
-                        layer.produced.push_back(source.produced[f]);
-                    }
-                    else
-                        layer.produced[found - layer.features.begin()] |= source.produced[f];
-                }
-                for (auto const& [key, id] : source.aliases)
-                    layer.buildAliases[std::string(key)] = mapped(s, id);
+                auto roots = origin.featureRoots(source);
+                if (roots.empty())
+                    output->setRootSchema(mapped(s, source.root));
+                for (auto const& row : roots)
+                    produced.emplace(origin.name(row.name), mapped(s, row.root));
+                origin.forEachAlias(
+                    l,
+                    [&](std::string_view key, TypeId id)
+                    { localAliases[std::string(key)] = mapped(s, id); });
             }
-            target_.layers.push_back(std::move(layer));
+            for (auto const& [feature, root] : produced)
+                output->addFeatureType(feature, root);
+            target_.setRelations(output->addr().index(), std::move(relations), known);
+            for (auto const& [key, id] : localAliases)
+                output->registerSchemaKey(key, id);
         }
         for (auto const& [key, index] : globalKeys)
-            target_.builder->idsByKey_.emplace(key, mapped_[index]);
+            target_.pool.registerSchemaKey(std::string(key), mapped_[index]);
         target_.prepareQueryRoots();
         for (size_t s = 0; s < inputs_.size(); ++s) {
-            for (auto const& [context, query] : inputs_[s]->schema_->queryRoots)
-                mapped_[slot(s, query)] =
-                    target_.queryRoots.at({mapped(s, context.first), mapped(s, context.second)});
-            for (size_t id = 1; id < graphs_[s].schemas_.size(); ++id)
-                if (graphs_[s].schemas_[id].queryRoot_ && !mapped_[slot(s, TypeId(id))]) {
-                    auto const& source = graphs_[s].schemas_[id];
-                    for (auto const& candidate : target_.builder->schemas_)
-                        if (candidate.queryRoot_ && candidate.kind_ == source.kind_ &&
-                            candidate.entry_.metaType_.empty()) {
-                            mapped_[slot(s, TypeId(id))] = candidate.id_;
+            for (auto const& query : inputs_[s]->schema_->queryRoots) {
+                auto merged =
+                    target_.findQueryRoot(mapped(s, query.feature), mapped(s, query.attribute));
+                if (!merged)
+                    throw std::invalid_argument("Merged query context is unavailable.");
+                mapped_[slot(s, query.root)] = merged;
+            }
+            for (size_t id = 1; id <= inputs_[s]->typeCount(); ++id)
+                if (queryRoot(slot(s, TypeId(id))) && !mapped_[slot(s, TypeId(id))]) {
+                    for (size_t candidate = 1; candidate <= target_.pool.typeCount(); ++candidate)
+                        if ((target_.data(TypeId(candidate)).flags & QueryRootFlag) &&
+                            target_.pool.schemaType(TypeId(candidate)).kind() ==
+                                targetKind(slot(s, TypeId(id))) &&
+                            !target_.data(TypeId(candidate)).metaType)
+                        {
+                            mapped_[slot(s, TypeId(id))] = TypeId(candidate);
                             break;
                         }
                     if (!mapped_[slot(s, TypeId(id))])
                         throw std::invalid_argument("Unmapped generated query scalar.");
                 }
             auto& remap = target_.contributorRemaps[std::string(inputs_[s]->schemaId())];
-            remap.resize(graphs_[s].schemas_.size());
+            remap.resize(inputs_[s]->typeCount() + 1);
             for (size_t id = 1; id < remap.size(); ++id)
                 remap[id] = mapped(s, TypeId(id));
         }
-        // Reference IDs are final now. Keep annotations only on canonical rows;
-        // overlay annotations are inherited from the merged payload below.
-        initialized.clear();
+        // Merge annotations one equivalence class at a time, then allocate CBOR
+        // once. Repeated writes would leave superseded payloads in the ModelPool.
         for (size_t i = 1; i < origins_.size(); ++i) {
-            if (node(i).queryRoot_)
+            if (queryRoot(i) || members_[i].empty())
                 continue;
-            auto extra = node(i).annotations_;
-            schema_detail::SchemaBuilder::validationSchemas(
-                extra,
-                [&](auto& value, auto const&)
-                {
-                    value["$ref"] = "#/definitions/" +
-                        std::to_string(mapped(origins_[i].first, reference(value)));
-                });
-            auto& out = target_.builder->schemas_[mapped_[i]].annotations_;
-            if (initialized.insert(mapped_[i]).second)
-                out = std::move(extra);
-            else
-                out = mergeAnnotations(std::move(out), std::move(extra), node(i).entry_.key_);
+            auto members = members_[i];
+            std::ranges::sort(members);
+            nlohmann::json merged;
+            for (auto member : members) {
+                auto const& metadata = source(member).data(node(member).id());
+                auto extra = source(member).annotation(metadata.annotations);
+                schema_detail::forEachValidationSchema(
+                    extra,
+                    [&](auto& value, auto const&)
+                    {
+                        value["$ref"] = "#/definitions/" +
+                            std::to_string(mapped(origins_[member].first, reference(value)));
+                    });
+                merged = merged.is_null() ?
+                    std::move(extra) :
+                    mergeAnnotations(
+                        std::move(merged),
+                        std::move(extra),
+                        std::string(source(member).text(metadata.key)));
+            }
+            target_.data(mapped_[i]).annotations = target_.annotation(merged);
         }
-        for (auto const& [context, query] : target_.queryRoots)
-            target_.builder->schemas_[query].annotations_ =
-                target_.builder->schemas_[context.second].annotations_;
+        for (auto const& query : target_.queryRoots)
+            target_.data(query.root).annotations = target_.data(query.attribute).annotations;
     }
 };

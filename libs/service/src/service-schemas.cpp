@@ -216,10 +216,11 @@ nlohmann::json DataSourceRegistry::schemaInventory(
                         "SourceData";
                     auto rootMetadata = [&](simfil::TypeId id)
                     {
+                        auto type = layer->mapSchema()->schemaType(id);
                         return nlohmann::json{
                             {"typeId", id},
-                            {"open", layer->open(id)},
-                            {"reachabilityComplete", layer->reachabilityComplete(id)}};
+                            {"open", type.open()},
+                            {"reachabilityComplete", type.reachabilityComplete()}};
                     };
                     auto types = nlohmann::json::array();
                     for (auto const& type : layer->featureTypes()) {

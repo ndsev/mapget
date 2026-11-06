@@ -21,25 +21,24 @@ namespace mapget
 namespace
 {
 /** Resolve the concrete id composition used by a stored feature-id node. */
-std::vector<IdPart> const* resolveComposition(
+FeatureIdentity::Composition resolveComposition(
     PartitionFeatureModelLayerBase const& model,
     simfil::StringId typeId,
     uint8_t idCompositionIndex)
 {
     auto typeName = model.strings()->resolve(typeId);
     if (!typeName) {
-        return nullptr;
+        return {};
     }
 
     auto typeInfo = model.layerInfo()->getTypeInfo(*typeName, false);
-    if (!typeInfo || typeInfo->uniqueIdCompositions_.empty()) {
-        return nullptr;
+    if (!typeInfo || typeInfo.compositions().empty()) {
+        return {};
     }
 
-    auto const compositionIndex = std::min<size_t>(
-        idCompositionIndex,
-        typeInfo->uniqueIdCompositions_.size() - 1U);
-    return &typeInfo->uniqueIdCompositions_[compositionIndex];
+    auto const compositionIndex =
+        std::min<size_t>(idCompositionIndex, typeInfo.compositions().size() - 1U);
+    return typeInfo.compositions()[compositionIndex];
 }
 
 /** Build the externally visible id-part layout after removing an optional tile prefix. */
@@ -57,7 +56,7 @@ void resolveVisiblePartLayout(
         return;
     }
 
-    auto const* composition = resolveComposition(model, data.typeId_, data.idCompositionIndex_);
+    auto composition = resolveComposition(model, data.typeId_, data.idCompositionIndex_);
     if (!composition) {
         return;
     }
@@ -94,11 +93,8 @@ void resolveVisiblePartLayout(
         }
 
         if (!prefixFeatureIdParts.empty()) {
-            auto const matchEndIndex = IdPart::compositionMatchEndIndex(
-                *composition,
-                0,
-                prefixFeatureIdParts,
-                prefixFeatureIdParts.size());
+            auto const matchEndIndex =
+                composition.matchEndIndex(0, prefixFeatureIdParts, prefixFeatureIdParts.size());
             if (!matchEndIndex) {
                 // A stored prefix that no longer matches the schema would make the
                 // visible id parts misleading, so we expose no parts instead.
@@ -110,9 +106,8 @@ void resolveVisiblePartLayout(
 
     auto const maxSlots = std::min<uint32_t>(
         values->size(),
-        static_cast<uint32_t>(composition->size()) - std::min<uint32_t>(
-            localStartIndex,
-            static_cast<uint32_t>(composition->size())));
+        static_cast<uint32_t>(composition.parts().size()) -
+            std::min<uint32_t>(localStartIndex, static_cast<uint32_t>(composition.parts().size())));
 
     for (uint32_t slot = 0; slot < maxSlots; ++slot) {
         auto const valueNode = values->at(static_cast<int64_t>(slot));
@@ -121,7 +116,7 @@ void resolveVisiblePartLayout(
             continue;
         }
 
-        auto sid = model.strings()->emplace((*composition)[localStartIndex + slot].idPartLabel_);
+        auto sid = model.strings()->emplace(composition.parts()[localStartIndex + slot].name());
         if (!sid) {
             break;
         }
@@ -185,7 +180,7 @@ struct CompositionParseState
 
 /** Try to parse one id composition, including optional parts that may consume no token. */
 [[nodiscard]] bool tryParseCompositionRecursive(
-    std::vector<IdPart> const& composition,
+    FeatureIdentity::Composition composition,
     std::vector<std::string_view> const& tokens,
     size_t partIndex,
     size_t tokenIndex,
@@ -193,7 +188,7 @@ struct CompositionParseState
     std::vector<CompositionParseState>& results,
     std::string* error)
 {
-    if (partIndex == composition.size()) {
+    if (partIndex == composition.parts().size()) {
         if (tokenIndex == tokens.size()) {
             results.push_back(current);
             return true;
@@ -201,10 +196,10 @@ struct CompositionParseState
         return false;
     }
 
-    auto const& part = composition[partIndex];
+    auto const& part = composition.parts()[partIndex];
     auto matched = false;
 
-    if (part.isOptional_) {
+    if (part.optional()) {
         // Optional parts are explored both as present and as omitted so we can
         // disambiguate compositions solely from the canonical string form.
         matched = tryParseCompositionRecursive(
@@ -228,14 +223,14 @@ struct CompositionParseState
 
     std::variant<int64_t, std::string> parsedValue = decoded;
     std::string localError;
-    if (!part.validate(parsedValue, &localError)) {
+    if (!part.validateValue(parsedValue, &localError)) {
         // Datatype mismatches do not fail the whole search immediately because a
         // different composition may still accept the same token sequence.
         return matched;
     }
 
     auto next = current;
-    next.values.emplace_back(part.idPartLabel_, std::move(parsedValue));
+    next.values.emplace_back(part.name(), std::move(parsedValue));
     return tryParseCompositionRecursive(
                composition,
                tokens,
@@ -518,7 +513,7 @@ bool normalizeFeatureIdParts(
     ParsedFeatureId& result)
 {
     result = {};
-    auto const* type = layerInfo.getTypeInfo(typeId, false);
+    auto type = layerInfo.getTypeInfo(typeId, false);
     if (!type)
         return false;
     std::set<std::string_view> names;
@@ -526,25 +521,25 @@ bool normalizeFeatureIdParts(
         if (!names.insert(name).second)
             return false;
     for (size_t index = 0;
-         index < type->uniqueIdCompositions_.size() && index <= std::numeric_limits<uint8_t>::max();
+         index < type.compositions().size() && index <= std::numeric_limits<uint8_t>::max();
          ++index)
     {
         KeyValuePairs ordered;
         bool matches = true;
-        for (auto const& definition : type->uniqueIdCompositions_[index]) {
+        for (auto definition : type.compositions()[index].parts()) {
             auto part = std::find_if(
                 parts.begin(),
                 parts.end(),
-                [&](auto const& item) { return item.first == definition.idPartLabel_; });
+                [&](auto const& item) { return item.first == definition.name(); });
             if (part == parts.end()) {
-                if (!definition.isOptional_) {
+                if (!definition.optional()) {
                     matches = false;
                     break;
                 }
                 continue;
             }
             auto value = part->second;
-            if (!definition.validate(value)) {
+            if (!definition.validateValue(value)) {
                 matches = false;
                 break;
             }
@@ -576,7 +571,7 @@ bool parseFeatureIdString(
     }
 
     auto const typeId = std::string(tokens.front());
-    auto const* typeInfo = layerInfo.getTypeInfo(typeId, false);
+    auto typeInfo = layerInfo.getTypeInfo(typeId, false);
     if (!typeInfo) {
         if (error) {
             *error = fmt::format("Could not find feature type {}", typeId);
@@ -586,10 +581,10 @@ bool parseFeatureIdString(
 
     std::vector<std::pair<uint8_t, CompositionParseState>> matches;
     std::string localError;
-    for (uint32_t compositionIndex = 0;
-         compositionIndex < typeInfo->uniqueIdCompositions_.size();
-         ++compositionIndex) {
-        auto const& composition = typeInfo->uniqueIdCompositions_[compositionIndex];
+    for (uint32_t compositionIndex = 0; compositionIndex < typeInfo.compositions().size();
+         ++compositionIndex)
+    {
+        auto const& composition = typeInfo.compositions()[compositionIndex];
         std::vector<CompositionParseState> parsedStates;
         CompositionParseState emptyState{};
         if (!tryParseCompositionRecursive(
@@ -658,14 +653,14 @@ std::string formatFeatureIdString(
     KeyValuePairs const& featureIdParts,
     LayerInfo const* layerInfo)
 {
-    std::vector<IdPart> const* composition = nullptr;
+    FeatureIdentity::Composition composition;
     if (layerInfo) {
         auto index = layerInfo->matchingFeatureIdCompositionIndex(
             typeId,
             castToKeyValueView(featureIdParts),
             false);
         if (index)
-            composition = &layerInfo->getTypeInfo(typeId)->uniqueIdCompositions_[*index];
+            composition = layerInfo->getTypeInfo(typeId).compositions()[*index];
     }
     std::string result(typeId);
     // Older AppleClang cannot capture structured bindings in the nested lambdas below.
@@ -683,10 +678,10 @@ std::string formatFeatureIdString(
                 }
                 else {
                     bool unsignedPart = composition &&
-                        std::ranges::any_of(*composition,
+                        std::ranges::any_of(composition.parts(),
                                             [&](auto const& item) {
-                                                return item.idPartLabel_ == idPart.first &&
-                                                    item.datatype_ == IdPartDataType::U64;
+                                                return item.name() == idPart.first &&
+                                                    item.datatype() == IdPartDataType::U64;
                                             });
                     if (unsignedPart)
                         fmt::format_to(

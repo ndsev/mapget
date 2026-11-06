@@ -28,8 +28,8 @@ public:
             auto builder = std::make_shared<MapSchema>(MapFormat{"inventory-test", "1", {}});
             for (size_t i = 0; i < layerCount; ++i) {
                 auto layer = builder->newLayer("Layer" + std::to_string(i), LayerType::Features);
-                auto root = layer->addSchema(simfil::Schema::Kind::Union);
-                layer->setComposition(root, MapSchema::Composition::AnyOf);
+                auto root = layer->addSchema(simfil::SchemaType::Kind::Union);
+                builder->schemaType(root).setComposition(MapSchema::Composition::AnyOf);
                 for (size_t j = 0; j < typeCount; ++j) {
                     auto name = "Feature" + std::to_string(i) + "_" + std::to_string(j);
                     auto feature =
@@ -38,7 +38,8 @@ public:
                         {{"name", name},
                          {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "U32"}}}}}});
                     layer->addFeatureType(identity, feature);
-                    layer->addAlternative(root, feature);
+                    builder->schemaType(root).asComposition().addAlternative(
+                        builder->schemaType(feature));
                 }
                 layer->setRootSchema(root);
             }
@@ -86,9 +87,11 @@ TEST_CASE(
     features->setRootSchema(feature);
     for (auto const* name : {"Raw-Header", "Metadata-Settings"}) {
         auto layer = owner->newLayer(name, LayerType::SourceData);
-        auto root = layer->addSchema(simfil::Schema::Kind::Object);
-        layer->addFieldSchema(root, "version", layer->addSchema(simfil::Schema::Kind::Int));
-        layer->setOpen(root, std::string_view(name).starts_with("Metadata-"));
+        auto root = layer->addSchema(simfil::SchemaType::Kind::Object);
+        owner->schemaType(root).asObject().addField(
+            "version",
+            owner->schemaType(layer->addSchema(simfil::SchemaType::Kind::Int)));
+        owner->schemaType(root).asObject().setOpen(std::string_view(name).starts_with("Metadata-"));
         layer->setRootSchema(root);
     }
     owner->finalize();

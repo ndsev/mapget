@@ -32,24 +32,43 @@ inline void bindSchema(pybind11::module_& m)
 {
     namespace py = pybind11;
 
-    py::class_<simfil::SchemaReference>(m, "SchemaReference", R"pbdoc(
-        Read-only exact type identity retaining its immutable graph.
-        type_id is local to schema_id. An empty reference has type_id zero and an empty
-        identity; no semantics may be inferred from its raw scalar value.
+    py::class_<simfil::SchemaType>(m, "SchemaType", R"pbdoc(
+        Immutable type view independently retaining its exact schema pool.
+
+        type_id is local to schema_id. An empty view has type_id zero and empty
+        descriptive strings; no scalar semantics may be inferred from it. Python
+        receives retained values, never pointers to temporary native views.
     )pbdoc")
         .def_property_readonly(
             "schema_id",
-            [](simfil::SchemaReference const& self)
-            { return self ? std::string(self.binding->identity()) : std::string{}; },
-            "Exact schema token, or an empty string for unknown provenance.")
-        .def_readonly(
+            [](simfil::SchemaType const& self)
+            { return self ? std::string(self.pool()->identity()) : std::string{}; },
+            "Exact artifact identity, or an empty string for unknown provenance.")
+        .def_property_readonly(
             "type_id",
-            &simfil::SchemaReference::id,
+            &simfil::SchemaType::id,
             "Graph-local numeric type ID; zero means unknown.")
+        .def_property_readonly(
+            "type_name",
+            [](simfil::SchemaType const& self)
+            { return self ? std::string(self.typeName()) : std::string{}; },
+            "Producer type name, or an empty string when unspecified.")
+        .def_property_readonly(
+            "kind",
+            [](simfil::SchemaType const& self)
+            {
+                return self ?
+                    std::string(self.pool()
+                                    ->dictionary()
+                                    .resolve(simfil::SchemaType::kindNameId(self.kind()))
+                                    .value()) :
+                    std::string{};
+            },
+            "Semantic kind name, independent of runtime metadata-node shape; empty for no type.")
         .def(
             "__bool__",
-            [](simfil::SchemaReference const& self) { return bool(self); },
-            "Whether this reference identifies a retained type.");
+            [](simfil::SchemaType const& self) { return bool(self); },
+            "Whether this view identifies a retained type.");
 
     py::class_<simfil::Bitmask>(m, "Bitmask", R"pbdoc(
         Read-only full-width flag value with intrinsic schema identity.
@@ -60,7 +79,10 @@ inline void bindSchema(pybind11::module_& m)
             "bits",
             &simfil::Bitmask::bits,
             "Exact unsigned 64-bit bits, including unknown bits.")
-        .def_readonly("type", &simfil::Bitmask::type, "Owner-retaining SchemaReference.")
+        .def_property_readonly(
+            "type",
+            [](simfil::Bitmask const& self) { return self.type.retain(); },
+            "Independently owner-retaining SchemaType.")
         .def(
             "to_dict",
             [](simfil::Bitmask const& self)
@@ -117,43 +139,51 @@ inline void bindSchema(pybind11::module_& m)
         .value("UUID128", IdPartDataType::UUID128, "128-bit UUID.")
         .value("STR", IdPartDataType::STR, "String identifier component.");
 
-    py::class_<IdPart>(m, "IdPart", R"pbdoc(
-        Read-only schema-owned identifier part. Retaining this view retains its schema.
+    py::class_<FeatureIdentity::Part>(m, "IdPart", R"pbdoc(
+        Immutable owner-retaining view of one canonical feature-ID part.
 
         Parts are ordered within a composition. Synthetic parts are converter-added;
-        optional parts do not distinguish otherwise identical primary feature IDs.
+        optional parts may be omitted by a reference. Each Python part retains the
+        exact native schema independently of its parent identity or tuple.
     )pbdoc")
-        .def_readonly("name", &IdPart::idPartLabel_, "ID-part label (JSON partId).")
-        .def_readonly("description", &IdPart::description_, "Producer description, possibly empty.")
-        .def_readonly("datatype", &IdPart::datatype_, "Declared IdPartDataType.")
-        .def_readonly(
+        .def_property_readonly("name", &FeatureIdentity::Part::name, "ID-part label (JSON partId).")
+        .def_property_readonly(
+            "description",
+            &FeatureIdentity::Part::description,
+            "Producer description, possibly empty.")
+        .def_property_readonly(
+            "datatype",
+            &FeatureIdentity::Part::datatype,
+            "Declared IdPartDataType.")
+        .def_property_readonly(
             "is_synthetic",
-            &IdPart::isSynthetic_,
+            &FeatureIdentity::Part::synthetic,
             "Whether the converter adds this part.")
-        .def_readonly(
+        .def_property_readonly(
             "is_optional",
-            &IdPart::isOptional_,
+            &FeatureIdentity::Part::optional,
             "Whether a reference may omit this part.");
 
-    py::class_<FeatureTypeInfo>(m, "FeatureTypeInfo", R"pbdoc(
-        Read-only view of one authoritative feature identity definition.
+    py::class_<FeatureIdentity>(m, "FeatureIdentity", R"pbdoc(
+        Immutable owner-retaining view of an authoritative feature identity.
 
-        The view retains its layer and immutable MapSchema; it is not a copied registry.
-        A reference-only type can have an identity definition without being produced
-        by this layer. Check LayerSchema.produced_feature_types before selecting it.
+        Identities are stored once in MapSchema, shared across its layers. A
+        reference-only identity need not be produced by any layer; consult
+        LayerSchema.produced_feature_types before selecting a feature type.
     )pbdoc")
-        .def_readonly("name", &FeatureTypeInfo::name_, "Exact type name used in canonical IDs.")
+        .def_property_readonly(
+            "name",
+            &FeatureIdentity::name,
+            "Exact type name used in canonical IDs.")
         .def_property_readonly(
             "unique_id_compositions",
-            [](py::object self)
+            [](FeatureIdentity const& self)
             {
-                auto const& type = self.cast<FeatureTypeInfo const&>();
                 py::list compositions;
-                for (auto const& composition : type.uniqueIdCompositions_) {
+                for (auto composition : self.compositions()) {
                     py::list parts;
-                    for (auto const& part : composition)
-                        parts.append(
-                            py::cast(&part, py::return_value_policy::reference_internal, self));
+                    for (auto part : composition.parts())
+                        parts.append(py::cast(part.retain()));
                     compositions.append(py::tuple(parts));
                 }
                 return py::tuple(compositions);
@@ -161,7 +191,7 @@ inline void bindSchema(pybind11::module_& m)
             R"pbdoc(
             Tuple of ordered tuples of IdPart views. The first composition is primary
             and required for produced features; later compositions are reference-only
-            alternatives. All views keep the original schema alive.
+            alternatives. Every returned part independently retains the native schema.
         )pbdoc");
 
     py::class_<MapSchema, MapSchema::ConstPtr>(m, "MapSchema", R"pbdoc(
@@ -249,19 +279,42 @@ inline void bindSchema(pybind11::module_& m)
             [](MapSchema const& self) { return py::tuple(py::cast(self.layerNames())); },
             "Tuple of schema root names. Catalog availability and authorization are separate.")
         .def_property_readonly(
+            "feature_identities",
+            [](MapSchema const& self)
+            {
+                py::list types;
+                for (auto type : self.featureIdentities())
+                    types.append(py::cast(type.retain()));
+                return py::tuple(types);
+            },
+            "Tuple of owner-retaining FeatureIdentity views, including reference-only "
+            "identities; each name occurs once across all layers.")
+        .def(
+            "get_type_info",
+            [](MapSchema const& self, std::string const& name)
+            {
+                auto type = self.getTypeInfo(name, false);
+                if (!type)
+                    throw py::key_error(name);
+                return type.retain();
+            },
+            py::arg("name"),
+            "Return an owner-retaining map-wide FeatureIdentity; unknown names raise KeyError.")
+        .def_property_readonly(
             "type_count",
             [](MapSchema const& self) { return self.typeCount(); },
             "Number of type definitions, excluding the unknown sentinel; not a maximum type ID.")
         .def(
-            "type_reference",
+            "schema_type",
             [](MapSchema const& self, simfil::TypeId id)
             {
-                if (!self.type(id))
+                auto type = self.schemaType(id);
+                if (!type)
                     throw py::key_error(std::to_string(id));
-                return simfil::SchemaReference{self.binding(), id};
+                return type.retain();
             },
             py::arg("type_id"),
-            "Return an owner-retaining reference to this exact graph's type; unknown IDs raise "
+            "Return an owner-retaining SchemaType; unknown IDs raise "
             "KeyError.")
         .def(
             "type_descriptor",
@@ -281,9 +334,10 @@ inline void bindSchema(pybind11::module_& m)
             R"pbdoc(
             Export a detached native type descriptor, not a JSON Schema document.
 
-            Uses simfil's SchemaModel, including named values, rawValue and exact
-            numeric metadata. $ref values are graph-local type IDs; cycles and native
-            descriptor-budget limits are marked with truncated. Unknown IDs raise
+            Reads canonical schema nodes, including named values, rawValue and exact
+            numeric metadata. $ref values are graph-local type IDs. Recursive edges
+            are marked with truncated: cycle during this export only. Exhausting an
+            export budget raises; no partial document is returned. Unknown IDs raise
             KeyError. This explicit expansion may be large; request individual types.
         )pbdoc")
         .def(
@@ -327,18 +381,6 @@ inline void bindSchema(pybind11::module_& m)
             "produced_feature_types",
             [](LayerSchema::Ptr const& self) { return py::tuple(py::cast(self->featureTypes())); },
             "Tuple of produced feature-root names, excluding reference-only identity definitions.")
-        .def_property_readonly(
-            "feature_types",
-            [](py::object self)
-            {
-                auto const& layer = self.cast<LayerSchema::Ptr const&>();
-                py::list types;
-                for (auto const& type : layer->featureTypeInfos())
-                    types
-                        .append(py::cast(&type, py::return_value_policy::reference_internal, self));
-                return py::tuple(types);
-            },
-            "Tuple of schema-owned FeatureTypeInfo views, including reference-only types.")
         .def(
             "get_type_info",
             [](py::object self, std::string const& name)
@@ -347,10 +389,11 @@ inline void bindSchema(pybind11::module_& m)
                 auto type = layer->getTypeInfo(name, false);
                 if (!type)
                     throw py::key_error(name);
-                return py::cast(type, py::return_value_policy::reference_internal, self);
+                return type.retain();
             },
             py::arg("name"),
-            "Return an owner-retaining FeatureTypeInfo; unknown names raise KeyError.")
+            "Forward to the owning MapSchema's identity lookup, including types not produced "
+            "by this layer. Unknown names raise KeyError.")
         .def(
             "feature_schema",
             [](LayerSchema::Ptr const& self, std::string const& name)

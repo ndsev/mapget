@@ -841,7 +841,7 @@ TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service]
     REQUIRE(firstSnapshot.size() == 1);
     REQUIRE(firstSnapshot.front().layers_.size() == 1);
     REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->layerId_ == "MutableLayer");
-    REQUIRE(firstSnapshot.front().layers_.at("MutableLayer")->featureTypes().size() == 1);
+    REQUIRE(firstSnapshot.front().mapSchema_->featureIdentities().size() == 1);
     REQUIRE(firstSnapshot.front().mapSchema_ == schema);
 
     firstSnapshot.front().layers_.at("MutableLayer")->layerId_ = "CallerMutation";

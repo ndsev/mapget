@@ -1337,7 +1337,7 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
-    // Imported domains already retain every graph; the transport resolver is construction-only.
+    // Imported types already retain every graph; the transport resolver is construction-only.
     setSchemaResolver({});
 }
 

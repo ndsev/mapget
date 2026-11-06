@@ -29,17 +29,37 @@ or its progress callback. Completed cache entries retain graphs weakly.
 
 A published graph is immutable. Metadata and partitions share it; source reload
 publishes a new snapshot instead of changing an ordinary shared pointer beneath
-readers. Layer names match exactly. A feature type's declared ID definitions are
-available from its LayerSchema, not a second LayerInfo vector. Open legacy
+readers. Layer names match exactly. Feature ID definitions are registered once on
+`MapSchema`, including identities whose target layers are unavailable. A layer
+stores only produced-name/root associations; `newFeature(name)` links the canonical
+identity to a layer-specific payload. There are no reference-only registration
+lists or copied `LayerInfo`/`LayerSchema` identity vectors. Lookup forwards to the
+map owner, so routing and feature creation must separately check production.
+Conflicting same-name identity contracts are rejected map-wide. Open legacy
 contracts remain usable for GeoJSON/custom sources without invented field facts.
+
+Construct generic records through the mutable owner's typed factories and
+`SchemaType`/`SchemaField` operations, not layer-level forwarding setters.
+`FeatureSchemaType` and `AttributeSchemaType` add native envelope invariants over
+that same storage. Native attribute binding publishes the actual named container
+edge and its owner metadata together. A shared payload's declaration and its use
+sites remain distinct; cloning a type does not clone its layer production or
+attribute assignments. Thin legacy roots remain generic views, not pretend native
+envelopes. `LayerSchema::mapSchema()` deliberately returns a const owner; retain the
+original mutable owner while constructing a graph rather than casting it writable.
+
+`SchemaType::kind()` packs the semantic name and structural affinities; nullability
+can change its affinity bits without changing the type's meaning. Compare semantic
+names with `SchemaType::kindNameId()`, and use `hasAffinity()` for runtime structure.
+Compare complete packed kinds only when the exact affinity set is intentional.
 
 Remote clients fetch the authorized exact schema separately before using catalog
 metadata. Binary constructors take installed schema resolvers and do no network
 I/O. Missing or mismatched schema identities are errors, including for cached
-partitions. Protocol 6.2 includes self-describing foreign identities, shared
+partitions. Protocol 6.3 includes self-describing foreign identities, shared
 SchemaPool graphs and the revised static dictionary for enum raw-value metadata.
 It rejects older streams before decoding their differently numbered fields.
-MapSchema codec 3 embeds SchemaPool codec 2; native and WASM consumers must be
+MapSchema codec 7 embeds SchemaPool codec 4; native and WASM consumers must be
 rebuilt together. Service schema composition, authorized
 artifact inventory and weak owner accounting live in `service-schemas.cpp`, as
 methods of the existing datasource registry rather than a separate schema service.

@@ -1,5 +1,5 @@
 #include "mcp-native-tools.h"
-#include "simfil/model/schema.h"
+#include "simfil/model/schema-type.h"
 
 namespace mapget::detail
 {
@@ -110,7 +110,7 @@ void McpNativeTools::buildCatalog()
         "mapId/sourceId selects detailed metadata by default; unfocused discovery is compact. "
         "Compact layers contains renderable layers; sourceDataLayers lists raw layer IDs. "
         "A layerId filter returns that layer's metadata, including raw layers. featureTypes "
-        "comes from the authoritative schema; produced=false marks reference-only types. "
+        "lists only the layer's produced types; ID compositions come from the shared map schema. "
         "mapFormat describes the source format; schemaId identifies the exact shared schema. "
         "Excludes inline schemas and coverage records; no tile I/O or schema reconstruction. "
         "offset/nextOffset page matching sources in this snapshot; retain the same filters.",

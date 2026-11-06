@@ -166,12 +166,12 @@ void McpNativeTools::Call::prepareExtraction()
             std::string error;
             if (!parseFeatureIdString(id, *layer_, parsed, &error)) {
                 std::string types;
-                for (auto const& type : layer_->featureTypes()) {
+                for (auto const& type : layer_->layerSchema()->featureTypes()) {
                     if (types.size() >= 512)
                         break;
                     if (!types.empty())
                         types += ", ";
-                    types += type.name_;
+                    types += type;
                 }
                 fail(
                     "invalid_feature_id",

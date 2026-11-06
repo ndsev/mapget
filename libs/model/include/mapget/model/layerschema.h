@@ -13,13 +13,14 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
+#include "mapget/model/featureschema.h"
 #include "mapget/model/info.h"
 #include "mapget/model/memory.h"
 #include "mapget/model/stringpool.h"
 #include "simfil/error.h"
 #include "simfil/evaluation.h"
 #include "simfil/model/model.h"
-#include "simfil/model/schema.h"
+#include "simfil/model/schema-type.h"
 
 namespace mapget
 {
@@ -59,26 +60,17 @@ public:
     /** Publish native forward contracts, including an explicitly empty inventory. */
     void setRelationDeclarations(std::vector<RelationDeclaration> declarations);
 
-    using Composition = simfil::Schema::Composition;
-    static constexpr auto FeatureKind = simfil::Schema::makeKind(
+    using Composition = simfil::SchemaType::Composition;
+    static constexpr auto FeatureKind = simfil::SchemaType::makeKind(
         StringPool::SchemaFeatureStr,
         simfil::valueTypeAffinity(simfil::ValueType::Object));
-    static constexpr auto AttributeKind = simfil::Schema::makeKind(
+    static constexpr auto AttributeKind = simfil::SchemaType::makeKind(
         StringPool::SchemaAttributeStr,
         simfil::valueTypeAffinity(simfil::ValueType::Object));
     /** Typed raw bits; declarations retain exact masks, aliases and unknown bits. */
-    static constexpr auto BitmaskKind = simfil::Schema::makeKind(
+    static constexpr auto BitmaskKind = simfil::SchemaType::makeKind(
         StringPool::SchemaBitmaskStr,
         simfil::valueTypeAffinity(simfil::ValueType::Bitmask));
-
-    /** Human-readable entry for a compiled JSON Schema transport branch. */
-    struct Entry
-    {
-        simfil::TypeId id_ = simfil::NoTypeId;
-        std::string_view key_;
-        std::string_view jsonPointer_;
-        std::string_view metaType_;
-    };
 
     /** Owner classification for a schema path starting at a known root. */
     enum class PathOwnerKind {
@@ -143,6 +135,26 @@ public:
         std::string compiledAstDebug_;
     };
 
+    /** One explicit meaning of confirmed search input, before any tile request.
+     * The predicate is portable Simfil with owner guards, never an unresolved
+     * standalone token whose meaning could change inside a style wrapper.
+     */
+    struct SearchInterpretation
+    {
+        std::string id_;
+        std::string label_;
+        std::string kind_;
+        std::string symbol_;
+        std::string query_;
+        SearchQueryConcreteScope scope_ = SearchQueryConcreteScope::Feature;
+        std::vector<AttributePathOwner> attributeScopes_;
+        std::vector<std::string> featureTypes_;
+    };
+
+    /** Enumerate distinct schema meanings; the caller must choose when more than one exists. */
+    [[nodiscard]] tl::expected<std::vector<SearchInterpretation>, simfil::Error>
+    searchInterpretations(std::string_view query, SearchQueryRequestedScope scope) const;
+
     using Ptr = simfil::model_ptr<LayerSchema>;
     using ModelType = MapSchema;
 
@@ -156,26 +168,31 @@ public:
     [[nodiscard]] std::string_view name() const;
     [[nodiscard]] LayerType layerType() const;
     [[nodiscard]] std::shared_ptr<MapSchema const> mapSchema() const;
-    /** Identity definitions are owned once by the schema, including reference-only types. */
-    void addFeatureType(FeatureTypeInfo info, simfil::TypeId rootSchema = 0, bool produced = true);
+    /** Register a produced feature root and its map-wide identity. */
+    void addFeatureType(FeatureTypeInfo info, simfil::TypeId rootSchema = 0);
+    /** Declare production using an identity already registered on the owning map. */
+    void addFeatureType(std::string_view name, simfil::TypeId rootSchema = 0);
     /** Build the native Feature envelope and identity fields once. Supplied properties
      * and layer-map objects remain extensible; reserved members cannot be redefined.
      * Zero arguments create empty containers with canonical lookup keys. */
-    [[nodiscard]] simfil::TypeId newFeature(
+    [[nodiscard]] FeatureSchemaType newFeature(
         FeatureTypeInfo info,
-        simfil::TypeId properties = 0,
-        simfil::TypeId attributeLayers = 0,
-        bool produced = true);
-    /** Bind a shared physical Attribute to a named use site without cloning it.
-     * The caller declares its actual container edge; decoder aliases may share this type. */
+        simfil::SchemaType properties = {},
+        simfil::SchemaType attributeLayers = {});
+    /** Create a produced root using an identity already declared on MapSchema. */
+    [[nodiscard]] FeatureSchemaType newFeature(
+        std::string_view name,
+        simfil::SchemaType properties = {},
+        simfil::SchemaType attributeLayers = {});
+    /** Atomically declare an Attribute's container edge and named owner without cloning it.
+     * Existing exact edges are reused; incompatible targets and thin legacy roots fail. */
     void bindAttribute(
-        simfil::TypeId type,
+        simfil::SchemaType type,
         std::string_view featureType,
         std::string_view layer,
         std::string_view name);
-    [[nodiscard]] std::span<FeatureTypeInfo const> featureTypeInfos() const;
     [[nodiscard]] bool producesFeatureType(std::string_view name) const;
-    [[nodiscard]] FeatureTypeInfo const*
+    [[nodiscard]] FeatureIdentity
     getTypeInfo(std::string_view name, bool throwIfMissing = true) const;
     /** Project native identity and forward relations without expanding types.
      * Optional reserve runs per visited entry, before copying text/containers, with a conservative
@@ -187,6 +204,8 @@ public:
         const;
     void setRootSchema(simfil::TypeId root);
     [[nodiscard]] simfil::TypeId rootSchema() const;
+    /** Borrow the layer's canonical root; retain the layer or map owner during traversal. */
+    [[nodiscard]] simfil::SchemaType rootType() const;
 
     [[nodiscard]] simfil::ValueType type() const override;
     [[nodiscard]] uint32_t size() const override;
@@ -206,7 +225,7 @@ public:
 
     /** Add one object/array/value schema node and return its stable TypeId. */
     [[nodiscard]] simfil::TypeId addSchema(
-        simfil::Schema::Kind kind,
+        simfil::SchemaType::Kind kind,
         std::string key = {},
         std::string metaType = {},
         std::string jsonPointer = {});
@@ -216,49 +235,13 @@ public:
      */
     [[nodiscard]] simfil::TypeId addJsonSchema(nlohmann::json const& schema);
 
-    /** Retain non-structural JSON Schema constraints and producer annotations on a domain.
+    /** Retain non-structural JSON Schema constraints and producer annotations on a type.
      * Structural fields and mapget's transport identities cannot be overridden here.
      */
     void setJsonSchemaAnnotations(simfil::TypeId id, nlohmann::json annotations);
 
     /** Register an additional lookup key for an existing schema node. */
     void registerSchemaKey(std::string key, simfil::TypeId id);
-
-    /** Add a direct field and optionally bind its domain. A multimap field projects repeated
-     * object entries to a JSON array, while retaining its native value domain.
-     */
-    void addFieldSchema(
-        simfil::TypeId parent,
-        std::string fieldName,
-        simfil::TypeId child = simfil::NoTypeId,
-        bool multimap = false);
-
-    /** Add one possible element schema to an array node. */
-    void addElementSchema(simfil::TypeId parent, simfil::TypeId child);
-
-    /** Add an enum-like string symbol directly declared by a value node. */
-    void addEnumSymbol(simfil::TypeId schemaId, std::string symbolName);
-
-    /** Add several enum-like string symbols directly declared by a value node. */
-    void addEnumSymbols(simfil::TypeId schemaId, std::span<const std::string> symbolNames);
-
-    /** Attach an owning non-string enum literal; string symbols use addEnumSymbol. */
-    void addEnumValue(simfil::TypeId schemaId, simfil::ScalarValueType value);
-
-    /** Retain an explicit logical operator instead of merging its alternatives. */
-    void setComposition(simfil::TypeId schemaId, Composition composition);
-    /** Add one alternative at the same value position, not an array element. */
-    void addAlternative(simfil::TypeId schemaId, simfil::TypeId alternative);
-    /** Set a concrete producer type name independently of its structural kind. */
-    void setTypeName(simfil::TypeId schemaId, std::string name);
-    /** Record undeclared object-member support; direct schemas default to closed. */
-    void setOpen(simfil::TypeId schemaId, bool open);
-    /** Record nullability without conflating it with field presence. */
-    void setNullable(simfil::TypeId schemaId, std::optional<bool> nullable);
-    /** Record required/optional presence on the parent-field edge. */
-    void setFieldRequired(simfil::TypeId schemaId, std::string field, std::optional<bool> required);
-    /** Classify a declared edge independently of its name and target domain. */
-    void setFieldRole(simfil::TypeId schemaId, std::string field, simfil::Schema::FieldRole role);
 
     /** Attach zserio type metadata used by completion/result-coloring consumers. */
     void setZserioType(simfil::TypeId schemaId, std::string zserioType);
@@ -269,17 +252,6 @@ public:
         AttributePathOwner owner,
         std::string attributeType,
         std::string zserioType = {});
-
-    /** Copy exact numeric semantics; input views need not outlive this call. */
-    void setNumericDomain(simfil::TypeId id, simfil::Schema::NumericDomain const& domain);
-    void addNamedValue(simfil::TypeId id, simfil::Schema::NamedValue const& value);
-    void setBitWidth(simfil::TypeId id, uint8_t width);
-    [[nodiscard]] std::optional<simfil::Schema::NumericDomain>
-    numericDomain(simfil::TypeId id) const;
-    void forEachNamedValue(
-        simfil::TypeId id,
-        std::function<void(simfil::Schema::NamedValue const&)> const& fn) const;
-    [[nodiscard]] uint8_t bitWidth(simfil::TypeId id) const;
 
     /** Finalize the entire owning MapSchema after direct construction. */
     void finalize();
@@ -312,60 +284,8 @@ public:
         std::string_view attributeTypeCode,
         std::string_view sourceDefinitionKey);
 
-    /** Return an entry by exact key, or by feature type name as a fallback. */
-    [[nodiscard]] Entry const* getSchema(std::string_view keyOrFeatureType) const;
-
-    /** Resolve a schema key to the serialized TypeId domain. */
+    /** Resolve a schema key to the serialized TypeId namespace. */
     [[nodiscard]] simfil::TypeId schemaId(std::string_view key) const;
-
-    /** Check a transported descriptor identity without materializing its JSON Schema. */
-    [[nodiscard]] bool hasSchema(simfil::TypeId id) const;
-
-    /** Return the packed domain kind, or Unknown when the identity is unavailable. */
-    [[nodiscard]] simfil::Schema::Kind kind(simfil::TypeId schemaId) const;
-
-    /** Return the concrete type name, or empty when producer metadata is absent. */
-    [[nodiscard]] std::string_view typeName(simfil::TypeId schemaId) const;
-    /** Return the explicit combiner, independently of its coarse affinity mask. */
-    [[nodiscard]] Composition composition(simfil::TypeId schemaId) const;
-    /** Return alternative types at the same value position. */
-    [[nodiscard]] std::span<simfil::TypeId const> alternatives(simfil::TypeId schemaId) const;
-    /** Return non-string enum literals; strings retain their canonical symbol index. */
-    [[nodiscard]] std::span<simfil::ScalarValueType const>
-    enumValues(simfil::TypeId schemaId) const;
-    /** Whether undeclared members are permitted; unknown types remain conservative. */
-    [[nodiscard]] bool open(simfil::TypeId schemaId) const;
-    /** Return known nullability, not field-presence information. */
-    [[nodiscard]] std::optional<bool> nullable(simfil::TypeId schemaId) const;
-    /** Return known presence requirements for one direct field. */
-    [[nodiscard]] std::optional<bool>
-    fieldRequired(simfil::TypeId schemaId, std::string_view field) const;
-    /** Context edges support explicit access but are not recursively enumerated. */
-    [[nodiscard]] simfil::Schema::FieldRole
-    fieldRole(simfil::TypeId schemaId, std::string_view field) const;
-    /** A finalized absence proof; incomplete/open graphs must not prune data. */
-    [[nodiscard]] bool reachabilityComplete(simfil::TypeId schemaId) const;
-
-    /** Return true if the schema can contain the field directly or through descendants. */
-    [[nodiscard]] bool canHaveField(simfil::TypeId schemaId, std::string_view fieldName) const;
-
-    /** Return true if the schema can contain the enum-like string symbol through descendants. */
-    [[nodiscard]] bool
-    canHaveEnumSymbol(simfil::TypeId schemaId, std::string_view symbolName) const;
-
-    /** Return field names directly declared by this schema node. */
-    [[nodiscard]] std::span<const std::string_view> directFields(simfil::TypeId schemaId) const;
-
-    /** Return field names reachable from this schema node. */
-    [[nodiscard]] std::span<const std::string_view> nestedFields(simfil::TypeId schemaId) const;
-
-    /** Return enum-like string symbols reachable from this schema node. */
-    [[nodiscard]] std::span<const std::string_view>
-    nestedEnumSymbols(simfil::TypeId schemaId) const;
-
-    /** Return enum-like string symbols declared directly by this schema node. */
-    [[nodiscard]] std::span<const std::string_view>
-    directEnumSymbols(simfil::TypeId schemaId) const;
 
     /** Return the mapget attribute type-code for an Attribute schema, if any. */
     [[nodiscard]] std::string_view attributeTypeCode(simfil::TypeId schemaId) const;
@@ -373,16 +293,6 @@ public:
     /** Return enum/zserio type names attached to a constant-like completion candidate. */
     [[nodiscard]] std::vector<std::string>
     constantTypeNames(simfil::TypeId schemaId, std::string_view symbolName) const;
-
-    /** Visit direct fields and their possible child schemas. */
-    void forEachDirectField(
-        simfil::TypeId schemaId,
-        const std::function<void(std::string_view, std::span<const simfil::TypeId>)>& fn) const;
-
-    /** Visit possible array element schemas. */
-    void
-    forEachElementSchema(simfil::TypeId schemaId, const std::function<void(simfil::TypeId)>& fn)
-        const;
 
     /** Resolve the Feature object schema for a concrete mapget feature type. */
     [[nodiscard]] simfil::TypeId featureSchema(std::string_view featureType) const;
@@ -405,7 +315,7 @@ public:
     [[nodiscard]] simfil::TypeId childSchema(
         simfil::TypeId parent,
         std::string_view fieldName,
-        std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+        std::optional<simfil::SchemaType::Kind> preferredKind = std::nullopt) const;
 
     /** Classify whether a path belongs to the feature itself or to an attribute branch. */
     [[nodiscard]] PathOwner ownerForPath(

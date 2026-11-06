@@ -34,11 +34,11 @@ support:
   alias for JSON Lines.
 
 Binary producers and consumers must use the same major/minor stream version.
-The current format, 6.2.0, changes static dictionary IDs to include schema enum
-`rawValue` metadata; readers reject older streams before interpreting their
+The current format, 6.3.0, changes static dictionary IDs to include schema enum
+`rawValue` and field-multiplicity metadata; readers reject older streams before interpreting their
 payload fields. Rebuild and deploy native servers, binary datasource clients
-and browser WASM together. Its schema artifacts use MapSchema codec 3 and
-SchemaPool codec 2, which likewise reject older encodings.
+and browser WASM together. Its schema artifacts use MapSchema codec 7 and
+SchemaPool codec 4, which likewise reject older encodings.
 
 `/filter` JSON Lines interleaves status records with payload records. Select
 payloads by `type: "PartitionSubsetLayer"`; do not assume the first line is a
@@ -510,6 +510,9 @@ All filters and fields are schema-compiled in their actual context.
 `rewrite: true` only enables `LayerSchema::normalizeSearchQuery()` for
 `entryFilter`; `rewrite: false` does not disable ordinary schema compilation.
 Relation channels require `rewrite: false`.
+
+Prepared-search channels may include `schemaId` with the exact artifact identity used during client-side interpretation. The service checks it against the selected datasource before requesting any tiles. A mismatch rejects the request with a preparation-required diagnostic. These channels carry explicit predicates and scope with `rewrite: false`; the server compiles that meaning without selecting an alternative interpretation.
+
 
 SIMFIL truthiness is used: zero results, `false`, `null`, and undefined are
 false; every other successfully evaluated value is true. Candidate-local

@@ -145,16 +145,15 @@ using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
 }
 
 /** Decode a JSON scalar into the storage type expected by an id-part definition. */
-[[nodiscard]] std::variant<int64_t, std::string> jsonToIdPartValue(
-    nlohmann::json const& json,
-    IdPart const& idPart)
+[[nodiscard]] std::variant<int64_t, std::string>
+jsonToIdPartValue(nlohmann::json const& json, FeatureIdentity::Part idPart)
 {
     if (json.is_number_unsigned()) {
         auto const value = json.get<uint64_t>();
-        if (idPart.datatype_ == IdPartDataType::U64)
+        if (idPart.datatype() == IdPartDataType::U64)
             return std::bit_cast<int64_t>(value);
         if (value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            raiseImport(fmt::format("Id part '{}' exceeds int64_t range.", idPart.idPartLabel_));
+            raiseImport(fmt::format("Id part '{}' exceeds int64_t range.", idPart.name()));
         }
         return static_cast<int64_t>(value);
     }
@@ -166,16 +165,14 @@ using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
     }
     raiseImport(fmt::format(
         "Id part '{}' must be encoded as an integer or string JSON value.",
-        idPart.idPartLabel_));
+        idPart.name()));
 }
 
 /** Validate an id-part value with the same rules used by binary feature creation. */
-void validateIdPartValue(
-    IdPart const& idPart,
-    std::variant<int64_t, std::string>& value)
+void validateIdPartValue(FeatureIdentity::Part idPart, std::variant<int64_t, std::string>& value)
 {
     std::string error;
-    if (!idPart.validate(value, &error)) {
+    if (!idPart.validateValue(value, &error)) {
         raiseImport(error);
     }
 }
@@ -330,39 +327,39 @@ void validateIdPartValue(
     std::string_view typeId,
     uint32_t fallbackFeatureIndex)
 {
-    auto const* typeInfo = tile.layerInfo()->getTypeInfo(typeId, false);
-    if (!typeInfo || typeInfo->uniqueIdCompositions_.empty()) {
+    auto typeInfo = tile.layerInfo()->getTypeInfo(typeId, false);
+    if (!typeInfo || typeInfo.compositions().empty()) {
         raiseImport(fmt::format(
             "Could not resolve feature type '{}' for best-effort import.",
             typeId));
     }
 
-    auto const& composition = typeInfo->uniqueIdCompositions_.front();
+    auto const& composition = typeInfo.compositions().front();
     KeyValuePairs parts;
-    parts.reserve(composition.size());
+    parts.reserve(composition.parts().size());
     bool usedFeatureIndex = false;
 
-    for (auto const& idPart : composition) {
-        if (idPart.idPartLabel_ == "tileId") {
-            if (!isIntegerIdPart(idPart.datatype_)) {
+    for (auto idPart : composition.parts()) {
+        if (idPart.name() == "tileId") {
+            if (!isIntegerIdPart(idPart.datatype())) {
                 raiseImport("Best-effort GeoJSON import requires an integer tileId id part.");
             }
             parts.emplace_back(
-                idPart.idPartLabel_,
+                idPart.name(),
                 tile.partitionId().kind() == PartitionKind::Object ?
                     std::bit_cast<int64_t>(tile.partitionId().objectId()) :
                     static_cast<int64_t>(tile.tileId().value()));
             continue;
         }
 
-        if (!usedFeatureIndex && isIntegerIdPart(idPart.datatype_)) {
+        if (!usedFeatureIndex && isIntegerIdPart(idPart.datatype())) {
             // Best-effort mode needs one deterministic per-feature slot to keep ids stable.
-            parts.emplace_back(idPart.idPartLabel_, static_cast<int64_t>(fallbackFeatureIndex));
+            parts.emplace_back(idPart.name(), static_cast<int64_t>(fallbackFeatureIndex));
             usedFeatureIndex = true;
             continue;
         }
 
-        if (idPart.isOptional_) {
+        if (idPart.optional()) {
             // Optional suffix parts may be dropped because no source field exists to recover them.
             continue;
         }
@@ -371,7 +368,7 @@ void validateIdPartValue(
             "Could not synthesize best-effort feature ids for type '{}'. "
             "Provide explicit id fields for required part '{}'.",
             typeId,
-            idPart.idPartLabel_));
+            idPart.name()));
     }
 
     if (!usedFeatureIndex) {
@@ -387,24 +384,25 @@ void validateIdPartValue(
 /** Read all required id fields for strict import from the feature JSON object. */
 [[nodiscard]] KeyValuePairs fullFeatureIdPartsFromFields(
     nlohmann::json const& featureJson,
-    std::vector<IdPart> const& composition)
+    FeatureIdentity::Composition composition)
 {
     KeyValuePairs result;
-    result.reserve(composition.size());
+    result.reserve(composition.parts().size());
 
-    for (auto const& idPart : composition) {
-        auto it = featureJson.find(idPart.idPartLabel_);
+    for (auto idPart : composition.parts()) {
+        auto it = featureJson.find(idPart.name());
         if (it == featureJson.end()) {
-            if (idPart.isOptional_) {
+            if (idPart.optional()) {
                 continue;
             }
             raiseImport(fmt::format(
-                "Feature is missing non-optional id field '{}' required by the primary composition.",
-                idPart.idPartLabel_));
+                "Feature is missing non-optional id field '{}' required by the primary "
+                "composition.",
+                idPart.name()));
         }
         auto value = jsonToIdPartValue(*it, idPart);
         validateIdPartValue(idPart, value);
-        result.emplace_back(idPart.idPartLabel_, std::move(value));
+        result.emplace_back(idPart.name(), std::move(value));
     }
 
     return result;
@@ -1366,11 +1364,12 @@ void importGeoJson(
         KeyValuePairs fullIdParts;
 
         if (options.strict_ || featureJson.contains("typeId")) {
-            auto const* typeInfo = tile.layerInfo()->getTypeInfo(typeId, false);
-            if (!typeInfo || typeInfo->uniqueIdCompositions_.empty()) {
+            auto typeInfo = tile.layerInfo()->getTypeInfo(typeId, false);
+            if (!typeInfo || typeInfo.compositions().empty()) {
                 raiseImport(fmt::format("Could not resolve feature type '{}' for import.", typeId));
             }
-            fullIdParts = fullFeatureIdPartsFromFields(featureJson, typeInfo->uniqueIdCompositions_.front());
+            fullIdParts =
+                fullFeatureIdPartsFromFields(featureJson, typeInfo.compositions().front());
             if (featureJson.contains("id")) {
                 ParsedFeatureId parsed;
                 std::string error;
@@ -1416,7 +1415,7 @@ void importGeoJson(
         }
     }
 
-    // Shared interwoven domains must exist before relation or attribute
+    // Shared interwoven types must exist before relation or attribute
     // validities resolve their compact sequence references.
     auto attrPointSequences = importAttrPointSequences(tile, geoJson);
 

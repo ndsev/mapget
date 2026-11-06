@@ -88,7 +88,7 @@ else()
     CPMAddPackage(
         NAME simfil
         GITHUB_REPOSITORY Klebert-Engineering/simfil
-        GIT_TAG 0589c7b09293002486b35218ddc516cbdd0c7f06
+        GIT_TAG 6b33b94dc7d31a69a55bae46a05b18f8187a4215
         GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"

@@ -55,30 +55,35 @@ public:
             auto feature =
                 layer->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"));
             compounds[i] = layer->addSchema(
-                simfil::Schema::Kind::Object,
+                simfil::SchemaType::Kind::Object,
                 LayerSchema::featurePropertiesKey("Road"));
-            scalars[i] = layer->addSchema(simfil::Schema::Kind::Int);
-            masks[i] = layer->addSchema(simfil::Schema::Kind::Bitmask);
-            layer->setTypeName(scalars[i], i == 0 ? "fixture.Speed" : "fixture.Count");
-            layer->setTypeName(masks[i], i == 0 ? "fixture.AccessA" : "fixture.AccessB");
-            layer->addNamedValue(
-                scalars[i],
-                {.name = i == 0 ? "UNLIMITED" : "UNKNOWN_COUNT",
-                 .value = int64_t{255},
-                 .role = simfil::Schema::NamedValue::Role::Special,
-                 .meaning = i == 0 ?
-                     simfil::Schema::NamedValue::Meaning::Unbounded :
-                     simfil::Schema::NamedValue::Meaning::Unknown});
-            layer->setBitWidth(masks[i], 64);
-            layer->addNamedValue(
-                masks[i],
+            scalars[i] = layer->addSchema(simfil::SchemaType::Kind::Int);
+            masks[i] = layer->addSchema(simfil::SchemaType::Kind::Bitmask);
+            owner->schemaType(scalars[i]).setTypeName(i == 0 ? "fixture.Speed" : "fixture.Count");
+            owner->schemaType(masks[i]).setTypeName(i == 0 ? "fixture.AccessA" : "fixture.AccessB");
+            owner->schemaType(scalars[i])
+                .asScalar()
+                .addNamedValue(
+                    {.name = i == 0 ? "UNLIMITED" : "UNKNOWN_COUNT",
+                     .value = int64_t{255},
+                     .role = simfil::SchemaType::NamedValue::Role::Special,
+                     .meaning = i == 0 ? simfil::SchemaType::NamedValue::Meaning::Unbounded :
+                                         simfil::SchemaType::NamedValue::Meaning::Unknown});
+            owner->schemaType(masks[i]).asBitmask().setBitWidth(64);
+            owner->schemaType(masks[i]).asScalar().addNamedValue(
                 {.name = "KNOWN",
                  .value = uint64_t{1},
-                 .role = simfil::Schema::NamedValue::Role::Flag});
-            layer->addFieldSchema(feature, "properties", compounds[i]);
-            layer->addFieldSchema(compounds[i], "speed", scalars[i]);
-            layer->addFieldSchema(compounds[i], "flags", masks[i]);
-            layer->addFieldSchema(compounds[i], "ordinary");
+                 .role = simfil::SchemaType::NamedValue::Role::Flag});
+            owner->schemaType(feature)
+                .asObject()
+                .addField("properties", owner->schemaType(compounds[i]));
+            owner->schemaType(compounds[i])
+                .asObject()
+                .addField("speed", owner->schemaType(scalars[i]));
+            owner->schemaType(compounds[i])
+                .asObject()
+                .addField("flags", owner->schemaType(masks[i]));
+            owner->schemaType(compounds[i]).asObject().addField("ordinary", {});
             layer->addFeatureType(
                 FeatureTypeInfo::fromJson(nlohmann::json::parse(R"({
                 "name":"Road","uniqueIdCompositions":[[{"partId":"id","datatype":"U64"}]]
@@ -120,7 +125,7 @@ public:
             sourceDictionaryBytes[i] = dictionary(*sourceStrings[i]);
             auto source = std::make_shared<simfil::ModelPool>(sourceStrings[i]);
             sourceModels[i] = source;
-            source->setSchemaBinding(owner->binding());
+            source->setSchemaPool(owner);
             auto root = source->newObject();
             REQUIRE(root->setSchema(compounds[i]));
             inlineCodes[i] = source->newSmallValue(int16_t{255});
@@ -128,10 +133,10 @@ public:
             root->addField("ordinary", source->newSmallValue(int16_t{255}));
             root->addField(
                 "flags",
-                source->newBitmask(UINT64_C(0x8000000000000001), {owner->binding(), masks[i]}));
+                source->newBitmask(UINT64_C(0x8000000000000001), owner->schemaType(masks[i])));
             roots[i] = root;
             auto env = makeEnvironment(sourceStrings[i]);
-            installLayerSchema(*env, layer, sourceStrings[i]);
+            env->setSchema(layer->rootType());
             auto evaluate = [&](std::string_view text)
             {
                 auto expression = simfil::compile(
@@ -139,7 +144,7 @@ public:
                     text,
                     {.any = false,
                      .rewriteMode = simfil::RewriteMode::Schema,
-                     .rootSchema = compounds[i]});
+                     .rootSchema = env->schema().pool()->schemaType(compounds[i])});
                 REQUIRE(expression);
                 auto values = simfil::eval(*env, **expression, *root, nullptr);
                 REQUIRE(values);
@@ -157,11 +162,11 @@ public:
         REQUIRE(identities[0] != identities[1]);
         REQUIRE(scalars[0] == scalars[1]);
         REQUIRE(inlineCodes[0]->addr() == inlineCodes[1]->addr());
-        REQUIRE(selected[0].schemaReference());
-        REQUIRE(selected[1].schemaReference());
-        REQUIRE(selected[0].schemaReference() != selected[1].schemaReference());
-        REQUIRE_FALSE(computed.schemaReference());
-        REQUIRE_FALSE(unknown.schemaReference());
+        REQUIRE(selected[0].schemaType());
+        REQUIRE(selected[1].schemaType());
+        REQUIRE(selected[0].schemaType() != selected[1].schemaType());
+        REQUIRE_FALSE(computed.schemaType());
+        REQUIRE_FALSE(unknown.schemaType());
         std::vector<simfil::Value> mixed{
             selected[0],
             selected[1],
@@ -230,41 +235,41 @@ public:
             REQUIRE(scalar->type() == simfil::ValueType::Int);
             CHECK(scalar->addr().column() == simfil::ModelPool::QualifiedScalar);
             CHECK(std::get<int64_t>(scalar->value()) == 255);
-            auto domain = scalar->schemaReference();
+            auto domain = scalar->schemaType();
             REQUIRE(domain);
-            CHECK(domain.binding->identity() == identities[i]);
-            CHECK(domain.id == scalars[i]);
-            CHECK(domain.definition()->namedValue(i == 0 ? "UNLIMITED" : "UNKNOWN_COUNT"));
+            CHECK(domain.pool()->identity() == identities[i]);
+            CHECK(domain.id() == scalars[i]);
+            CHECK(domain.namedValue(i == 0 ? "UNLIMITED" : "UNKNOWN_COUNT"));
             CHECK(scalar->toJson() == 255);
             auto mask = sequence->at(i + 2);
             REQUIRE(mask->type() == simfil::ValueType::Bitmask);
             CHECK(mask->addr().column() == simfil::ModelPool::Bitmask);
             auto bits = std::get<simfil::Bitmask>(mask->value());
             CHECK(bits.bits == UINT64_C(0x8000000000000001));
-            CHECK(bits.type.binding->identity() == identities[i]);
-            CHECK(bits.type.id == masks[i]);
+            CHECK(bits.type.pool()->identity() == identities[i]);
+            CHECK(bits.type.id() == masks[i]);
             CHECK(mask->toJson() == bits.toJson());
             auto compound = sequence->at(i + 4);
             REQUIRE(compound->type() == simfil::ValueType::Object);
-            auto root = compound->schemaReference();
+            auto root = compound->schemaType();
             REQUIRE(root);
-            CHECK(root.binding->identity() == identities[i]);
-            CHECK(root.id == compounds[i]);
+            CHECK(root.pool()->identity() == identities[i]);
+            CHECK(root.id() == compounds[i]);
             // Copying a bound subtree must not qualify every ordinary scalar leaf.
             auto leaf = compound->at(0);
             REQUIRE(leaf);
             CHECK(leaf->addr().column() != simfil::ModelPool::QualifiedScalar);
-            CHECK_FALSE(leaf->schemaReference());
-            CHECK(simfil::Value::at(*compound, *leaf, 0).schemaReference() == domain);
+            CHECK_FALSE(leaf->schemaType());
+            CHECK(simfil::Value::at(*compound, *leaf, 0).schemaType() == domain);
         }
         for (size_t i : {6, 7}) {
             auto plain = sequence->at(i);
             CHECK(plain->type() == simfil::ValueType::Int);
             CHECK(plain->addr().column() != simfil::ModelPool::QualifiedScalar);
-            CHECK_FALSE(plain->schemaReference());
+            CHECK_FALSE(plain->schemaType());
             CHECK(plain->toJson() == 255);
         }
-        CHECK(sequence->at(0)->schemaReference() != sequence->at(1)->schemaReference());
+        CHECK(sequence->at(0)->schemaType() != sequence->at(1)->schemaType());
     }
 
     /** Check every scope, attribute hosts, relation endpoints, group keys and trace copies. */
@@ -317,7 +322,7 @@ public:
                 [&](auto const& row)
                 {
                     checkSlots(row->values());
-                    CHECK(row->groupKey()->schemaReference().binding->identity() == identities[0]);
+                    CHECK(row->groupKey()->schemaType().pool()->identity() == identities[0]);
                     return true;
                 });
         }

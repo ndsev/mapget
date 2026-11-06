@@ -18,7 +18,8 @@
 #include <bitsery/traits/string.h>
 #include <bitsery/traits/vector.h>
 #include <picosha2.h>
-#include "simfil/model/schema-model.h"
+#include "simfil/model/bitsery-traits.h"
+#include "simfil/model/schema-node.h"
 
 namespace mapget
 {
@@ -40,7 +41,7 @@ MapSchema::MapSchema(MapFormat format)
 MapSchema::~MapSchema() = default;
 void MapSchema::requireMutable() const
 {
-    if (schema_->frozen || !schema_->builder)
+    if (schema_->frozen || simfil::SchemaPool::finalized())
         throw std::logic_error("MapSchema is immutable after finalization.");
 }
 bool MapSchema::finalized() const
@@ -55,18 +56,18 @@ std::string_view MapSchema::schemaId() const
 {
     if (!finalized())
         throw std::logic_error("MapSchema identity is unavailable before finalization.");
-    return schema_->identity;
+    return simfil::SchemaPool::identity();
 }
 size_t MapSchema::typeCount() const
 {
-    return (schema_->builder ? schema_->builder->schemas_.size() : schema_->types.size()) - 1;
+    return simfil::SchemaPool::typeCount();
 }
 
 LayerSchema::Ptr MapSchema::newLayer(std::string_view name, LayerType type)
 {
     requireMutable();
-    if (name.empty())
-        throw std::invalid_argument("A schema layer requires a nonempty name.");
+    if (name.empty() || unsigned(type) > unsigned(LayerType::SourceData))
+        throw std::invalid_argument("A schema layer requires a nonempty name and valid kind.");
     if (auto existing = layer(name)) {
         if (existing->layerType() != type)
             throw std::invalid_argument(
@@ -76,17 +77,32 @@ LayerSchema::Ptr MapSchema::newLayer(std::string_view name, LayerType type)
     if (schema_->layers.size() == UINT16_MAX)
         throw std::length_error("MapSchema layer count exceeds 16-bit namespace.");
     auto index = schema_->layers.size();
-    Impl::Layer item;
-    item.name = name;
-    item.type = type;
-    schema_->layers.push_back(std::move(item));
-    auto result = LayerSchema::Ptr::make(shared_from_this(), ModelNodeAddress{Impl::Layers, index});
+    LayerSchema::Ptr result;
+    appendExtension(
+        [&]
+        {
+            schema_->appendMetadata(
+                [&]
+                {
+                    Impl::LayerData item;
+                    item.name = schema_->intern(name);
+                    item.type = uint8_t(type);
+                    schema_->layerBuild.emplace_back();
+                    schema_->layers.push_back(item);
+                    result = LayerSchema::Ptr::make(
+                        shared_from_this(),
+                        ModelNodeAddress{Impl::Layers, index});
+                });
+        });
     return result;
 }
 LayerSchema::Ptr MapSchema::layer(std::string_view name) const
 {
+    auto sid = schema_->dictionary.get(name);
+    if (!sid)
+        return {};
     for (size_t i = 0; i < schema_->layers.size(); ++i)
-        if (schema_->layers[i].name == name)
+        if (schema_->layers[i].name == sid)
             return LayerSchema::Ptr::make(shared_from_this(), ModelNodeAddress{Impl::Layers, i});
     return {};
 }
@@ -94,152 +110,97 @@ std::vector<std::string> MapSchema::layerNames() const
 {
     std::vector<std::string> names;
     for (auto const& layer : schema_->layers)
-        names.push_back(layer.name);
+        names.emplace_back(schema_->name(layer.name));
     return names;
 }
 
 TypeId MapSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
 {
     requireMutable();
-    if (!key.empty() && schema_->builder->idsByKey_.contains(key))
+    if (!key.empty() && findSchema(key))
         throw std::invalid_argument("Duplicate global schema key: " + key);
-    return schema_->builder
-        ->allocate(kind, std::move(key), std::move(pointer), std::move(metaType));
+    // Legacy declarations still carry mapget semantics in metaType. Preserve
+    // their structural affinity while assigning the canonical specialized name.
+    if (kind == Kind::Object && metaType == "Feature")
+        kind = simfil::SchemaType::makeKind(
+            simfil::SchemaType::kindNameId(LayerSchema::FeatureKind),
+            simfil::SchemaType::affinities(kind));
+    else if (kind == Kind::Object && metaType == "Attribute")
+        kind = simfil::SchemaType::makeKind(
+            simfil::SchemaType::kindNameId(LayerSchema::AttributeKind),
+            simfil::SchemaType::affinities(kind));
+    auto id = simfil::SchemaPool::newType(kind).id();
+    auto& row = schema_->data(id);
+    row.key = schema_->text(key);
+    row.pointer = schema_->text(pointer);
+    row.metaType = schema_->text(metaType);
+    if (!key.empty())
+        registerSchemaKey(std::move(key), id);
+    return id;
 }
 void MapSchema::registerSchemaKey(std::string key, TypeId id)
 {
     requireMutable();
     schema_->requireType(id);
-    auto [it, inserted] = schema_->builder->idsByKey_.emplace(std::move(key), id);
-    if (!inserted && it->second != id)
-        throw std::invalid_argument("A global schema key has conflicting declarations.");
+    auto found = schema_->buildAliases.find(key);
+    if (found != schema_->buildAliases.end()) {
+        if (found->second != id)
+            throw std::invalid_argument("A global schema key has conflicting declarations.");
+        return;
+    }
+    schema_->aliases.push_back({schema_->text(key), id, 0});
+    try {
+        schema_->buildAliases.emplace(std::move(key), id);
+    }
+    catch (...) {
+        schema_->aliases.resize(schema_->aliases.size() - 1);
+        throw;
+    }
+}
+TypeId MapSchema::Impl::findAlias(size_t layerIndex, std::string_view key) const
+{
+    auto scope = aliasScope(layerIndex);
+    if (!indexed) {
+        auto const& cache = scope ? layerBuild.at(layerIndex).aliases : buildAliases;
+        if (auto found = cache.find(key); found != cache.end())
+            return found->second;
+        if (!pool.simfil::SchemaPool::finalized())
+            return 0;
+        // A private staged pool can be generically frozen without derived indexes.
+        TypeId result = 0;
+        forEachAlias(
+            layerIndex,
+            [&](auto name, auto id)
+            {
+                if (name == key)
+                    result = id;
+            });
+        return result;
+    }
+    auto found = std::lower_bound(
+        aliases.begin(),
+        aliases.end(),
+        std::pair{scope, key},
+        [&](auto const& alias, auto const& wanted)
+        {
+            return alias.layer < wanted.first ||
+                (alias.layer == wanted.first && text(alias.key) < wanted.second);
+        });
+    return found != aliases.end() && found->layer == scope && text(found->key) == key ?
+        found->id :
+        0;
 }
 TypeId MapSchema::findSchema(std::string_view key) const
 {
-    if (schema_->builder) {
-        auto it = schema_->builder->idsByKey_.find(key);
-        return it == schema_->builder->idsByKey_.end() ? 0 : it->second;
-    }
-    auto it = schema_->globalAliases.find(key);
-    return it == schema_->globalAliases.end() ? 0 : it->second;
-}
-void MapSchema::addFieldSchema(TypeId parent, std::string field, TypeId child, bool multimap)
-{
-    requireMutableType(parent);
-    if (child)
-        schema_->requireType(child);
-    auto& builder = *schema_->builder;
-    auto const& definition = builder.schemas_[parent];
-    if (definition.reservedFields_.contains(field)) {
-        auto found = definition.childSchemas_.find(field);
-        if (found == definition.childSchemas_.end() ||
-            found->second != std::vector<TypeId>{child} ||
-            definition.multimapFields_.contains(field) != multimap)
-            throw std::invalid_argument("Cannot redefine reserved mapget field: " + field);
-        return;
-    }
-    builder.addDirectField(parent, field);
-    if (child)
-        builder.addChild(parent, field, child);
-    if (multimap)
-        builder.schemas_[parent].multimapFields_.insert(std::move(field));
-}
-void MapSchema::addElementSchema(TypeId parent, TypeId child)
-{
-    requireMutableType(parent);
-    schema_->requireType(child);
-    schema_->builder->addElementSchema(parent, child);
-}
-void MapSchema::addEnumSymbol(TypeId id, std::string name)
-{
-    requireMutableType(id);
-    schema_->builder->addEnumSymbol(id, name);
-}
-void MapSchema::addEnumSymbols(TypeId id, std::span<std::string const> names)
-{
-    for (auto const& name : names)
-        addEnumSymbol(id, name);
-}
-void MapSchema::addEnumValue(TypeId id, simfil::ScalarValueType value)
-{
-    requireMutableType(id);
-    if (std::holds_alternative<std::string>(value) ||
-        std::holds_alternative<std::string_view>(value) ||
-        std::holds_alternative<simfil::Bitmask>(value))
-        throw std::invalid_argument("Use symbol/named-mask declarations for strings and bitmasks.");
-    schema_->builder->schemas_[id].enumValues_.push_back(std::move(value));
-}
-void MapSchema::setComposition(TypeId id, Composition op)
-{
-    requireMutableType(id);
-    auto& d = schema_->builder->schemas_[id];
-    d.composition_ = op;
-    if (op != Composition::None)
-        d.kind_ = op == Composition::AllOf ?
-            Kind::Intersection :
-            op == Composition::OneOf ?
-            Kind::OneOf :
-            Kind::Union;
-}
-void MapSchema::addAlternative(TypeId id, TypeId other)
-{
-    requireMutableType(id);
-    schema_->requireType(other);
-    auto& ids = schema_->builder->schemas_[id].alternatives_;
-    if (schema_->builder->schemas_[id].composition_ == Composition::OneOf ||
-        std::ranges::find(ids, other) == ids.end())
-        ids.push_back(other);
-}
-void MapSchema::setTypeName(TypeId id, std::string name)
-{
-    requireMutableType(id);
-    schema_->builder->schemas_[id].typeName_ = std::move(name);
-}
-void MapSchema::setOpen(TypeId id, bool open)
-{
-    requireMutableType(id);
-    schema_->builder->schemas_[id].open_ = open;
-}
-void MapSchema::setNullable(TypeId id, std::optional<bool> value)
-{
-    requireMutableType(id);
-    schema_->builder->schemas_[id].nullable_ = value;
-}
-void MapSchema::setFieldRequired(TypeId id, std::string field, std::optional<bool> required)
-{
-    requireMutableType(id);
-    auto& values = schema_->builder->schemas_[id].required_;
-    if (schema_->builder->schemas_[id].reservedFields_.contains(field)) {
-        auto found = values.find(field);
-        if (found == values.end() ? required.has_value() : required != found->second)
-            throw std::invalid_argument("Cannot change reserved field presence: " + field);
-        return;
-    }
-    if (required)
-        values[std::move(field)] = *required;
-    else
-        values.erase(field);
+    return schema_->findAlias(Impl::GlobalLayer, key);
 }
 void MapSchema::setZserioType(TypeId id, std::string name)
 {
-    requireMutableType(id);
-    auto& d = schema_->builder->schemas_[id];
-    d.zserioType_ = std::move(name);
-    if (d.typeName_.empty())
-        d.typeName_ = d.zserioType_;
-}
-
-void MapSchema::setFieldRole(TypeId id, std::string field, simfil::Schema::FieldRole role)
-{
-    requireMutableType(id);
-    auto& fields = schema_->builder->schemas_[id].contextFields_;
-    if (schema_->builder->schemas_[id].reservedFields_.contains(field) &&
-        (role == simfil::Schema::FieldRole::Context) != fields.contains(field))
-        throw std::invalid_argument("Cannot change reserved field role: " + field);
-    if (role == simfil::Schema::FieldRole::Context)
-        fields.insert(std::move(field));
-    else
-        fields.erase(field);
+    requireMutable();
+    schema_->requireType(id);
+    schema_->data(id).zserioType = schema_->text(name);
+    if (!schemaType(id).sealed() && schemaType(id).typeName().empty())
+        schemaType(id).setTypeName(name);
 }
 void MapSchema::setAttributeMetadata(
     TypeId id,
@@ -247,287 +208,289 @@ void MapSchema::setAttributeMetadata(
     std::string type,
     std::string zserio)
 {
-    requireMutableType(id);
-    auto& d = schema_->builder->schemas_[id];
-    d.attributeType_ = std::move(type);
-    if (!zserio.empty())
-        d.zserioType_ = std::move(zserio);
-    if (d.typeName_.empty())
-        d.typeName_ = d.zserioType_.empty() ? d.attributeType_ : d.zserioType_;
-    schema_->builder->registerAttributeOwner(id, std::move(owner));
-    if (!d.attributeOwners_.empty()) {
-        auto const& first = d.attributeOwners_.front().attributeName_;
-        d.attributeTypeCode_ =
-            std::ranges::all_of(
-                d.attributeOwners_,
-                [&](auto const& site) { return site.attributeName_ == first; }) ?
-            first :
-            std::string{};
-    }
-}
-void MapSchema::setJsonSchemaAnnotations(TypeId id, nlohmann::json annotations)
-{
-    requireMutableType(id);
-    if (!annotations.is_object() ||
-        schema_detail::SchemaBuilder::annotations(annotations) != annotations)
-        throw std::invalid_argument(
-            "Schema annotations cannot replace structural type declarations.");
-    auto& builder = *schema_->builder;
-    auto start = builder.schemas_.size();
-    std::optional<decltype(builder.idsByKey_)> aliases;
-    try {
-        schema_detail::SchemaBuilder::validationSchemas(
-            annotations,
-            [&](auto& constraint, auto const&)
-            {
-                if (!aliases)
-                    aliases = builder.idsByKey_;
-                auto child = addJsonSchema(constraint);
-                constraint = {{"$ref", "#/definitions/" + std::to_string(child)}};
-            });
-        builder.schemas_[id].annotations_ = std::move(annotations);
-    }
-    catch (...) {
-        builder.schemas_.resize(start);
-        builder.entriesById_.resize(start);
-        if (aliases)
-            builder.idsByKey_ = std::move(*aliases);
-        throw;
-    }
-}
-
-void MapSchema::setNumericDomain(TypeId id, simfil::Schema::NumericDomain const& value)
-{
-    requireMutableType(id);
-    nlohmann::json json{
-        {"encoding", value.encoding},
-        {"unit", value.unit},
-        {"scale", value.scale},
-        {"offset", value.offset},
-        {"complete", value.complete}};
-    auto numeric = [](auto const& number)
-    {
-        return std::visit([](auto v) { return nlohmann::json(v); }, number);
-    };
-    if (value.minimum)
-        json["minimum"] = numeric(*value.minimum);
-    if (value.maximum)
-        json["maximum"] = numeric(*value.maximum);
-    for (auto const& range : value.ordinaryRanges)
-        json["ordinaryRanges"]
-            .push_back({{"minimum", numeric(range.min)}, {"maximum", numeric(range.max)}});
-    schema_->builder->schemas_[id].annotations_["x-mapget"]["numericDomain"] = std::move(json);
-}
-void MapSchema::addNamedValue(TypeId id, simfil::Schema::NamedValue const& value)
-{
-    requireMutableType(id);
-    static constexpr std::string_view roles[]{"constant", "special", "flag"};
-    static constexpr std::string_view
-        meanings[]{"ordinary", "unknown", "variable", "unbounded", "saturated"};
-    if (unsigned(value.role) >= std::size(roles) ||
-        unsigned(value.meaning) >= std::size(meanings) || value.name.empty())
-        throw std::invalid_argument("Invalid named-value declaration.");
-    nlohmann::json json{
-        {"name", value.name},
-        {"value", std::visit([](auto v) { return nlohmann::json(v); }, value.value)},
-        {"role", roles[unsigned(value.role)]},
-        {"meaning", meanings[unsigned(value.meaning)]},
-        {"deprecated", value.deprecated},
-        {"removed", value.removed}};
-    if (value.rawValue)
-        json["rawValue"] =
-            std::visit([](auto raw) { return nlohmann::json(raw); }, *value.rawValue);
-    auto& values = schema_->builder->schemas_[id].annotations_["x-mapget"]["namedValues"];
-    if (!values.is_null())
-        for (auto const& old : values)
-            if (old.at("name") == json.at("name")) {
-                if (old != json)
-                    throw std::invalid_argument("Conflicting named-value declaration.");
-                return;
-            }
-    values.push_back(std::move(json));
-}
-void MapSchema::setBitWidth(TypeId id, uint8_t width)
-{
-    requireMutableType(id);
-    if (width == 0 || width > 64)
-        throw std::invalid_argument("Bitmask width must be 1..64.");
-    schema_->builder->schemas_[id].annotations_["x-mapget"]["bitWidth"] = width;
-}
-std::optional<simfil::Schema::NumericDomain> MapSchema::numericDomain(TypeId id) const
-{
-    auto d = type(id);
-    return d ? d->numericDomain() : std::nullopt;
-}
-void MapSchema::forEachNamedValue(
-    TypeId id,
-    std::function<void(simfil::Schema::NamedValue const&)> const& fn) const
-{
-    if (auto d = type(id))
-        d->forEachNamedValue(fn);
-}
-uint8_t MapSchema::bitWidth(TypeId id) const
-{
-    auto d = type(id);
-    return d ? d->bitWidth() : 0;
-}
-
-TypeId
-MapSchema::Impl::import(schema_detail::SchemaBuilder const& source, size_t layerIndex, TypeId root)
-{
-    std::vector<TypeId> remap(source.schemas_.size());
-    auto importedCount =
-        std::ranges::count_if(source.schemas_, [](auto const& value) { return value.id_ != 0; });
-    if (importedCount > simfil::MaxTypeId + 1u - builder->schemas_.size())
-        throw std::length_error("Combined MapSchema exceeds its 16-bit type namespace.");
-    auto start = builder->schemas_.size();
-    auto aliasesBefore = builder->idsByKey_;
-    auto& layer = layers.at(layerIndex);
-    auto localBefore = layer.buildAliases;
-    try {
-        for (size_t i = 1; i < source.schemas_.size(); ++i) {
-            if (!source.valid(TypeId(i)))
-                continue;
-            auto const& d = source.schemas_[i];
-            // Never reinterpret transported local IDs as graph-global IDs.
-            remap[i] = builder->allocate(d.kind_, {}, {}, d.entry_.metaType_);
-        }
-        auto mapped = [&](TypeId id)
+    requireMutable();
+    schema_->requireType(id);
+    if (!type.empty() || !zserio.empty())
+        requireMutableType(id);
+    appendExtension(
+        [&]
         {
-            if (id == 0)
-                return TypeId{0};
-            if (id >= remap.size() || !remap[id])
-                throw std::invalid_argument("Dangling type reference in imported schema.");
-            return remap[id];
-        };
-        for (size_t i = 1; i < source.schemas_.size(); ++i)
-            if (remap[i]) {
-                auto copy = source.schemas_[i];
-                schema_detail::SchemaBuilder::validationSchemas(
-                    copy.annotations_,
-                    [&](nlohmann::json& value, auto const&)
+            schema_->appendMetadata(
+                [&]
+                {
+                    auto old = schema_->data(id).owners;
+                    auto row = schema_->prepareAttributeOwner(id, owner);
+                    if (schema_->isAttributeType(id))
+                        row.metaType = schema_->text("Attribute");
+                    if (!type.empty())
+                        row.attributeType = schema_->text(type);
+                    if (!zserio.empty())
+                        row.zserioType = schema_->text(zserio);
+                    // Named ownership is independent of sealing a physical payload.
+                    // Its generic typename is a producer declaration, not a use-site side effect.
+                    schema_->data(id) = row;
+                    if (old && old != row.owners)
+                        schema_->owners.truncate(old, 0);
+                });
+        });
+}
+
+MapSchema::Impl::TypeData
+MapSchema::Impl::prepareAttributeOwner(TypeId id, LayerSchema::AttributePathOwner const& owner)
+{
+    auto row = data(id);
+    if (owner.featureType_.empty() || owner.attributeLayerName_.empty() ||
+        owner.attributeName_.empty())
+        return row;
+    OwnerData site{
+        intern(owner.featureType_),
+        intern(owner.attributeLayerName_),
+        intern(owner.attributeName_),
+        owner.featureLayer_.empty() ? StringId{0} : intern(owner.featureLayer_)};
+    auto sites = ownerSites(row.owners);
+    if (std::ranges::any_of(
+            sites,
+            [&](auto const& item)
+            {
+                return item.feature == site.feature && item.layer == site.layer &&
+                    item.name == site.name && item.featureLayer == site.featureLayer;
+            }))
+        return row;
+    if (ownerRows.size() == MaxEdges)
+        throw std::length_error("Attribute owner row budget exceeded.");
+    auto ids = owners.range(row.owners);
+    auto symbol = sites.empty() ? site.name : sites.front().name;
+    row.attributeCode = site.name == symbol &&
+            std::ranges::all_of(sites, [&](auto const& item) { return item.name == symbol; }) ?
+        text(name(symbol)) :
+        ModelNodeAddress{};
+    auto handle = allocateMetadataArray(owners, std::max(size_t{2}, ids.size() + 1));
+    for (auto value : ids)
+        owners.push_back(handle, value);
+    auto index = ownerRows.size();
+    ownerRows.push_back(site);
+    owners.push_back(handle, uint32_t(index));
+    row.owners = handle;
+    return row;
+}
+
+void MapSchema::Impl::bindAttributeOwner(TypeId id, LayerSchema::AttributePathOwner const& owner)
+{
+    pool.requireMutable();
+    requireType(id);
+    if (owner.featureType_.empty() || owner.attributeLayerName_.empty() ||
+        owner.attributeName_.empty())
+        return;
+    pool.appendExtension(
+        [&]
+        {
+            appendMetadata(
+                [&]
+                {
+                    auto old = data(id).owners;
+                    auto staged = prepareAttributeOwner(id, owner);
+                    // No allocations after publication; a failed append leaves the old use sites
+                    // intact.
+                    data(id) = staged;
+                    if (old && old != staged.owners)
+                        owners.truncate(old, 0);
+                });
+        });
+}
+
+TypeId MapSchema::Impl::import(
+    MapSchema const& source,
+    size_t layerIndex,
+    TypeId root,
+    std::span<TypeId const> reuse)
+{
+    pool.requireMutable();
+    auto const& input = *source.schema_;
+    if (input.layers.size() > 1 || !input.valid(root))
+        throw std::invalid_argument("Schema import requires one staged layer and a valid root.");
+    if (layerIndex != GlobalLayer)
+        (void)layerAt(layerIndex);
+    for (auto identity : source.featureIdentities()) {
+        if (auto existing = pool.getTypeInfo(identity.name(), false);
+            existing && !existing.sameIdentity(identity))
+            throw std::invalid_argument(
+                "Conflicting map-wide feature identity: " + std::string(identity.name()));
+    }
+    // Local spellings take precedence inside the one staged JSON boundary.
+    std::map<std::string, TypeId, std::less<>> sourceAliases;
+    for (auto const& alias : input.aliases)
+        if (!alias.layer)
+            sourceAliases[std::string(input.text(alias.key))] = alias.id;
+    for (auto const& alias : input.aliases)
+        if (alias.layer)
+            sourceAliases[std::string(input.text(alias.key))] = alias.id;
+    auto remap = pool.importGraphWithExtension(
+        source,
+        reuse,
+        [&](std::span<TypeId const> mapping)
+        {
+            appendMetadata(
+                [&]
+                {
+                    auto mapped = [&](TypeId id)
                     {
-                        auto reference = value.at("$ref").get<std::string>();
-                        constexpr std::string_view prefix = "#/definitions/";
-                        if (!reference.starts_with(prefix))
-                            throw std::invalid_argument("Unresolved schema validation reference.");
-                        uint32_t id = 0;
-                        auto digits = std::string_view(reference).substr(prefix.size());
-                        auto [end, error] =
-                            std::from_chars(digits.data(), digits.data() + digits.size(), id);
-                        if (error != std::errc{} || end != digits.data() + digits.size() ||
-                            id > simfil::MaxTypeId)
-                            throw std::invalid_argument("Invalid schema validation reference.");
-                        value["$ref"] = "#/definitions/" + std::to_string(mapped(TypeId(id)));
-                    });
-                copy.id_ = remap[i];
-                copy.entry_.id_ = remap[i];
-                for (auto& [_, children] : copy.childSchemas_)
-                    for (auto& c : children)
-                        c = mapped(c);
-                for (auto& c : copy.elementSchemas_)
-                    c = mapped(c);
-                for (auto& c : copy.alternatives_)
-                    c = mapped(c);
-                auto owners = std::move(copy.attributeOwners_);
-                copy.attributeOwners_.clear();
-                builder->entriesById_[remap[i]] = copy.entry_;
-                builder->schemas_[remap[i]] = std::move(copy);
-                for (auto& owner : owners) {
-                    owner.attributeSchema_ = remap[i];
-                    owner.featureLayer_ = layer.name;
-                    builder->registerAttributeOwner(remap[i], std::move(owner));
-                }
-            }
-        for (auto const& [key, id] : source.idsByKey_) {
-            auto [it, inserted] = layer.buildAliases.emplace(key, mapped(id));
-            if (!inserted && it->second != mapped(id))
-                throw std::invalid_argument("Conflicting layer-local schema key: " + key);
-        }
-    }
-    catch (...) {
-        builder->schemas_.resize(start);
-        builder->entriesById_.resize(start);
-        builder->idsByKey_ = std::move(aliasesBefore);
-        layer.buildAliases = std::move(localBefore);
-        throw;
-    }
-    return root ? remap.at(root) : 0;
+                        if (!id)
+                            return TypeId{0};
+                        if (id >= mapping.size() || !mapping[id])
+                            throw std::invalid_argument(
+                                "Dangling type reference in imported metadata.");
+                        return mapping[id];
+                    };
+                    auto const& targetAliases = layerIndex == GlobalLayer ?
+                        buildAliases :
+                        layerBuild.at(layerIndex).aliases;
+                    for (auto const& [key, id] : sourceAliases)
+                        if (auto existing = targetAliases.find(key);
+                            existing != targetAliases.end() && existing->second != mapped(id))
+                            throw std::invalid_argument(
+                                "Conflicting imported schema alias: " + key);
+                    for (size_t n = 1; n < mapping.size(); ++n) {
+                        if (!reuse.empty() && reuse[n])
+                            continue;
+                        auto id = TypeId(n);
+                        auto const& original = input.data(id);
+                        if (original.flags & QueryRootFlag)
+                            throw std::invalid_argument(
+                                "Staged imports must not contain derived query roots.");
+                        TypeData row{};
+                        row.flags = original.flags;
+                        row.key = text(input.text(original.key));
+                        row.pointer = text(input.text(original.pointer));
+                        row.metaType = text(input.text(original.metaType));
+                        row.zserioType = text(input.text(original.zserioType));
+                        row.attributeType = text(input.text(original.attributeType));
+                        row.attributeCode = text(input.text(original.attributeCode));
+                        auto sites = input.ownerSites(original.owners);
+                        std::vector<OwnerData> copiedSites;
+                        for (auto const& site : sites) {
+                            auto layer = layerIndex == GlobalLayer ?
+                                (site.featureLayer ?
+                                     input.name(site.featureLayer) :
+                                     std::string_view{}) :
+                                name(layerAt(layerIndex).name);
+                            copiedSites.push_back(
+                                {intern(input.name(site.feature)),
+                                 intern(input.name(site.layer)),
+                                 intern(input.name(site.name)),
+                                 layer.empty() ? StringId{0} : intern(layer)});
+                        }
+                        row.owners = newOwners(copiedSites);
+                        auto extra = input.annotation(original.annotations);
+                        schema_detail::forEachValidationSchema(
+                            extra,
+                            [&](auto& constraint, auto const&)
+                            {
+                                auto reference = constraint.at("$ref").template get<std::string>();
+                                constexpr std::string_view prefix = "#/definitions/";
+                                if (!reference.starts_with(prefix))
+                                    throw std::invalid_argument(
+                                        "Unresolved schema validation reference.");
+                                auto digits = std::string_view(reference).substr(prefix.size());
+                                uint32_t value = 0;
+                                auto [end, error] = std::from_chars(
+                                    digits.data(),
+                                    digits.data() + digits.size(),
+                                    value);
+                                if (error != std::errc{} || end != digits.data() + digits.size() ||
+                                    value > simfil::MaxTypeId)
+                                    throw std::invalid_argument(
+                                        "Invalid schema validation reference.");
+                                constraint["$ref"] = "#/definitions/" +
+                                    std::to_string(mapped(TypeId(value)));
+                            });
+                        row.annotations = annotation(extra);
+                        data(mapped(id)) = row;
+                    }
+                    for (auto identity : source.featureIdentities())
+                        pool.addFeatureType(identity);
+                    if (layerIndex != GlobalLayer && !input.layers.empty()) {
+                        for (auto const& produced : input.featureRoots(input.layers[0]))
+                            bindProduced(
+                                layerIndex,
+                                input.name(produced.name),
+                                mapped(produced.root));
+                    }
+
+                    for (auto const& [key, id] : sourceAliases) {
+                        if (layerIndex == GlobalLayer)
+                            pool.registerSchemaKey(key, mapped(id));
+                        else
+                            pool.layer(name(layerAt(layerIndex).name))
+                                ->registerSchemaKey(key, mapped(id));
+                    }
+                    // Recreate construction policy only after every imported edge and
+                    // declaration is available, before exposing mutable imported views.
+                    for (size_t n = 1; n < mapping.size(); ++n)
+                        if (reuse.empty() || !reuse[n])
+                            protectNativeType(mapping[n]);
+                });
+        });
+    return remap[root];
 }
 
-LayerSchema::Ptr MapSchema::importLayer(
-    std::string_view name,
-    LayerType type,
-    nlohmann::json const& json,
-    std::span<FeatureTypeInfo const> features)
+void MapSchema::Impl::appendMetadata(std::function<void()> const& extension)
 {
-    requireMutable();
-    schema_detail::SchemaBuilder::validateInput(json);
-    auto inputs = nlohmann::json::array();
-    for (auto const& info : features) {
-        // Reuse the metadata validator, without persisting its JSON representation.
-        inputs.push_back(FeatureTypeInfo::fromJson(info.toJson()).toJson());
-    }
-    auto fingerprint = picosha2::hash256_hex_string(json.dump() + inputs.dump());
-    if (auto found = layer(name)) {
-        auto const& old = schema_->layerAt(found->addr().index());
-        if (old.type == type && old.importedFingerprint == fingerprint)
-            return found;
-        throw std::invalid_argument(
-            "Conflicting declarations for schema layer '" + std::string(name) + "'.");
-    }
-    schema_detail::SchemaBuilder imported;
-    TypeId importedRoot = 0;
-    if (!json.is_null())
-        importedRoot = schema_detail::LayerSchemaCompiler(imported, json).buildAll();
-    auto start = schema_->builder->schemas_.size();
-    auto result = newLayer(name, type);
-    auto index = result->addr().index();
+    auto typeCount = types.size();
+    auto layerCount = layers.size();
+    auto layerBuildCount = layerBuild.size();
+    auto ownerRowCount = ownerRows.size();
+    auto relationRowCount = relationRows.size();
+    auto producedCheckpoint = producedFeatures.checkpointAppends();
+    auto relationListCheckpoint = relationLists.checkpointAppends();
+    auto relationTargetCheckpoint = relationTargets.checkpointAppends();
+    auto aliasCount = aliases.size();
+    auto identityCount = identities.size();
+    auto compositionCheckpoint = identityCompositions.checkpointAppends();
+    auto partCheckpoint = identityParts.checkpointAppends();
+    auto ownerCheckpoint = owners.checkpointAppends();
+    auto textStart = appendedTextKeys.size();
+    auto policyStart = appendedPolicyTypes.size();
+    ++metadataAppendDepth;
     try {
-        auto& target = schema_->layers[index];
-        target.importedFingerprint = std::move(fingerprint);
-        target.root = schema_->import(imported, index, importedRoot);
-        auto emitted = schema_->builder->featureRoots(target.root);
-        for (auto const& info : features) {
-            auto root = result->schemaId(LayerSchema::featureKey(info.name_));
-            bool produced = emitted.empty() || std::ranges::find(emitted, root) != emitted.end();
-            if (root) {
-                auto const& annotations = schema_->builder->schemas_[root].annotations_;
-                if (auto metadata = schema_detail::mapgetMetadata(annotations);
-                    metadata && metadata->contains("produced"))
-                    produced = produced && metadata->at("produced").get<bool>();
-            }
-            result->addFeatureType(info, root, produced);
-        }
-        if (!target.root) {
-            target.root = result->addSchema(Kind::Object);
-            result->setOpen(target.root, true);
-        }
+        extension();
     }
     catch (...) {
-        schema_->builder->schemas_.resize(start);
-        schema_->builder->entriesById_.resize(start);
-        schema_->layers.pop_back();
-        // Root registration is deferred to finalization; no dangling root survives rollback.
+        // A narrow generic mutation can roll back its new value storage before
+        // this derived scope unwinds. Cache-owned strings stay valid either way.
+        for (size_t n = aliasCount; n < aliases.size(); ++n) {
+            auto const& alias = aliases[n];
+            auto key = std::ranges::find_if(
+                textIndex,
+                [&](auto const& item) { return item.second == alias.key; });
+            auto& cache = alias.layer ? layerBuild.at(alias.layer - 1).aliases : buildAliases;
+            if (key != textIndex.end())
+                cache.erase(key->first);
+        }
+        aliases.resize(aliasCount);
+        types.resize(typeCount);
+        layers.resize(layerCount);
+        layerBuild.resize(layerBuildCount);
+        ownerRows.resize(ownerRowCount);
+        relationRows.resize(relationRowCount);
+        producedFeatures.rollbackAppends(producedCheckpoint);
+        relationLists.rollbackAppends(relationListCheckpoint);
+        relationTargets.rollbackAppends(relationTargetCheckpoint);
+        identities.resize(identityCount);
+        identityCompositions.rollbackAppends(compositionCheckpoint);
+        identityParts.rollbackAppends(partCheckpoint);
+        owners.rollbackAppends(ownerCheckpoint);
+        for (size_t n = textStart; n < appendedTextKeys.size(); ++n)
+            textIndex.erase(appendedTextKeys[n]);
+        appendedTextKeys.resize(textStart);
+        for (size_t n = policyStart; n < appendedPolicyTypes.size(); ++n)
+            reservedFields.erase(appendedPolicyTypes[n]);
+        appendedPolicyTypes.resize(policyStart);
+        --metadataAppendDepth;
         throw;
     }
-    return result;
-}
-
-TypeId MapSchema::addJsonSchema(nlohmann::json const& json)
-{
-    requireMutable();
-    schema_detail::SchemaBuilder::validateInput(json);
-    auto start = schema_->builder->schemas_.size();
-    auto aliases = schema_->builder->idsByKey_;
-    try {
-        return schema_detail::LayerSchemaCompiler(*schema_->builder, json).append();
-    }
-    catch (...) {
-        schema_->builder->schemas_.resize(start);
-        schema_->builder->entriesById_.resize(start);
-        schema_->builder->idsByKey_ = std::move(aliases);
-        throw;
+    if (!--metadataAppendDepth) {
+        appendedTextKeys.clear();
+        appendedPolicyTypes.clear();
     }
 }
 
@@ -551,11 +514,12 @@ MapSchema& LayerSchema::mutableOwner()
 }
 std::string_view LayerSchema::name() const
 {
-    return mapSchema()->schema_->layerAt(addr_.index()).name;
+    auto const& graph = *mapSchema()->schema_;
+    return graph.name(graph.layerAt(addr_.index()).name);
 }
 LayerType LayerSchema::layerType() const
 {
-    return mapSchema()->schema_->layerAt(addr_.index()).type;
+    return LayerType(mapSchema()->schema_->layerAt(addr_.index()).type);
 }
 void LayerSchema::setRootSchema(TypeId root)
 {
@@ -568,93 +532,160 @@ TypeId LayerSchema::rootSchema() const
 {
     return mapSchema()->schema_->layerAt(addr_.index()).root;
 }
-std::span<FeatureTypeInfo const> LayerSchema::featureTypeInfos() const
+size_t MapSchema::identityCount() const
 {
-    return mapSchema()->schema_->layerAt(addr_.index()).features;
+    return schema_->identities.size();
 }
-FeatureTypeInfo const* LayerSchema::getTypeInfo(std::string_view name, bool throwIfMissing) const
+FeatureIdentity MapSchema::getTypeInfo(std::string_view name, bool throwIfMissing) const
 {
-    for (auto const& feature : featureTypeInfos())
-        if (feature.name_ == name)
-            return &feature;
+    auto sid = schema_->dictionary.get(name);
+    if (sid && schema_->identityIndex.size() == identityCount()) {
+        auto found = std::lower_bound(
+            schema_->identityIndex.begin(),
+            schema_->identityIndex.end(),
+            sid,
+            [&](auto index, auto wanted) { return schema_->identities[index].name < wanted; });
+        if (found != schema_->identityIndex.end() && schema_->identities[*found].name == sid)
+            return {this, *found};
+    }
+    else if (sid) {
+        for (size_t i = 0; i < identityCount(); ++i)
+            if (schema_->identities[i].name == sid)
+                return {this, i};
+    }
     if (throwIfMissing)
         throw std::invalid_argument(
-            "Unknown feature type '" + std::string(name) + "' in schema layer '" +
-            std::string(this->name()) + "'.");
-    return nullptr;
+            "Unknown feature identity '" + std::string(name) + "' in MapSchema.");
+    return {};
+}
+void MapSchema::addFeatureType(FeatureTypeInfo info)
+{
+    requireMutable();
+    info.validate();
+    if (auto existing = getTypeInfo(info.name_, false)) {
+        if (!existing.sameIdentity(info))
+            throw std::invalid_argument("Conflicting map-wide feature identity: " + info.name_);
+        return;
+    }
+    if (identityCount() == UINT16_MAX)
+        throw std::length_error("MapSchema feature identity capacity exceeded.");
+    appendExtension(
+        [&]
+        {
+            schema_->appendMetadata(
+                [&]
+                {
+                    schema_->appendIdentity(
+                        info.name_,
+                        info.uniqueIdCompositions_,
+                        [](auto const& parts) -> auto const& { return parts; });
+                });
+        });
+}
+void MapSchema::addFeatureType(FeatureIdentity identity)
+{
+    requireMutable();
+    if (!identity)
+        throw std::invalid_argument("Cannot register an absent feature identity.");
+    if (auto existing = getTypeInfo(identity.name(), false)) {
+        if (!existing.sameIdentity(identity))
+            throw std::invalid_argument(
+                "Conflicting map-wide feature identity: " + std::string(identity.name()));
+        return;
+    }
+    if (identityCount() == UINT16_MAX)
+        throw std::length_error("MapSchema feature identity capacity exceeded.");
+    appendExtension(
+        [&]
+        {
+            schema_->appendMetadata(
+                [&]
+                {
+                    schema_->appendIdentity(
+                        identity.name(),
+                        identity.compositions(),
+                        [](auto composition) { return composition.parts(); });
+                });
+        });
+}
+FeatureIdentity LayerSchema::getTypeInfo(std::string_view name, bool throwIfMissing) const
+{
+    return mapSchema()->getTypeInfo(name, throwIfMissing);
 }
 bool LayerSchema::producesFeatureType(std::string_view name) const
 {
-    auto const& layer = mapSchema()->schema_->layerAt(addr_.index());
-    for (size_t i = 0; i < layer.features.size(); ++i)
-        if (layer.features[i].name_ == name)
-            return layer.produced[i];
-    if (layer.features.empty()) {
-        auto types = featureTypes();
-        return std::ranges::find(types, name) != types.end();
+    auto const& graph = *mapSchema()->schema_;
+    auto const& layer = graph.layerAt(addr_.index());
+    auto roots = graph.featureRoots(layer);
+    if (!roots.empty()) {
+        auto sid = graph.dictionary.get(name);
+        return sid &&
+            std::ranges::any_of(roots, [sid](auto const& row) { return row.name == sid; });
     }
-    return false;
+    auto types = featureTypes();
+    return std::ranges::find(types, name) != types.end();
 }
 std::vector<std::string> LayerSchema::featureTypes() const
 {
+    auto const& graph = *mapSchema()->schema_;
+    auto const& layer = graph.layerAt(addr_.index());
     std::vector<std::string> result;
-    auto const& layer = mapSchema()->schema_->layerAt(addr_.index());
-    for (size_t i = 0; i < layer.features.size(); ++i)
-        if (layer.produced[i])
-            result.push_back(layer.features[i].name_);
-    if (layer.features.empty()) {
-        auto const& graph = *mapSchema()->schema_;
+    auto entries = graph.featureRoots(layer);
+    for (auto const& row : entries)
+        result.emplace_back(graph.name(row.name));
+    if (entries.empty()) {
         auto roots = graph.producedRoots(layer);
-        auto appendAliases = [&](auto const& aliases)
-        {
-            constexpr std::string_view prefix = "Feature:";
-            for (auto const& [key, id] : aliases)
+        graph.forEachAlias(
+            addr_.index(),
+            [&](std::string_view key, TypeId id)
+            {
+                constexpr std::string_view prefix = "Feature:";
                 if (key.starts_with(prefix) && key.size() > prefix.size() &&
                     std::ranges::find(roots, id) != roots.end())
-                    result.emplace_back(std::string_view(key).substr(prefix.size()));
-        };
-        // Descriptive type names need not match feature IDs (and may be absent).
-        // Only this layer's produced Feature aliases establish those names.
-        if (graph.builder)
-            appendAliases(layer.buildAliases);
-        else
-            appendAliases(layer.aliases);
+                    result.emplace_back(key.substr(prefix.size()));
+            });
     }
+    std::ranges::sort(result);
     return result;
 }
-void LayerSchema::addFeatureType(FeatureTypeInfo info, TypeId root, bool produced)
+void LayerSchema::addFeatureType(FeatureTypeInfo info, TypeId root)
 {
+    auto name = info.name_;
     auto& owner = mutableOwner();
-    info = FeatureTypeInfo::fromJson(info.toJson());
-    auto& layer = owner.schema_->layerAt(addr_.index());
-    if (!root)
-        root = schemaId(featureKey(info.name_));
     if (root)
         owner.schema_->requireType(root);
-    for (size_t i = 0; i < layer.features.size(); ++i)
-        if (layer.features[i].name_ == info.name_) {
-            if (layer.features[i].toJson() != info.toJson() || layer.produced[i] != produced ||
-                (root && layer.featureRoots[i] != root))
+    owner.addFeatureType(std::move(info));
+    addFeatureType(std::string_view(name), root);
+}
+void LayerSchema::addFeatureType(std::string_view name, TypeId root)
+{
+    auto& owner = mutableOwner();
+    (void)owner.getTypeInfo(name);
+    if (!root)
+        root = schemaId(featureKey(name));
+    if (root)
+        owner.schema_->requireType(root);
+    auto entries = owner.schema_->featureRoots(owner.schema_->layerAt(addr_.index()));
+    for (auto const& row : entries)
+        if (owner.schema_->name(row.name) == name) {
+            if (root && row.root != root)
                 throw std::invalid_argument(
-                    "Conflicting feature identity declaration: " + info.name_);
+                    "Conflicting produced feature root: " + std::string(name));
             return;
         }
     if (!root) {
-        root = addSchema(FeatureKind, featureKey(info.name_), "Feature");
-        setOpen(root, true);
-        setTypeName(root, info.name_);
+        root = addSchema(FeatureKind, featureKey(name), "Feature");
+        owner.schemaType(root).asObject().setOpen(true);
+        owner.schemaType(root).setTypeName(name);
     }
-    registerSchemaKey(featureKey(info.name_), root);
-    layer.features.push_back(std::move(info));
-    layer.featureRoots.push_back(root);
-    layer.produced.push_back(produced);
+    registerSchemaKey(featureKey(name), root);
+    owner.schema_->bindProduced(addr_.index(), name, root);
 }
 TypeId LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
 {
     auto& owner = mutableOwner();
     auto id = owner.addSchema(kind, {}, std::move(metaType), std::move(pointer));
-    owner.schema_->builder->schemas_[id].entry_.key_ = key;
-    owner.schema_->builder->entriesById_[id].key_ = key;
+    owner.schema_->data(id).key = owner.schema_->text(key);
     if (!key.empty())
         registerSchemaKey(std::move(key), id);
     return id;
@@ -663,106 +694,66 @@ void LayerSchema::registerSchemaKey(std::string key, TypeId id)
 {
     auto& owner = mutableOwner();
     owner.schema_->requireType(id);
-    auto& aliases = owner.schema_->layerAt(addr_.index()).buildAliases;
-    auto [it, inserted] = aliases.emplace(std::move(key), id);
-    if (!inserted && it->second != id)
-        throw std::invalid_argument("Conflicting layer-local schema key: " + it->first);
+    auto& aliases = owner.schema_->layerBuild.at(addr_.index()).aliases;
+    auto it = aliases.find(key);
+    if (it != aliases.end()) {
+        if (it->second != id)
+            throw std::invalid_argument("Conflicting layer-local schema key: " + it->first);
+        return;
+    }
+    owner.schema_->aliases.push_back({owner.schema_->text(key), id, uint16_t(addr_.index() + 1)});
+    try {
+        aliases.emplace(std::move(key), id);
+    }
+    catch (...) {
+        owner.schema_->aliases.resize(owner.schema_->aliases.size() - 1);
+        throw;
+    }
 }
 TypeId LayerSchema::schemaId(std::string_view key) const
 {
     auto owner = mapSchema();
-    auto const& layer = owner->schema_->layerAt(addr_.index());
-    if (owner->schema_->builder) {
-        if (auto it = layer.buildAliases.find(key); it != layer.buildAliases.end())
-            return it->second;
-    }
-    else if (auto it = layer.aliases.find(key); it != layer.aliases.end())
-        return it->second;
-    return owner->findSchema(key);
-}
-TypeId LayerSchema::addJsonSchema(nlohmann::json const& json)
-{
-    auto& owner = mutableOwner();
-    auto& graph = *owner.schema_;
-    // Compiler resolves converter-shared keys globally, with layer aliases taking precedence.
-    auto globals = std::move(graph.builder->idsByKey_);
-    graph.builder->idsByKey_ = globals;
-    for (auto const& [key, id] : graph.layerAt(addr_.index()).buildAliases)
-        graph.builder->idsByKey_[key] = id;
-    try {
-        auto id = owner.addJsonSchema(json);
-        auto& aliases = graph.layerAt(addr_.index()).buildAliases;
-        for (auto const& [key, value] : graph.builder->idsByKey_)
-            if (!globals.contains(key) || globals.at(key) != value)
-                aliases[key] = value;
-        graph.builder->idsByKey_ = std::move(globals);
+    if (auto id = owner->schema_->findAlias(addr_.index(), key))
         return id;
-    }
-    catch (...) {
-        graph.builder->idsByKey_ = std::move(globals);
-        throw;
-    }
+    return owner->findSchema(key);
 }
 void LayerSchema::finalize()
 {
     if (!mapSchema()->finalized())
         mutableOwner().finalize();
 }
-LayerSchema::Ptr LayerSchema::fromJsonSchema(nlohmann::json json)
-{
-    if (json.is_null())
-        return {};
-    auto owner = std::make_shared<MapSchema>();
-    auto layer = owner->importLayer("legacy", LayerType::Features, json);
-    owner->finalize();
-    return layer;
-}
-
-std::vector<TypeId> MapSchema::Impl::producedRoots(Layer const& layer) const
+std::vector<TypeId> MapSchema::Impl::producedRoots(LayerData const& layer) const
 {
     std::vector<TypeId> result;
-    if (!layer.features.empty()) {
-        for (size_t i = 0; i < layer.features.size(); ++i)
-            if (layer.produced[i])
-                result.push_back(layer.featureRoots[i]);
+    if (!featureRoots(layer).empty()) {
+        for (auto const& [_, root] : featureRoots(layer))
+            result.push_back(root);
         return result;
     }
-    // Schema-only readers may discover produced roots without inventing feature ID
-    // compositions. This does not make such a graph a valid feature creation contract.
+    // Schema-only legacy inputs may describe produced roots without ID contracts.
     std::vector<TypeId> pending{layer.root};
-    std::vector<bool> seen(builder ? builder->schemas_.size() : types.size());
+    std::vector<bool> seen(pool.typeCount() + 1);
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
         if (!valid(id) || seen[id])
             continue;
         seen[id] = true;
+        auto type = pool.schemaType(id);
         if (metaType(id) == "Feature" ||
-            (builder ? builder->schemas_[id].kind_ : pool.type(id)->kind()) ==
-                LayerSchema::FeatureKind)
+            simfil::SchemaType::kindNameId(type.kind()) ==
+                simfil::SchemaType::kindNameId(LayerSchema::FeatureKind))
         {
-            auto extra = builder ?
-                builder->schemas_[id].annotations_ :
-                annotation(types[id].annotations);
+            auto extra = annotation(data(id).annotations);
             auto metadata = schema_detail::mapgetMetadata(extra);
             if (!metadata || metadata->value("produced", true))
                 result.push_back(id);
             continue;
         }
-        if (builder) {
-            auto const& domain = builder->schemas_[id];
-            pending.insert(pending.end(), domain.alternatives_.begin(), domain.alternatives_.end());
-            pending.insert(
-                pending.end(),
-                domain.elementSchemas_.begin(),
-                domain.elementSchemas_.end());
-        }
-        else {
-            auto const& domain = *pool.type(id);
-            auto alternatives = domain.alternatives();
-            pending.insert(pending.end(), alternatives.begin(), alternatives.end());
-            domain.forEachElementSchema([&](auto child) { pending.push_back(child); });
-        }
+        auto alternatives = type.alternatives();
+        pending.insert(pending.end(), alternatives.begin(), alternatives.end());
+        auto elements = type.elements();
+        pending.insert(pending.end(), elements.begin(), elements.end());
     }
     std::ranges::sort(result);
     return result;
@@ -772,86 +763,94 @@ void MapSchema::Impl::prepareQueryRoots()
 {
     std::set<std::pair<TypeId, TypeId>> contexts;
     std::map<TypeId, std::pair<std::string, std::string>> featureNames;
-    for (auto const& layer : layers)
-        for (size_t i = 0; i < layer.features.size(); ++i)
-            featureNames
-                .emplace(layer.featureRoots[i], std::pair{layer.name, layer.features[i].name_});
-    for (auto const& layer : layers)
+    for (auto const& layer : layers) {
+        for (auto const& [name, root] : featureRoots(layer))
+            featureNames.emplace(
+                root,
+                std::pair{std::string(this->name(layer.name)), std::string(this->name(name))});
         for (auto feature : producedRoots(layer)) {
-            // Legacy schema-only inputs can declare Feature roots without an ID
-            // composition. Query contexts still need their layer/name ownership.
-            auto const& source = builder->schemas_[feature];
-            auto metadata = schema_detail::mapgetMetadata(source.annotations_);
-            auto name = schema_detail::metadataString(metadata, "featureType");
+            auto source = pool.schemaType(feature);
+            auto extra = annotation(data(feature).annotations);
+            auto name =
+                schema_detail::metadataString(schema_detail::mapgetMetadata(extra), "featureType");
             featureNames.try_emplace(
                 feature,
-                layer.name,
-                name.empty() ? source.typeName_ : std::move(name));
+                std::string(this->name(layer.name)),
+                name.empty() ? std::string(source.typeName()) : std::move(name));
             std::vector<TypeId> pending{feature};
-            std::vector<bool> seen(builder->schemas_.size());
+            std::vector<bool> seen(pool.typeCount() + 1);
             while (!pending.empty()) {
                 auto id = pending.back();
                 pending.pop_back();
-                if (!builder->valid(id) || seen[id])
+                if (!valid(id) || seen[id])
                     continue;
                 seen[id] = true;
-                auto const& d = builder->schemas_[id];
-                if (d.entry_.metaType_ == "Attribute")
+                if (text(data(id).metaType) == "Attribute")
                     contexts.emplace(feature, id);
-                for (auto const& [_, children] : d.childSchemas_)
-                    pending.insert(pending.end(), children.begin(), children.end());
-                pending.insert(pending.end(), d.elementSchemas_.begin(), d.elementSchemas_.end());
-                pending.insert(pending.end(), d.alternatives_.begin(), d.alternatives_.end());
+                auto type = pool.schemaType(id);
+                type.forEachDirectField(
+                    [&](simfil::SchemaField const& field)
+                    {
+                        auto children = field.types();
+                        pending.insert(pending.end(), children.begin(), children.end());
+                    });
+                auto elements = type.elements();
+                pending.insert(pending.end(), elements.begin(), elements.end());
+                auto alternatives = type.alternatives();
+                pending.insert(pending.end(), alternatives.begin(), alternatives.end());
             }
         }
-    if (contexts.empty())
-        return;
-    for (auto const& [context, _] : queryRoots)
-        contexts.erase(context);
+    }
+    for (auto const& query : queryRoots)
+        contexts.erase({query.feature, query.attribute});
     if (contexts.empty())
         return;
     auto string = pool.primitive(Kind::String);
     auto integer = pool.primitive(Kind::Int);
     auto boolean = pool.primitive(Kind::Bool);
     for (auto [feature, attribute] : contexts) {
-        auto copy = builder->schemas_[attribute];
-        auto id = builder->allocate(LayerSchema::AttributeKind, {}, {}, "Attribute");
-        copy.id_ = id;
-        copy.entry_ = builder->entriesById_[id];
-        copy.queryRoot_ = true;
+        auto source = pool.schemaType(attribute);
+        auto id = pool.addSchema(LayerSchema::AttributeKind, {}, "Attribute");
+        auto row = data(attribute);
+        row.flags = QueryRootFlag;
+        row.key = {};
+        row.pointer = {};
+        row.owners = 0;
         auto const& [featureLayer, featureName] = featureNames.at(feature);
-        std::erase_if(
-            copy.attributeOwners_,
-            [&](auto const& owner)
-            {
-                return owner.featureType_ != featureName ||
-                    (!owner.featureLayer_.empty() && owner.featureLayer_ != featureLayer);
-            });
-        copy.attributeTypeCode_.clear();
-        if (!copy.attributeOwners_.empty()) {
-            auto const& name = copy.attributeOwners_.front().attributeName_;
-            if (std::ranges::all_of(
-                    copy.attributeOwners_,
-                    [&](auto const& owner) { return owner.attributeName_ == name; }))
-                copy.attributeTypeCode_ = name;
+        auto sourceSites = ownerSites(data(attribute).owners);
+        std::vector<OwnerData> sites;
+        for (auto const& site : sourceSites)
+            if ((!site.featureLayer || name(site.featureLayer) == featureLayer) &&
+                name(site.feature) == featureName)
+                sites.push_back(site);
+        if (!sites.empty()) {
+            row.owners = newOwners(sites);
+            auto code = sites.front().name;
+            row.attributeCode =
+                std::ranges::all_of(sites, [&](auto const& site) { return site.name == code; }) ?
+                text(name(code)) :
+                ModelNodeAddress{};
         }
-        // Only overlay edges are stored; the payload is referenced by TypeData::base.
-        copy.directFields_.clear();
-        copy.childSchemas_.clear();
-        copy.required_.clear();
-        copy.contextFields_.clear();
-        copy.directEnumSymbols_.clear();
-        copy.enumValues_.clear();
-        copy.elementSchemas_.clear();
-        // A named Attribute may describe several physical branches. Its query
-        // context must retain those alternatives rather than hide their fields.
-        builder->schemas_[id] = std::move(copy);
-        auto overlay = [&](std::string_view name, TypeId child)
+        else
+            row.attributeCode = {};
+        data(id) = row;
+        pool.schemaType(id).setTypeName(source.typeName());
+        pool.simfil::SchemaPool::setBaseSchema(id, attribute);
+        pool.simfil::SchemaPool::setComposition(id, source.composition());
+        // Read each source edge by index; appending in the same arena invalidates ranges.
+        auto count = source.alternatives().size();
+        for (size_t n = 0; n < count; ++n) {
+            auto child = source.alternatives()[n];
+            pool.simfil::SchemaPool::addAlternative(id, child);
+        }
+        auto overlay = [&](std::string_view field, TypeId child)
         {
-            builder->addDirectField(id, name);
-            builder->addChild(id, name, child);
-            builder->schemas_[id].required_[std::string(name)] = true;
-            builder->schemas_[id].contextFields_.emplace(name);
+            pool.simfil::SchemaPool::addFieldSchema(id, field, child);
+            pool.simfil::SchemaPool::setFieldRequired(id, field, true);
+            pool.simfil::SchemaPool::setFieldRole(
+                id,
+                field,
+                simfil::SchemaType::FieldRole::Context);
         };
         overlay("$name", string);
         overlay("$layer", string);
@@ -860,240 +859,63 @@ void MapSchema::Impl::prepareQueryRoots()
         overlay("$validityIndex", integer);
         overlay("$validityCount", integer);
         overlay("$hasValidity", boolean);
-        queryRoots.emplace(std::pair{feature, attribute}, id);
+        queryRoots.push_back({feature, attribute, id});
     }
-}
-
-void MapSchema::Impl::compileScalarMetadata(
-    TypeId id,
-    schema_detail::SchemaBuilder::LogicalSchema const& source,
-    nlohmann::json& extra)
-{
-    auto& generic = static_cast<simfil::SchemaPool&>(pool);
-    auto kindName = simfil::Schema::kindNameId(source.kind_);
-    auto explicitMetadata = schema_detail::mapgetMetadata(extra);
-    if (source.composition_ == Composition::None &&
-        (kindName == simfil::Schema::kindNameId(Kind::Int) ||
-         kindName == simfil::Schema::kindNameId(Kind::Float)) &&
-        (!explicitMetadata || !explicitMetadata->contains("numericDomain")))
-    {
-        auto inferred = nlohmann::json::object();
-        for (auto key : {"minimum", "maximum"})
-            if (auto bound = extra.find(key); bound != extra.end() && bound->is_number())
-                inferred[key] = *bound;
-        if (!inferred.empty())
-            extra["x-mapget"]["numericDomain"] = std::move(inferred);
-    }
-    auto bits = simfil::Schema::affinities(source.kind_);
-    auto mask = simfil::valueTypeAffinity(simfil::ValueType::Bitmask);
-    auto isMask = source.composition_ == Composition::None && (bits & mask) &&
-        !(bits & ~(mask | simfil::valueTypeAffinity(simfil::ValueType::Null)));
-    auto metadata = extra.find("x-mapget");
-    if (metadata == extra.end()) {
-        if (isMask)
-            generic.setBitWidth(id, 64);
-        return;
-    }
-    if (auto declarations = metadata->find("relationDeclarations"); declarations != metadata->end())
-    {
-        if (!declarations->is_array())
-            throw std::invalid_argument("relationDeclarations must be an array.");
-        for (auto& relation : *declarations) {
-            if (!relation.contains("complete") && relation.contains("coverage"))
-                relation["complete"] = relation.at("coverage") == "complete";
-            relation.erase("coverage");
-            relation.erase("incoming");
-        }
-    }
-    if (metadata->contains("bitWidth") && !isMask)
-        throw std::invalid_argument("bitWidth requires a concrete raw-bitmask type.");
-    auto width = metadata->value("bitWidth", isMask ? 64u : 0u);
-    if ((isMask && !width) || width > 64)
-        throw std::invalid_argument("Bitmask width must be 1..64.");
-    if (isMask)
-        generic.setBitWidth(id, uint8_t(width));
-    metadata->erase("bitWidth");
-    auto numericValue = [](nlohmann::json const& value) -> simfil::Schema::NumericValue
-    {
-        if (value.is_number_unsigned())
-            return value.get<uint64_t>();
-        if (value.is_number_integer())
-            return value.get<int64_t>();
-        if (value.is_number_float())
-            return value.get<double>();
-        throw std::invalid_argument("Numeric domain metadata must be numeric.");
-    };
-    if (auto values = metadata->find("namedValues"); values != metadata->end()) {
-        if (!values->is_array())
-            throw std::invalid_argument("namedValues must be an array.");
-        std::set<std::string> seen;
-        for (auto const& value : *values) {
-            simfil::Schema::NamedValue named;
-            auto name = value.at("name").get<std::string>();
-            if (name.empty() || !seen.insert(name).second)
-                throw std::invalid_argument("Duplicate or empty named-value name.");
-            named.name = name;
-            auto const& scalar = value.at("value");
-            if (scalar.is_boolean())
-                named.value = scalar.get<bool>();
-            else if (scalar.is_string())
-                named.value = std::string_view(scalar.get_ref<std::string const&>());
-            else
-                std::visit([&](auto number) { named.value = number; }, numericValue(scalar));
-            auto role = value.value("role", "constant");
-            if (role != "constant" && role != "special" && role != "flag")
-                throw std::invalid_argument("Invalid named-value role.");
-            named.role = role == "flag" ?
-                simfil::Schema::NamedValue::Role::Flag :
-                role == "special" ?
-                simfil::Schema::NamedValue::Role::Special :
-                simfil::Schema::NamedValue::Role::Constant;
-            std::array<std::string_view, 5>
-                meanings{"ordinary", "unknown", "variable", "unbounded", "saturated"};
-            auto meaning = value.value("meaning", "ordinary");
-            auto found = std::ranges::find(meanings, meaning);
-            if (found == meanings.end())
-                throw std::invalid_argument("Invalid named-value meaning.");
-            named.meaning = simfil::Schema::NamedValue::Meaning(found - meanings.begin());
-            named.deprecated = value.value("deprecated", false);
-            named.removed = value.value("removed", false);
-            if (auto raw = value.find("rawValue"); raw != value.end()) {
-                if (raw->is_number_unsigned())
-                    named.rawValue = raw->get<uint64_t>();
-                else if (raw->is_number_integer())
-                    named.rawValue = raw->get<int64_t>();
-                else
-                    throw std::invalid_argument("Named-value rawValue must be an integer.");
-            }
-            generic.addNamedValue(id, named);
-        }
-        metadata->erase("namedValues");
-    }
-    if (auto numeric = metadata->find("numericDomain"); numeric != metadata->end()) {
-        simfil::Schema::NumericDomain domain;
-        auto encoding = numeric->value("encoding", ""), unit = numeric->value("unit", "");
-        domain.encoding = encoding;
-        domain.unit = unit;
-        if (auto minimum = numeric->find("minimum"); minimum != numeric->end())
-            domain.minimum = numericValue(*minimum);
-        if (auto maximum = numeric->find("maximum"); maximum != numeric->end())
-            domain.maximum = numericValue(*maximum);
-        domain.complete = numeric->value("complete", false);
-        domain.scale = numeric->value("scale", 1.);
-        domain.offset = numeric->value("offset", 0.);
-        std::vector<simfil::Schema::NumericRange> ranges;
-        if (auto input = numeric->find("ordinaryRanges"); input != numeric->end())
-            for (auto const& range : *input)
-                ranges.push_back(
-                    {numericValue(range.at("minimum")), numericValue(range.at("maximum"))});
-        domain.ordinaryRanges = ranges;
-        generic.setNumericDomain(id, domain);
-        metadata->erase("numericDomain");
-    }
-    if (metadata->empty())
-        extra.erase("x-mapget");
+    std::sort(
+        queryRoots.begin(),
+        queryRoots.end(),
+        [](auto const& left, auto const& right) {
+            return std::pair{left.feature, left.attribute} <
+                std::pair{right.feature, right.attribute};
+        });
 }
 
 void MapSchema::Impl::compile()
 {
-    for (auto& layer : layers)
-        if (!layer.root) {
-            std::vector<TypeId> roots;
-            for (size_t i = 0; i < layer.featureRoots.size(); ++i)
-                if (layer.produced[i])
-                    roots.push_back(layer.featureRoots[i]);
-            if (roots.size() == 1)
-                layer.root = roots.front();
-            else {
-                layer.root =
-                    builder->allocate(roots.empty() ? Kind::Unknown : Kind::Union, {}, {}, {});
-                if (!roots.empty()) {
-                    builder->schemas_[layer.root].composition_ = Composition::AnyOf;
-                    builder->schemas_[layer.root].alternatives_ = std::move(roots);
-                }
+    // Generic typed factories need no map-specific metadata until publication.
+    types.resize(pool.simfil::SchemaPool::typeCount() + 1);
+    // Legacy imports and explicit Feature declarations have the same lookup
+    // contract as newFeature(). The alias never becomes an enumerable member.
+    for (size_t id = 1; id < types.size(); ++id) {
+        auto type = pool.schemaType(TypeId(id));
+        if (simfil::SchemaType::kindNameId(type.kind()) !=
+                simfil::SchemaType::kindNameId(LayerSchema::FeatureKind) ||
+            !type.field("properties"))
+            continue;
+        // An explicitly declared member takes precedence, matching Feature::get().
+        if (!type.field("attributes"))
+            pool.simfil::SchemaPool::addFieldAlias(TypeId(id), "attributes", "properties");
+    }
+    for (auto const& layer : layers) {
+        auto entries = producedFeatures.range(layer.produced);
+        std::vector<ProducedRootData> sorted(entries.begin(), entries.end());
+        std::ranges::sort(
+            sorted,
+            [&](auto const& a, auto const& b) { return name(a.name) < name(b.name); });
+        for (size_t i = 0; i < sorted.size(); ++i)
+            entries[i] = sorted[i];
+    }
+    for (auto& layer : layers) {
+        if (layer.root)
+            continue;
+        std::vector<TypeId> roots;
+        for (auto const& [_, root] : featureRoots(layer))
+            roots.push_back(root);
+        if (roots.size() == 1)
+            layer.root = roots.front();
+        else {
+            layer.root = pool.addSchema(roots.empty() ? Kind::Unknown : Kind::Union);
+            if (!roots.empty()) {
+                pool.setComposition(layer.root, Composition::AnyOf);
+                for (auto root : roots)
+                    pool.addAlternative(layer.root, root);
             }
         }
+    }
+    normalizeRelations();
     prepareQueryRoots();
-    auto& generic = static_cast<simfil::SchemaPool&>(pool);
-    types.resize(builder->schemas_.size());
-    for (size_t id = 1; id < builder->schemas_.size(); ++id) {
-        if (!builder->valid(TypeId(id)) || generic.addSchema(builder->schemas_[id].kind_) != id)
-            throw std::invalid_argument("MapSchema has a hole in its type namespace.");
-    }
-    for (auto [context, query] : queryRoots)
-        generic.setBaseSchema(query, context.second);
-    for (size_t id = 1; id < builder->schemas_.size(); ++id) {
-        auto const& source = builder->schemas_[id];
-        TypeData row{};
-        row.flags = uint32_t(source.queryRoot_) << 3;
-        row.key = text(source.entry_.key_);
-        row.pointer = text(source.entry_.jsonPointer_);
-        row.metaType = text(source.entry_.metaType_);
-        row.zserioType = text(source.zserioType_);
-        row.attributeType = text(source.attributeType_);
-        row.attributeCode = text(source.attributeTypeCode_);
-        generic.setTypeName(TypeId(id), source.typeName_);
-        generic.setOpen(TypeId(id), source.open_);
-        generic.setNullable(TypeId(id), source.nullable_);
-        generic.setComposition(TypeId(id), source.composition_);
-        for (auto const& name : source.directFields_) {
-            auto children = source.childSchemas_.find(name);
-            if (children == source.childSchemas_.end() || children->second.empty())
-                generic.addFieldSchema(
-                    TypeId(id),
-                    name,
-                    simfil::NoTypeId,
-                    source.multimapFields_.contains(name));
-            else
-                for (auto child : children->second)
-                    generic.addFieldSchema(
-                        TypeId(id),
-                        name,
-                        child,
-                        source.multimapFields_.contains(name));
-            if (auto it = source.required_.find(name); it != source.required_.end())
-                generic.setFieldRequired(TypeId(id), name, it->second);
-            if (source.contextFields_.contains(name))
-                generic.setFieldRole(TypeId(id), name, simfil::Schema::FieldRole::Context);
-        }
-        // Legacy imports also keep the implicit alias in childSchemas_, but only
-        // an actual declared field may override the native lookup-only alias.
-        if (simfil::Schema::kindNameId(source.kind_) ==
-                simfil::Schema::kindNameId(LayerSchema::FeatureKind) &&
-            source.childSchemas_.contains("properties") &&
-            std::ranges::find(source.directFields_, "attributes") == source.directFields_.end())
-            generic.addFieldAlias(TypeId(id), "attributes", "properties");
-        for (auto child : source.elementSchemas_)
-            generic.addElementSchema(TypeId(id), child);
-        for (auto child : source.alternatives_)
-            generic.addAlternative(TypeId(id), child);
-        for (auto const& symbol : source.directEnumSymbols_)
-            generic.addEnumSymbol(TypeId(id), symbol);
-        for (auto const& value : source.enumValues_)
-            generic.addEnumValue(TypeId(id), value);
-        row.owners.begin = owners.size();
-        for (auto const& owner : source.attributeOwners_)
-            owners.push_back(
-                {intern(owner.featureType_),
-                 intern(owner.attributeLayerName_),
-                 intern(owner.attributeName_),
-                 owner.featureLayer_.empty() ? StringId{0} : intern(owner.featureLayer_)});
-        row.owners.count = owners.size() - row.owners.begin;
-        auto extra = source.annotations_.is_null() ? nlohmann::json::object() : source.annotations_;
-        compileScalarMetadata(TypeId(id), source, extra);
-        row.annotations = annotation(extra);
-        types[id] = row;
-    }
-    for (auto const& [key, id] : builder->idsByKey_)
-        aliases.push_back({text(key), id, 0});
-    for (size_t i = 0; i < layers.size(); ++i) {
-        for (auto const& [key, id] : layers[i].buildAliases)
-            aliases.push_back({text(key), id, uint16_t(i + 1)});
-        layers[i].buildAliases.clear();
-        layers[i].importedFingerprint.clear();
-    }
     for (size_t i = 0; i < descriptorKeys.size(); ++i)
-        descriptorKeys[i] = intern(std::array<std::string_view, 12>{
+        descriptorKeys[i] = intern(std::array<std::string_view, 21>{
             "name",
             "layerType",
             "root",
@@ -1105,19 +927,32 @@ void MapSchema::Impl::compile()
             "items",
             "alternatives",
             "enum",
-            "open"}[i]);
-    builder.reset();
+            "open",
+            "schemaKey",
+            "jsonPointer",
+            "metaType",
+            "zserioType",
+            "attributeType",
+            "attributeTypeCode",
+            "attributeOwners",
+            "featureType",
+            "featureLayer"}[i]);
     pool.finalizeSchema();
+    buildAliases.clear();
+    std::vector<LayerBuildData>().swap(layerBuild);
+    reservedFields.clear();
+    std::vector<TypeId>().swap(appendedPolicyTypes);
+    arrayTypes.clear();
+    nullableTypes.clear();
     textIndex.clear();
     textIndex.rehash(0);
+    std::vector<std::string>().swap(appendedTextKeys);
 }
 
 void MapSchema::Impl::index()
 {
-    entries.clear();
-    globalAliases.clear();
     for (size_t i = 0; i < descriptorKeys.size(); ++i) {
-        descriptorKeys[i] = pool.strings()->get(std::array<std::string_view, 12>{
+        descriptorKeys[i] = pool.strings()->get(std::array<std::string_view, 21>{
             "name",
             "layerType",
             "root",
@@ -1129,139 +964,63 @@ void MapSchema::Impl::index()
             "items",
             "alternatives",
             "enum",
-            "open"}[i]);
+            "open",
+            "schemaKey",
+            "jsonPointer",
+            "metaType",
+            "zserioType",
+            "attributeType",
+            "attributeTypeCode",
+            "attributeOwners",
+            "featureType",
+            "featureLayer"}[i]);
         if (!descriptorKeys[i])
             throw std::invalid_argument("Missing schema descriptor vocabulary.");
     }
-    for (auto& layer : layers)
-        layer.aliases.clear();
-    entries.resize(types.size());
-    for (auto const& alias : aliases) {
-        auto& index = alias.layer ? layers.at(alias.layer - 1).aliases : globalAliases;
-        auto [it, inserted] = index.emplace(text(alias.key), alias.id);
-        if (!inserted && it->second != alias.id)
-            throw std::invalid_argument("Conflicting stored schema aliases.");
-    }
-    for (size_t id = 1; id < types.size(); ++id) {
-        auto const& row = types[id];
-        entries[id] = {TypeId(id), text(row.key), text(row.pointer), text(row.metaType)};
-    }
-    // Resolve forward contracts once for each produced layer. Referenced-only
-    // identity types do not make that layer a source of incoming relations.
-    size_t work = 0;
-    for (auto& layer : layers) {
-        if (layer.relationsDeclared) {
-            layer.relationsByTarget.clear();
-            std::set<std::pair<std::string, std::string>> names;
-            for (size_t i = 0; i < layer.relations.size(); ++i) {
-                auto const& value = layer.relations[i];
-                if (!pool.layer(layer.name)->producesFeatureType(value.ownerType_) ||
-                    value.name_.empty() || value.targetTypes_.empty() ||
-                    !names.emplace(value.ownerType_, value.name_).second ||
-                    unsigned(value.locality_) >
-                        unsigned(LayerSchema::RelationDeclaration::Locality::MayCrossContainer))
-                    throw std::invalid_argument("Invalid native forward relation declaration.");
-                for (auto const& target : value.targetTypes_) {
-                    if (target.empty())
-                        throw std::invalid_argument("Empty relation target type.");
-                    layer.relationsByTarget[target].push_back(i);
-                }
-            }
+    // Sort the canonical records themselves; the runtime lookup needs no mirror.
+    std::sort(
+        aliases.begin(),
+        aliases.end(),
+        [&](auto const& left, auto const& right)
+        {
+            return left.layer < right.layer ||
+                (left.layer == right.layer && text(left.key) < text(right.key));
+        });
+    size_t written = 0;
+    for (size_t n = 0; n < aliases.size(); ++n) {
+        auto value = aliases[n];
+        if (written && aliases[written - 1].layer == value.layer &&
+            text(aliases[written - 1].key) == text(value.key))
+        {
+            if (aliases[written - 1].id != value.id)
+                throw std::invalid_argument("Conflicting stored schema aliases.");
             continue;
         }
-        layer.relations.clear();
-        layer.relationsByTarget.clear();
-        layer.relationsKnown = false;
-        std::vector<TypeId> pending{layer.root};
-        auto produced = producedRoots(layer);
-        auto hasInventory = [&](TypeId id)
-        {
-            if (!valid(id))
-                return false;
-            auto value = annotation(types[id].annotations);
-            auto meta = schema_detail::mapgetMetadata(value);
-            return meta && meta->contains("relationDeclarations") &&
-                meta->value("relationDeclarationsKnown", true);
-        };
-        bool layerWide = valid(layer.root) && metaType(layer.root) != "Feature" &&
-            simfil::Schema::kindNameId(pool.type(layer.root)->kind()) !=
-                simfil::Schema::kindNameId(LayerSchema::FeatureKind) &&
-            hasInventory(layer.root);
-        layer.relationsKnown = layerWide ||
-            (!produced.empty() && std::ranges::all_of(produced, hasInventory));
-        pending.insert(pending.end(), produced.begin(), produced.end());
-        std::vector<bool> seen(types.size());
-        while (!pending.empty()) {
-            auto id = pending.back();
-            pending.pop_back();
-            if (!valid(id) || seen[id])
-                continue;
-            seen[id] = true;
-            ++work;
-            if (work > 64 * 1024 * 1024)
-                throw std::length_error("MapSchema relation-index work budget exceeded.");
-            auto annotations = annotation(types[id].annotations);
-            auto meta = annotations.find("x-mapget");
-            if (meta != annotations.end())
-                if (auto declarations = meta->find("relationDeclarations");
-                    declarations != meta->end())
-                {
-                    if (!declarations->is_array())
-                        throw std::invalid_argument("relationDeclarations must be an array.");
-                    for (auto const& input : *declarations) {
-                        LayerSchema::RelationDeclaration value{
-                            input.at("ownerType").get<std::string>(),
-                            input.at("name").get<std::string>(),
-                            input.at("targetTypes").get<std::vector<std::string>>(),
-                            input.value("complete", false)};
-                        auto locality = input.value("locality", "unknown");
-                        using Locality = LayerSchema::RelationDeclaration::Locality;
-                        if (locality == "same-container")
-                            value.locality_ = Locality::SameContainer;
-                        else if (locality == "may-cross-container")
-                            value.locality_ = Locality::MayCrossContainer;
-                        else if (locality != "unknown")
-                            throw std::invalid_argument("Invalid relation locality.");
-                        if (!pool.layer(layer.name)->producesFeatureType(value.ownerType_))
-                            continue;
-                        if (value.name_.empty() || value.targetTypes_.empty())
-                            throw std::invalid_argument("Incomplete forward relation declaration.");
-                        auto old = std::ranges::find_if(
-                            layer.relations,
-                            [&](auto const& d)
-                            { return d.ownerType_ == value.ownerType_ && d.name_ == value.name_; });
-                        if (old != layer.relations.end()) {
-                            if (old->targetTypes_ != value.targetTypes_ ||
-                                old->complete_ != value.complete_ ||
-                                old->locality_ != value.locality_)
-                                throw std::invalid_argument(
-                                    "Conflicting forward relation declaration.");
-                            continue;
-                        }
-                        auto index = layer.relations.size();
-                        for (auto const& target : value.targetTypes_)
-                            layer.relationsByTarget[target].push_back(index);
-                        layer.relations.push_back(std::move(value));
-                    }
-                }
-            auto append = [&](TypeId child)
-            {
-                if (++work > 64 * 1024 * 1024)
-                    throw std::length_error("MapSchema relation-index work budget exceeded.");
-                pending.push_back(child);
-            };
-            auto const& domain = *pool.type(id);
-            domain.forEachEnumerableField(
-                [&](auto, auto children)
-                {
-                    for (auto child : children)
-                        append(child);
-                });
-            domain.forEachElementSchema(append);
-            for (auto child : domain.alternatives())
-                append(child);
-        }
+        aliases[written++] = value;
     }
+    aliases.resize(written);
+    identityIndex.resize(identities.size());
+    for (size_t i = 0; i < identities.size(); ++i)
+        identityIndex[i] = uint16_t(i);
+    std::sort(
+        identityIndex.begin(),
+        identityIndex.end(),
+        [&](auto a, auto b) { return identities[a].name < identities[b].name; });
+    indexed = true;
+    relationTargetIndex.clear();
+    for (size_t index = 0; index < layers.size(); ++index) {
+        auto ids = relationIds(layers[index]);
+        for (auto id : ids)
+            for (auto target : relationTargets.range(relationRows[id].targets))
+                relationTargetIndex.push_back({target, uint16_t(index), id});
+    }
+    std::sort(
+        relationTargetIndex.begin(),
+        relationTargetIndex.end(),
+        [](auto const& a, auto const& b) {
+            return std::tuple{a.target, a.layer, a.relation} <
+                std::tuple{b.target, b.layer, b.relation};
+        });
 }
 
 void MapSchema::Impl::validate() const
@@ -1280,10 +1039,12 @@ void MapSchema::Impl::validate() const
         throw std::invalid_argument("Map metadata and generic type namespaces disagree.");
     auto type = [&](TypeId id)
     {
-        if (!id || id >= types.size() || !pool.type(id))
+        if (!id || id >= types.size() || !pool.schemaType(id))
             throw std::invalid_argument("Dangling MapSchema type reference.");
     };
-    size_t ownerEnd = 0;
+    std::set<simfil::ArrayIndex> ownerArrays;
+    size_t ownerCount = 0;
+    std::vector<bool> usedOwners(ownerRows.size());
     for (size_t id = 1; id < types.size(); ++id) {
         auto const& d = types[id];
         if (d.flags & ~8u)
@@ -1291,28 +1052,44 @@ void MapSchema::Impl::validate() const
         for (auto address :
              {d.key, d.pointer, d.metaType, d.zserioType, d.attributeType, d.attributeCode})
             text(address);
-        if (d.owners.count && d.owners.begin != ownerEnd)
-            throw std::invalid_argument("Attribute owner slices must be canonical.");
-        for (auto const& owner : d.owners.in(owners)) {
+        if (!owners.valid(d.owners) || !owners.valid(0) || owners.size(0) ||
+            (d.owners && !ownerArrays.insert(d.owners).second))
+            throw std::invalid_argument("Invalid or multiply-owned attribute owner array.");
+        auto count = owners.size(d.owners);
+        if (count > MaxEdges - ownerCount)
+            throw std::length_error("Attribute owner storage exceeds its edge budget.");
+        ownerCount += count;
+        if (d.owners && !count)
+            throw std::invalid_argument("Empty owner lists must use the reserved head.");
+        for (auto index : owners.range(d.owners)) {
+            if (index >= ownerRows.size() || usedOwners[index])
+                throw std::invalid_argument("Invalid or multiply-owned attribute owner row.");
+            usedOwners[index] = true;
+            auto const& owner = ownerRows[index];
+            if (!owner.feature || !owner.layer || !owner.name)
+                throw std::invalid_argument("Incomplete attribute owner row.");
             name(owner.feature);
             name(owner.layer);
             name(owner.name);
             if (owner.featureLayer)
                 name(owner.featureLayer);
         }
-        ownerEnd += d.owners.count;
         if (d.annotations)
             (void)annotation(d.annotations);
-        if (auto base = pool.baseSchema(TypeId(id))) {
-            if (base >= id || !(d.flags & 8) || pool.baseSchema(base) || (types[base].flags & 8) ||
-                simfil::Schema::kindNameId(pool.type(base)->kind()) !=
-                    simfil::Schema::kindNameId(LayerSchema::AttributeKind))
+        if (auto base = pool.schemaType(TypeId(id)).baseType().id()) {
+            if ((types[base].flags & QueryRootFlag) ||
+                ((d.flags & QueryRootFlag) &&
+                 (base >= id || metaType(base) != "Attribute" || !isAttributeType(base))))
                 throw std::invalid_argument(
                     "Query overlays must refer directly to a non-overlay attribute payload.");
         }
     }
-    if (ownerEnd != owners.size())
-        throw std::invalid_argument("Unreferenced attribute ownership storage.");
+    requireOwnedArrays(owners, ownerArrays);
+    for (size_t index = 0; index < ownerRows.size(); ++index) {
+        auto const& row = ownerRows[index];
+        if (!usedOwners[index] && (row.feature || row.layer || row.name || row.featureLayer))
+            throw std::invalid_argument("Unreferenced attribute owner row payload.");
+    }
     for (auto const& alias : aliases) {
         type(alias.id);
         text(alias.key);
@@ -1320,37 +1097,133 @@ void MapSchema::Impl::validate() const
             throw std::invalid_argument("Unknown schema alias layer.");
     }
     std::set<TypeId> overlays;
-    for (auto const& [context, root] : queryRoots) {
-        type(context.first);
-        type(context.second);
-        type(root);
-        if (pool.baseSchema(root) != context.second || !overlays.insert(root).second ||
-            simfil::Schema::kindNameId(pool.type(context.first)->kind()) !=
-                simfil::Schema::kindNameId(LayerSchema::FeatureKind))
+    std::optional<std::pair<TypeId, TypeId>> previousContext;
+    for (auto const& query : queryRoots) {
+        auto context = std::pair{query.feature, query.attribute};
+        type(query.feature);
+        type(query.attribute);
+        type(query.root);
+        if (query.reserved || (previousContext && *previousContext >= context) ||
+            pool.schemaType(query.root).baseType().id() != query.attribute ||
+            !overlays.insert(query.root).second ||
+            simfil::SchemaType::kindNameId(pool.schemaType(query.feature).kind()) !=
+                simfil::SchemaType::kindNameId(LayerSchema::FeatureKind))
             throw std::invalid_argument("Invalid query overlay binding.");
+        previousContext = context;
     }
     for (size_t id = 1; id < types.size(); ++id)
-        if (bool(pool.baseSchema(TypeId(id))) != overlays.contains(TypeId(id)))
+        if (bool(types[id].flags & QueryRootFlag) != overlays.contains(TypeId(id)))
             throw std::invalid_argument(
                 "Query overlay bindings must cover every overlay exactly once.");
-    std::set<std::string> names;
-    for (auto const& layer : layers) {
-        if (layer.name.empty() || !names.insert(layer.name).second ||
-            unsigned(layer.type) > unsigned(LayerType::SourceData))
+    if (!identityCompositions.valid(0) || identityCompositions.size(0) || !identityParts.valid(0) ||
+        identityParts.size(0))
+        throw std::invalid_argument("Invalid empty identity arena head.");
+    std::set<simfil::ArrayIndex> compositionArrays, partArrays;
+    size_t identityEdges = 0;
+    std::set<std::string_view> identityNames;
+    for (size_t index = 0; index < identities.size(); ++index) {
+        auto const& record = identities[index];
+        auto identityName = name(record.name);
+        validateIdentifierName("feature type name", identityName, ".");
+        if (!record.compositions || !identityCompositions.valid(record.compositions) ||
+            !compositionArrays.insert(record.compositions).second)
+            throw std::invalid_argument("Invalid or multiply-owned identity composition array.");
+        auto compositions = identityCompositions.range(record.compositions);
+        if (identityName.empty() || record.reserved || !identityNames.insert(identityName).second ||
+            compositions.empty() || compositions.size() > 256)
+            throw std::invalid_argument("Invalid map-wide feature identity.");
+        if (compositions.size() > MaxEdges - identityEdges)
+            throw std::length_error("Feature identity storage exceeds its edge budget.");
+        identityEdges += compositions.size();
+        for (auto handle : compositions) {
+            // Only the reserved empty head may be shared across immutable definitions.
+            if (!identityParts.valid(handle) || (handle && !partArrays.insert(handle).second))
+                throw std::invalid_argument("Invalid or multiply-owned identity part array.");
+            auto parts = identityParts.range(handle);
+            if (parts.size() > MaxEdges - identityEdges)
+                throw std::length_error("Feature identity storage exceeds its edge budget.");
+            identityEdges += parts.size();
+            if ((handle && parts.empty()) || parts.size() > 16)
+                throw std::invalid_argument(
+                    "Feature ID parts require the canonical empty head or 1..16 parts.");
+            std::set<std::string_view> labels;
+            for (auto const& part : parts) {
+                auto label = name(part.name);
+                validateIdentifierName("id-part label", label, ".");
+                if (label.empty() || !labels.insert(label).second || part.flags & ~uint8_t{3} ||
+                    part.datatype > unsigned(IdPartDataType::STR))
+                    throw std::invalid_argument("Invalid or duplicate feature ID part.");
+                (void)this->text(part.description);
+            }
+        }
+    }
+    if (compositionArrays.size() !=
+            identityCompositions.size() - 1 + identityCompositions.singleton_handle_count() ||
+        partArrays.size() != identityParts.size() - 1 + identityParts.singleton_handle_count())
+        throw std::invalid_argument("Unreferenced identity arena storage.");
+    std::set<StringId> layerNames;
+    std::set<simfil::ArrayIndex> producedArrays, relationArrays, targetArrays;
+    std::vector<bool> usedRelations(relationRows.size());
+    size_t relationEdges = 0;
+    for (size_t index = 0; index < layers.size(); ++index) {
+        auto const& layer = layers[index];
+        if (!layer.name || name(layer.name).empty() || !layerNames.insert(layer.name).second ||
+            layer.type > unsigned(LayerType::SourceData) || layer.reserved ||
+            layer.flags & ~(RelationsKnownFlag | RelationsDeclaredFlag))
             throw std::invalid_argument("Invalid or duplicate schema layer.");
         if (layer.root)
             type(layer.root);
-        if (layer.features.size() != layer.featureRoots.size() ||
-            layer.features.size() != layer.produced.size())
-            throw std::invalid_argument("Invalid feature identity column lengths.");
-        std::set<std::string> types;
-        for (size_t i = 0; i < layer.features.size(); ++i) {
-            auto const& feature = layer.features[i];
-            (void)FeatureTypeInfo::fromJson(feature.toJson());
-            if (!types.insert(feature.name_).second || layer.produced[i] > 1)
-                throw std::invalid_argument("Invalid or duplicate feature declaration.");
-            type(layer.featureRoots[i]);
+        if (!producedFeatures.valid(layer.produced) ||
+            (layer.produced && !producedArrays.insert(layer.produced).second) ||
+            !relationLists.valid(layer.relations) ||
+            (layer.relations && !relationArrays.insert(layer.relations).second))
+            throw std::invalid_argument("Invalid or multiply-owned layer memberships.");
+        std::set<StringId> producedNames;
+        std::string_view previous;
+        for (auto const& produced : featureRoots(layer)) {
+            auto spelling = name(produced.name);
+            if (!identityNames.contains(spelling) || !producedNames.insert(produced.name).second ||
+                (!previous.empty() && spelling <= previous))
+                throw std::invalid_argument("Invalid or unordered produced feature identity.");
+            previous = spelling;
+            type(produced.root);
         }
+        std::set<std::pair<StringId, StringId>> declarations;
+        for (auto id : relationIds(layer)) {
+            if (id >= relationRows.size() || usedRelations[id])
+                throw std::invalid_argument("Invalid or multiply-owned relation row.");
+            usedRelations[id] = true;
+            auto const& row = relationRows[id];
+            if (row.layer != index || !row.owner || !row.name || row.flags & ~uint8_t{1} ||
+                row.locality >
+                    unsigned(LayerSchema::RelationDeclaration::Locality::MayCrossContainer) ||
+                !pool.layer(name(layer.name))->producesFeatureType(name(row.owner)) ||
+                !declarations.emplace(row.owner, row.name).second ||
+                !relationTargets.valid(row.targets) || !row.targets ||
+                !targetArrays.insert(row.targets).second)
+                throw std::invalid_argument("Invalid native forward relation declaration.");
+            name(row.name);
+            auto targets = relationTargets.range(row.targets);
+            if (targets.empty() || targets.size() > MaxEdges - relationEdges)
+                throw std::length_error("Invalid or excessive relation target storage.");
+            relationEdges += targets.size();
+            std::string_view previousTarget;
+            for (auto target : targets) {
+                auto spelling = name(target);
+                if (spelling.empty() || (!previousTarget.empty() && spelling <= previousTarget))
+                    throw std::invalid_argument("Invalid or unordered relation target names.");
+                previousTarget = spelling;
+            }
+        }
+    }
+    requireOwnedArrays(producedFeatures, producedArrays);
+    requireOwnedArrays(relationLists, relationArrays);
+    requireOwnedArrays(relationTargets, targetArrays);
+    for (size_t index = 0; index < relationRows.size(); ++index) {
+        auto const& row = relationRows[index];
+        if (!usedRelations[index] &&
+            (row.owner || row.name || row.targets || row.layer || row.flags || row.locality))
+            throw std::invalid_argument("Unreferenced relation row payload.");
     }
 }
 
@@ -1365,7 +1238,7 @@ void MapSchema::Impl::validatePool() const
         model.objectMemberStorage().singleton_handle_count() ||
         model.arrayMemberStorage().singleton_handle_count() || stats.objectSchemas.logicalBytes ||
         stats.arraySchemas.logicalBytes || stats.qualifiedScalars.logicalBytes ||
-        stats.bitmasks.logicalBytes || stats.schemaBindings.logicalBytes)
+        stats.bitmasks.logicalBytes || stats.schemaOwners.logicalBytes)
         throw std::invalid_argument(
             "MapSchema payload may not contain generic compound/qualified values.");
     if (model.numRoots() != layers.size())
@@ -1473,91 +1346,66 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
     }
     else
         s.object(types);
-    vector(s, owners, std::min(MaxEdges, budget / sizeof(OwnerData)));
-    vector(s, aliases, std::min(MaxEdges, budget / sizeof(AliasData)));
-    container(
-        s,
-        layers,
-        UINT16_MAX,
-        memory,
-        [&](auto& a, Layer& layer)
-        {
-            text(a, layer.name);
-            a.value4b(layer.type);
-            a.value2b(layer.root);
-            container(
-                a,
-                layer.features,
-                UINT16_MAX,
-                memory,
-                [&](auto& b, FeatureTypeInfo& info)
-                {
-                    text(b, info.name_);
-                    container(
-                        b,
-                        info.uniqueIdCompositions_,
-                        UINT16_MAX,
-                        memory,
-                        [&](auto& c, auto& composition)
-                        {
-                            container(
-                                c,
-                                composition,
-                                16,
-                                memory,
-                                [&](auto& d, IdPart& part)
-                                {
-                                    text(d, part.idPartLabel_);
-                                    text(d, part.description_);
-                                    d.value4b(part.datatype_);
-                                    d.boolValue(part.isSynthetic_);
-                                    d.boolValue(part.isOptional_);
-                                });
-                        });
-                });
-            vector(a, layer.featureRoots, UINT16_MAX);
-            vector(a, layer.produced, UINT16_MAX);
-            a.boolValue(layer.relationsKnown);
-            container(
-                a,
-                layer.relations,
-                MaxEdges,
-                memory,
-                [&](auto& b, LayerSchema::RelationDeclaration& relation)
-                {
-                    text(b, relation.ownerType_);
-                    text(b, relation.name_);
-                    container(
-                        b,
-                        relation.targetTypes_,
-                        UINT16_MAX,
-                        memory,
-                        [&](auto& c, std::string& target) { text(c, target); });
-                    b.boolValue(relation.complete_);
-                    b.value4b(relation.locality_);
-                });
-            if constexpr (simfil::detail::bitsery_input_archive<S>)
-                layer.relationsDeclared = true;
-        });
-    std::vector<std::array<TypeId, 3>> queries;
-    if constexpr (!simfil::detail::bitsery_input_archive<S>)
-        for (auto [context, root] : queryRoots)
-            queries.push_back({context.first, context.second, root});
-    container(
-        s,
-        queries,
-        UINT16_MAX,
-        memory,
-        [](auto& a, auto& v)
-        {
-            for (auto& id : v)
-                a.value2b(id);
-        });
     if constexpr (simfil::detail::bitsery_input_archive<S>) {
-        for (auto const& v : queries)
-            if (!queryRoots.emplace(std::pair{v[0], v[1]}, v[2]).second)
-                throw std::invalid_argument("Duplicate query-root binding.");
+        // Bound the existing column/arena wire records before their codecs allocate.
+        auto start = s.adapter().currentReadPos();
+        auto column = [&](size_t width, size_t limit)
+        {
+            uint64_t bytes = 0;
+            s.value8b(bytes);
+            if (bytes > memory || bytes > simfil::bitsery_max_column_payload_bytes ||
+                bytes % width || bytes / width > limit ||
+                !simfil::detail::check_bitsery_payload_available(s.adapter(), size_t(bytes)))
+                throw std::length_error("MapSchema metadata exceeds its column/arena budget.");
+            memory -= size_t(bytes);
+            s.adapter().currentReadPos(s.adapter().currentReadPos() + size_t(bytes));
+        };
+        auto arena = [&](size_t width)
+        {
+            column(8, MaxEdges + 1);  // compact heads
+            column(width, MaxEdges);  // regular values
+            column(width, MaxEdges);  // singleton values
+            column(1, MaxEdges);      // singleton occupancy
+        };
+        column(sizeof(OwnerData), MaxEdges);
+        arena(sizeof(uint32_t));
+        column(sizeof(AliasData), MaxEdges);
+        column(sizeof(IdentityData), UINT16_MAX);
+        arena(sizeof(simfil::ArrayIndex));
+        arena(sizeof(IdentityPartData));
+        column(sizeof(LayerData), UINT16_MAX);
+        arena(sizeof(ProducedRootData));
+        column(sizeof(RelationData), MaxEdges);
+        arena(sizeof(uint32_t));
+        arena(sizeof(StringId));
+        s.adapter().currentReadPos(start);
     }
+    s.object(ownerRows);
+    s.ext(owners, bitsery::ext::ArrayArenaExt{});
+    s.object(aliases);
+    s.object(identities);
+    s.ext(identityCompositions, bitsery::ext::ArrayArenaExt{});
+    s.ext(identityParts, bitsery::ext::ArrayArenaExt{});
+    s.object(layers);
+    s.ext(producedFeatures, bitsery::ext::ArrayArenaExt{});
+    s.object(relationRows);
+    s.ext(relationLists, bitsery::ext::ArrayArenaExt{});
+    s.ext(relationTargets, bitsery::ext::ArrayArenaExt{});
+    if constexpr (simfil::detail::bitsery_input_archive<S>)
+        if (s.adapter().error() != bitsery::ReaderError::NoError)
+            throw std::invalid_argument("Malformed MapSchema metadata columns/arenas.");
+    if constexpr (simfil::detail::bitsery_input_archive<S>) {
+        uint64_t bytes = 0;
+        s.value8b(bytes);
+        if (bytes % sizeof(QueryData) || bytes / sizeof(QueryData) > simfil::MaxTypeId ||
+            bytes > memory || bytes > budget)
+            throw std::length_error("Query contexts exceed their column budget.");
+        memory -= size_t(bytes);
+        if (!queryRoots.read_payload_from_bitsery(s.adapter(), size_t(bytes)))
+            throw std::invalid_argument("Truncated query context column.");
+    }
+    else
+        s.object(queryRoots);
     container(
         s,
         constituents,
@@ -1586,7 +1434,6 @@ void MapSchema::Impl::readBody(std::vector<uint8_t> const& input, size_t budget)
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     bitsery::Deserializer<Adapter> s(Adapter(input.begin(), input.end()));
-    builder.reset();
     readWrite(s, budget);
     std::string generic;
     size_t memory = budget;
@@ -1604,7 +1451,9 @@ void MapSchema::finalize()
     if (finalized())
         return;
     requireMutable();
-    // After packing has started, failures poison only this unpublished builder.
+    if (schema_->metadataAppendDepth)
+        throw std::logic_error("Cannot publish a schema from an active metadata append.");
+    // Failed publication never exposes a partially validated owner.
     // Callers retry getOrBuild with a fresh graph, never publish partially frozen state.
     schema_->compile();
     schema_->validate();
@@ -1614,7 +1463,7 @@ void MapSchema::finalize()
     schema_->validatePool();
     std::ostringstream body(std::ios::binary);
     schema_->writeBody(body);
-    schema_->identity = "mapget-schema:sha256:" + picosha2::hash256_hex_string(body.str());
+    setIdentity("mapget-schema:sha256:" + picosha2::hash256_hex_string(body.str()));
     ModelPool::freeze();
     schema_->frozen = true;
     schema_->summarize();
@@ -1636,7 +1485,7 @@ tl::expected<void, simfil::Error> MapSchema::write(std::ostream& output) const
         uint32_t version = Impl::CodecVersion;
         s.value4b(magic);
         s.value4b(version);
-        auto id = schema_->identity;
+        auto id = std::string(schemaId());
         s.text1b(id, 128);
         s.text1b(payload, UINT32_MAX);
         s.adapter().flush();
@@ -1689,7 +1538,7 @@ MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, siz
             result->schema_->writeBody(canonical);
             if (canonical.str() != payload)
                 throw std::invalid_argument("Noncanonical MapSchema payload.");
-            result->schema_->identity = identity;
+            result->setIdentity(identity);
             result->ModelPool::freeze();
             result->schema_->frozen = true;
             result->schema_->summarize();
@@ -1801,21 +1650,9 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
     return future.get();
 }
 
-simfil::Schema const* MapSchema::type(TypeId id) const
-{
-    if (!simfil::SchemaPool::finalized())
-        throw std::logic_error("Schema query requires a finalized graph.");
-    return simfil::SchemaPool::type(id);
-}
-std::shared_ptr<simfil::SchemaBinding const> MapSchema::binding() const
-{
-    if (!finalized())
-        throw std::logic_error("Schema binding requires a finalized graph.");
-    return simfil::SchemaPool::binding(std::string(schemaId()));
-}
 simfil::ModelNode::Ptr MapSchema::typeNode(TypeId id) const
 {
-    if (!type(id))
+    if (!schemaType(id))
         return {};
     return simfil::SchemaPool::typeNode(id);
 }
@@ -1834,6 +1671,9 @@ std::vector<std::string> MapSchema::checkForErrors() const
 tl::expected<void, simfil::Error>
 MapSchema::resolve(simfil::ModelNode const& node, ResolveFn const& callback) const
 {
+    if (node.addr().column() == Impl::AttributeOwner ||
+        node.addr().column() == Impl::AttributeOwners)
+        return resolveAttributeOwners(node, callback);
     if (node.addr().column() == Impl::Layers) {
         if (node.addr().index() >= schema_->layers.size())
             return tl::unexpected(simfil::Error{
@@ -1843,7 +1683,7 @@ MapSchema::resolve(simfil::ModelNode const& node, ResolveFn const& callback) con
         callback(*view);
         return {};
     }
-    return ModelPool::resolve(node, callback);
+    return SchemaPool::resolve(node, callback);
 }
 LayerSchema::Ptr
 resolveInternal(simfil::res::tag<LayerSchema>, MapSchema const& pool, simfil::ModelNode const& node)
@@ -1854,339 +1694,16 @@ resolveInternal(simfil::res::tag<LayerSchema>, MapSchema const& pool, simfil::Mo
     return LayerSchema::Ptr::make(pool.shared_from_this(), node.addr());
 }
 
-schema_detail::SchemaBuilder MapSchema::Impl::exportBuilder() const
-{
-    schema_detail::SchemaBuilder result;
-    result.schemas_.resize(types.size());
-    result.entriesById_.resize(types.size());
-    auto scalarJson = [](simfil::Schema::NumericValue const& value)
-    {
-        return std::visit([](auto v) { return nlohmann::json(v); }, value);
-    };
-    for (size_t i = 1; i < types.size(); ++i) {
-        auto const& row = types[i];
-        auto const& view = *pool.type(i);
-        auto& out = result.schemas_[i];
-        out.id_ = TypeId(i);
-        out.kind_ = view.kind();
-        out.entry_ = {
-            TypeId(i),
-            std::string(text(row.key)),
-            std::string(text(row.pointer)),
-            std::string(text(row.metaType))};
-        result.entriesById_[i] = out.entry_;
-        out.typeName_ = view.typeName();
-        out.zserioType_ = text(row.zserioType);
-        out.attributeType_ = text(row.attributeType);
-        out.attributeTypeCode_ = text(row.attributeCode);
-        out.queryRoot_ = row.flags & 8;
-        out.open_ = view.open();
-        out.nullable_ = view.nullable();
-        out.composition_ = view.composition();
-        for (auto alternative : view.alternatives())
-            out.alternatives_.push_back(alternative);
-        view.forEachElementSchema([&](TypeId child) { out.elementSchemas_.push_back(child); });
-        view.forEachDirectField(
-            [&](StringId field, auto children)
-            {
-                auto n = std::string(name(field));
-                out.directFields_.push_back(n);
-                out.childSchemas_[n] = {children.begin(), children.end()};
-                // The generic pool represents an unknown declaration as a zero
-                // edge; legacy JSON uses unknownEdge rather than a dangling ref 0.
-                if (children.size() == 1 && children.front() == simfil::NoTypeId)
-                    out.childSchemas_[n].clear();
-                if (pool.fieldMultimap(TypeId(i), field))
-                    out.multimapFields_.insert(n);
-                if (auto required = view.fieldRequired(field))
-                    out.required_[n] = *required;
-                if (view.fieldRole(field) == simfil::Schema::FieldRole::Context)
-                    out.contextFields_.insert(n);
-            });
-        for (auto symbol : view.directEnumSymbols())
-            out.directEnumSymbols_.push_back(std::string(name(symbol)));
-        out.enumValues_ = {view.enumValues().begin(), view.enumValues().end()};
-        out.attributeOwners_ = attributeOwners(TypeId(i));
-        out.annotations_ = annotation(row.annotations);
-        if (auto numeric = view.numericDomain()) {
-            auto& json = out.annotations_["x-mapget"]["numericDomain"];
-            json = {
-                {"encoding", numeric->encoding},
-                {"unit", numeric->unit},
-                {"scale", numeric->scale},
-                {"offset", numeric->offset},
-                {"complete", numeric->complete}};
-            if (numeric->minimum)
-                json["minimum"] = scalarJson(*numeric->minimum);
-            if (numeric->maximum)
-                json["maximum"] = scalarJson(*numeric->maximum);
-            for (auto const& range : numeric->ordinaryRanges)
-                json["ordinaryRanges"].push_back(
-                    {{"minimum", scalarJson(range.min)}, {"maximum", scalarJson(range.max)}});
-        }
-        view.forEachNamedValue(
-            [&](auto const& value)
-            {
-                static constexpr std::string_view roles[]{"constant", "special", "flag"};
-                static constexpr std::string_view
-                    meanings[]{"ordinary", "unknown", "variable", "unbounded", "saturated"};
-                out.annotations_["x-mapget"]["namedValues"].push_back(
-                    {{"name", value.name},
-                     {"value", std::visit([](auto v) { return nlohmann::json(v); }, value.value)},
-                     {"role", roles[unsigned(value.role)]},
-                     {"meaning", meanings[unsigned(value.meaning)]},
-                     {"deprecated", value.deprecated},
-                     {"removed", value.removed}});
-                if (value.rawValue)
-                    out.annotations_["x-mapget"]["namedValues"].back()["rawValue"] =
-                        std::visit([](auto raw) { return nlohmann::json(raw); }, *value.rawValue);
-            });
-        if (view.isBitmask())
-            out.annotations_["x-mapget"]["bitWidth"] = view.bitWidth();
-    }
-    for (auto const& [key, id] : globalAliases)
-        result.idsByKey_.emplace(key, id);
-    return result;
-}
-
-nlohmann::json LayerSchema::toJsonSchema() const
-{
-    auto const& graph = *mapSchema()->schema_;
-    auto compiled = graph.builder ? *graph.builder : graph.exportBuilder();
-    auto const& layer = graph.layerAt(addr_.index());
-    for (auto& type : compiled.schemas_)
-        std::erase_if(
-            type.attributeOwners_,
-            [&](auto const& owner)
-            { return !owner.featureLayer_.empty() && owner.featureLayer_ != layer.name; });
-    if (graph.builder)
-        for (auto const& [key, id] : layer.buildAliases)
-            compiled.idsByKey_[key] = id;
-    else
-        for (auto const& [key, id] : layer.aliases)
-            compiled.idsByKey_[std::string(key)] = id;
-    std::vector<TypeId> roots = layer.featureRoots;
-    if (layer.root)
-        roots.push_back(layer.root);
-    // Layer-local aliases can name converter-only or reference-only contracts.
-    if (graph.builder)
-        for (auto const& [_, id] : layer.buildAliases)
-            roots.push_back(id);
-    else
-        for (auto const& [_, id] : layer.aliases)
-            roots.push_back(id);
-    auto json = compiled.exportTypes(roots);
-    // Native forward declarations are encoded only at the JSON interchange boundary.
-    if (layer.relationsDeclared) {
-        auto declarations = nlohmann::json::array();
-        for (auto const& relation : layer.relations) {
-            static constexpr std::string_view locality[]{
-                "unknown",
-                "same-container",
-                "may-cross-container"};
-            declarations.push_back(
-                {{"ownerType", relation.ownerType_},
-                 {"name", relation.name_},
-                 {"targetTypes", relation.targetTypes_},
-                 {"complete", relation.complete_},
-                 {"locality", locality[unsigned(relation.locality_)]}});
-        }
-        for (size_t i = 0; i < layer.featureRoots.size(); ++i) {
-            auto root = layer.featureRoots[i];
-            auto& metadata = json["definitions"][std::to_string(root)]["x-mapget"];
-            metadata["relationDeclarations"] = nlohmann::json::array();
-            for (auto const& declaration : declarations)
-                if (declaration["ownerType"] == layer.features[i].name_)
-                    metadata["relationDeclarations"].push_back(declaration);
-            metadata["relationDeclarationsKnown"] = layer.relationsKnown;
-        }
-    }
-    json.erase("anyOf");
-    if (layer.root)
-        json["$ref"] = "#/definitions/" + std::to_string(layer.root);
-    else
-        for (auto root : graph.producedRoots(layer))
-            json["anyOf"].push_back({{"$ref", "#/definitions/" + std::to_string(root)}});
-    return json;
-}
-
-LayerSchema::Entry const* LayerSchema::getSchema(std::string_view key) const
-{
-    auto id = schemaId(key);
-    if (!id)
-        id = featureSchema(key);
-    auto const& graph = *mapSchema()->schema_;
-    if (graph.builder)
-        throw std::logic_error(
-            "getSchema() requires finalization; use schemaId() during construction.");
-    return id && id < graph.entries.size() ? &graph.entries[id] : nullptr;
-}
-bool LayerSchema::hasSchema(TypeId id) const
-{
-    return mapSchema()->schema_->valid(id);
-}
-Kind LayerSchema::kind(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (graph.builder)
-        return graph.builder->kind(id);
-    return graph.valid(id) ? graph.pool.type(id)->kind() : Kind::Unknown;
-}
-std::string_view LayerSchema::typeName(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return {};
-    return graph.builder ?
-        std::string_view(graph.builder->schemas_[id].typeName_) :
-        graph.pool.type(id)->typeName();
-}
-Composition LayerSchema::composition(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return Composition::None;
-    return graph.builder ?
-        graph.builder->schemas_[id].composition_ :
-        graph.pool.type(id)->composition();
-}
-std::span<TypeId const> LayerSchema::alternatives(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return {};
-    return graph.builder ?
-        std::span<TypeId const>(graph.builder->schemas_[id].alternatives_) :
-        graph.pool.type(id)->alternatives();
-}
-std::span<simfil::ScalarValueType const> LayerSchema::enumValues(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return {};
-    return graph.builder ?
-        std::span<simfil::ScalarValueType const>(graph.builder->schemas_[id].enumValues_) :
-        graph.pool.type(id)->enumValues();
-}
-bool LayerSchema::open(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return true;
-    return graph.builder ? graph.builder->schemas_[id].open_ : graph.pool.type(id)->open();
-}
-std::optional<bool> LayerSchema::nullable(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return {};
-    return graph.builder ? graph.builder->schemas_[id].nullable_ : graph.pool.type(id)->nullable();
-}
-std::optional<bool> LayerSchema::fieldRequired(TypeId id, std::string_view field) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return {};
-    if (graph.builder) {
-        auto const& required = graph.builder->schemas_[id].required_;
-        if (auto it = required.find(field); it != required.end())
-            return it->second;
-        return {};
-    }
-    return graph.pool.type(id)->fieldRequired(graph.pool.strings()->get(field));
-}
-bool LayerSchema::reachabilityComplete(TypeId id) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    return !graph.builder && graph.valid(id) && graph.pool.type(id)->reachabilityComplete();
-}
-
-simfil::Schema::FieldRole LayerSchema::fieldRole(TypeId id, std::string_view field) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.valid(id))
-        return simfil::Schema::FieldRole::Data;
-    if (graph.builder)
-        return graph.builder->schemas_[id].contextFields_.contains(field) ?
-            simfil::Schema::FieldRole::Context :
-            simfil::Schema::FieldRole::Data;
-    return graph.pool.type(id)->fieldRole(graph.pool.strings()->get(field));
-}
-bool LayerSchema::canHaveField(TypeId id, std::string_view field) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (graph.builder || !graph.valid(id))
-        return true;
-    return graph.pool.type(id)->canHaveField(graph.pool.strings()->get(field));
-}
-bool LayerSchema::canHaveEnumSymbol(TypeId id, std::string_view symbol) const
-{
-    auto const& graph = *mapSchema()->schema_;
-    if (graph.builder || !graph.valid(id))
-        return false;
-    return graph.pool.type(id)->canHaveEnumSymbol(graph.pool.strings()->get(symbol));
-}
-std::span<std::string_view const> LayerSchema::directFields(TypeId id) const
-{
-    auto const& g = *mapSchema()->schema_;
-    return !g.builder && g.valid(id) ? g.pool.fieldNames(id) : std::span<std::string_view const>{};
-}
-std::span<std::string_view const> LayerSchema::nestedFields(TypeId id) const
-{
-    auto const& g = *mapSchema()->schema_;
-    return !g.builder && g.valid(id) ?
-        g.pool.fieldNames(id, true) :
-        std::span<std::string_view const>{};
-}
-std::span<std::string_view const> LayerSchema::directEnumSymbols(TypeId id) const
-{
-    auto const& g = *mapSchema()->schema_;
-    return !g.builder && g.valid(id) ? g.pool.enumNames(id) : std::span<std::string_view const>{};
-}
-std::span<std::string_view const> LayerSchema::nestedEnumSymbols(TypeId id) const
-{
-    auto const& g = *mapSchema()->schema_;
-    return !g.builder && g.valid(id) ?
-        g.pool.enumNames(id, true) :
-        std::span<std::string_view const>{};
-}
 std::string_view LayerSchema::attributeTypeCode(TypeId id) const
 {
     auto const& g = *mapSchema()->schema_;
     if (!g.valid(id))
         return {};
-    return g.builder ?
-        std::string_view(g.builder->schemas_[id].attributeTypeCode_) :
-        g.text(g.types[id].attributeCode);
-}
-void LayerSchema::forEachDirectField(
-    TypeId id,
-    std::function<void(std::string_view, std::span<TypeId const>)> const& fn) const
-{
-    auto const& g = *mapSchema()->schema_;
-    if (!g.valid(id))
-        return;
-    if (g.builder)
-        g.builder->forEachDirectField(id, fn);
-    else
-        g.pool.type(id)
-            ->forEachDirectField([&](StringId name, auto children) { fn(g.name(name), children); });
-}
-void LayerSchema::forEachElementSchema(TypeId id, std::function<void(TypeId)> const& fn) const
-{
-    auto const& g = *mapSchema()->schema_;
-    if (!g.valid(id))
-        return;
-    if (g.builder)
-        g.builder->forEachElementSchema(id, fn);
-    else
-        g.pool.type(id)->forEachElementSchema(fn);
+    return g.text(g.data(id).attributeCode);
 }
 TypeId LayerSchema::attributeQuerySchema(std::string_view feature, TypeId attribute) const
 {
-    auto const& roots = mapSchema()->schema_->queryRoots;
-    auto it = roots.find({featureSchema(feature), attribute});
-    return it == roots.end() ? 0 : it->second;
+    return mapSchema()->schema_->findQueryRoot(featureSchema(feature), attribute);
 }
 TypeId LayerSchema::featureSchema(std::string_view feature) const
 {
@@ -2205,18 +1722,14 @@ std::string_view MapSchema::Impl::metaType(TypeId id) const
 {
     if (!valid(id))
         return {};
-    return builder ?
-        std::string_view(builder->schemas_[id].entry_.metaType_) :
-        text(types[id].metaType);
+    return text(data(id).metaType);
 }
 std::vector<LayerSchema::AttributePathOwner> MapSchema::Impl::attributeOwners(TypeId id) const
 {
     if (!valid(id))
         return {};
-    if (builder)
-        return builder->schemas_[id].attributeOwners_;
     std::vector<LayerSchema::AttributePathOwner> result;
-    for (auto const& owner : types[id].owners.in(owners))
+    for (auto const& owner : ownerSites(data(id).owners))
         result.push_back(
             {std::string(name(owner.feature)),
              std::string(name(owner.layer)),
@@ -2229,42 +1742,34 @@ TypeId
 MapSchema::Impl::childSchema(TypeId root, std::string_view field, std::optional<Kind> preferred)
     const
 {
-    if (builder)
-        return builder->childSchema(root, field, preferred);
     std::vector<TypeId> pending{root};
-    std::vector<bool> seen(types.size());
-    TypeId fallback = 0;
-    auto fieldId = pool.strings()->get(field);
+    std::vector<bool> seen(pool.typeCount() + 1);
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
         if (!valid(id) || seen[id])
             continue;
         seen[id] = true;
-        auto const& view = *pool.type(id);
+        auto view = pool.schemaType(id);
         for (auto alternate : view.alternatives())
             pending.push_back(alternate);
-        if (hasAffinity(view.kind(), simfil::ValueType::Array) &&
-            view.composition() == Composition::None)
-            view.forEachElementSchema([&](TypeId item) { pending.push_back(item); });
-        TypeId selected = 0;
-        view.forEachDirectField(
-            [&](StringId name, auto children)
-            {
-                if (name != view.canonicalField(fieldId))
-                    return;
-                for (auto child : children) {
-                    if (!child)
-                        continue;
-                    if (!fallback)
-                        fallback = child;
-                    if (!selected &&
-                        (!preferred || matchesKind(pool.type(child)->kind(), *preferred)))
-                        selected = child;
-                }
-            });
-        if (selected || fallback)
-            return selected ? selected : fallback;
+        if (view.hasAffinity(simfil::ValueType::Array) && view.composition() == Composition::None)
+            for (auto item : view.elements())
+                pending.push_back(item);
+        auto occurrence = view.field(field);
+        if (!occurrence)
+            continue;
+        TypeId fallback = 0;
+        for (auto child : occurrence.types()) {
+            if (!child)
+                continue;
+            if (!fallback)
+                fallback = child;
+            if (!preferred || matchesKind(pool.schemaType(child).kind(), *preferred))
+                return child;
+        }
+        if (fallback)
+            return fallback;
     }
     return 0;
 }
@@ -2382,79 +1887,9 @@ void LayerSchema::setJsonSchemaAnnotations(simfil::TypeId id, nlohmann::json ann
     mutableOwner().setJsonSchemaAnnotations(id, std::move(annotations));
 }
 
-void LayerSchema::addFieldSchema(
-    simfil::TypeId parent,
-    std::string fieldName,
-    simfil::TypeId child,
-    bool multimap)
-{
-    mutableOwner().addFieldSchema(parent, std::move(fieldName), child, multimap);
-}
-
-void LayerSchema::addElementSchema(simfil::TypeId parent, simfil::TypeId child)
-{
-    mutableOwner().addElementSchema(parent, child);
-}
-
-void LayerSchema::addEnumSymbol(simfil::TypeId schemaId, std::string symbolName)
-{
-    mutableOwner().addEnumSymbol(schemaId, std::move(symbolName));
-}
-
-void LayerSchema::addEnumSymbols(simfil::TypeId schemaId, std::span<const std::string> symbolNames)
-{
-    mutableOwner().addEnumSymbols(schemaId, symbolNames);
-}
-
-void LayerSchema::addEnumValue(simfil::TypeId schemaId, simfil::ScalarValueType value)
-{
-    mutableOwner().addEnumValue(schemaId, std::move(value));
-}
-
-void LayerSchema::setComposition(simfil::TypeId schemaId, Composition composition)
-{
-    mutableOwner().setComposition(schemaId, composition);
-}
-
-void LayerSchema::addAlternative(simfil::TypeId schemaId, simfil::TypeId alternative)
-{
-    mutableOwner().addAlternative(schemaId, alternative);
-}
-
-void LayerSchema::setTypeName(simfil::TypeId schemaId, std::string name)
-{
-    mutableOwner().setTypeName(schemaId, std::move(name));
-}
-
-void LayerSchema::setOpen(simfil::TypeId schemaId, bool open)
-{
-    mutableOwner().setOpen(schemaId, open);
-}
-
-void LayerSchema::setNullable(simfil::TypeId schemaId, std::optional<bool> nullable)
-{
-    mutableOwner().setNullable(schemaId, nullable);
-}
-
-void LayerSchema::setFieldRequired(
-    simfil::TypeId schemaId,
-    std::string field,
-    std::optional<bool> required)
-{
-    mutableOwner().setFieldRequired(schemaId, std::move(field), required);
-}
-
 void LayerSchema::setZserioType(simfil::TypeId schemaId, std::string zserioType)
 {
     mutableOwner().setZserioType(schemaId, std::move(zserioType));
-}
-
-void LayerSchema::setFieldRole(
-    simfil::TypeId schemaId,
-    std::string field,
-    simfil::Schema::FieldRole role)
-{
-    mutableOwner().setFieldRole(schemaId, std::move(field), role);
 }
 
 void LayerSchema::setAttributeMetadata(
@@ -2522,8 +1957,6 @@ std::string LayerSchema::attributeKey(
 std::vector<LayerSchema::NamedSchemaPath>
 MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
 {
-    if (builder)
-        return builder->scalarFieldPathsForAttribute(root, attribute);
     if (!valid(root) ||
         std::ranges::none_of(
             types,
@@ -2531,7 +1964,7 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
             {
                 return text(row.attributeCode) == attribute ||
                     std::ranges::any_of(
-                           row.owners.in(owners),
+                           ownerSites(row.owners),
                            [&](auto const& owner) { return name(owner.name) == attribute; });
             }))
         return {};
@@ -2540,22 +1973,23 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
     // are not attribute codes; a shared DAG must not expand exponentially merely
     // to prove that a code (or a selected payload scalar) is absent.
     constexpr uint8_t hasAttribute = 1, hasScalar = 2;
-    std::vector<std::vector<TypeId>> parents(types.size());
-    std::vector<bool> seen(types.size());
-    std::vector<uint8_t> reachable(types.size());
+    auto count = pool.typeCount() + 1;
+    std::vector<std::vector<TypeId>> parents(count);
+    std::vector<bool> seen(count);
+    std::vector<uint8_t> reachable(count);
     std::vector<TypeId> pending{root};
     seen[root] = true;
     while (!pending.empty()) {
         auto id = pending.back();
         pending.pop_back();
-        auto const& row = types[id];
+        auto const& row = data(id);
         if (text(row.attributeCode) == attribute ||
             std::ranges::any_of(
-                row.owners.in(owners),
+                ownerSites(row.owners),
                 [&](auto const& owner) { return name(owner.name) == attribute; }))
             reachable[id] |= hasAttribute;
-        auto const& domain = *pool.type(id);
-        if (matchesKind(domain.kind(), Kind::Value))
+        auto type = pool.schemaType(id);
+        if (matchesKind(type.kind(), Kind::Value))
             reachable[id] |= hasScalar;
         auto addChild = [&](TypeId child)
         {
@@ -2567,17 +2001,19 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
                 pending.push_back(child);
             }
         };
-        domain.forEachEnumerableField(
-            [&](auto, auto children)
+        type.forEachField(
+            [&](simfil::SchemaField const& field)
             {
-                for (auto child : children)
-                    addChild(child);
+                if (field.role() == simfil::SchemaType::FieldRole::Data)
+                    for (auto child : field.types())
+                        addChild(child);
             });
-        domain.forEachElementSchema(addChild);
-        for (auto child : domain.alternatives())
+        for (auto child : type.elements())
+            addChild(child);
+        for (auto child : type.alternatives())
             addChild(child);
     }
-    for (size_t id = 1; id < types.size(); ++id)
+    for (size_t id = 1; id < count; ++id)
         if (reachable[id])
             pending.push_back(TypeId(id));
     while (!pending.empty()) {
@@ -2594,7 +2030,7 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
 
     std::vector<LayerSchema::NamedSchemaPath> result;
     LayerSchema::NamedSchemaPath path;
-    std::vector<bool> active(types.size());
+    std::vector<bool> active(count);
     size_t work = 0;
     // An attribute shorthand chooses its first payload scalar, not every scalar
     // in the record. Keep this precedence identical to the transient compiler.
@@ -2603,8 +2039,8 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
     {
         if (!valid(id) || active[id])
             return false;
-        auto const& row = types[id];
-        auto const& view = *pool.type(id);
+        auto const& row = data(id);
+        auto view = pool.schemaType(id);
         auto matches =
             (boundName.empty() ?
                  text(row.attributeCode) == attribute :
@@ -2612,7 +2048,7 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
         if (id == root && boundName.empty())
             matches = matches ||
                 std::ranges::any_of(
-                          row.owners.in(owners),
+                          ownerSites(row.owners),
                           [&](auto const& owner) { return name(owner.name) == attribute; });
         selected = selected || matches;
         // Reachability deliberately includes data metadata edges: only the original
@@ -2632,12 +2068,13 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
             if (selected && found)
                 break;
         }
-        view.forEachEnumerableField(
-            [&](StringId field, auto children)
+        view.forEachField(
+            [&](simfil::SchemaField const& field)
             {
-                if (selected && found)
+                if ((selected && found) || field.role() != simfil::SchemaType::FieldRole::Data)
                     return;
-                auto name = this->name(field);
+                auto name = field.name();
+                auto children = field.types();
                 if ((first || matches) &&
                     schema_detail::isAttributeScalarShorthandMetadataField(name))
                     return;
@@ -2650,15 +2087,13 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
                 }
                 path.pop_back();
             });
-        view.forEachElementSchema(
-            [&](TypeId child)
-            {
-                if (selected && found)
-                    return;
-                path.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
-                found = visit(child, selected, false, boundName) || found;
-                path.pop_back();
-            });
+        for (auto child : view.elements()) {
+            if (selected && found)
+                break;
+            path.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, {}});
+            found = visit(child, selected, false, boundName) || found;
+            path.pop_back();
+        }
         active[id] = false;
         return found;
     };
@@ -2691,16 +2126,21 @@ std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() cons
             if (producesFeatureType(owner.featureType_) &&
                 (owner.featureLayer_.empty() || owner.featureLayer_ == name()))
                 result.push_back(owner);
-        forEachDirectField(
-            id,
-            [&](auto field, auto children)
+        auto view = g.pool.schemaType(id);
+        view.forEachField(
+            [&](auto const& field)
             {
-                if (fieldRole(id, field) == simfil::Schema::FieldRole::Data)
+                if (field.role() == simfil::SchemaType::FieldRole::Data) {
+                    auto children = field.types();
                     pending.insert(pending.end(), children.begin(), children.end());
+                }
             });
-        forEachElementSchema(id, [&](auto child) { pending.push_back(child); });
-        auto a = alternatives(id);
-        pending.insert(pending.end(), a.begin(), a.end());
+        for (auto child : view.itemTypes())
+            pending.push_back(child);
+        for (auto child : view.alternatives())
+            pending.push_back(child);
+        if (auto base = view.baseType())
+            pending.push_back(base.id());
     }
     auto key = [](auto const& o)
     {
@@ -2722,8 +2162,6 @@ std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() cons
 std::vector<std::string> LayerSchema::constantTypeNames(TypeId root, std::string_view symbol) const
 {
     auto const& g = *mapSchema()->schema_;
-    if (g.builder)
-        return g.builder->constantTypeNames(root, symbol);
     std::vector<std::string> result;
     std::vector<TypeId> pending{root};
     std::vector<bool> seen(g.types.size());
@@ -2737,61 +2175,39 @@ std::vector<std::string> LayerSchema::constantTypeNames(TypeId root, std::string
         if (d.attributeType &&
             (g.text(d.attributeCode) == symbol ||
              std::ranges::any_of(
-                 g.attributeOwners(id),
-                 [&](auto const& owner) { return owner.attributeName_ == symbol; })))
+                 g.ownerSites(d.owners),
+                 [&](auto const& owner) { return g.name(owner.name) == symbol; })))
             result.emplace_back(g.text(d.attributeType));
-        auto typeName = g.pool.type(id)->typeName();
-        if (std::ranges::find(directEnumSymbols(id), symbol) != directEnumSymbols(id).end() &&
-            !typeName.empty())
+        auto type = g.pool.schemaType(id);
+        auto typeName = type.typeName();
+        if (type.hasDirectEnumSymbol(symbol) && !typeName.empty())
             result.emplace_back(typeName);
-        g.pool.type(id)->forEachNamedValue(
+        type.forEachNamedValue(
             [&](auto const& value)
             {
                 if (value.name == symbol && !typeName.empty())
                     result.emplace_back(typeName);
             });
-        forEachDirectField(
-            id,
-            [&](auto field, auto children)
+        auto view = g.pool.schemaType(id);
+        view.forEachField(
+            [&](auto const& field)
             {
-                if (fieldRole(id, field) == simfil::Schema::FieldRole::Data)
+                if (field.role() == simfil::SchemaType::FieldRole::Data) {
+                    auto children = field.types();
                     pending.insert(pending.end(), children.begin(), children.end());
+                }
             });
-        forEachElementSchema(id, [&](auto child) { pending.push_back(child); });
-        auto a = alternatives(id);
-        pending.insert(pending.end(), a.begin(), a.end());
+        for (auto child : view.itemTypes())
+            pending.push_back(child);
+        for (auto child : view.alternatives())
+            pending.push_back(child);
+        if (auto base = view.baseType())
+            pending.push_back(base.id());
     }
     std::ranges::sort(result);
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
-void LayerSchema::setNumericDomain(TypeId id, simfil::Schema::NumericDomain const& d)
-{
-    mutableOwner().setNumericDomain(id, d);
-}
-void LayerSchema::addNamedValue(TypeId id, simfil::Schema::NamedValue const& v)
-{
-    mutableOwner().addNamedValue(id, v);
-}
-void LayerSchema::setBitWidth(TypeId id, uint8_t width)
-{
-    mutableOwner().setBitWidth(id, width);
-}
-std::optional<simfil::Schema::NumericDomain> LayerSchema::numericDomain(TypeId id) const
-{
-    return mapSchema()->numericDomain(id);
-}
-void LayerSchema::forEachNamedValue(
-    TypeId id,
-    std::function<void(simfil::Schema::NamedValue const&)> const& fn) const
-{
-    mapSchema()->forEachNamedValue(id, fn);
-}
-uint8_t LayerSchema::bitWidth(TypeId id) const
-{
-    return mapSchema()->bitWidth(id);
-}
-
 bool LayerSchema::RelationDeclaration::permitsIncoming(
     std::string_view owner,
     std::string_view name,
@@ -2812,55 +2228,58 @@ LayerSchema::featureTypeContract(std::string_view name, std::function<void(size_
             throw std::length_error("Feature contract string is too large.");
         reserve(2 + value.size() * 6);  // Quotes and worst-case escaping, before allocating JSON.
     };
-    auto const& identity = *getTypeInfo(name);
-    auto const& layer = mapSchema()->schema_->layerAt(addr_.index());
+    auto identity = getTypeInfo(name);
+    auto const& graph = *mapSchema()->schema_;
+    auto const& layer = graph.layerAt(addr_.index());
     if (reserve)
         reserve(256);
-    chargeString(identity.name_);
+    chargeString(identity.name());
     auto result = nlohmann::json{
-        {"name", identity.name_},
+        {"name", identity.name()},
         {"uniqueIdCompositions", nlohmann::json::array()},
         {"produced", producesFeatureType(name)},
         {"typeId", featureSchema(name)},
-        {"forwardRelationsKnown", layer.relationsKnown},
+        {"forwardRelationsKnown", graph.relationsKnown(layer)},
         {"forwardRelations", nlohmann::json::array()}};
-    for (auto const& composition : identity.uniqueIdCompositions_) {
+    for (auto const& composition : identity.compositions()) {
         if (reserve)
             reserve(8);
-        nlohmann::json parts;
-        for (auto const& part : composition) {
+        auto parts = nlohmann::json::array();
+        for (auto part : composition.parts()) {
             if (reserve)
                 reserve(128);
-            chargeString(part.idPartLabel_);
-            chargeString(part.description_);
+            chargeString(part.name());
+            chargeString(part.description());
             parts.push_back(part.toJson());
         }
         result["uniqueIdCompositions"].push_back(std::move(parts));
     }
     // Read the frozen relation index directly. A layer-wide vector copy would allocate
     // unrelated declarations before the caller can stop a focused inspection.
-    for (auto const& declaration : layer.relations) {
+    for (auto const& declaration : graph.relationsOf(layer)) {
         if (reserve)
             reserve(0);
-        if (declaration.ownerType_ != name)
+        if (graph.name(declaration.owner) != name)
             continue;
         if (reserve)
             reserve(128);
-        chargeString(declaration.name_);
+        chargeString(graph.name(declaration.name));
         auto targets = nlohmann::json::array();
-        for (auto const& target : declaration.targetTypes_) {
-            chargeString(target);
-            targets.push_back(target);
+        for (auto target : graph.relationTargets.range(declaration.targets)) {
+            auto spelling = graph.name(target);
+            chargeString(spelling);
+            targets.push_back(spelling);
         }
-        auto locality = declaration.locality_ == RelationDeclaration::Locality::SameContainer ?
+        auto locality = declaration.locality ==
+                unsigned(RelationDeclaration::Locality::SameContainer) ?
             "same-container" :
-            declaration.locality_ == RelationDeclaration::Locality::MayCrossContainer ?
+            declaration.locality == unsigned(RelationDeclaration::Locality::MayCrossContainer) ?
             "may-cross-container" :
             "unknown";
         result["forwardRelations"].push_back(
-            {{"name", declaration.name_},
+            {{"name", graph.name(declaration.name)},
              {"targetTypes", std::move(targets)},
-             {"complete", declaration.complete_},
+             {"complete", graph.relationComplete(declaration)},
              {"locality", locality}});
     }
     return result;
@@ -2868,25 +2287,42 @@ LayerSchema::featureTypeContract(std::string_view name, std::function<void(size_
 
 std::vector<LayerSchema::RelationDeclaration> LayerSchema::relationDeclarations() const
 {
-    return mapSchema()->schema_->layerAt(addr_.index()).relations;
+    auto const& graph = *mapSchema()->schema_;
+    std::vector<RelationDeclaration> result;
+    for (auto const& row : graph.relationsOf(graph.layerAt(addr_.index())))
+        result.push_back(graph.relationDeclaration(row));
+    return result;
 }
 std::vector<LayerSchema::RelationDeclaration>
 LayerSchema::relationsTo(std::string_view target) const
 {
-    auto const& layer = mapSchema()->schema_->layerAt(addr_.index());
+    auto const& graph = *mapSchema()->schema_;
     std::vector<RelationDeclaration> result;
-    if (auto found = layer.relationsByTarget.find(target); found != layer.relationsByTarget.end())
-        for (auto i : found->second)
-            result.push_back(layer.relations[i]);
+    auto sid = graph.dictionary.get(target);
+    if (!sid)
+        return result;
+    auto key = std::pair{sid, uint16_t(addr_.index())};
+    auto found = std::lower_bound(
+        graph.relationTargetIndex.begin(),
+        graph.relationTargetIndex.end(),
+        key,
+        [](auto const& row, auto wanted) {
+            return std::pair{row.target, row.layer} < wanted;
+        });
+    for (;
+         found != graph.relationTargetIndex.end() && std::pair{found->target, found->layer} == key;
+         ++found)
+        result.push_back(graph.relationDeclaration(graph.relationRows[found->relation]));
     return result;
 }
 bool LayerSchema::hasRelationDeclarations() const
 {
-    return mapSchema()->schema_->layerAt(addr_.index()).relationsKnown;
+    auto const& graph = *mapSchema()->schema_;
+    return graph.relationsKnown(graph.layerAt(addr_.index()));
 }
 
 /** A layer remains a small native object even without feature roots (e.g. an
- * open SourceData decoder). Domain descriptors share the graph through SchemaModel.
+ * open SourceData decoder). Descriptors read the same canonical graph directly.
  */
 simfil::ValueType LayerSchema::type() const
 {
@@ -2934,7 +2370,6 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
     if (schema_->memorySummary)
         return *schema_->memorySummary;
     MemoryUsageBreakdown result;
-    result.add("identity", stringMemoryUsage(schema_->identity));
     result.add(
         "format",
         stringMemoryUsage(schema_->format.name_) + stringMemoryUsage(schema_->format.version_));
@@ -2946,19 +2381,20 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
              (sizeof(decltype(schema_->format.subsystems_)::value_type) + 3 * sizeof(void*))});
     for (auto const& [name, version] : schema_->format.subsystems_)
         result.add("subsystem-text", stringMemoryUsage(name) + stringMemoryUsage(version));
-    result.add(
-        "query-root-index",
-        {schema_->queryRoots.size() * sizeof(decltype(schema_->queryRoots)::value_type),
-         schema_->queryRoots.size() *
-             (sizeof(decltype(schema_->queryRoots)::value_type) + 3 * sizeof(void*))});
+    result.add("query-contexts", schema_->queryRoots.memory_usage());
     result.add("object", {sizeof(*this) + sizeof(Impl), sizeof(*this) + sizeof(Impl)});
     result.add("model-pool", memoryUsageStats().total());
     result.add("dictionary", strings()->memoryUsage());
     result.add("type-column", schema_->types.memory_usage());
-    result.add("attribute-owners", vectorMemoryUsage(schema_->owners));
-    result.add("aliases", vectorMemoryUsage(schema_->aliases));
-    result.add("entries", vectorMemoryUsage(schema_->entries));
-    result.add("layers", vectorMemoryUsage(schema_->layers));
+    result.add("attribute-owners", schema_->owners.memory_usage());
+    result.add("aliases", schema_->aliases.memory_usage());
+    result.add("layers", schema_->layers.memory_usage());
+    result.add("attribute-owner-rows", schema_->ownerRows.memory_usage());
+    result.add("produced-roots", schema_->producedFeatures.memory_usage());
+    result.add("relation-rows", schema_->relationRows.memory_usage());
+    result.add("relation-memberships", schema_->relationLists.memory_usage());
+    result.add("relation-targets", schema_->relationTargets.memory_usage());
+    result.add("relation-target-index", schema_->relationTargetIndex.memory_usage());
     result.add("generic-schema", schemaMemoryUsage());
     result.add("constituents", vectorMemoryUsage(schema_->constituents));
     for (auto const& [identity, format] : schema_->constituents) {
@@ -2985,59 +2421,31 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
     for (auto const& [identity, remap] : schema_->contributorRemaps)
         result
             .add("contributor-remap-data", stringMemoryUsage(identity) + vectorMemoryUsage(remap));
-    for (auto const& layer : schema_->layers) {
-        result.add("layer-names", stringMemoryUsage(layer.name));
-        result.add("import-fingerprint", stringMemoryUsage(layer.importedFingerprint));
-        result.add("relations", vectorMemoryUsage(layer.relations));
-        for (auto const& relation : layer.relations)
-            result.add(
-                "relation-text",
-                stringMemoryUsage(relation.ownerType_) + stringMemoryUsage(relation.name_) +
-                    stringVectorMemoryUsage(relation.targetTypes_));
+    result.add("feature-definitions", schema_->identities.memory_usage());
+    result.add("identity-compositions", schema_->identityCompositions.memory_usage());
+    result.add("identity-parts", schema_->identityParts.memory_usage());
+    result.add("identity-name-index", schema_->identityIndex.memory_usage());
+    result.add("layer-build-cache", vectorMemoryUsage(schema_->layerBuild));
+    for (auto const& cache : schema_->layerBuild) {
+        result.add("import-fingerprint", stringMemoryUsage(cache.fingerprint));
         result.add(
-            "relation-target-index",
-            {layer.relationsByTarget.size() * sizeof(decltype(layer.relationsByTarget)::value_type),
-             layer.relationsByTarget.size() *
-                 (sizeof(decltype(layer.relationsByTarget)::value_type) + 3 * sizeof(void*))});
-        for (auto const& [target, indices] : layer.relationsByTarget)
-            result.add(
-                "relation-target-data",
-                stringMemoryUsage(target) + vectorMemoryUsage(indices));
-        result.add("feature-definitions", vectorMemoryUsage(layer.features));
-        result.add("feature-roots", vectorMemoryUsage(layer.featureRoots));
-        result.add("feature-production", vectorMemoryUsage(layer.produced));
-        for (auto const& feature : layer.features) {
-            result.add("feature-name", stringMemoryUsage(feature.name_));
-            result.add("id-compositions", vectorMemoryUsage(feature.uniqueIdCompositions_));
-            for (auto const& composition : feature.uniqueIdCompositions_) {
-                result.add("id-parts", vectorMemoryUsage(composition));
-                for (auto const& part : composition) {
-                    result.add("id-part-names", stringMemoryUsage(part.idPartLabel_));
-                    result.add("id-part-descriptions", stringMemoryUsage(part.description_));
-                }
-            }
-        }
-        result.add(
-            "layer-alias-index",
-            {layer.aliases.size() * sizeof(decltype(layer.aliases)::value_type),
-             layer.aliases.size() *
-                 (sizeof(decltype(layer.aliases)::value_type) + 3 * sizeof(void*))});
+            "layer-build-aliases",
+            {cache.aliases.size() * sizeof(decltype(cache.aliases)::value_type),
+             cache.aliases.size() *
+                 (sizeof(decltype(cache.aliases)::value_type) + 3 * sizeof(void*))});
+        for (auto const& [key, id] : cache.aliases)
+            result.add("layer-build-alias-text", stringMemoryUsage(key));
     }
-    result.add(
-        "global-alias-index",
-        {schema_->globalAliases.size() * sizeof(decltype(schema_->globalAliases)::value_type),
-         schema_->globalAliases.size() *
-             (sizeof(decltype(schema_->globalAliases)::value_type) + 3 * sizeof(void*))});
     return result;
 }
 
 void MapSchema::Impl::summarize()
 {
     auto counts = pool.schemaStatistics();
-    size_t featureTypes = 0, relations = 0;
+    size_t producedCount = 0, relationCount = 0;
     for (auto const& layer : layers) {
-        featureTypes += layer.features.size();
-        relations += layer.relations.size();
+        producedCount += featureRoots(layer).size();
+        relationCount += relationIds(layer).size();
     }
     memorySummary = pool.memoryUsage();
     statistics = {
@@ -3051,8 +2459,9 @@ void MapSchema::Impl::summarize()
           {"elementEdges", counts.elementEdges},
           {"alternativeEdges", counts.alternativeEdges},
           {"layers", layers.size()},
-          {"featureTypes", featureTypes},
-          {"relationDeclarations", relations},
+          {"featureTypes", identities.size()},
+          {"producedFeatureTypes", producedCount},
+          {"relationDeclarations", relationCount},
           {"internedNames", pool.strings()->size()}}},
         {"limits",
          {{"typeId", simfil::MaxTypeId}, {"nameId", std::numeric_limits<StringId>::max()}}},

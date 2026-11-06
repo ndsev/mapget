@@ -812,24 +812,28 @@ void McpNativeTools::Call::listSources()
                 if (layer->tileAssociationLevel_)
                     metadata["tileAssociationLevel"] = *layer->tileAssociationLevel_;
                 metadata = boundedJson(metadata);
-                for (auto const& type : layer->featureTypes()) {
+                for (auto const& name : schema->featureTypes()) {
                     if (!step())
                         break;
-                    auto info = boundedJson(
-                        {{"name", type.name_},
-                         {"produced", schema && schema->producesFeatureType(type.name_)}});
+                    auto type = schema->getTypeInfo(name);
+                    auto info = boundedJson({{"name", type.name()}, {"produced", true}});
                     if (details)
                         info["uniqueIdCompositions"] = Json::array();
                     if (details)
-                        for (auto const& composition : type.uniqueIdCompositions_) {
+                        for (auto composition : type.compositions()) {
                             if (!step())
                                 break;
                             charge(24);
                             auto parts = Json::array();
-                            for (auto const& part : composition) {
+                            for (auto part : composition.parts()) {
                                 if (!step())
                                     break;
-                                parts.push_back(boundedJson(part.toJson()));
+                                parts.push_back(boundedJson(
+                                    {{"partId", part.name()},
+                                     {"description", part.description()},
+                                     {"datatype", part.datatype()},
+                                     {"isSynthetic", part.synthetic()},
+                                     {"isOptional", part.optional()}}));
                             }
                             info["uniqueIdCompositions"].push_back(std::move(parts));
                         }

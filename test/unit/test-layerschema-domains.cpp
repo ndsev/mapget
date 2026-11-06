@@ -1,7 +1,11 @@
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <nlohmann/json-schema.hpp>
+#include <ranges>
 #include <sstream>
+#include <tuple>
+#include <utility>
 
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/layerschema.h"
@@ -9,20 +13,21 @@
 #include "mapget/model/simfilutil.h"
 #include "simfil/diagnostics.h"
 #include "simfil/model/json.h"
-#include "simfil/model/schema-model.h"
+#include "simfil/model/schema-node.h"
 #include "simfil/simfil.h"
 
 using namespace mapget;
-using Kind = simfil::Schema::Kind;
-using Composition = simfil::Schema::Composition;
+using Kind = simfil::SchemaType::Kind;
+using Composition = simfil::SchemaType::Composition;
 
 namespace
 {
 
-/** Create a mutable layer view whose graph survives the local builder variable. */
-LayerSchema::Ptr newTestSchema()
+/** Keep the writable graph explicit while the layer scopes production metadata. */
+std::pair<std::shared_ptr<MapSchema>, LayerSchema::Ptr> newTestSchema()
 {
-    return std::make_shared<MapSchema>()->newLayer("Test", LayerType::Features);
+    auto owner = std::make_shared<MapSchema>();
+    return {owner, owner->newLayer("Test", LayerType::Features)};
 }
 
 /** Supply real identity metadata without constraining the property-domain fixture. */
@@ -43,24 +48,43 @@ LayerSchema::Ptr importTestSchema(
     return layer;
 }
 
+/** Materialize declarations only for the legacy JSON import boundary. */
+std::vector<FeatureTypeInfo> identityDeclarations(LayerSchema::Ptr const& schema)
+{
+    std::vector<FeatureTypeInfo> declarations;
+    for (auto identity : schema->mapSchema()->featureIdentities())
+        declarations.push_back(identity.toDeclaration());
+    return declarations;
+}
+
 /** Exercise the codec with the same schema-owned identity declarations. */
 LayerSchema::Ptr roundtripSchema(LayerSchema::Ptr const& schema)
 {
-    auto features = schema->featureTypeInfos();
     return importTestSchema(
         schema->toJsonSchema(),
-        {features.begin(), features.end()},
+        identityDeclarations(schema),
         std::string(schema->name()));
 }
 
-/** Bind the same typed graph used by completion to a bounded metadata descriptor. */
+/** Read a bounded descriptor directly from the canonical type, without a feature-data schema. */
 nlohmann::json describe(LayerSchema::Ptr registry, simfil::TypeId root)
 {
-    auto strings = std::make_shared<StringPool>("SchemaDescriptorTest");
-    auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, registry, strings);
-    auto model = std::make_shared<simfil::SchemaModel>(strings, env->querySchemaCallback);
-    return model->root(root)->toJson();
+    return registry->mapSchema()->schemaType(root).modelNode()->toJson();
+}
+
+/** Compare type contracts independently of their current JSON source document.
+ * Only descriptor nodes lose their location; literal metadata remains untouched. */
+nlohmann::json withoutSourceLocations(nlohmann::json descriptor)
+{
+    descriptor.erase("jsonPointer");
+    if (auto fields = descriptor.find("fields"); fields != descriptor.end())
+        for (auto& [name, field] : fields->items())
+            field = withoutSourceLocations(std::move(field));
+    for (auto name : {"elements", "alternatives"})
+        if (auto children = descriptor.find(name); children != descriptor.end())
+            for (auto& child : *children)
+                child = withoutSourceLocations(std::move(child));
+    return descriptor;
 }
 
 /** Check owning candidate text without depending on incidental suggestion ordering. */
@@ -70,7 +94,8 @@ bool suggests(
     std::string_view query,
     std::string_view text)
 {
-    auto candidates = simfil::complete(env, query, query.size(), root);
+    auto candidates =
+        simfil::complete(env, query, query.size(), env.schema().pool()->schemaType(root));
     REQUIRE(candidates);
     return std::ranges::any_of(
         *candidates,
@@ -109,12 +134,12 @@ TEST_CASE(
                 root,
                 std::string_view(name) == "Geometry" ? "coordinates" : "point");
             REQUIRE(position != simfil::NoTypeId);
-            auto shape = graph->type(position);
-            REQUIRE(shape->composition() == Composition::AnyOf);
-            REQUIRE(shape->reachabilityComplete());
-            CHECK_FALSE(layer->canHaveField(position, "payload"));
-            REQUIRE(layer->canHaveField(position, "lon"));
-            auto alternatives = shape->alternatives();
+            auto shape = graph->schemaType(position);
+            REQUIRE(shape.composition() == Composition::AnyOf);
+            REQUIRE(shape.reachabilityComplete());
+            CHECK_FALSE(shape.canHaveField(graph->dictionary().get("payload")));
+            REQUIRE(shape.canHaveField(graph->dictionary().get("lon")));
+            auto alternatives = shape.alternatives();
             REQUIRE_FALSE(alternatives.empty());
             auto point = alternatives.back();
             nlohmann::json_schema::json_validator validator;
@@ -127,7 +152,7 @@ TEST_CASE(
                     CAPTURE(depth);
                     auto current = alternatives[depth];
                     for (size_t i = 0; i < depth; ++i)
-                        current = graph->type(current)->itemSchema();
+                        current = graph->schemaType(current).itemSchema();
                     CHECK(current == point);
                     CHECK_NOTHROW(
                         validator.validate({{"type", "LineString"}, {"coordinates", coordinate}}));
@@ -142,10 +167,11 @@ TEST_CASE(
                       R"({"payload":1})"_json})
                     CHECK_THROWS(validator.validate({{"type", "Point"}, {"coordinates", invalid}}));
                 auto bounds = layer->childSchema(root, "aabb");
-                REQUIRE(layer->kind(bounds) == Kind::Object);
+                REQUIRE(graph->schemaType(bounds).kind() == Kind::Object);
                 CHECK(layer->childSchema(bounds, "origin") == point);
                 CHECK(layer->childSchema(bounds, "size") == point);
-                CHECK_FALSE(layer->canHaveField(bounds, "payload"));
+                CHECK_FALSE(
+                    graph->schemaType(bounds).canHaveField(graph->dictionary().get("payload")));
                 CHECK_NOTHROW(validator.validate(
                     R"({"type":"Polygon","aabb":{"origin":[11,48,0],"size":[1,2,3]}})"_json));
                 CHECK_THROWS(
@@ -155,7 +181,8 @@ TEST_CASE(
                 REQUIRE(alternatives.size() == 2);
                 bool attribute = std::string_view(name) == "AttrPoint";
                 CHECK(
-                    layer->kind(alternatives.front()) == (attribute ? Kind::String : Kind::Float));
+                    graph->schemaType(alternatives.front()).kind() ==
+                    (attribute ? Kind::String : Kind::Float));
                 auto value = nlohmann::json{{"point", coordinate}};
                 if (attribute)
                     value["index"] = 1;
@@ -167,22 +194,24 @@ TEST_CASE(
                 value["point"] = {{"payload", 1}};
                 CHECK_THROWS(validator.validate(value));
             }
-            auto definition = graph->type(point);
+            auto definition = graph->schemaType(point);
             REQUIRE(definition);
-            CHECK(definition->kind() == Kind::Array);
-            CHECK(definition->typeName() == "mapget::Point");
-            REQUIRE(definition->directFields().size() == 3);
+            CHECK(definition.kind() == Kind::Array);
+            CHECK(definition.typeName() == "mapget::Point");
+            REQUIRE(definition.directFields().size() == 3);
             for (auto field : {"lon", "lat", "elevation"}) {
                 auto id = graph->strings()->get(field);
-                CHECK(definition->fieldRole(id) == simfil::Schema::FieldRole::Context);
-                CHECK(definition->fieldSchema(id) == definition->itemSchema());
+                CHECK(definition.fieldRole(id) == simfil::SchemaType::FieldRole::Context);
+                CHECK(definition.fieldSchema(id) == definition.itemSchema());
             }
             size_t enumerated = 0;
-            definition->forEachEnumerableField([&](auto, auto) { ++enumerated; });
+            definition.forEachDirectField(
+                [&](auto const& field)
+                { enumerated += field.role() == simfil::SchemaType::FieldRole::Data; });
             CHECK(enumerated == 0);
             auto strings = std::make_shared<StringPool>("PointCompletion");
             auto env = makeEnvironment(strings);
-            installCompletionLayerSchema(*env, layer, strings);
+            env->setSchema(layer->rootType());
             CHECK(suggests(*env, point, "lo", "lon"));
             if (std::string_view(name) == "Geometry")
                 CHECK(suggests(*env, root, "coordinates[0].lo", "lon"));
@@ -197,8 +226,12 @@ TEST_CASE(
     auto graph = std::make_shared<MapSchema>();
     auto layer = graph->newLayer("Test", LayerType::Features);
     auto properties = layer->addSchema(Kind::Object);
-    layer->addFieldSchema(properties, "payload", graph->primitive(Kind::Int));
-    REQUIRE(layer->newFeature(testFeatureType("Carrier", "identifier"), properties));
+    graph->schemaType(properties)
+        .asObject()
+        .addField("payload", graph->schemaType(graph->primitive(Kind::Int)));
+    REQUIRE(
+        layer->newFeature(testFeatureType("Carrier", "identifier"), graph->schemaType(properties))
+            .id());
     graph->finalize();
     std::ostringstream output;
     REQUIRE(graph->write(output));
@@ -221,7 +254,7 @@ TEST_CASE(
             info.getLayer("Test"),
             strings);
         auto env = makeEnvironment(strings);
-        installLayerSchema(*env, registry, strings);
+        env->setSchema(registry->rootType());
         size_t plannedEvaluations = 0;
         for (int64_t points : {2, 257}) {
             auto feature = tile->newFeature("Carrier", {{"identifier", points}});
@@ -279,39 +312,38 @@ TEST_CASE(
     auto composition = GENERATE(Composition::AnyOf, Composition::OneOf, Composition::AllOf);
     auto graph = std::make_shared<MapSchema>();
     auto layer = graph->newLayer("Test", LayerType::Features);
-    REQUIRE(layer->newFeature(testFeatureType("Carrier", "identifier")));
+    REQUIRE(layer->newFeature(testFeatureType("Carrier", "identifier")).id());
     auto integer = graph->primitive(Kind::Int);
-    auto left = graph->newAttribute("left", "LeftAttribute");
-    auto right = graph->newAttribute("right", "RightAttribute");
-    layer->addFieldSchema(left, "leftValue", integer);
-    layer->addFieldSchema(right, "rightValue", integer);
+    auto left = graph->newAttribute("left", "LeftAttribute").id();
+    auto right = graph->newAttribute("right", "RightAttribute").id();
+    graph->schemaType(left).asObject().addField("leftValue", graph->schemaType(integer));
+    graph->schemaType(right).asObject().addField("rightValue", graph->schemaType(integer));
     auto choice = layer->addSchema(Kind::Union, "attribute-choice");
-    layer->setComposition(choice, composition);
-    layer->addAlternative(choice, left);
-    layer->addAlternative(choice, right);
-    auto affinities = simfil::Schema::affinities(layer->kind(choice));
-    layer->bindAttribute(choice, "Carrier", "rules", "CHOICE");
-    CHECK(simfil::Schema::affinities(layer->kind(choice)) == affinities);
+    graph->schemaType(choice).setComposition(composition);
+    graph->schemaType(choice).asComposition().addAlternative(graph->schemaType(left));
+    graph->schemaType(choice).asComposition().addAlternative(graph->schemaType(right));
+    auto kindName = simfil::SchemaType::kindNameId(graph->schemaType(choice).kind());
+    auto affinities = simfil::SchemaType::affinities(layer->mapSchema()->schemaType(choice).kind());
+    layer->bindAttribute(graph->schemaType(choice), "Carrier", "rules", "CHOICE");
     CHECK(
-        simfil::Schema::kindNameId(layer->kind(choice)) ==
-        simfil::Schema::kindNameId(LayerSchema::AttributeKind));
-    auto container = layer->addSchema(Kind::Object);
-    layer->addFieldSchema(layer->attributeLayerMapSchema("Carrier"), "rules", container);
-    layer->addFieldSchema(container, "CHOICE", choice, true);
+        simfil::SchemaType::affinities(layer->mapSchema()->schemaType(choice).kind()) ==
+        affinities);
+    CHECK(
+        simfil::SchemaType::kindNameId(layer->mapSchema()->schemaType(choice).kind()) == kindName);
 
     auto mixed = layer->addSchema(Kind::Union, "mixed-choice");
-    layer->setComposition(mixed, composition);
-    layer->addAlternative(mixed, left);
-    layer->addAlternative(mixed, integer);
-    auto mixedKind = layer->kind(mixed);
+    graph->schemaType(mixed).setComposition(composition);
+    graph->schemaType(mixed).asComposition().addAlternative(graph->schemaType(left));
+    graph->schemaType(mixed).asComposition().addAlternative(graph->schemaType(integer));
+    auto mixedKind = layer->mapSchema()->schemaType(mixed).kind();
     REQUIRE_THROWS_AS(
-        layer->bindAttribute(mixed, "Carrier", "rules", "MIXED"),
+        layer->bindAttribute(graph->schemaType(mixed), "Carrier", "rules", "MIXED"),
         std::invalid_argument);
-    CHECK(layer->kind(mixed) == mixedKind);
+    CHECK(layer->mapSchema()->schemaType(mixed).kind() == mixedKind);
     CHECK(layer->attributeOwners(mixed).empty());
     REQUIRE_NOTHROW(graph->finalize());
     // Finalization computes the aggregate's object affinity from its alternatives.
-    affinities = simfil::Schema::affinities(layer->kind(choice));
+    affinities = simfil::SchemaType::affinities(layer->mapSchema()->schemaType(choice).kind());
     CHECK(affinities == simfil::valueTypeAffinity(simfil::ValueType::Object));
     std::ostringstream output;
     REQUIRE(graph->write(output));
@@ -321,19 +353,23 @@ TEST_CASE(
         auto payload = registry->schemaId("attribute-choice");
         REQUIRE(payload != simfil::NoTypeId);
         CHECK(
-            simfil::Schema::kindNameId(registry->kind(payload)) ==
-            simfil::Schema::kindNameId(LayerSchema::AttributeKind));
-        CHECK(simfil::Schema::affinities(registry->kind(payload)) == affinities);
-        CHECK(registry->composition(payload) == composition);
-        REQUIRE(registry->mapSchema()->type(payload)->alternatives().size() == 2);
+            simfil::SchemaType::kindNameId(registry->mapSchema()->schemaType(payload).kind()) ==
+            kindName);
+        CHECK(
+            simfil::SchemaType::affinities(registry->mapSchema()->schemaType(payload).kind()) ==
+            affinities);
+        CHECK(registry->mapSchema()->schemaType(payload).composition() == composition);
+        REQUIRE(registry->mapSchema()->schemaType(payload).alternatives().size() == 2);
         auto query = registry->attributeQuerySchema("Carrier", payload);
         REQUIRE(query != simfil::NoTypeId);
-        CHECK(registry->mapSchema()->baseSchema(query) == payload);
-        CHECK(registry->canHaveField(query, "leftValue"));
-        CHECK(registry->canHaveField(query, "rightValue"));
+        CHECK(registry->mapSchema()->schemaType(query).baseType().id() == payload);
+        CHECK(registry->mapSchema()->schemaType(query).canHaveField(
+            registry->mapSchema()->dictionary().get("leftValue")));
+        CHECK(registry->mapSchema()->schemaType(query).canHaveField(
+            registry->mapSchema()->dictionary().get("rightValue")));
         auto strings = std::make_shared<StringPool>("AttributeAggregate");
         auto env = makeEnvironment(strings);
-        installCompletionLayerSchema(*env, registry, strings);
+        env->setSchema(registry->rootType());
         CHECK(suggests(*env, query, "leftV", "leftValue"));
         CHECK(suggests(*env, query, "rightV", "rightValue"));
     }
@@ -349,16 +385,18 @@ TEST_CASE(
         LayerType::SourceData,
         R"({"type":"array","items":{"type":"number"},"properties":{"ghost":{"type":"string"}}})"_json);
     graph->finalize();
-    CHECK(layer->directFields(layer->rootSchema()).empty());
+    CHECK(layer->mapSchema()->schemaType(layer->rootSchema()).directFields().empty());
     CHECK(layer->childSchema(layer->rootSchema(), "ghost") == simfil::NoTypeId);
-    CHECK_FALSE(layer->canHaveField(layer->rootSchema(), "ghost"));
+    CHECK_FALSE(layer->mapSchema()
+                    ->schemaType(layer->rootSchema())
+                    .canHaveField(layer->mapSchema()->dictionary().get("ghost")));
 }
 
 TEST_CASE(
     "Feature lookup aliases resolve canonical schema paths without duplicating enumeration",
     "[schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Intersection"), "Feature");
     schema->addFeatureType(testFeatureType("Intersection"), root);
     auto properties = schema->addSchema(Kind::Object);
@@ -367,10 +405,10 @@ TEST_CASE(
     auto wrapper = schema->addSchema(Kind::Object);
     // Keep this auxiliary query root in the selected layer's JSON projection.
     schema->registerSchemaKey("query-wrapper", wrapper);
-    schema->addFieldSchema(root, "properties", properties);
-    schema->addFieldSchema(properties, "connectedRoads", roads);
-    schema->addElementSchema(roads, road);
-    schema->addFieldSchema(wrapper, "$feature", root);
+    owner->schemaType(root).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("connectedRoads", owner->schemaType(roads));
+    owner->schemaType(roads).asArray().addElement(owner->schemaType(road));
+    owner->schemaType(wrapper).asObject().addField("$feature", owner->schemaType(root));
     schema->finalize();
 
     for (bool imported : {false, true}) {
@@ -379,7 +417,7 @@ TEST_CASE(
         REQUIRE(registry->schemaId("query-wrapper") == wrapper);
         auto strings = std::make_shared<StringPool>("FeatureAliasTest");
         auto env = makeEnvironment(strings);
-        installCompletionLayerSchema(*env, registry, strings);
+        env->setSchema(registry->rootType());
         for (auto query :
              {"#attributes.connectedRoads > 3",
               "attributes.connectedRoads == 'x'",
@@ -390,64 +428,70 @@ TEST_CASE(
             CAPTURE(imported, query);
             auto ast = simfil::compile(*env, query, {.any = false});
             REQUIRE(ast);
-            auto refs = simfil::referencedSchemaPaths(*env, **ast, root);
+            auto refs =
+                simfil::referencedSchemaPaths(*env, **ast, env->schema().pool()->schemaType(root));
             REQUIRE(refs);
             REQUIRE_FALSE(refs->hasUnresolvedAccess);
             REQUIRE(refs->paths.size() == 1);
             CHECK(refs->paths[0].path[0].field == StringPool::PropertiesStr);
         }
         CHECK(suggests(*env, root, "attributes.connectedR", "connectedRoads"));
-        auto fields = simfil::Schema::fieldPaths(
-            root,
-            env->querySchemaCallback,
-            strings->get("connectedRoads"));
+        auto fields = registry->mapSchema()->schemaType(root).fieldPaths(
+            registry->mapSchema()->dictionary().get("connectedRoads"));
         REQUIRE(fields.size() == 1);
         CHECK(fields[0][0].field == StringPool::PropertiesStr);
         auto ast = simfil::compile(*env, "#$feature.attributes.connectedRoads > 3", {.any = false});
         REQUIRE(ast);
-        auto refs = simfil::referencedSchemaPaths(*env, **ast, wrapper);
+        auto refs =
+            simfil::referencedSchemaPaths(*env, **ast, env->schema().pool()->schemaType(wrapper));
         REQUIRE(refs);
         REQUIRE_FALSE(refs->hasUnresolvedAccess);
         CHECK(refs->paths[0].path[1].field == StringPool::PropertiesStr);
-        CHECK(registry->canHaveField(wrapper, "attributes"));
+        CHECK(registry->mapSchema()->schemaType(wrapper).canHaveField(
+            registry->mapSchema()->dictionary().get("attributes")));
         auto recursive = simfil::compile(*env, "**.attributes.connectedRoads", {.any = false});
         REQUIRE(recursive);
-        auto nestedRefs = simfil::referencedSchemaPaths(*env, **recursive, wrapper);
+        auto nestedRefs = simfil::referencedSchemaPaths(
+            *env,
+            **recursive,
+            env->schema().pool()->schemaType(wrapper));
         REQUIRE(nestedRefs);
         REQUIRE_FALSE(nestedRefs->hasUnresolvedAccess);
         REQUIRE(nestedRefs->paths.size() == 1);
         CHECK(nestedRefs->paths[0].path[1].field == StringPool::PropertiesStr);
         auto aliases =
-            simfil::Schema::fieldPaths(root, env->querySchemaCallback, StringPool::AttributesStr);
+            registry->mapSchema()->schemaType(root).fieldPaths(StringPool::AttributesStr);
         REQUIRE(aliases.size() == 1);
         CHECK(aliases[0][0].field == StringPool::PropertiesStr);
         CHECK(
-            std::ranges::find(registry->nestedFields(wrapper), "attributes") ==
-            registry->nestedFields(wrapper).end());
+            std::ranges::count(
+                registry->mapSchema()->schemaType(wrapper).nestedFields(),
+                StringPool::AttributesStr) == 0);
     }
 
     // A new immutable contract gives a real attributes member precedence over the alias.
     REQUIRE_THROWS(schema->addSchema(Kind::Object));
-    schema = newTestSchema();
+    std::tie(owner, schema) = newTestSchema();
     root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Intersection"), "Feature");
     schema->addFeatureType(testFeatureType("Intersection"), root);
     properties = schema->addSchema(Kind::Object);
     roads = schema->addSchema(Kind::Array);
     road = schema->addSchema(Kind::Int);
-    schema->addFieldSchema(root, "properties", properties);
-    schema->addFieldSchema(properties, "connectedRoads", roads);
-    schema->addElementSchema(roads, road);
+    owner->schemaType(root).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("connectedRoads", owner->schemaType(roads));
+    owner->schemaType(roads).asArray().addElement(owner->schemaType(road));
     auto real = schema->addSchema(Kind::Object);
-    schema->addFieldSchema(real, "actual", road);
-    schema->addFieldSchema(root, "attributes", real);
+    owner->schemaType(real).asObject().addField("actual", owner->schemaType(road));
+    owner->schemaType(root).asObject().addField("attributes", owner->schemaType(real));
     schema->finalize();
     auto strings = std::make_shared<StringPool>("FeatureAliasShadowTest");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
+    env->setSchema(schema->rootType());
     for (auto query : {"attributes.actual", "attributes.connectedRoads"}) {
         auto ast = simfil::compile(*env, query, {.any = false});
         REQUIRE(ast);
-        auto refs = simfil::referencedSchemaPaths(*env, **ast, root);
+        auto refs =
+            simfil::referencedSchemaPaths(*env, **ast, env->schema().pool()->schemaType(root));
         REQUIRE(refs);
         CHECK(
             refs->hasUnresolvedAccess == (std::string_view(query) == "attributes.connectedRoads"));
@@ -460,7 +504,7 @@ TEST_CASE(
     "Native schema transport preserves validation constraints and JSON projections",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     schema->addFeatureType(testFeatureType("Carrier"), root);
     auto count = schema->addSchema(Kind::Int);
@@ -477,41 +521,57 @@ TEST_CASE(
     schema->setJsonSchemaAnnotations(
         root,
         {{"title", "Carrier"}, {"x-mapget", {{"layerTarget", "example.Carrier"}}}});
-    schema->addNamedValue(
-        flags,
-        {.name = "LEFT", .value = uint64_t{1}, .role = simfil::Schema::NamedValue::Role::Flag});
-    schema->addNamedValue(
-        flags,
-        {.name = "RIGHT", .value = uint64_t{2}, .role = simfil::Schema::NamedValue::Role::Flag});
-    schema->addEnumSymbols(phase, std::vector<std::string>{"WAITING", "ACTIVE", "DONE"});
-    schema->addFieldSchema(attribute, "label", label);
-    schema->setFieldRequired(attribute, "label", true);
-    schema->addFieldSchema(root, "id", count, true);
-    schema->addFieldSchema(root, "attribute", attribute, true);
-    schema->addFieldSchema(root, "variant", attribute, true);
-    schema->addFieldSchema(root, "variant", count, true);
-    schema->addFieldSchema(root, "groups", children, true);
-    schema->addFieldSchema(root, "flags", flags);
-    schema->addFieldSchema(root, "phase", phase);
-    schema->addFieldSchema(root, "bytes", bytes);
-    schema->addFieldSchema(root, "children", children);
-    schema->addElementSchema(children, root);
-    schema->setFieldRequired(root, "id", true);
+    owner->schemaType(flags).asScalar().addNamedValue(
+        {.name = "LEFT", .value = uint64_t{1}, .role = simfil::SchemaType::NamedValue::Role::Flag});
+    owner->schemaType(flags).asScalar().addNamedValue(
+        {.name = "RIGHT",
+         .value = uint64_t{2},
+         .role = simfil::SchemaType::NamedValue::Role::Flag});
+    for (auto const& symbol : std::vector<std::string>{"WAITING", "ACTIVE", "DONE"})
+        owner->schemaType(phase).asEnum().addSymbol(symbol);
+    owner->schemaType(attribute).asObject().addField("label", owner->schemaType(label));
+    owner->schemaType(attribute).asObject().declareField("label").setRequired(true);
+    owner->schemaType(root).asObject().addField("id", owner->schemaType(count)).setMultimap(true);
+    owner->schemaType(root)
+        .asObject()
+        .addField("attribute", owner->schemaType(attribute))
+        .setMultimap(true);
+    owner->schemaType(root)
+        .asObject()
+        .addField("variant", owner->schemaType(attribute))
+        .setMultimap(true);
+    owner->schemaType(root)
+        .asObject()
+        .addField("variant", owner->schemaType(count))
+        .setMultimap(true);
+    owner->schemaType(root)
+        .asObject()
+        .addField("groups", owner->schemaType(children))
+        .setMultimap(true);
+    owner->schemaType(root).asObject().addField("flags", owner->schemaType(flags));
+    owner->schemaType(root).asObject().addField("phase", owner->schemaType(phase));
+    owner->schemaType(root).asObject().addField("bytes", owner->schemaType(bytes));
+    owner->schemaType(root).asObject().addField("children", owner->schemaType(children));
+    owner->schemaType(children).asArray().addElement(owner->schemaType(root));
+    owner->schemaType(root).asObject().declareField("id").setRequired(true);
     schema->finalize();
 
     auto exported = schema->toJsonSchema();
-    auto restored = importTestSchema(
-        exported,
-        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
+    auto restored = importTestSchema(exported, identityDeclarations(schema));
     // The codec exports from the immutable graph; there is no retained transport JSON cache.
     REQUIRE(restored->toJsonSchema() == exported);
-    REQUIRE(describe(restored, root) == describe(schema, root));
-    REQUIRE(restored->childSchema(root, "attribute") == attribute);
-    REQUIRE(restored->kind(flags) == LayerSchema::BitmaskKind);
-    REQUIRE(restored->kind(bytes) == Kind::Bytes);
+    REQUIRE_FALSE(describe(schema, root).contains("jsonPointer"));
+    REQUIRE(describe(restored, root)["jsonPointer"] == "/definitions/" + std::to_string(root));
     REQUIRE(
-        std::ranges::find(restored->directFields(root), "_multimap") ==
-        restored->directFields(root).end());
+        withoutSourceLocations(describe(restored, root)) ==
+        withoutSourceLocations(describe(schema, root)));
+    REQUIRE(restored->childSchema(root, "attribute") == attribute);
+    REQUIRE(restored->mapSchema()->schemaType(flags).kind() == LayerSchema::BitmaskKind);
+    REQUIRE(restored->mapSchema()->schemaType(bytes).kind() == Kind::Bytes);
+    REQUIRE(
+        std::ranges::count(
+            restored->mapSchema()->schemaType(root).directFields(),
+            restored->mapSchema()->dictionary().get("_multimap")) == 0);
     auto const& namedFlags =
         exported["definitions"][std::to_string(flags)]["x-mapget"]["namedValues"];
     REQUIRE(namedFlags.size() == 2);
@@ -527,7 +587,7 @@ TEST_CASE(
     REQUIRE_NOTHROW(validator.set_root_schema(exported));
     auto projected = R"({"id":2,"attribute":{"label":"road"},
         "bytes":{"_bytes":true,"hex":"abcd","number":43981}})"_json;
-    projected["flags"] = simfil::Bitmask{3, {schema->mapSchema()->binding(), flags}}.toJson();
+    projected["flags"] = simfil::Bitmask{3, schema->mapSchema()->schemaType(flags)}.toJson();
     REQUIRE_NOTHROW(validator.validate(projected));
     projected["flags"] = "LEFT|RIGHT";
     REQUIRE_THROWS(validator.validate(projected));
@@ -551,7 +611,7 @@ TEST_CASE(
     "Native schema transport preserves explicit alias ownership",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto root = schema->addSchema(Kind::Object);
     schema->setRootSchema(root);
     auto first = schema->addSchema(Kind::Object, "shared-context-key");
@@ -559,14 +619,12 @@ TEST_CASE(
     REQUIRE_THROWS(schema->registerSchemaKey("shared-context-key", second));
     schema->registerSchemaKey("second-context", second);
     // Reference traversal reaches the second context first, unlike producer allocation.
-    schema->addFieldSchema(root, "a", second);
-    schema->addFieldSchema(root, "b", first);
+    owner->schemaType(root).asObject().addField("a", owner->schemaType(second));
+    owner->schemaType(root).asObject().addField("b", owner->schemaType(first));
     schema->finalize();
 
     auto const transport = schema->toJsonSchema();
-    auto restored = importTestSchema(
-        transport,
-        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
+    auto restored = importTestSchema(transport, identityDeclarations(schema));
     REQUIRE(restored->schemaId("shared-context-key") == schema->schemaId("shared-context-key"));
     REQUIRE(restored->schemaId("second-context") == second);
     REQUIRE(restored->toJsonSchema() == transport);
@@ -576,7 +634,7 @@ TEST_CASE(
     "Converter fragments share native domains but keep local references isolated",
     "[schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto shared = schema->addSchema(Kind::String, "shared");
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     schema->addFeatureType(testFeatureType("Carrier"), root);
@@ -586,17 +644,18 @@ TEST_CASE(
     auto first = schema->addJsonSchema(fragment);
     fragment["$defs"]["Value"] = {{"type", "string"}, {"enum", {"ON", "OFF"}}};
     auto second = schema->addJsonSchema(fragment);
-    schema->addFieldSchema(root, "first", first);
-    schema->addFieldSchema(root, "second", second);
+    owner->schemaType(root).asObject().addField("first", owner->schemaType(first));
+    owner->schemaType(root).asObject().addField("second", owner->schemaType(second));
     schema->finalize();
     REQUIRE(schema->childSchema(first, "shared") == shared);
     REQUIRE(schema->childSchema(second, "shared") == shared);
-    REQUIRE(schema->kind(schema->childSchema(first, "value")) == Kind::Int);
-    REQUIRE(schema->kind(schema->childSchema(second, "value")) == Kind::String);
+    REQUIRE(
+        schema->mapSchema()->schemaType(schema->childSchema(first, "value")).kind() == Kind::Int);
+    REQUIRE(
+        schema->mapSchema()->schemaType(schema->childSchema(second, "value")).kind() ==
+        Kind::String);
     auto exported = schema->toJsonSchema();
-    auto restored = importTestSchema(
-        exported,
-        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
+    auto restored = importTestSchema(exported, identityDeclarations(schema));
     REQUIRE(restored->toJsonSchema() == exported);
     nlohmann::json_schema::json_validator validator;
     REQUIRE_NOTHROW(validator.set_root_schema(exported));
@@ -611,7 +670,7 @@ TEST_CASE(
     auto imported = importTestSchema(R"({"type":"object","if":{"required":["mode"]},
         "then":{"required":["value"]},"properties":{"mode":{"type":"string"}}})"_json);
     REQUIRE(roundtripSchema(imported)->toJsonSchema() == imported->toJsonSchema());
-    auto native = newTestSchema();
+    auto [nativeOwner, native] = newTestSchema();
     auto root = native->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     native->addFeatureType(testFeatureType("Carrier"), root);
     native->finalize();
@@ -619,11 +678,13 @@ TEST_CASE(
     auto before = native->toJsonSchema();
     REQUIRE(snapshot->mapSchema() == native->mapSchema());
     REQUIRE_THROWS(native->addSchema(Kind::Int));
-    auto replacement = newTestSchema();
+    auto [replacementOwner, replacement] = newTestSchema();
     auto replacementRoot =
         replacement->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     replacement->addFeatureType(testFeatureType("Carrier"), replacementRoot);
-    replacement->addFieldSchema(replacementRoot, "added", replacement->addSchema(Kind::Int));
+    replacementOwner->schemaType(replacementRoot)
+        .asObject()
+        .addField("added", replacementOwner->schemaType(replacement->addSchema(Kind::Int)));
     replacement->finalize();
     REQUIRE(replacement->toJsonSchema() != before);
     REQUIRE(replacement->mapSchema() != snapshot->mapSchema());
@@ -656,12 +717,13 @@ TEST_CASE(
         {testFeatureType("Thing")});
     auto root = schema->featureSchema("Thing");
     REQUIRE(root != simfil::NoTypeId);
-    REQUIRE(schema->kind(root) == LayerSchema::FeatureKind);
-    REQUIRE(schema->typeName(root) == "Thing");
-    REQUIRE(schema->fieldRequired(root, "items") == true);
-    REQUIRE(schema->fieldRequired(root, "optional") == false);
-    REQUIRE_FALSE(schema->reachabilityComplete(root));
-    REQUIRE(schema->canHaveField(root, "undeclaredBelowUnknown"));
+    REQUIRE(schema->mapSchema()->schemaType(root).kind() == LayerSchema::FeatureKind);
+    REQUIRE(schema->mapSchema()->schemaType(root).typeName() == "Thing");
+    REQUIRE(schema->mapSchema()->schemaType(root).field("items").required() == true);
+    REQUIRE(schema->mapSchema()->schemaType(root).field("optional").required() == false);
+    REQUIRE_FALSE(schema->mapSchema()->schemaType(root).reachabilityComplete());
+    REQUIRE(schema->mapSchema()->schemaType(root).canHaveField(
+        schema->mapSchema()->dictionary().get("undeclaredBelowUnknown")));
     auto json = describe(schema, root);
     REQUIRE(json["kind"] == "Feature");
     REQUIRE(json["fields"]["items"]["required"] == true);
@@ -678,20 +740,22 @@ TEST_CASE(
     REQUIRE(json["fields"]["number"]["enum"] == nlohmann::json::array({2.5, 3.5}));
     auto strings = std::make_shared<StringPool>("SchemaDomainCompletion");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
+    env->setSchema(schema->rootType());
     REQUIRE(suggests(*env, root, "items[17].na", "name"));
     REQUIRE(suggests(*env, root, "items[17].name == ru", "\"rural\""));
     REQUIRE(suggests(*env, root, "both.ri", "right"));
     auto roundtrip = roundtripSchema(schema);
     REQUIRE(roundtrip->featureSchema("Thing") == root);
-    REQUIRE(describe(roundtrip, root) == json);
+    REQUIRE(json["jsonPointer"] == "#");
+    REQUIRE(describe(roundtrip, root)["jsonPointer"] == "/definitions/" + std::to_string(root));
+    REQUIRE(withoutSourceLocations(describe(roundtrip, root)) == withoutSourceLocations(json));
 }
 
 TEST_CASE(
     "Direct rich LayerSchema transport preserves IDs metadata and plural edges",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto root = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     schema->addFeatureType(testFeatureType("Carrier"), root);
     auto number = schema->addSchema(Kind::Int, "count");
@@ -701,64 +765,72 @@ TEST_CASE(
     auto never = schema->addSchema(Kind::Never, "none");
     auto unknown = schema->addSchema(Kind::Unknown, "unknown");
     auto bytes = schema->addSchema(Kind::Bytes, "bytes");
-    schema->setTypeName(root, "ConcreteCarrier");
-    schema->setTypeName(text, "Label");
-    schema->setNullable(text, true);
-    schema->setNullable(number, false);
-    schema->addEnumSymbol(text, "FIRST");
-    schema->addEnumValue(number, int64_t{4});
-    schema->addEnumValue(bytes, simfil::ByteArray{"blob"});
-    schema->setComposition(unionId, Composition::OneOf);
-    schema->addAlternative(unionId, number);
-    schema->addAlternative(unionId, text);
-    schema->addElementSchema(array, number);
-    schema->addElementSchema(array, text);
-    schema->addFieldSchema(root, "list", array);
-    schema->addFieldSchema(root, "many", number);
-    schema->addFieldSchema(root, "many", text);
-    schema->addFieldSchema(root, "odd.name", unionId);
-    schema->addFieldSchema(root, "none", never);
-    schema->addFieldSchema(root, "unknown", unknown);
-    schema->addFieldSchema(root, "bytes", bytes);
-    schema->addFieldSchema(root, "unspecified");
-    schema->setFieldRequired(root, "list", true);
-    schema->setFieldRequired(root, "many", false);
+    owner->schemaType(root).setTypeName("ConcreteCarrier");
+    owner->schemaType(text).setTypeName("Label");
+    owner->schemaType(text).setNullable(true);
+    owner->schemaType(number).setNullable(false);
+    owner->schemaType(text).asEnum().addSymbol("FIRST");
+    owner->schemaType(number).asEnum().addValue(int64_t{4});
+    owner->schemaType(bytes).asEnum().addValue(simfil::ByteArray{"blob"});
+    owner->schemaType(unionId).setComposition(Composition::OneOf);
+    owner->schemaType(unionId).asComposition().addAlternative(owner->schemaType(number));
+    owner->schemaType(unionId).asComposition().addAlternative(owner->schemaType(text));
+    owner->schemaType(array).asArray().addElement(owner->schemaType(number));
+    owner->schemaType(array).asArray().addElement(owner->schemaType(text));
+    owner->schemaType(root).asObject().addField("list", owner->schemaType(array));
+    owner->schemaType(root).asObject().addField("many", owner->schemaType(number));
+    owner->schemaType(root).asObject().addField("many", owner->schemaType(text));
+    owner->schemaType(root).asObject().addField("odd.name", owner->schemaType(unionId));
+    owner->schemaType(root).asObject().addField("none", owner->schemaType(never));
+    owner->schemaType(root).asObject().addField("unknown", owner->schemaType(unknown));
+    owner->schemaType(root).asObject().addField("bytes", owner->schemaType(bytes));
+    owner->schemaType(root).asObject().addField("unspecified", {});
+    owner->schemaType(root).asObject().declareField("list").setRequired(true);
+    owner->schemaType(root).asObject().declareField("many").setRequired(false);
     schema->registerSchemaKey("textAlias", text);
     schema->finalize();
     auto json = schema->toJsonSchema();
-    auto roundtrip = importTestSchema(
-        json,
-        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()});
+    auto roundtrip = importTestSchema(json, identityDeclarations(schema));
     REQUIRE(roundtrip->featureSchema("Carrier") == root);
     REQUIRE(roundtrip->schemaId("textAlias") == text);
-    REQUIRE(roundtrip->kind(number) == schema->kind(number));
-    REQUIRE(roundtrip->kind(text) == schema->kind(text));
-    REQUIRE(roundtrip->kind(never) == Kind::Never);
-    REQUIRE(roundtrip->kind(unknown) == Kind::Unknown);
-    REQUIRE(roundtrip->enumValues(bytes).size() == 1);
-    REQUIRE(std::get<simfil::ByteArray>(roundtrip->enumValues(bytes)[0]).bytes == "blob");
-    REQUIRE(describe(roundtrip, root) == describe(schema, root));
+    REQUIRE(
+        roundtrip->mapSchema()->schemaType(number).kind() ==
+        schema->mapSchema()->schemaType(number).kind());
+    REQUIRE(
+        roundtrip->mapSchema()->schemaType(text).kind() ==
+        schema->mapSchema()->schemaType(text).kind());
+    REQUIRE(roundtrip->mapSchema()->schemaType(never).kind() == Kind::Never);
+    REQUIRE(roundtrip->mapSchema()->schemaType(unknown).kind() == Kind::Unknown);
+    std::vector<simfil::SchemaType::EnumValue> byteValues;
+    roundtrip->mapSchema()->schemaType(bytes).forEachEnumValue(
+        [&](auto const& value) { byteValues.push_back(value); });
+    REQUIRE(byteValues.size() == 1);
+    REQUIRE(std::get<simfil::ByteArray>(byteValues[0]).bytes == "blob");
+    REQUIRE_FALSE(describe(schema, root).contains("jsonPointer"));
+    REQUIRE(describe(roundtrip, root)["jsonPointer"] == "/definitions/" + std::to_string(root));
+    REQUIRE(
+        withoutSourceLocations(describe(roundtrip, root)) ==
+        withoutSourceLocations(describe(schema, root)));
     REQUIRE(roundtrip->toJsonSchema() == json);
 
     auto invalid = json;
     invalid["definitions"]["bad"] = invalid["definitions"]["1"];
-    REQUIRE_THROWS(importTestSchema(
-        invalid,
-        {schema->featureTypeInfos().begin(), schema->featureTypeInfos().end()}));
+    REQUIRE_THROWS(importTestSchema(invalid, identityDeclarations(schema)));
 }
 
 TEST_CASE(
     "Attribute query roots preserve payload aliases and exact runtime overlays",
     "[DataSourceInfo][schema-domain]")
 {
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     schema->addFeatureType(testFeatureType("Carrier"), feature);
     auto attribute = schema->addSchema(Kind::Object, "speed", "Attribute");
     auto value = schema->addSchema(Kind::Int);
-    schema->addFieldSchema(feature, "speed", attribute);
-    schema->addFieldSchema(feature, "identifier", value);
-    schema->addFieldSchema(attribute, "value", value);
+    owner->schemaType(feature).asObject().addField("speed", owner->schemaType(attribute));
+    owner->schemaType(feature).asObject().addField("identifier", owner->schemaType(value));
+    owner->schemaType(attribute).asObject().addField("value", owner->schemaType(value));
+    owner->schemaType(attribute).setTypeName("SpeedAttribute");
     schema->setAttributeMetadata(
         attribute,
         {"Carrier", "rules", "SPEED", attribute},
@@ -784,7 +856,7 @@ TEST_CASE(
     auto highest = sourceStrings->highest();
     auto strings = std::make_shared<StringPool>("Completion");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
+    env->setSchema(schema->rootType());
     REQUIRE(suggests(*env, root, "$feature.id", "identifier"));
     REQUIRE(suggests(*env, root, "val", "value"));
     auto ast = simfil::compile(
@@ -793,13 +865,21 @@ TEST_CASE(
         simfil::CompileOptions{
             .any = false,
             .rewriteMode = simfil::RewriteMode::Schema,
-            .rootSchema = root});
+            .rootSchema = env->schema().pool()->schemaType(root)});
     REQUIRE(ast);
     REQUIRE((*ast)->expr().toString().find("value") != std::string::npos);
     REQUIRE(sourceStrings->highest() == highest);
     auto restored = roundtripSchema(schema);
     REQUIRE(restored->attributeQuerySchema("Carrier", attribute) != simfil::NoTypeId);
-    REQUIRE(describe(restored, restored->attributeQuerySchema("Carrier", attribute)) == json);
+    // Generated query overlays have no JSON location; their physical payloads do.
+    REQUIRE_FALSE(describe(schema, attribute).contains("jsonPointer"));
+    REQUIRE(
+        describe(restored, attribute)["jsonPointer"] ==
+        "/definitions/" + std::to_string(attribute));
+    REQUIRE(
+        withoutSourceLocations(
+            describe(restored, restored->attributeQuerySchema("Carrier", attribute))) ==
+        withoutSourceLocations(json));
 }
 
 TEST_CASE(
@@ -808,27 +888,34 @@ TEST_CASE(
 {
     auto graph = std::make_shared<MapSchema>();
     auto schema = graph->newLayer("Test", LayerType::Features);
-    auto attribute = graph->newAttribute("shared-speed", "SpeedAttribute");
-    schema->addFieldSchema(attribute, "value", graph->primitive(Kind::Int));
+    auto attribute = graph->newAttribute("shared-speed", "SpeedAttribute").id();
+    graph->schemaType(attribute)
+        .asObject()
+        .addField("value", graph->schemaType(graph->primitive(Kind::Int)));
     for (std::string feature : {"Carrier", "Other"}) {
-        REQUIRE(schema->newFeature(testFeatureType(feature, "identifier")) != simfil::NoTypeId);
+        REQUIRE(
+            schema->newFeature(testFeatureType(feature, "identifier")).id() != simfil::NoTypeId);
         auto container = schema->addSchema(Kind::Object, {}, "AttributeContainer");
-        schema->addFieldSchema(schema->attributeLayerMapSchema(feature), "rules", container, true);
+        graph->schemaType(schema->attributeLayerMapSchema(feature))
+            .asObject()
+            .addField("rules", graph->schemaType(container))
+            .setMultimap(true);
         auto names = feature == "Carrier" ?
             std::vector<std::string>{"SPEED", "ADVISORY_SPEED"} :
             std::vector<std::string>{"OTHER_SPEED"};
         for (auto const& name : names) {
-            schema->bindAttribute(attribute, feature, "rules", name);
-            schema->addFieldSchema(container, name, attribute, true);
+            schema->bindAttribute(graph->schemaType(attribute), feature, "rules", name);
         }
     }
     auto otherLayer = graph->newLayer("OtherLayer", LayerType::Features);
-    REQUIRE(otherLayer->newFeature(testFeatureType("Carrier", "identifier")) != simfil::NoTypeId);
+    REQUIRE(
+        otherLayer->newFeature(testFeatureType("Carrier", "identifier")).id() != simfil::NoTypeId);
     auto container = otherLayer->addSchema(Kind::Object, {}, "AttributeContainer");
-    otherLayer
-        ->addFieldSchema(otherLayer->attributeLayerMapSchema("Carrier"), "rules", container, true);
-    otherLayer->bindAttribute(attribute, "Carrier", "rules", "LAYER_SPEED");
-    otherLayer->addFieldSchema(container, "LAYER_SPEED", attribute, true);
+    graph->schemaType(otherLayer->attributeLayerMapSchema("Carrier"))
+        .asObject()
+        .addField("rules", graph->schemaType(container))
+        .setMultimap(true);
+    otherLayer->bindAttribute(graph->schemaType(attribute), "Carrier", "rules", "LAYER_SPEED");
     graph->finalize();
     CHECK(schema->attributeTypeCode(attribute).empty());
     std::ostringstream binary(std::ios::binary);
@@ -849,8 +936,8 @@ TEST_CASE(
         REQUIRE(physical != simfil::NoTypeId);
         auto strings = std::make_shared<StringPool>("SharedAttributeQueryNames");
         auto env = makeEnvironment(strings);
-        installCompletionLayerSchema(*env, registry, strings);
-        auto const& lookup = env->querySchemaCallback;
+        env->setSchema(registry->rootType());
+        auto graph = registry->mapSchema();
         for (std::string feature : {"Carrier", "Other"}) {
             if (!registry->producesFeatureType(feature))
                 continue;
@@ -860,16 +947,16 @@ TEST_CASE(
                 CHECK(owner.featureType_ == feature);
                 CHECK(owner.featureLayer_ == registry->name());
             }
-            REQUIRE(lookup(root)->symbolEqualityPaths(simfil::StringPool::Empty, lookup).empty());
+            REQUIRE(graph->schemaType(root).symbolEqualityPaths(simfil::StringPool::Empty).empty());
             for (std::string symbol :
                  {"SPEED", "ADVISORY_SPEED", "OTHER_SPEED", "LAYER_SPEED", "MISSING"}) {
                 CAPTURE(feature, symbol);
-                auto symbolId = strings->emplace(symbol).value();
-                CHECK(lookup(physical)->symbolEqualityPaths(symbolId, lookup).empty());
-                CHECK(lookup(registry->featureSchema(feature))
-                          ->symbolEqualityPaths(symbolId, lookup)
+                auto symbolId = graph->dictionary().get(symbol);
+                CHECK(graph->schemaType(physical).symbolEqualityPaths(symbolId).empty());
+                CHECK(graph->schemaType(registry->featureSchema(feature))
+                          .symbolEqualityPaths(symbolId)
                           .empty());
-                auto paths = lookup(root)->symbolEqualityPaths(symbolId, lookup);
+                auto paths = graph->schemaType(root).symbolEqualityPaths(symbolId);
                 auto allowed = registry->name() == "OtherLayer" ?
                     symbol == "LAYER_SPEED" :
                     feature == "Carrier" ?
@@ -883,19 +970,21 @@ TEST_CASE(
                 }
                 REQUIRE(paths.size() == 1);
                 REQUIRE(paths.front().size() == 1);
-                CHECK(paths.front().front().field == strings->get("$name"));
-                auto scalarPaths = lookup(root)->scalarFieldPathsForSymbol(symbolId, lookup);
+                CHECK(paths.front().front().field == graph->dictionary().get("$name"));
+                auto scalarPaths = graph->schemaType(root).scalarFieldPathsForSymbol(symbolId);
                 CHECK(scalarPaths.empty() == (registry->name() == "Test" && feature == "Carrier"));
                 auto ast = simfil::compile(
                     *env,
                     symbol,
-                    {.any = false, .rewriteMode = simfil::RewriteMode::Schema, .rootSchema = root});
+                    {.any = false,
+                     .rewriteMode = simfil::RewriteMode::Schema,
+                     .rootSchema = env->schema().pool()->schemaType(root)});
                 REQUIRE(ast);
                 for (std::string actual :
                      {"SPEED", "ADVISORY_SPEED", "OTHER_SPEED", "LAYER_SPEED", "MISSING"}) {
                     CAPTURE(actual);
                     auto data = std::make_shared<simfil::ModelPool>(strings);
-                    data->setSchemaBinding(registry->mapSchema()->binding());
+                    data->setSchemaPool(registry->mapSchema());
                     auto object = data->newObject();
                     REQUIRE(object->setSchema(root));
                     REQUIRE(object->addField("$name", std::string_view(actual)));
@@ -916,28 +1005,33 @@ TEST_CASE(
 {
     auto graph = std::make_shared<MapSchema>();
     auto schema = graph->newLayer("Test", LayerType::Features);
-    REQUIRE(schema->newFeature(testFeatureType("Carrier", "identifier")) != simfil::NoTypeId);
+    REQUIRE(schema->newFeature(testFeatureType("Carrier", "identifier")).id() != simfil::NoTypeId);
     auto container = schema->addSchema(Kind::Object, {}, "AttributeContainer");
-    schema->addFieldSchema(schema->attributeLayerMapSchema("Carrier"), "rules", container, true);
-    auto attribute = graph->newAttribute("shared-speed");
-    schema->addFieldSchema(attribute, "value", graph->primitive(Kind::Int));
+    graph->schemaType(schema->attributeLayerMapSchema("Carrier"))
+        .asObject()
+        .addField("rules", graph->schemaType(container))
+        .setMultimap(true);
+    auto attribute = graph->newAttribute("shared-speed").id();
+    graph->schemaType(attribute)
+        .asObject()
+        .addField("value", graph->schemaType(graph->primitive(Kind::Int)));
     for (auto name : {"SPEED", "ADVISORY_SPEED"}) {
-        schema->bindAttribute(attribute, "Carrier", "rules", name);
-        schema->addFieldSchema(container, name, attribute, true);
+        schema->bindAttribute(graph->schemaType(attribute), "Carrier", "rules", name);
     }
     graph->finalize();
     auto root = schema->attributeQuerySchema("Carrier", attribute);
     REQUIRE(root != simfil::NoTypeId);
     auto strings = std::make_shared<StringPool>("SharedAttributeScalarAliases");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
+    env->setSchema(schema->rootType());
     auto options = simfil::CompileOptions{
         .any = true,
         .rewriteMode = simfil::RewriteMode::Schema,
-        .rootSchema = root};
+        .rootSchema = env->schema().pool()->schemaType(root)};
     auto ambiguous = simfil::compile(*env, "SPEED > 40", options);
     REQUIRE(ambiguous);
-    auto references = simfil::referencedSchemaPaths(*env, **ambiguous, root);
+    auto references =
+        simfil::referencedSchemaPaths(*env, **ambiguous, env->schema().pool()->schemaType(root));
     REQUIRE(references);
     CHECK(references->hasUnresolvedAccess);
     auto explicitField = simfil::compile(*env, "value > 40", options);
@@ -951,13 +1045,14 @@ TEST_CASE(
     CHECK(normalized->attributeScopes_.front().attributeName_ == "SPEED");
     auto guarded = simfil::compile(*env, normalized->normalizedQuery_, options);
     REQUIRE(guarded);
-    auto guardedReferences = simfil::referencedSchemaPaths(*env, **guarded, root);
+    auto guardedReferences =
+        simfil::referencedSchemaPaths(*env, **guarded, env->schema().pool()->schemaType(root));
     REQUIRE(guardedReferences);
     CHECK_FALSE(guardedReferences->hasUnresolvedAccess);
     for (std::string actual : {"SPEED", "ADVISORY_SPEED"}) {
         CAPTURE(actual, normalized->normalizedQuery_);
         auto data = std::make_shared<simfil::ModelPool>(strings);
-        data->setSchemaBinding(schema->mapSchema()->binding());
+        data->setSchemaPool(schema->mapSchema());
         auto object = data->newObject();
         REQUIRE(object->setSchema(root));
         REQUIRE(object->addField("$name", std::string_view(actual)));
@@ -987,97 +1082,116 @@ TEST_CASE(
 {
     auto graph = std::make_shared<MapSchema>();
     auto schema = graph->newLayer("Test", LayerType::Features);
-    auto feature = schema->newFeature(testFeatureType("Carrier", "identifier"));
-    auto attribute = graph->newAttribute("payload");
-    schema->bindAttribute(attribute, "Carrier", "rules", "SPEED");
-    schema->addFieldSchema(schema->featurePropertiesSchema("Carrier"), "payload", attribute);
-    schema->addFieldSchema(attribute, "$name", graph->primitive(Kind::String));
-    schema->addFieldSchema(attribute, "$feature", feature);
+    auto feature = schema->newFeature(testFeatureType("Carrier", "identifier")).id();
+    auto attribute = graph->newAttribute("payload").id();
+    schema->bindAttribute(graph->schemaType(attribute), "Carrier", "rules", "SPEED");
+    graph->schemaType(schema->featurePropertiesSchema("Carrier"))
+        .asObject()
+        .addField("payload", graph->schemaType(attribute));
+    graph->schemaType(attribute)
+        .asObject()
+        .addField("$name", graph->schemaType(graph->primitive(Kind::String)));
+    graph->schemaType(attribute).asObject().addField("$feature", graph->schemaType(feature));
     graph->finalize();
     auto strings = std::make_shared<StringPool>("AttributePayloadQueryLookalike");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
-    auto const& lookup = env->querySchemaCallback;
-    auto symbol = strings->emplace("SPEED").value();
+    env->setSchema(schema->rootType());
+
+    auto symbol = graph->dictionary().get("SPEED");
     CHECK(schema->attributeTypeCode(attribute) == "SPEED");
     CHECK(schema->childSchema(attribute, "$feature") == feature);
-    CHECK(lookup(attribute)->symbolEqualityPaths(symbol, lookup).empty());
+    CHECK(graph->schemaType(attribute).symbolEqualityPaths(symbol).empty());
     auto query = schema->attributeQuerySchema("Carrier", attribute);
     REQUIRE(query != simfil::NoTypeId);
-    auto paths = lookup(query)->symbolEqualityPaths(symbol, lookup);
+    auto paths = graph->schemaType(query).symbolEqualityPaths(symbol);
     REQUIRE(paths.size() == 1);
     REQUIRE(paths.front().size() == 1);
-    CHECK(paths.front().front().field == strings->get("$name"));
+    CHECK(paths.front().front().field == graph->dictionary().get("$name"));
 }
 
 TEST_CASE("Schema summaries preserve cycles across immutable contract variants", "[schema-domain]")
 {
     auto variant = GENERATE(0, 1, 2);
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto first = schema->addSchema(Kind::Object);
     schema->setRootSchema(first);
     auto second = schema->addSchema(Kind::Object);
     auto array = schema->addSchema(Kind::Array);
     auto choice = schema->addSchema(Kind::Union);
     auto value = schema->addSchema(Kind::String);
-    schema->addFieldSchema(first, "next", second);
-    schema->addFieldSchema(first, "alias", array);
-    schema->addFieldSchema(second, "items", array);
-    schema->addFieldSchema(second, "state", value);
-    schema->addElementSchema(array, choice);
-    schema->setComposition(choice, Composition::AnyOf);
-    schema->addAlternative(choice, first);
-    schema->addAlternative(choice, value);
-    schema->addEnumSymbols(value, std::vector<std::string>{"ON", "OFF"});
+    owner->schemaType(first).asObject().addField("next", owner->schemaType(second));
+    owner->schemaType(first).asObject().addField("alias", owner->schemaType(array));
+    owner->schemaType(second).asObject().addField("items", owner->schemaType(array));
+    owner->schemaType(second).asObject().addField("state", owner->schemaType(value));
+    owner->schemaType(array).asArray().addElement(owner->schemaType(choice));
+    owner->schemaType(choice).setComposition(Composition::AnyOf);
+    owner->schemaType(choice).asComposition().addAlternative(owner->schemaType(first));
+    owner->schemaType(choice).asComposition().addAlternative(owner->schemaType(value));
+    for (auto const& symbol : std::vector<std::string>{"ON", "OFF"})
+        owner->schemaType(value).asEnum().addSymbol(symbol);
     if (variant != 0) {
-        schema->addFieldSchema(second, "late", value);
-        schema->addEnumSymbol(value, "LATE");
+        owner->schemaType(second).asObject().addField("late", owner->schemaType(value));
+        owner->schemaType(value).asEnum().addSymbol("LATE");
     }
-    schema->setOpen(second, variant == 1);
+    owner->schemaType(second).asObject().setOpen(variant == 1);
     schema->finalize();
 
     for (auto id : {first, second, array, choice}) {
         CAPTURE(id);
-        REQUIRE(std::ranges::equal(
-            schema->nestedFields(id),
+        REQUIRE(std::ranges::is_sorted(schema->mapSchema()->schemaType(id).nestedFields()));
+        REQUIRE(std::ranges::is_sorted(schema->mapSchema()->schemaType(id).nestedEnumSymbols()));
+        // Use a value-returning projection rather than a prvalue transform
+        // iterator (GCC 13 is_permutation retains the latter's expired reference).
+        auto resolve = [&](auto name)
+        {
+            return schema->mapSchema()->dictionary().resolve(name).value();
+        };
+        REQUIRE(std::ranges::is_permutation(
+            schema->mapSchema()->schemaType(id).nestedFields(),
             variant == 0 ? std::vector<std::string>{"alias", "items", "next", "state"} :
-                           std::vector<std::string>{"alias", "items", "late", "next", "state"}));
-        REQUIRE(std::ranges::equal(
-            schema->nestedEnumSymbols(id),
+                           std::vector<std::string>{"alias", "items", "late", "next", "state"},
+            {},
+            resolve));
+        REQUIRE(std::ranges::is_permutation(
+            schema->mapSchema()->schemaType(id).nestedEnumSymbols(),
             variant == 0 ? std::vector<std::string>{"OFF", "ON"} :
-                           std::vector<std::string>{"LATE", "OFF", "ON"}));
-        REQUIRE(schema->reachabilityComplete(id) == (variant != 1));
-        REQUIRE(schema->canHaveField(id, "absent") == (variant == 1));
+                           std::vector<std::string>{"LATE", "OFF", "ON"},
+            {},
+            resolve));
+        REQUIRE(schema->mapSchema()->schemaType(id).reachabilityComplete() == (variant != 1));
+        REQUIRE(
+            schema->mapSchema()->schemaType(id).canHaveField(
+                schema->mapSchema()->dictionary().get("absent")) == (variant == 1));
     }
-    REQUIRE(schema->nestedFields(value).empty());
+    REQUIRE(schema->mapSchema()->schemaType(value).nestedFields().empty());
 
     // A published completeness proof cannot be invalidated through a retained builder alias.
-    REQUIRE_THROWS(schema->setOpen(second, false));
+    REQUIRE_THROWS(owner->schemaType(second).asObject().setOpen(false));
 }
 
 TEST_CASE("Many attribute query roots retain the shared feature schema", "[schema-domain]")
 {
     auto partial = GENERATE(false, true);
-    auto schema = newTestSchema();
+    auto [owner, schema] = newTestSchema();
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Carrier"), "Feature");
     schema->addFeatureType(testFeatureType("Carrier"), feature);
     auto shared = schema->addSchema(Kind::Object);
     auto parent = shared;
     for (size_t i = 0; i < 128; ++i) {
         auto child = schema->addSchema(Kind::Object);
-        schema->addFieldSchema(parent, "left", child);
-        schema->addFieldSchema(parent, "right", child);
+        owner->schemaType(parent).asObject().addField("left", owner->schemaType(child));
+        owner->schemaType(parent).asObject().addField("right", owner->schemaType(child));
         parent = child;
     }
     auto value = schema->addSchema(Kind::String);
-    schema->addEnumSymbol(value, "SHARED_VALUE");
-    schema->addFieldSchema(parent, "value", value);
+    owner->schemaType(value).asEnum().addSymbol("SHARED_VALUE");
+    owner->schemaType(parent).asObject().addField("value", owner->schemaType(value));
     std::vector<simfil::TypeId> attributes;
     for (size_t i = 0; i < 400; ++i) {
         auto name = "attribute" + std::to_string(i);
         auto attribute = schema->addSchema(Kind::Object, {}, "Attribute");
-        schema->addFieldSchema(attribute, "payload", shared);
-        schema->addFieldSchema(feature, name, attribute);
+        owner->schemaType(attribute).asObject().addField("payload", owner->schemaType(shared));
+        owner->schemaType(feature).asObject().addField(name, owner->schemaType(attribute));
         schema->setAttributeMetadata(
             attribute,
             {"Carrier", "rules", name, attribute},
@@ -1085,7 +1199,7 @@ TEST_CASE("Many attribute query roots retain the shared feature schema", "[schem
         attributes.push_back(attribute);
     }
     if (partial)
-        schema->addFieldSchema(parent, "unknown");
+        owner->schemaType(parent).asObject().addField("unknown", {});
     schema->finalize();
     for (auto attribute : attributes) {
         auto root = schema->attributeQuerySchema("Carrier", attribute);
@@ -1093,15 +1207,24 @@ TEST_CASE("Many attribute query roots retain the shared feature schema", "[schem
         REQUIRE(schema->childSchema(root, "$feature") == feature);
         // $feature is an explicit context edge, not an implicit wildcard subtree.
         // Incomplete payload metadata must still leave absence proofs conservative.
-        REQUIRE(schema->canHaveField(root, "attribute399") == partial);
-        REQUIRE(schema->canHaveField(schema->childSchema(root, "$feature"), "attribute399"));
-        REQUIRE(schema->canHaveField(root, "value"));
-        REQUIRE(schema->canHaveEnumSymbol(root, "SHARED_VALUE"));
-        REQUIRE(schema->reachabilityComplete(root) == !partial);
-        REQUIRE(schema->canHaveField(root, "absent") == partial);
+        REQUIRE(
+            schema->mapSchema()->schemaType(root).canHaveField(
+                schema->mapSchema()->dictionary().get("attribute399")) == partial);
+        REQUIRE(schema->mapSchema()
+                    ->schemaType(schema->childSchema(root, "$feature"))
+                    .canHaveField(schema->mapSchema()->dictionary().get("attribute399")));
+        REQUIRE(schema->mapSchema()->schemaType(root).canHaveField(
+            schema->mapSchema()->dictionary().get("value")));
+        REQUIRE(schema->mapSchema()->schemaType(root).canHaveEnumSymbol(
+            schema->mapSchema()->dictionary().get("SHARED_VALUE")));
+        REQUIRE(schema->mapSchema()->schemaType(root).reachabilityComplete() == !partial);
+        REQUIRE(
+            schema->mapSchema()->schemaType(root).canHaveField(
+                schema->mapSchema()->dictionary().get("absent")) == partial);
     }
     if (!partial)
-        REQUIRE_FALSE(schema->canHaveField(feature, "$feature"));
+        REQUIRE_FALSE(schema->mapSchema()->schemaType(feature).canHaveField(
+            schema->mapSchema()->dictionary().get("$feature")));
 }
 
 TEST_CASE(
@@ -1125,16 +1248,17 @@ TEST_CASE(
     })"_json,
         {testFeatureType("Recursive")});
     auto root = schema->featureSchema("Recursive");
-    REQUIRE(schema->reachabilityComplete(root));
-    REQUIRE_FALSE(schema->canHaveField(root, "absent"));
+    REQUIRE(schema->mapSchema()->schemaType(root).reachabilityComplete());
+    REQUIRE_FALSE(schema->mapSchema()->schemaType(root).canHaveField(
+        schema->mapSchema()->dictionary().get("absent")));
     auto multi = schema->childSchema(root, "multi");
-    REQUIRE(schema->kind(multi) == Kind::Object);
-    REQUIRE(schema->composition(multi) == Composition::None);
+    REQUIRE(schema->mapSchema()->schemaType(multi).kind() == Kind::Object);
+    REQUIRE(schema->mapSchema()->schemaType(multi).composition() == Composition::None);
     auto json = describe(schema, root);
     REQUIRE(json["fields"]["next"]["truncated"] == "cycle");
     auto strings = std::make_shared<StringPool>("RecursiveCompletion");
     auto env = makeEnvironment(strings);
-    installCompletionLayerSchema(*env, schema, strings);
+    env->setSchema(schema->rootType());
     REQUIRE(suggests(*env, root, "next.next.next.multi.la", "label"));
     auto ast = simfil::compile(
         *env,
@@ -1142,11 +1266,98 @@ TEST_CASE(
         simfil::CompileOptions{
             .any = false,
             .rewriteMode = simfil::RewriteMode::Schema,
-            .rootSchema = root});
+            .rootSchema = env->schema().pool()->schemaType(root)});
     REQUIRE(ast);
     auto data = std::make_shared<simfil::ModelPool>(strings);
     REQUIRE(simfil::json::parse(R"({"next":{"next":{"state":"DONE"}}})", data));
     auto values = simfil::eval(*env, **ast, *data->root(0).value(), nullptr);
     REQUIRE(values);
     REQUIRE_FALSE(values->empty());
+}
+
+TEST_CASE(
+    "Search preparation distinguishes attributes from enum meanings",
+    "[schema-domain][search-preparation]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    auto schema = graph->newLayer("Road", LayerType::Features);
+    REQUIRE(schema->newFeature(testFeatureType("Road", "roadId")).id() != simfil::NoTypeId);
+    auto container = schema->addSchema(Kind::Object, {}, "AttributeContainer");
+    graph->schemaType(schema->attributeLayerMapSchema("Road"))
+        .asObject()
+        .addField("rules", graph->schemaType(container))
+        .setMultimap(true);
+    auto speed = graph->newAttribute("SPEED_LIMIT").id();
+    graph->schemaType(speed)
+        .asObject()
+        .addField("value", graph->schemaType(graph->primitive(Kind::Int)));
+    schema->bindAttribute(graph->schemaType(speed), "Road", "rules", "SPEED_LIMIT");
+    auto warning = graph->newAttribute("WARNING_SIGN").id();
+    // Real datasource enums have a named semantic union and physical string
+    // representation. The chooser must expose the declaration once, including
+    // every attribute that uses it, rather than duplicate its storage forms.
+    auto category = schema->addSchema(Kind::Union, {}, "WarningSign");
+    graph->schemaType(category).setComposition(Composition::AnyOf);
+    graph->schemaType(category).setTypeName("WarningSign");
+    auto text = schema->addSchema(Kind::String);
+    graph->schemaType(text).asEnum().addSymbol("SPEED_LIMIT");
+    graph->schemaType(text).asEnum().addSymbol("ANIMALS");
+    graph->schemaType(category).asComposition().addAlternative(graph->schemaType(text));
+    graph->schemaType(category)
+        .addNamedValue({.name = "SPEED_LIMIT", .value = std::string_view("SPEED_LIMIT")});
+    graph->schemaType(category)
+        .addNamedValue({.name = "ANIMALS", .value = std::string_view("ANIMALS")});
+    graph->schemaType(warning).asObject().addField("warningSign", graph->schemaType(category));
+    schema->bindAttribute(graph->schemaType(warning), "Road", "rules", "WARNING_SIGN");
+    auto movable = graph->newAttribute("MOVABLE_WARNING_SIGN").id();
+    graph->schemaType(movable)
+        .asObject()
+        .addField("movableWarningSign", graph->schemaType(category));
+    schema->bindAttribute(graph->schemaType(movable), "Road", "rules", "MOVABLE_WARNING_SIGN");
+    graph->finalize();
+    for (auto query :
+         {"SPEED_LIMIT", "\"SPEED_LIMIT\"", "any(SPEED_LIMIT)", "any(\"SPEED_LIMIT\")"}) {
+        auto prepared =
+            schema->searchInterpretations(query, LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(prepared);
+        REQUIRE(prepared->size() == 2);
+        CHECK((*prepared)[0].id_.find("attribute:") == 0);
+        CHECK((*prepared)[1].id_.find("enum:") == 0);
+        CHECK((*prepared)[1].query_.find("hasSymbol") != std::string::npos);
+        CHECK((*prepared)[1].query_.find("WARNING_SIGN") != std::string::npos);
+    }
+    auto animals =
+        schema->searchInterpretations("ANIMALS", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(animals);
+    REQUIRE(animals->size() == 1);
+    CHECK(animals->front().attributeScopes_.size() == 2);
+    CHECK(animals->front().id_ == "enum:attribute:WarningSign:ANIMALS");
+    CHECK(animals->front().scope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    auto unknown =
+        schema->searchInterpretations("UNDECLARED", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(unknown);
+    CHECK(unknown->empty());
+}
+
+TEST_CASE("Anonymous enum interpretations retain their artifact identity", "[search-preparation]")
+{
+    auto identity = [](std::string version)
+    {
+        auto graph =
+            std::make_shared<MapSchema>(MapFormat{"AnonymousEnums", std::move(version), {}});
+        auto layer = graph->newLayer("Road", LayerType::Features);
+        auto root = layer->newFeature(testFeatureType("Road", "roadId"));
+        auto value = layer->addSchema(Kind::String);
+        graph->schemaType(value).asEnum().addSymbol("ANIMALS");
+        root.properties().addField("category", graph->schemaType(value));
+        graph->finalize();
+        auto meanings =
+            layer->searchInterpretations("ANIMALS", LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(meanings);
+        REQUIRE(meanings->size() == 1);
+        return meanings->front().id_;
+    };
+    // Equal graph-local type numbers are not evidence that two unnamed enums
+    // describe the same concept. Named semantic types can group across sources.
+    CHECK(identity("1") != identity("2"));
 }

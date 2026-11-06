@@ -147,8 +147,12 @@ public:
      * - Version 6.2:
      *   + Schema raw-value metadata extends simfil's static dictionary; mapget field IDs shift.
      *   + MapSchema codec 3 / SchemaPool codec 2 carry native relation contracts and enum ordinals.
+     * - Version 6.3:
+     *   + Canonical schema field multiplicity extends simfil's static dictionary;
+     *     mapget field IDs shift and require matched native/WASM readers.
+     *   + MapSchema codec 7 / SchemaPool codec 4 use canonical columns and arenas.
      */
-    static constexpr Version CurrentProtocolVersion{6, 2, 0};
+    static constexpr Version CurrentProtocolVersion{6, 3, 0};
 
     /** Map to keep track of the highest sent string id per datasource node. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

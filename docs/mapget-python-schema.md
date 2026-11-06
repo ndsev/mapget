@@ -30,8 +30,9 @@ legacy_info = {
 source = mapget.DataSourceServer(legacy_info)
 schema = source.map_schema
 road = schema.layer("Road")
-identity = road.get_type_info("Road")
+identity = schema.get_type_info("Road")
 assert identity.unique_id_compositions[0][0].name == "id"
+assert road.produced_feature_types == ("Road",)
 
 # Canonical references need their exact owner, not the old inline definitions.
 replacement = mapget.DataSourceServer(source.info(), map_schema=schema)
@@ -50,9 +51,11 @@ Python constructor or mutators; `from_metadata()` returns an already finalized o
 
 Every schema/layer/type/ID-part view retains its original owner. It remains valid after a client,
 datasource, tile or higher-level Python wrapper is destroyed. There is no separately owned Python
-feature-type registry. Properties are read-only; returned dictionary snapshots can be modified
-without altering the graph. A schema can contain roots absent from a particular datasource;
-only that source's catalog determines availability and authorization.
+feature-type registry. Identity definitions belong to `MapSchema` and are shared across its
+layers; layers record only the feature types they produce. Properties are read-only; returned
+dictionary snapshots can be modified without altering the graph. A schema can contain roots
+absent from a particular datasource; only that source's catalog determines availability and
+authorization.
 
 <!-- mcp:
 title: "Python exact binary schema retrieval"
@@ -86,9 +89,11 @@ envelope/graph and returns an immutable artifact. The default input bound is 64 
 and oversized input raise; no partial schema is installed. Supply the expected token whenever
 the bytes correspond to advertised metadata. This format is neither JSON Schema nor a tile stream.
 
-The current wire formats are tile-stream protocol **6.2**, MapSchema codec **3** and
-embedded simfil SchemaPool codec **2**. The `rawValue` static-dictionary addition shifts
-mapget field IDs, so 6.1 streams are incompatible even though their framing is unchanged.
+The current wire formats are tile-stream protocol **6.3**, MapSchema codec **7** and
+embedded simfil SchemaPool codec **4**. The `rawValue` and field-multiplicity static-dictionary additions shift
+mapget field IDs, so 6.1/6.2 streams are incompatible even though their framing is unchanged.
+MapSchema codec 7 stores identity definitions once at map level and produced feature roots
+per layer in canonical columns and arenas; older artifacts are not accepted.
 Stream compatibility requires equal major/minor versions and ignores patch. Rebuild the
 Python wheel, native consumers and erdblick WASM together; old framed payloads and unsupported
 schema artifacts are rejected rather than reinterpreted under the new IDs.
@@ -110,20 +115,20 @@ incoming-relation results affected by missing contributions are partial, not com
 
 <!-- mcp:
 title: "Python schema inspection API"
-keywords: [Python, LayerSchema, FeatureTypeInfo, IdPart, MapFormat, Bitmask, SchemaReference, type_id, type_descriptor, rawValue]
+keywords: [Python, LayerSchema, FeatureIdentity, IdPart, MapFormat, Bitmask, SchemaType, type_id, type_descriptor, rawValue]
 -->
 ## Inspection API
 
 | Object | Read-Only API |
 | --- | --- |
 | `MapFormat` | `name`, `version`, `subsystems`, `to_dict()`, tuple equality. `MapFormat(name="", version="", subsystems=())` constructs a descriptive value, not a schema. |
-| `MapSchema` | `schema_id`, `format`, `layer_names`, `type_count`, `layer(layer_id)`, `type_reference(type_id)`, `type_descriptor(type_id)`, plus the binary/import operations above. |
-| `LayerSchema` | `name`, `type`, `map_schema`, `root_schema`, `feature_types`, `produced_feature_types`, `get_type_info(name)`, `feature_schema(feature_type)`, `to_json_schema()`. |
-| `FeatureTypeInfo` | `name`, `unique_id_compositions`: ordered tuples of owner-retaining `IdPart` views. The first composition is primary; subsequent compositions are reference alternatives. |
+| `MapSchema` | `schema_id`, `format`, `layer_names`, `feature_identities`, `get_type_info(name)`, `type_count`, `layer(layer_id)`, `schema_type(type_id)`, `type_descriptor(type_id)`, plus the binary/import operations above. |
+| `LayerSchema` | `name`, `type`, `map_schema`, `root_schema`, `produced_feature_types`, `get_type_info(name)`, `feature_schema(feature_type)`, `to_json_schema()`. |
+| `FeatureIdentity` | `name`, `unique_id_compositions`: ordered tuples of owner-retaining `IdPart` views. The first composition is primary; subsequent compositions are reference alternatives. |
 | `IdPart` | `name`, `description`, `datatype`, `is_optional`, `is_synthetic`. |
 | `IdPartDataType` | `I32`, `U32`, `I64`, `U64`, `UUID128`, `STR`. |
-| `SchemaReference` | `schema_id`, `type_id`, boolean validity. The reference retains its graph. Empty references have no interpretation. |
-| `Bitmask` | `bits` as an exact Python integer, `type` as a `SchemaReference`, `to_dict()` using simfil's lossless tag. |
+| `SchemaType` | `schema_id`, `type_id`, `type_name`, `kind`, boolean validity. The view retains its graph. Empty views have no interpretation. |
+| `Bitmask` | `bits` as an exact Python integer, `type` as a `SchemaType`, `to_dict()` using simfil's lossless tag. |
 
 `MapFormat.subsystems` is a detached list of `{name, version}` pairs for direct content modules.
 Pairs are sorted and deduplicated, but distinct versions of the same name are retained.
@@ -136,20 +141,27 @@ count of feature classes. Numeric `type_id` values are local to that exact artif
 interchangeable with the string-valued `typeId` field of a Feature.
 A nonempty version/subsystem map requires a format name; empty subsystem names are rejected.
 
-`LayerSchema.feature_types` includes reference-only identity definitions; use
-`produced_feature_types` to enumerate produced feature roots. These are tuples, not mutable
-registries. Unknown `layer(...)` and `get_type_info(...)` names raise `KeyError`.
+`MapSchema.feature_identities` contains every identity definition once, including reference-only
+types and types produced by several layers. Identical legacy declarations across layers share
+one definition; conflicting definitions for the same feature name are rejected. Equivalence
+ignores ID-part descriptions, but requires matching ordered compositions, labels, datatypes,
+and optional/synthetic flags. Legacy `x-mapget.produced: false` remains reference-only.
+`MapSchema.get_type_info(name)` looks up that map-wide identity. `LayerSchema.get_type_info(name)`
+forwards to the same owner, so a successful lookup does not establish that the layer produces
+the type. Use `LayerSchema.produced_feature_types` for that layer's produced feature names.
+Both inventories are read-only tuples; the former `LayerSchema.feature_types` registry is removed.
+Unknown `layer(...)` and `get_type_info(...)` names raise `KeyError`.
 `feature_schema(...)` returns a local type ID, or zero when there is no root. `root_schema`
 is likewise local to `map_schema.schema_id`. `to_json_schema()` is an explicit, potentially
 large detached export for interoperability; routine discovery uses the native views instead.
 
-`type_reference(type_id)` returns the exact owner-retaining reference for a known type.
-`type_descriptor(type_id)` exports a detached dictionary through simfil's native `SchemaModel`,
+`schema_type(type_id)` returns the exact owner-retaining reference for a known type.
+`type_descriptor(type_id)` exports a detached dictionary directly from canonical schema nodes,
 not the JSON Schema exporter. Both methods reject unknown IDs, including zero, with `KeyError`.
 
 ```python
 root_type_id = schema.layer("Road").root_schema
-reference = schema.type_reference(root_type_id)
+reference = schema.schema_type(root_type_id)
 assert reference.schema_id == schema.schema_id
 assert reference.type_id == root_type_id
 
@@ -158,9 +170,11 @@ assert descriptor["$ref"] == root_type_id
 ```
 
 Descriptors expose `kind`, fields, alternatives, enum values and numeric/named-value metadata
-where declared. `$ref` values refer to types in the same artifact. Recursive expansion and
-native descriptor-budget limits are marked by `truncated`; request the referenced type
-separately when needed. Expansion can be large, so inspect individual types rather than
+where declared. `$ref` values refer to types in the same artifact. Recursive expansion
+is marked by `truncated: cycle` during export; navigation is not truncated. Exceeding
+export work, depth or byte limits raises rather than returning a partial dictionary.
+Request the referenced type separately when needed. Expansion can be large, so inspect
+individual types rather than
 exporting every root. Mutating the returned dictionary does not change the native graph.
 
 In `namedValues`, `value` describes the model value; optional `rawValue` retains the original
@@ -171,7 +185,7 @@ decimal strings for unsigned values above signed 64-bit range and hexadecimal st
 flag masks; the binding preserves those representations. Binary schema roundtrips retain
 the same metadata and type references.
 
-`ModelNode.schema_reference` exposes explicit qualification. An ordinary leaf may instead
+`ModelNode.schema_type` exposes explicit qualification. An ordinary leaf may instead
 derive its meaning from its parent field/element; a detached unqualified node cannot recover
 that context. Plain JSON export of qualified integers/floats/strings remains the underlying
 primitive. Bitmasks retain full-width bits and exact type identity; node conversion returns a typed
@@ -193,7 +207,8 @@ MCP projections use an explicit qualified-scalar envelope; see
 ## Validation
 
 Run `python3 test/integration/python-schema2-smoke.py` against the rebuilt mapget Python package.
-It covers legacy normalization, canonical reconstruction, immutable owner lifetimes, exact
+It covers legacy normalization, canonical reconstruction, map-wide identity sharing and
+conflict rejection, reference-only identities, immutable owner lifetimes, exact
 type references/counts, detached descriptors, named-value `rawValue`, shared/cyclic type
 references, bitmask metadata, binary failures/roundtrip, source-qualified client retrieval
 and partition schema retention.

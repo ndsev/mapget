@@ -188,7 +188,7 @@ model_ptr<Array> Feature::relations()
             model().childSchemaId(
                 schema(),
                 StringPool::RelationsStr,
-                simfil::Schema::Kind::Array));
+                simfil::SchemaType::Kind::Array));
         relationNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -263,7 +263,7 @@ void Feature::setSchema(simfil::TypeId schemaId)
         simfil::ValueType::Object);
     if (checked == schema())
         return;
-    // Rebinding an already populated root would silently change its children's domains.
+    // Rebinding an already populated root would silently change its children's types.
     auto const& existing = *static_cast<Feature const*>(this);
     if (existing.attributeNodeAddress() || existing.attributeLayerNodeAddress() ||
         existing.relationNodeAddress())

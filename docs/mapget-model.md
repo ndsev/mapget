@@ -118,8 +118,8 @@ resolves to a separately shared immutable graph before any partition is construc
 | --- | --- |
 | `DataSourceInfo` | Map/dictionary identity, runtime limits, layer metadata, format and shared MapSchema owner. |
 | `LayerInfo` | Availability, partition addressing, coverage and same-named schema binding. |
-| `MapSchema` | One immutable type graph, schema dictionary and exact artifact identity. |
-| `LayerSchema` | ModelNode view of layer roots, produced/reference-only types and their identity definitions. |
+| `MapSchema` | One immutable type graph, schema dictionary, map-wide feature identities and exact artifact identity. |
+| `LayerSchema` | ModelNode view of layer-local produced feature roots and their payload schemas. |
 | `FeatureTypeInfo` | Primary and secondary ID compositions made of `IdPart` records. |
 | `Coverage` | Compact discovery tile ranges and optional filled bits. |
 
@@ -149,6 +149,24 @@ canonical generic types, dictionary, indexes, descriptor adaptation and codec.
 MapSchema adds formats, layers, feature identities and relation/attribute semantics,
 not another structural graph. Metadata copies retain this owner rather than copying
 JSON or rebuilding each layer.
+
+Feature identity definitions belong to the map, not to the referring layer.
+`MapSchema::addFeatureType()` registers each ordered ID-composition contract once;
+`featureIdentities()` and `getTypeInfo()` expose borrowed `FeatureIdentity` views over
+that canonical inventory. `FeatureTypeInfo` and `IdPart` are declaration/import DTOs,
+not retained copies. Identity compositions and parts are arena-backed views; `retain()`
+pins the same schema when a view escapes its caller's lifetime. Registration
+does not allocate a schema type or a pretend Feature root. A known identity may have
+no available target layer, yet still be encoded in a same-map relation or validity.
+Layers declare only what they actually produce, using `newFeature(name)` with a
+registered identity, or `newFeature(info)` to register and produce in one call.
+Different layers can provide different payload schemas for the same identity.
+Same-name compositions must agree in part names, ordering, datatypes and
+optional/synthetic flags; conflicting definitions fail, including during legacy
+import and add-on composition. Description-only differences reuse the first prose.
+`LayerSchema::getTypeInfo()` and `LayerInfo::getTypeInfo()` forward to the map-wide
+inventory. They do **not** establish production or routing eligibility; use
+`LayerSchema::producesFeatureType()` or `featureTypes()` for that.
 
 - `DataSourceInfo.mapFormat_` describes the map format by name, version and a flat
   canonical set of subsystem-name/version pairs. It is descriptive, not a substitute for the exact
@@ -185,7 +203,8 @@ reports the numeric ID, dictionary, map and layer, rather than substituting a
 placeholder type name that produces a misleading schema error.
 This is a coordinated binary protocol cutover; legacy metadata compatibility does
 not mean old binary payload compatibility.
-MapSchema envelope codec 3 embeds SchemaPool codec 2. Previous codecs
+MapSchema envelope codec 7 embeds SchemaPool codec 4. Identities are stored once,
+followed by each layer's produced-name/root associations. Previous codecs
 are deliberately rejected; consumers must fetch a matching artifact rather than
 reinterpret its payload. Native roundtrip fixtures cover both current decoding
 and rejection of the old envelope.
@@ -210,7 +229,8 @@ keywords: ["enum", "bitmask", "units", "numeric domain", "schema aliases", "cons
 -->
 ### Schema Types
 
-`LayerSchema` stores precise scalar affinities, named feature/attribute kinds,
+`MapSchema` extends the canonical simfil `SchemaPool` with mapget metadata.
+Borrowed `SchemaType`/`SchemaField` views expose scalar affinities, named feature/attribute kinds,
 `typename`, nullable values, field-presence requirements, open objects, scalar
 enum literals, and explicit `anyOf`/`oneOf`/`allOf` edges. Internally, a packed kind
 contains a static name ID above `simfil::ValueType` affinity bits; generic traversal
@@ -223,30 +243,43 @@ numeric masks do not establish raw bit values. Unknown metadata is not a scalar 
 or proof that a field is absent. Finalization builds reachability indexes once;
 open or incomplete subgraphs deliberately disable negative pruning.
 
-Metadata-only completion uses a private `StringPool` and environment prepared by
-`installCompletionLayerSchema`, then calls the TypeId overload of
-`simfil::complete`. Feature roots come from `featureSchema(featureType)`.
-`attributeQuerySchema(featureType, attributeSchema)` returns a prepared root in
+Metadata-only completion uses a private `StringPool` and an environment retaining
+one graph via `Environment::setSchema(layer->rootType())`. Pass the selected
+`SchemaType` to `simfil::complete`; an empty compile root deliberately means
+schema-free compilation, not an implicit environment default. Feature roots come
+from `mapSchema->schemaType(layer->featureSchema(featureType))`.
+`attributeQuerySchema(featureType, attributeSchema)` identifies a prepared root in
 the same graph with the payload, aliases and actual runtime overlays: `$name`,
 `$layer`, `$attributeIndex`, `$validityIndex`, `$validityCount`, `$hasValidity`,
 and `$feature`. It does not construct sample model nodes or another registry.
-The environment callback retains the registry and bindings. Return candidate
-strings across environments, never their pool-local IDs.
+Canonical schema path IDs belong to the schema dictionary, not the environment's
+data dictionary. Return candidate strings across environments, never pool-local IDs.
 
 Query overlays are explicit-only edges, represented by
-`simfil::Schema::FieldRole::Context`. Wildcard and recursive data-field discovery
+`simfil::SchemaType::FieldRole::Context`. Wildcard and recursive data-field discovery
 do not follow these edges; explicitly requesting `$feature`, `$source` or
 `$target` still resolves them. Generated attribute-query overlay fields carry
 this role, while a producer's ordinary `$`-prefixed field remains enumerable.
 JSON Schema roundtrips preserve the distinction in `x-mapget.contextFields`;
 descriptor queries expose `role: "context"` on the field edge.
 
-`simfil::SchemaModel` supplies the separate lazy descriptor view for metadata
-queries, using that same owning callback and private pool. For example,
+`simfil::SchemaTypeModelNode` exposes descriptors directly over the same canonical
+pool. Converting a `SchemaType` to a metadata node retains that pool; navigation
+never constructs an independent schema model or expanded descriptor tree. For example,
 `fields.items.elements[0].kind` queries schema metadata; completing
 `items[17].name` traverses the represented item type. Descriptor objects have
 `NoTypeId`, so feature-field pruning cannot accidentally suppress metadata.
-Recursion and depth/work limits are explicit rather than silently empty types.
+Navigation preserves graph references, including cycles. Query evaluation owns its
+work and cancellation limits. JSON export separately detects active-path cycles and
+rejects exhausted depth, work or output-byte budgets without returning partial JSON.
+
+Mapget's type descriptors add optional `schemaKey`, `jsonPointer`, `metaType`,
+`zserioType`, `attributeType` and `attributeTypeCode` text from the same owner.
+`attributeOwners` lists named use sites as `featureType`, `layer`, `name` and an
+optional `featureLayer`. Owner nodes directly reference stable canonical rows;
+there is no copied owner graph. A reusable Attribute payload can have several use
+sites. Its generated query context contains only the applicable feature owners,
+not an arbitrarily selected global name.
 
 JSON Schema is an import/export format, not the retained representation or the
 schema RPC payload. Explicit export produces draft-07 `definitions` with mapget
@@ -272,7 +305,7 @@ rejects structural keywords and mapget-owned identity/type annotations: fields,
 arrays, alternatives, kinds and enum literals must use the typed construction API.
 These annotations support JSON validation, not additional SIMFIL pruning proofs.
 
-`addFieldSchema(..., multimap=true)` describes duplicate-key JSON projection
+`object.addField(name, child).setMultimap(true)` describes duplicate-key JSON projection
 without changing the native value type. Its first `anyOf` branch describes one
 native value, and the second describes an array of repeated values. These may
 overlap when the native value is itself an array. `BitmaskKind` describes raw unsigned
@@ -304,29 +337,43 @@ with `origin` and `size` Points. Attribute points admit the runtime display stri
 and lossless JSON Point representation. These contracts allow unrelated wildcard
 fields to skip large coordinate buffers without losing named point lookups.
 
-`LayerSchema::newFeature()` builds the common envelope and primary ID fields from
-`FeatureTypeInfo`, registers the supplied properties/attribute-layer map, and checks
-common-field conflicts. `attributes` is a lookup alias for `properties`, never a
-second enumerable field. `MapSchema::newAttribute()` installs shared validity and
-source-link fields. Add the provider's payload fields and then bind the same
-physical Attribute to each named use site with `LayerSchema::bindAttribute()`.
-The physical type is not copied for each Attribute name or decoder profile.
+`LayerSchema::newFeature()` returns a `FeatureSchemaType` over the canonical
+pool. It builds and seals the common envelope and primary ID fields; its
+`properties()` and `attributeLayers()` containers remain extensible. A map-wide
+identity is registered once, then reused by name in every producing layer.
+`attributes` is a lookup alias for `properties`, never a second enumerable field.
+`MapSchema::newAttribute()` returns an extensible `AttributeSchemaType` with the
+shared validity and source-link fields. Both views borrow by default; `retain()`
+explicitly pins the same graph without copying its declarations.
+
+Native `LayerSchema::bindAttribute()` creates or reuses the named attribute-layer
+container, adds the payload edge, and records the use site as one operation.
+Conflicting existing edges are rejected. Producers do not repeat AttributeContainer
+metadata or maintain a separate owner declaration. Binding requires a native
+Feature envelope; legacy JSON imports use their explicit metadata boundary rather
+than silently acquiring invented common fields.
 
 ```cpp
 auto schema = std::make_shared<MapSchema>(format);
+schema->addFeatureType(roadIdentity);
 auto roads = schema->newLayer("Road", LayerType::Features);
-auto feature = roads->newFeature(roadIdentity);
-auto rules = roads->addSchema(simfil::Schema::Kind::Object, {}, "AttributeContainer");
-roads->addFieldSchema(roads->attributeLayerMapSchema("Road"), "rules", rules, true);
+auto road = roads->newFeature("Road");
+road.properties().addField("name", schema->newScalarType(simfil::SchemaType::Kind::String));
+auto speed = schema->newScalarType(simfil::SchemaType::Kind::Int);
+speed.setNumericDomain({.unit = "km/h"});
 auto attribute = schema->newAttribute("physical:Speed", "SpeedValue");
-schema->addFieldSchema(attribute, "speed", speedType);
+attribute.addField("value", speed);
 roads->bindAttribute(attribute, "Road", "rules", "SPEED_LIMIT");
-roads->addFieldSchema(rules, "SPEED_LIMIT", attribute, true);
-roads->setRelationDeclarations({}); // Explicitly no stored forward relations.
 schema->finalize();
 ```
 
-`speedType` above is a provider-defined scalar contract in this same artifact.
+Generic `SchemaType`/`SchemaField` methods write directly to the owner's records,
+including field presence, repeated-member semantics and Context roles. Mapget's
+reserved-field checks run at those writes, not only in a specialized view, so
+casting a view to its generic base cannot bypass them. Opening a properties object
+remains possible while its common fields stay protected. After finalization all
+views reject mutation.
+
 Attribute names and owning feature layers/types remain explicit use-site metadata;
 `setAttributeType()` records discriminator-enum provenance independently of payload
 `typename`. A bare shared physical type does not choose one of its owners. Query
@@ -1013,7 +1060,7 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 6.2, including exact schema
+Binary readers and writers must both use protocol 6.3, including exact schema
 bindings, qualified scalars and version-2 incoming manifests. Error and empty-tile
 expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
 string-pool caches are cleared by the normal startup compatibility check.

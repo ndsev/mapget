@@ -38,16 +38,20 @@ public:
         auto layer = graph->newLayer("Things", LayerType::Features);
         auto root = layer->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Thing"));
         auto properties = layer->addSchema(
-            simfil::Schema::Kind::Object,
+            simfil::SchemaType::Kind::Object,
             LayerSchema::featurePropertiesKey("Thing"));
-        layer->addFieldSchema(root, "properties", properties);
-        valueDomain =
-            layer->addSchema(addon ? simfil::Schema::Kind::String : simfil::Schema::Kind::Int);
-        layer->addFieldSchema(properties, addon ? "label" : "count", valueDomain);
+        graph->schemaType(root).asObject().addField("properties", graph->schemaType(properties));
+        valueDomain = layer->addSchema(
+            addon ? simfil::SchemaType::Kind::String : simfil::SchemaType::Kind::Int);
+        graph->schemaType(properties)
+            .asObject()
+            .addField(addon ? "label" : "count", graph->schemaType(valueDomain));
         if (!addon) {
-            flagsDomain = layer->addSchema(simfil::Schema::Kind::Bitmask);
-            layer->setBitWidth(flagsDomain, 64);
-            layer->addFieldSchema(properties, "flags", flagsDomain);
+            flagsDomain = layer->addSchema(simfil::SchemaType::Kind::Bitmask);
+            graph->schemaType(flagsDomain).asBitmask().setBitWidth(64);
+            graph->schemaType(properties)
+                .asObject()
+                .addField("flags", graph->schemaType(flagsDomain));
         }
         layer->addFeatureType(identity, root);
         layer->setRootSchema(root);
@@ -58,8 +62,10 @@ public:
         }
         else {
             auto raw = graph->newLayer("Raw", LayerType::SourceData);
-            rawDomain = raw->addSchema(simfil::Schema::Kind::Object);
-            raw->addFieldSchema(rawDomain, "count", valueDomain);
+            rawDomain = raw->addSchema(simfil::SchemaType::Kind::Object);
+            graph->schemaType(rawDomain)
+                .asObject()
+                .addField("count", graph->schemaType(valueDomain));
             raw->setRootSchema(rawDomain);
         }
         for (auto const& name : additionalLayers) {
@@ -97,14 +103,12 @@ public:
         else {
             if (auto added = properties->addField(
                     "count",
-                    tile->newQualifiedValue(int64_t{255}, {graph->binding(), valueDomain}));
+                    tile->newQualifiedValue(int64_t{255}, graph->schemaType(valueDomain)));
                 !added)
                 throw std::runtime_error(added.error().message);
             if (auto added = properties->addField(
                     "flags",
-                    tile->newBitmask(
-                        UINT64_C(0x8000000000000001),
-                        {graph->binding(), flagsDomain}));
+                    tile->newBitmask(UINT64_C(0x8000000000000001), graph->schemaType(flagsDomain)));
                 !added)
                 throw std::runtime_error(added.error().message);
             feature->addLine({{11, 48, 0}, {11.1, 48.1, 0}});
@@ -123,7 +127,7 @@ public:
         root->setSourceDataAddressScope();
         if (auto added = root->object()->addField(
                 "count",
-                tile->newQualifiedValue(int64_t{255}, {graph->binding(), valueDomain}));
+                tile->newQualifiedValue(int64_t{255}, graph->schemaType(valueDomain)));
             !added)
             throw std::runtime_error(added.error().message);
         tile->addRoot(root);
@@ -208,7 +212,7 @@ TEST_CASE(
         copied = target->clone(clones, tile, properties);
         REQUIRE(copied);
         CHECK(copied->owningModel().get() == target.get());
-        CHECK(copied->schemaReference().binding->identity() == destination.graph->schemaId());
+        CHECK(copied->schemaType().pool()->identity() == destination.graph->schemaId());
     }
     CHECK(oldOwner.expired());
     CHECK(copied->toJson() == expected);
@@ -270,14 +274,13 @@ TEST_CASE(
         CHECK(native->at(0)->addr() == featureAddress);
         CHECK(native->at(0)->geom()->addr() == geometryAddress);
         CHECK(
-            native->resolve(scalarAddress)->schemaReference().binding->identity() ==
+            native->resolve(scalarAddress)->schemaType().pool()->identity() ==
             effective->schemaId());
         CHECK(
-            native->resolve(maskAddress)->schemaReference().binding->identity() ==
-            effective->schemaId());
+            native->resolve(maskAddress)->schemaType().pool()->identity() == effective->schemaId());
         CHECK(independent->schemaId() == base.graph->schemaId());
         CHECK(
-            independent->at(0)->attributes()->at(0)->schemaReference().binding->identity() ==
+            independent->at(0)->attributes()->at(0)->schemaType().pool()->identity() ==
             base.graph->schemaId());
 
         auto restored = std::make_shared<PartitionFeatureLayer>(
@@ -299,7 +302,7 @@ TEST_CASE(
         auto json = native->toJson();
         native->rebindSchema(metadata.getLayer("Raw"));
         auto rebound = native->resolve<SourceDataCompoundNode>(address);
-        CHECK(rebound->schemaReference().binding->identity() == effective->schemaId());
+        CHECK(rebound->schemaType().pool()->identity() == effective->schemaId());
         CHECK(rebound->sourceDataAddress().u64() == SourceDataAddress(32, 64).u64());
         CHECK(rebound->isSourceDataAddressScope());
         CHECK(rebound->schemaName() == "NativeRaw");

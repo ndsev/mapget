@@ -111,6 +111,11 @@ TEST_CASE(
         }
     })");
     metadata["layers"]["OtherRoads"] = metadata["layers"]["Roads"];
+    // The map knows Road's identity, but an unrelated layer must not become a locate candidate.
+    metadata["layers"]["Unrelated"] = {
+        {"featureTypes",
+         {{{"name", "Other"},
+           {"uniqueIdCompositions", {{{{"partId", "otherId"}, {"datatype", "U32"}}}}}}}}};
 
     size_t fetches = 0;
     std::unique_ptr<DataSource> source;
@@ -368,10 +373,10 @@ TEST_CASE("GeoJsonSource", "[GeoJsonSource]")
         REQUIRE(laneLayer != nullptr);
 
         // Verify feature type names
-        REQUIRE(roadLayer->featureTypes().size() == 1);
-        REQUIRE(roadLayer->featureTypes()[0].name_ == "RoadFeature");
-        REQUIRE(laneLayer->featureTypes().size() == 1);
-        REQUIRE(laneLayer->featureTypes()[0].name_ == "LaneFeature");
+        REQUIRE(roadLayer->layerSchema()->featureTypes().size() == 1);
+        REQUIRE(roadLayer->layerSchema()->featureTypes()[0] == "RoadFeature");
+        REQUIRE(laneLayer->layerSchema()->featureTypes().size() == 1);
+        REQUIRE(laneLayer->layerSchema()->featureTypes()[0] == "LaneFeature");
         REQUIRE(roadLayer->schemaOwner() == laneLayer->schemaOwner());
 
         // Fill Road layer

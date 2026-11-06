@@ -8,7 +8,8 @@
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatareference.h"
 #include "mapget/service/locate.h"
-#include "simfil/model/schema-model.h"
+#include "simfil/model/schema-node.h"
+#include "simfil/model/schema-type.h"
 #include "simfil/result.h"
 
 #include <cctype>
@@ -195,16 +196,16 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
     auto scalar = [&](Json raw)
     {
         // Provenance is explicit response metadata, never inferred from a numeric code.
-        auto type = value.schemaReference();
+        auto type = value.schemaType();
         if (!type)
             return raw;
         charge(64);
-        chargeString(type.binding->identity());
+        chargeString(type.pool()->identity());
         return Json{
             {"$mapget", "qualified"},
             {"value", std::move(raw)},
-            {"schema", type.binding->identity()},
-            {"typeId", type.id}};
+            {"schema", type.pool()->identity()},
+            {"typeId", type.id()}};
     };
     switch (value.type) {
     case ValueType::Undef: return {{"$mapget", "undefined"}};
@@ -243,7 +244,7 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
         // simfil owns the full-width tag and type validation; no mapget-specific codec.
         charge(96);
         if (mask.type)
-            chargeString(mask.type.binding->identity());
+            chargeString(mask.type.pool()->identity());
         return mask.toJson();
     }
     case ValueType::Array:
@@ -253,6 +254,42 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
             value.as<ValueType::Object>();
         if (!node)
             return nullptr;
+        if (auto schema = std::dynamic_pointer_cast<simfil::SchemaPool const>(node->owningModel()))
+        {
+            std::optional<Json> descriptorJson;
+            auto resolved = schema->resolve(
+                *node,
+                simfil::Model::Lambda(
+                    [&](simfil::ModelNode const& resolvedNode)
+                    {
+                        auto descriptor =
+                            dynamic_cast<simfil::SchemaTypeModelNode const*>(&resolvedNode);
+                        if (!descriptor)
+                            return;
+                        // The generic exporter owns cycle detection. Its traversal
+                        // still consumes this call's cancellation, work and byte budgets.
+                        descriptorJson = descriptor->toJson(
+                            {.maxDepth = SerializationNestingLimit - depth,
+                             .maxNodes = remainingWork_,
+                             .maxBytes = remainingBytes_,
+                             .reserve =
+                                 [&](size_t nodes, size_t bytes)
+                             {
+                                 if (!step(nodes))
+                                     throw std::length_error("work");
+                                 charge(bytes);
+                             },
+                             .scalar =
+                                 [&](simfil::ModelNode const& scalar)
+                             {
+                                 return valueJson(simfil::Value::field(scalar), depth + 1);
+                             }});
+                    }));
+            if (!resolved)
+                throw std::runtime_error("Invalid native schema descriptor.");
+            if (descriptorJson)
+                return std::move(*descriptorJson);
+        }
         auto model =
             std::dynamic_pointer_cast<PartitionFeatureModelLayerBase const>(node->owningModel());
         if (model &&
@@ -320,8 +357,8 @@ void McpNativeTools::Call::environment(std::shared_ptr<simfil::StringPool> strin
     else
         strings = std::make_shared<StringPool>("mcp-query");
     env_ = makeEnvironment(strings);
-    if (layer_)
-        installCompletionLayerSchema(*env_, layer_->layerSchema(), strings);
+    if (layer_ && layer_->layerSchema())
+        env_->setSchema(layer_->layerSchema()->rootType());
     traceFunction_ = std::make_unique<Trace>(*this);
     env_->functions["trace"] = traceFunction_.get();
 }
@@ -401,7 +438,10 @@ Json McpNativeTools::Call::evaluate(
         auto ast = simfil::compile(
             *env_,
             expression,
-            {.any = predicate, .rewriteMode = simfil::RewriteMode::Schema, .rootSchema = schema});
+            {.any = predicate,
+             .rewriteMode = simfil::RewriteMode::Schema,
+             .rootSchema =
+                 layer_ ? layer_->schemaOwner()->schemaType(schema) : simfil::SchemaType{}});
         if (!ast) {
             issues_.push_back(boundedJson(
                 {{"phase", "compile"},
@@ -573,7 +613,7 @@ void McpNativeTools::Call::querySchema()
         if (arguments.contains("featureType"))
             throw std::invalid_argument("Choose featureType or typeId");
         auto id = arguments["typeId"].get<simfil::TypeId>();
-        if (!schema->hasSchema(id)) {
+        if (!schema->mapSchema()->schemaType(id)) {
             fail(
                 "unknown_schema",
                 "The selected layer has no such typeId. Read mapget_query_schema "
@@ -587,8 +627,7 @@ void McpNativeTools::Call::querySchema()
     }
     else {
         for (auto const& type : types) {
-            // Identity-only declarations can have a synthesized common-field type,
-            // but that type does not describe data produced by this layer.
+            // A map-wide identity can exist without a produced root in this layer.
             if (arguments.contains("featureType") && schema->getTypeInfo(type, false) &&
                 !schema->producesFeatureType(type))
             {
@@ -619,14 +658,15 @@ void McpNativeTools::Call::querySchema()
         findSchema(roots, types);
         return;
     }
-    environment();
-    auto model = std::make_shared<simfil::SchemaModel>(
-        env_->strings(),
-        env_->querySchemaCallback,
-        std::max(size_t{2}, remainingWork_));
+    auto owner = schema->mapSchema();
+    // Descriptor fields use the schema dictionary. Compile against a private
+    // copy with identical IDs; query text must never mutate the shared owner.
+    environment(owner->strings());
+    // These are metadata objects, not instances of the layer's feature type.
+    env_->setSchema({});
     for (size_t i = 0; i < roots.size() && step(); ++i) {
         auto id = roots[i];
-        auto root = model->root(id);
+        auto root = owner->typeNode(id);
         Json values;
         if (arguments.contains("query")) {
             // Explicit queries see the whole lazy graph, never the overview's projection.
@@ -640,10 +680,7 @@ void McpNativeTools::Call::querySchema()
                 layer_->type_ != LayerType::Features)
                 expanded.insert(id);
             if (arguments.contains("featureType")) {
-                auto properties = simfil::Schema::fieldSchemas(
-                    id,
-                    env_->querySchemaCallback,
-                    StringPool::PropertiesStr);
+                auto properties = owner->schemaType(id).fieldTypes(StringPool::PropertiesStr);
                 expanded.insert(properties.begin(), properties.end());
             }
             // Logical alternatives describe the same selected value position.
@@ -651,16 +688,13 @@ void McpNativeTools::Call::querySchema()
             while (!pending.empty() && step()) {
                 auto current = pending.back();
                 pending.pop_back();
-                for (auto alternative : schema->alternatives(current))
+                for (auto alternative : owner->schemaType(current).alternatives())
                     if (expanded.insert(alternative).second)
                         pending.push_back(alternative);
             }
             expanded.erase(simfil::NoTypeId);
             values = Json::array({schemaOverview(*root, expanded)});
         }
-        // Projections such as **.typename may never emit a node-budget marker themselves.
-        if (model->exhausted())
-            truncate("schema_node_limit");
         Json item{{"typeId", id}, {"values", std::move(values)}};
         if (arguments.contains("featureType") && !arguments.contains("query"))
             item["contract"] = boundedJson(schema->featureTypeContract(types[i], reserveContract));
@@ -869,7 +903,7 @@ void McpNativeTools::Call::validateExpression()
             query,
             {.any = arguments.value("predicate", false),
              .rewriteMode = simfil::RewriteMode::Schema,
-             .rootSchema = id});
+             .rootSchema = schema->mapSchema()->schemaType(id)});
         Json context{{"featureType", type}, {"typeId", id}, {"schemaCertain", false}};
         if (!featureLayer) {
             context.erase("featureType");
@@ -883,13 +917,15 @@ void McpNativeTools::Call::validateExpression()
                 {"size", ast.error().location.size}};
         }
         else if (id != simfil::NoTypeId) {
-            auto paths = simfil::referencedSchemaPaths(*env_, **ast, id);
+            auto paths =
+                simfil::referencedSchemaPaths(*env_, **ast, schema->mapSchema()->schemaType(id));
             if (paths) {
                 context["unresolvedAccess"] = paths->hasUnresolvedAccess;
                 context["dynamicAccess"] = paths->hasDynamicAccess;
                 context["broadWildcardAccess"] = paths->hasBroadWildcardAccess;
                 context["schemaCertain"] = !paths->hasUnresolvedAccess &&
-                    !paths->hasDynamicAccess && !paths->hasBroadWildcardAccess && !schema->open(id);
+                    !paths->hasDynamicAccess && !paths->hasBroadWildcardAccess &&
+                    !schema->mapSchema()->schemaType(id).open();
             }
         }
         try {

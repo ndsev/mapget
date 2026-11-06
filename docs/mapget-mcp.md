@@ -596,9 +596,11 @@ that layer's metadata (including raw layers), but does not enable source details
 Both forms include the descriptive `mapFormat` tuple and exact string `schemaId`, but omit
 inline JSON schemas and coverage records. Discovery reads the initialized immutable schema;
 it does not rebuild it, export it to JSON Schema, or fetch tiles. A layer's `hasSchema`
-reports its bound contract. Each `featureTypes` entry comes from that contract's authoritative
-identity definitions; `produced:false` marks a reference-only type. There is no second
-`schemaFeatureTypes` list. Unadvertised schema roots do not become available layers.
+reports its bound contract. Each `featureTypes` entry is actually produced by that layer,
+with its identity definition borrowed from the authoritative map-wide registry.
+There are no layer-local reference-only lists or second `schemaFeatureTypes` list.
+The focused schema tool can inspect a known identity even when no layer produces it.
+Unadvertised schema roots do not become available layers.
 Neither schema declarations nor a documentation support table proves
 that a particular record exists in a loaded map.
 
@@ -731,7 +733,7 @@ Success is an object in `structuredContent`, with the same JSON in a text conten
 
 Failures use `isError: true` and a structured error. A partial enumeration is a successful
 bounded response with `complete: false` and a reason such as `item_limit`,
-`expression_result_limit`, `work_limit`, `schema_node_limit`, `byte_limit`, `query_error`, or
+`expression_result_limit`, `work_limit`, `byte_limit`, `query_error`, or
 `load_failed_or_cancelled`. Follow `nextCursor` for feature extraction, or a returned
 `nextOffset` for tools supporting offset paging. Schema discovery offers `narrowing`
 and `expandArguments` instead. No tool promises a whole-source snapshot or automatic
@@ -819,14 +821,22 @@ keywords: [schema, descriptor, validation, completion, simfil]
 -->
 ### Schema And Expression Semantics
 
-`mapget_query_schema` uses simfil's lazy `SchemaModel` on the same `LayerSchema` graph used
-by completion and expression validation. `mapSchemaId` on these responses is the exact string
+`mapget_query_schema` reads native descriptor nodes directly from the same canonical
+schema pool used by completion and expression validation. It does not construct a
+separate adapter model or descriptor graph. `mapSchemaId` on these responses is the exact string
 artifact identity; the tool's numeric `typeId` argument and descriptor `$ref` values are
 local type IDs, not the catalog's string `schemaId`. Keep both identities when retaining
 results across reloads. The schema has its own dictionary; query environments bind it to their
 private data dictionaries without mutating a datasource's streamed dictionary.
 Descriptors contain `kind`, `fields`, `elements`, `alternatives`, enum values,
-open/nullable/required flags and terminal recursion/budget markers as appropriate.
+open/nullable/required flags and mapget's optional type metadata. Descriptor navigation
+preserves recursive graph edges. Evaluation and response serialization have per-call
+work, byte, deadline and cancellation limits; a bounded response is not evidence of
+an absent field or declaration. Mapget-specific descriptors also expose nonempty
+`metaType`, `zserioType`, `attributeType`, `attributeTypeCode` and `attributeOwners`.
+For a focused Attribute type, `attributeOwners.*` returns its named feature/layer
+use sites without expanding its payload. A shared type ID does not identify one
+unique attribute occurrence.
 Named-value declarations distinguish ordinary constants, special numeric values and flags;
 they do not turn an open numeric range into an exhaustive enum. `find` matches those names
 as well as field/type names and string enum symbols, returning bounded matching-name summaries

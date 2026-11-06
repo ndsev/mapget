@@ -315,9 +315,6 @@ public:
      */
     void rebindSchema(std::shared_ptr<LayerInfo> const& info);
 
-    /** Return a schema entry by schema key, or by feature type name as a convenience. */
-    [[nodiscard]] LayerSchema::Entry const* getSchema(std::string_view typeName) const;
-
     /** Import a mapget-flavoured or best-effort GeoJSON feature collection into this tile. */
     void fromJson(nlohmann::json const& json, GeoJsonImportOptions const& options = {});
 
@@ -474,11 +471,11 @@ protected:
         PartitionFeatureLayer::Ptr const& otherLayer,
         simfil::ModelNode::Ptr const& otherNode);
 
-    /** Translate a copied producer domain into this layer's composed graph. */
-    simfil::SchemaReference remapSchemaReference(simfil::SchemaReference const& reference) const;
+    /** Translate a copied producer type into this layer's composed graph. */
+    simfil::SchemaType remapSchemaType(simfil::SchemaType const& reference) const;
 
     /** Get the primary id composition for the given feature type. */
-    std::vector<IdPart> const& getPrimaryIdComposition(std::string_view const& type) const;
+    FeatureIdentity::Composition getPrimaryIdComposition(std::string_view const& type) const;
 
     /** Resolve schema IDs used by mapget's custom feature-model nodes. */
     [[nodiscard]] simfil::TypeId featureSchemaId(std::string_view featureType) const;
@@ -488,11 +485,11 @@ protected:
     [[nodiscard]] simfil::TypeId childSchemaId(
         simfil::TypeId parent,
         std::string_view fieldName,
-        std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+        std::optional<simfil::SchemaType::Kind> preferredKind = std::nullopt) const;
     [[nodiscard]] simfil::TypeId childSchemaId(
         simfil::TypeId parent,
         simfil::StringId field,
-        std::optional<simfil::Schema::Kind> preferredKind = std::nullopt) const;
+        std::optional<simfil::SchemaType::Kind> preferredKind = std::nullopt) const;
     void applyObjectSchema(simfil::Object& object, simfil::TypeId schemaId) const;
     void applyArraySchema(simfil::Array& array, simfil::TypeId schemaId) const;
     /** Preserve a concrete binding when the containing declaration explicitly admits it. */

@@ -323,7 +323,7 @@ void PartitionLayer::installSchemaResolver(
                 throw std::invalid_argument(
                     "Partition references an uninstalled schema artifact: " +
                     std::string(identity));
-            return graph->binding();
+            return graph;
         });
 }
 

@@ -155,7 +155,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             else if (search) {
                 owner = service->getSchema({}, artifact, headers);
                 auto layer = owner ? owner->layer(layerName) : LayerSchema::Ptr{};
-                if (!layer || !layer->hasSchema(static_cast<simfil::TypeId>(id))) {
+                if (!layer || !owner->schemaType(static_cast<simfil::TypeId>(id))) {
                     callback(
                         schemaError(drogon::k404NotFound, "Schema search root is unavailable."));
                     return;
@@ -184,7 +184,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     callback(schemaError(drogon::k404NotFound, "Schema type is unavailable."));
                     return;
                 }
-                // Traverse metadata, not data edges. The very same SchemaModel descriptors
+                // Traverse metadata, not data edges. The very same canonical schema descriptors
                 // used by MCP supply explicit references for every child/shared/cyclic type.
                 body = {
                     {"mapSchemaId", artifact},
@@ -195,12 +195,11 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                 for (auto const& name : owner->layerNames()) {
                     checkpoint();
                     auto layer = owner->layer(name);
-                    for (auto const& type : layer->featureTypeInfos()) {
+                    for (auto const& type : layer->featureTypes()) {
                         checkpoint();
-                        if (!layer->producesFeatureType(type.name_) ||
-                            layer->featureSchema(type.name_) != id)
+                        if (layer->featureSchema(type) != id)
                             continue;
-                        auto contract = layer->featureTypeContract(type.name_, reserve);
+                        auto contract = layer->featureTypeContract(type, reserve);
                         contract["layerId"] = copyName(name);
                         body["featureTypes"].push_back(std::move(contract));
                     }

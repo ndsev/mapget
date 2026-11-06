@@ -236,17 +236,13 @@ TEST_CASE("Grid traffic metadata and locate expose the traffic layer", "[gridsou
     REQUIRE(layer->schemaOwner() == info.getLayer("DevSrc-RoadLayer")->schemaOwner());
     REQUIRE(layer->layerSchema()->featureTypes() == std::vector<std::string>{"DevSrc-Traffic"});
     REQUIRE_FALSE(layer->layerSchema()->producesFeatureType("DevSrc-Road"));
-    REQUIRE(layer->getTypeInfo("DevSrc-Road", false) != nullptr);
+    REQUIRE(layer->getTypeInfo("DevSrc-Road", false));
     REQUIRE_FALSE(layer->toJson().contains("featureTypes"));
     REQUIRE_FALSE(layer->toJson().contains("featureModelSchema"));
 
-    const auto trafficType = std::find_if(
-        layer->featureTypes().begin(),
-        layer->featureTypes().end(),
-        [](const auto& type) { return type.name_ == "DevSrc-Traffic"; });
-    REQUIRE(trafficType != layer->featureTypes().end());
-    REQUIRE(trafficType->uniqueIdCompositions_.front().back().idPartLabel_ ==
-        "DevSrc-TrafficId");
+    const auto trafficType = info.mapSchema_->getTypeInfo("DevSrc-Traffic");
+    REQUIRE(trafficType);
+    REQUIRE(trafficType.compositions().front().parts().back().name() == "DevSrc-TrafficId");
 
     const auto tileId = TileId::fromWgs84(11.0, 48.0, 13).value();
     auto tile = makeTile(info, "DevSrc-TrafficLayer");

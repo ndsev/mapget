@@ -193,7 +193,7 @@ MemoryUsageBreakdown PartitionFeatureModelLayerBase::memoryUsage() const
     result.add("model-pool.array-schemas", model.arraySchemas);
     result.add("model-pool.qualified-scalars", model.qualifiedScalars);
     result.add("model-pool.bitmasks", model.bitmasks);
-    result.add("model-pool.schema-bindings", model.schemaBindings);
+    result.add("model-pool.schema-owners", model.schemaOwners);
 
     result.add("common.feature-ids", featureIds_.memory_usage());
     result.add("common.geometry-source-data-references", geomSourceDataRefs_.memory_usage());
@@ -593,11 +593,11 @@ model_ptr<FeatureId> PartitionFeatureModelLayerBase::newFeatureId(
     }
     else {
         auto const& composition =
-            layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[data.idCompositionIndex_];
+            layerInfo_->getTypeInfo(typeId).compositions()[data.idCompositionIndex_].parts();
         auto parts = newArray(std::max<size_t>(1, composition.size()), true);
         auto part = featureIdParts.begin();
         for (auto const& definition : composition) {
-            if (part != featureIdParts.end() && part->first == definition.idPartLabel_) {
+            if (part != featureIdParts.end() && part->first == definition.name()) {
                 parts->append(
                     std::visit([&](auto const& value) { return newValue(value); }, part->second));
                 ++part;

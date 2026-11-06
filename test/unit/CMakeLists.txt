@@ -10,6 +10,7 @@ add_executable(test.mapget
   test-datasource-auth.cpp
   test-mcp-native.cpp
   test-mcp-help.cpp
+  test-featureidentity.cpp
   test-feature-id-index.cpp
   test-foreign-feature-id.cpp
   test-model-geometry.cpp
@@ -21,7 +22,10 @@ add_executable(test.mapget
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-mapschema-metadata.cpp
   test-mapschema.cpp
+  test-mapschema-json.cpp
+  test-mapschema-descriptor.cpp
   test-mapschema-compose.cpp
   test-http-schema.cpp
   test-mcp-schema2.cpp

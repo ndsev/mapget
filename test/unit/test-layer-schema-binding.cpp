@@ -1,3 +1,4 @@
+#include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/mapschema.h"
 #include "mapget/model/sourcedatalayer.h"
@@ -37,27 +38,36 @@ public:
         auto root = road->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"));
         concreteFeature = unionRoot ? road->addSchema(LayerSchema::FeatureKind) : root;
         if (unionRoot) {
-            road->setComposition(root, simfil::Schema::Composition::OneOf);
-            road->addAlternative(root, concreteFeature);
+            graph->schemaType(root).setComposition(simfil::SchemaType::Composition::OneOf);
+            graph->schemaType(root).asComposition().addAlternative(
+                graph->schemaType(concreteFeature));
         }
-        auto choice = road->addSchema(simfil::Schema::Kind::Object, LayerSchema::featurePropertiesKey("Road"));
-        road->setComposition(choice, simfil::Schema::Composition::OneOf);
-        road->addFieldSchema(concreteFeature, "properties", choice);
+        auto choice = road->addSchema(
+            simfil::SchemaType::Kind::Object,
+            LayerSchema::featurePropertiesKey("Road"));
+        graph->schemaType(choice).setComposition(simfil::SchemaType::Composition::OneOf);
+        graph->schemaType(concreteFeature)
+            .asObject()
+            .addField("properties", graph->schemaType(choice));
         for (size_t i = 0; i != properties.size(); ++i) {
-            properties[i] = road->addSchema(simfil::Schema::Kind::Object);
-            values[i] = road->addSchema(simfil::Schema::Kind::Int);
-            road->addFieldSchema(properties[i], "value", values[i]);
-            road->addAlternative(choice, properties[i]);
-            road->addNamedValue(values[i], {
-                .name = i == 0 ? "UNLIMITED" : "UNKNOWN",
-                .value = int64_t{255},
-                .role = simfil::Schema::NamedValue::Role::Special,
-                .meaning = i == 0 ? simfil::Schema::NamedValue::Meaning::Unbounded :
-                                   simfil::Schema::NamedValue::Meaning::Unknown});
+            properties[i] = road->addSchema(simfil::SchemaType::Kind::Object);
+            values[i] = road->addSchema(simfil::SchemaType::Kind::Int);
+            graph->schemaType(properties[i])
+                .asObject()
+                .addField("value", graph->schemaType(values[i]));
+            graph->schemaType(choice).asComposition().addAlternative(
+                graph->schemaType(properties[i]));
+            graph->schemaType(values[i]).asScalar().addNamedValue(
+                {.name = i == 0 ? "UNLIMITED" : "UNKNOWN",
+                 .value = int64_t{255},
+                 .role = simfil::SchemaType::NamedValue::Role::Special,
+                 .meaning = i == 0 ?
+                     simfil::SchemaType::NamedValue::Meaning::Unbounded :
+                     simfil::SchemaType::NamedValue::Meaning::Unknown});
         }
-        bitmask = road->addSchema(simfil::Schema::Kind::Bitmask);
-        road->setBitWidth(bitmask, 64);
-        road->addFieldSchema(properties[0], "flags", bitmask);
+        bitmask = road->addSchema(simfil::SchemaType::Kind::Bitmask);
+        graph->schemaType(bitmask).asBitmask().setBitWidth(64);
+        graph->schemaType(properties[0]).asObject().addField("flags", graph->schemaType(bitmask));
         auto identity = FeatureTypeInfo::fromJson(nlohmann::json::parse(R"({
             "name":"Road","uniqueIdCompositions":[[{"partId":"id","datatype":"U32"}]]
         })"));
@@ -132,6 +142,78 @@ public:
     }
 };
 
+TEST_CASE(
+    "Local cross-layer references need only the map identity registry",
+    "[layer-schema-binding][feature-id-index]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    graph->addFeatureType(
+        {"Road", {{{"region", {}, IdPartDataType::STR}, {"roadId", {}, IdPartDataType::U32}}}});
+    graph->addFeatureType({"Lane", {{{"laneId", {}, IdPartDataType::U64}}}});
+    graph->addFeatureType({"Unavailable", {{{"key", {}, IdPartDataType::STR}}}});
+    auto road = graph->newLayer("Road", LayerType::Features);
+    (void)road->newFeature("Road").id();
+    (void)graph->newLayer("Lane", LayerType::Features)->newFeature("Lane");
+    graph->finalize();
+    DataSourceInfo info;
+    info.mapId_ = "CrossLayer";
+    info.stringPoolId_ = "CrossLayer";
+    for (auto const& name : graph->layerNames()) {
+        auto layer = std::make_shared<LayerInfo>();
+        layer->layerId_ = name;
+        info.layers_[name] = layer;
+    }
+    info.setMapSchema(graph);
+    CHECK(info.getLayer("Road")->validFeatureId("Lane", {{"laneId", 1}}, false));
+    CHECK_FALSE(info.getLayer("Road")->validFeatureId("Lane", {{"laneId", 1}}, true));
+    auto strings = std::make_shared<StringPool>(info.stringPoolId_);
+    auto tile = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromValue(131073),
+        info.stringPoolId_,
+        info.mapId_,
+        info.getLayer("Road"),
+        strings);
+    // Unrelated reference identities need not share the source tile's prefix layout.
+    REQUIRE_NOTHROW(tile->setIdPrefix({{"region", "DE"}}));
+    auto feature = tile->newFeature("Road", {{"roadId", 7}});
+    auto lane = tile->newFeatureId("Lane", {{"laneId", int64_t{-1}}});
+    auto unavailable = tile->newFeatureId("Unavailable", {{"key", "target"}});
+    CHECK(lane->toString() == "Lane.18446744073709551615");
+    CHECK(unavailable->toString() == "Unavailable.target");
+    feature->addRelation(tile->newRelation("lane", lane));
+    feature->addRelation(tile->newRelation("missing-layer", unavailable));
+    CHECK_THROWS(tile->newFeature("Lane", {{"laneId", 1}}));
+    CHECK_THROWS(tile->newFeature("Unavailable", {{"key", "target"}}));
+    CHECK_THROWS(tile->newFeatureId("Lane", {{"roadId", 1}}));
+    CHECK_THROWS(tile->newFeatureId("Unknown", {{"id", 1}}));
+    CHECK(tile->size() == 1);
+    REQUIRE(tile->validate());
+    FeatureLayerFilterRequest request;
+    request.channels_.push_back({.channelId_ = "feature", .featureTypes_ = {"Road"}});
+    REQUIRE(request.filterSource(*tile, false));
+    request.channels_.front().featureTypes_ = {"Lane"};
+    CHECK_FALSE(request.filterSource(*tile, false));
+
+    // Decode both owners independently: no builder or layer-local identity copies survive.
+    std::ostringstream schemaStream(std::ios::binary);
+    REQUIRE(graph->write(schemaStream));
+    auto schemaBytes = schemaStream.str();
+    auto restoredGraph = MapSchema::read(
+        std::span(reinterpret_cast<uint8_t const*>(schemaBytes.data()), schemaBytes.size()));
+    auto restoredInfo =
+        DataSourceInfo::fromJson(info.toJson(), [restoredGraph](auto) { return restoredGraph; });
+    auto decoded = std::make_shared<PartitionFeatureLayer>(
+        LayerSchemaBindingFixture::encode(*tile),
+        [restoredInfo](auto, auto name) { return restoredInfo.getLayer(std::string(name)); },
+        [strings](auto) { return strings; });
+    REQUIRE(decoded->validate());
+    CHECK(decoded->toJson() == tile->toJson());
+    CHECK(decoded->at(0)->getRelation(0)->target()->keyValuePairs() == lane->keyValuePairs());
+    CHECK(decoded->at(0)->getRelation(1)->target()->toString() == "Unavailable.target");
+    CHECK(restoredGraph->featureIdentities().size() == 3);
+    CHECK_FALSE(restoredGraph->layer("Unavailable"));
+}
+
 /**
  * Build the native common contracts once, then exercise real model allocations.
  * Each raw layer is only a validation root for a shared built-in type; the
@@ -150,17 +232,30 @@ public:
         using Builtin = MapSchema::Builtin;
         auto owner = std::make_shared<MapSchema>();
         auto road = owner->newLayer("Road", LayerType::Features);
-        auto root = road->newFeature(FeatureTypeInfo::fromJson(
-            {{"name", "Road"},
-             {"uniqueIdCompositions", {{{{"partId", "roadId"}, {"datatype", "U32"}}}}}}));
+        auto root =
+            road
+                ->newFeature(FeatureTypeInfo::fromJson(
+                    {{"name", "Road"},
+                     {"uniqueIdCompositions", {{{{"partId", "roadId"}, {"datatype", "U32"}}}}}}))
+                .id();
         REQUIRE(root != simfil::NoTypeId);
-        auto attributes = road->addSchema(simfil::Schema::Kind::Object);
-        road->addFieldSchema(road->attributeLayerMapSchema("Road"), "rules", attributes);
-        auto attribute = owner->newAttribute("access", "AccessAttribute");
-        owner->addFieldSchema(attribute, "value", owner->primitive(simfil::Schema::Kind::Int));
-        owner->addFieldSchema(attribute, "link", owner->builtin(Builtin::RelationReference));
-        road->addFieldSchema(attributes, "access", attribute, true);
-        road->bindAttribute(attribute, "Road", "rules", "access");
+        auto attributes = road->addSchema(simfil::SchemaType::Kind::Object);
+        owner->schemaType(road->attributeLayerMapSchema("Road"))
+            .asObject()
+            .addField("rules", owner->schemaType(attributes))
+            .setMultimap(true);
+        auto attribute = owner->newAttribute("access", "AccessAttribute").id();
+        owner->schemaType(attribute)
+            .asObject()
+            .addField("value", owner->schemaType(owner->primitive(simfil::SchemaType::Kind::Int)));
+        owner->schemaType(attribute)
+            .asObject()
+            .addField("link", owner->schemaType(owner->builtin(Builtin::RelationReference)));
+        owner->schemaType(attributes)
+            .asObject()
+            .addField("access", owner->schemaType(attribute))
+            .setMultimap(true);
+        road->bindAttribute(owner->schemaType(attribute), "Road", "rules", "access");
         owner->newLayer("Attribute", LayerType::SourceData)->setRootSchema(attribute);
         for (auto const& [name, builtin] : std::array{
                  std::pair{"SourceDataReference", Builtin::SourceDataReference},
@@ -276,9 +371,9 @@ TEST_CASE(
     }
     CHECK(propertyFields == 1);
     CHECK_FALSE(feature->toJson().contains("attributes"));
-    auto fields = view->directFields(node.schema());
-    CHECK(std::ranges::count(fields, "properties") == 1);
-    CHECK(std::ranges::count(fields, "attributes") == 0);
+    auto fields = view->mapSchema()->schemaType(node.schema()).directFields();
+    CHECK(std::ranges::count(fields, StringPool::PropertiesStr) == 1);
+    CHECK(std::ranges::count(fields, StringPool::AttributesStr) == 0);
     CHECK(fixture.tile->checkForErrors().empty());
 }
 
@@ -378,24 +473,28 @@ TEST_CASE("Partition memory reports include qualified scalars, bitmasks and sche
     auto beforePool = pool.memoryUsageStats().total();
     auto beforeLayer = layer->memoryUsage().total();
 
-    auto scalar = pool.newQualifiedValue(int64_t{255}, {fixture.graph->binding(), fixture.values[0]});
-    auto mask = pool.newBitmask(UINT64_C(0x8000000000000001), {fixture.graph->binding(), fixture.bitmask});
+    auto scalar =
+        pool.newQualifiedValue(int64_t{255}, fixture.graph->schemaType(fixture.values[0]));
+    auto mask =
+        pool.newBitmask(UINT64_C(0x8000000000000001), fixture.graph->schemaType(fixture.bitmask));
     CHECK(scalar->addr().column() == simfil::ModelPool::QualifiedScalar);
     CHECK(mask->addr().column() == simfil::ModelPool::Bitmask);
     // Native partitions keep one graph; only subset results import a foreign graph namespace.
     if (std::string_view(kind) == "subset") {
-        auto projected = pool.newQualifiedValue(int64_t{255}, {foreign.graph->binding(), foreign.values[0]});
-        CHECK(projected->schemaReference().binding->identity() == foreign.graph->schemaId());
+        auto projected =
+            pool.newQualifiedValue(int64_t{255}, foreign.graph->schemaType(foreign.values[0]));
+        CHECK(projected->schemaType().pool()->identity() == foreign.graph->schemaId());
     }
     else
-        CHECK(pool.hasDirectSchemaBinding(fixture.graph->schemaId()));
+        CHECK(pool.hasDirectSchemaPool(fixture.graph->schemaId()));
 
     auto stats = pool.memoryUsageStats();
     auto report = layer->memoryUsage();
     for (auto const& [name, expected] : std::array{
-        std::pair{"model-pool.qualified-scalars", stats.qualifiedScalars},
-        std::pair{"model-pool.bitmasks", stats.bitmasks},
-        std::pair{"model-pool.schema-bindings", stats.schemaBindings}}) {
+             std::pair{"model-pool.qualified-scalars", stats.qualifiedScalars},
+             std::pair{"model-pool.bitmasks", stats.bitmasks},
+             std::pair{"model-pool.schema-owners", stats.schemaOwners}})
+    {
         CAPTURE(name);
         REQUIRE(expected.logicalBytes > 0);
         REQUIRE(expected.allocatedBytes > 0);
@@ -449,14 +548,14 @@ TEST_CASE("Native feature clones retain concrete property domains below a union"
         REQUIRE(cloned);
         auto properties = cloned->attributesOrNull();
         REQUIRE(properties);
-        CHECK(properties->schemaReference() == attributes->schemaReference());
+        CHECK(properties->schemaType() == attributes->schemaType());
         auto value = properties->at(0);
         REQUIRE(value);
         CHECK(value->addr().column() != simfil::ModelPool::QualifiedScalar);
-        auto domain = simfil::Value::at(*properties, *value, 0).schemaReference();
-        CHECK(domain == simfil::SchemaReference{fixture.graph->binding(), fixture.values[i]});
-        REQUIRE(domain.definition());
-        CHECK(domain.definition()->namedValue(i == 0 ? "UNLIMITED" : "UNKNOWN"));
+        auto domain = simfil::Value::at(*properties, *value, 0).schemaType();
+        CHECK(domain == fixture.graph->schemaType(fixture.values[i]));
+        REQUIRE(domain);
+        CHECK(domain.namedValue(i == 0 ? "UNLIMITED" : "UNKNOWN"));
     }
 
     // A second merge must not reinterpret an existing inline scalar using another alternative.
@@ -487,18 +586,19 @@ TEST_CASE("Native binary payload namespaces must match their outer schema header
     REQUIRE_NOTHROW(fixture.decode(feature, LayerSchemaBindingFixture::encode(*tile)));
     auto replacement = std::make_shared<simfil::ModelPool>(fixture.strings);
     if (mode == "exact" || mode == "foreign")
-        replacement->setSchemaBinding(mode == "exact" ? fixture.graph->binding() : foreign.graph->binding());
+        replacement->setSchemaPool(mode == "exact" ? fixture.graph : foreign.graph);
     else if (mode == "imported")
-        REQUIRE(replacement->importSchema({fixture.graph->binding(), fixture.properties[0]}));
+        REQUIRE(replacement->importSchema(fixture.graph->schemaType(fixture.properties[0])));
 
     // Every replacement is a valid generic pool; even a resolvable foreign graph is not native.
     std::ostringstream encodedPool;
     REQUIRE(replacement->write(encodedPool));
     auto poolWire = encodedPool.str();
     auto probe = std::make_shared<simfil::ModelPool>(fixture.strings);
-    probe->setSchemaResolver([a = fixture.graph, b = foreign.graph](std::string_view id) {
-        return id == a->schemaId() ? a->binding() : id == b->schemaId() ? b->binding() : nullptr;
-    });
+    probe->setSchemaResolver(
+        [a = fixture.graph, b = foreign.graph](std::string_view id) {
+            return id == a->schemaId() ? a : id == b->schemaId() ? b : nullptr;
+        });
     REQUIRE(probe->read(std::vector<uint8_t>(poolWire.begin(), poolWire.end())));
 
     auto bytes = LayerSchemaBindingFixture::encode(*tile, replacement.get());
@@ -506,6 +606,61 @@ TEST_CASE("Native binary payload namespaces must match their outer schema header
         REQUIRE_NOTHROW(fixture.decode(feature, bytes, foreign.graph));
     else
         REQUIRE_THROWS(fixture.decode(feature, bytes, foreign.graph));
+}
+
+TEST_CASE(
+    "Broad feature declarations retain concrete bindings independent of nullability",
+    "[schema2][layer-binding][binary]")
+{
+    using Kind = simfil::SchemaType::Kind;
+    auto kind = GENERATE(Kind::Unknown, Kind::Any, Kind::Object);
+    auto nullable =
+        GENERATE(std::optional<bool>{}, std::optional<bool>{false}, std::optional<bool>{true});
+    CAPTURE(kind, nullable.has_value(), nullable.value_or(false));
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Road", LayerType::Features);
+    auto declared = layer->addSchema(kind, LayerSchema::featureKey("Road"));
+    graph->schemaType(declared).setNullable(nullable);
+    auto concrete = graph->newObjectType();
+    layer->addFeatureType({"Road", {{{"roadId", {}, IdPartDataType::U32}}}}, declared);
+    layer->setRootSchema(declared);
+    graph->finalize();
+
+    DataSourceInfo info;
+    info.mapId_ = "BroadFeatureMap";
+    info.stringPoolId_ = "BroadFeatureBindings";
+    auto metadata = std::make_shared<LayerInfo>();
+    metadata->layerId_ = "Road";
+    info.layers_.emplace(metadata->layerId_, metadata);
+    info.setMapSchema(graph);
+    auto strings = std::make_shared<StringPool>(info.stringPoolId_);
+    auto source = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromValue(131073),
+        info.stringPoolId_,
+        info.mapId_,
+        info.getLayer("Road"),
+        strings);
+    auto feature = source->newFeature("Road", {{"roadId", int64_t{1}}});
+    if (kind == Kind::Object) {
+        // Matching structure alone is not a declared refinement of a concrete object.
+        REQUIRE_THROWS_AS(feature->setSchema(concrete.id()), std::invalid_argument);
+        CHECK(feature->schemaType().id() == declared);
+    }
+    else {
+        REQUIRE_NOTHROW(feature->setSchema(concrete.id()));
+        CHECK(feature->schemaType().id() == concrete.id());
+    }
+    CHECK(source->checkForErrors().empty());
+
+    auto restored = std::make_shared<PartitionFeatureLayer>(
+        LayerSchemaBindingFixture::encode(*source),
+        [info](auto const&, auto const& name) { return info.getLayer(std::string(name)); },
+        [strings](auto const&) { return strings; },
+        [graph](std::string_view id) -> MapSchema::ConstPtr
+        { return id == graph->schemaId() ? graph : nullptr; });
+    REQUIRE(restored->find("Road.1"));
+    CHECK(restored->find("Road.1")->schemaType() == feature->schemaType());
+    CHECK(restored->checkForErrors().empty());
 }
 
 TEST_CASE("Feature binary readers validate explicit domains in native records", "[schema2][layer-binding][binary]")
@@ -558,7 +713,8 @@ TEST_CASE("Feature binary readers validate explicit domains in native records", 
         std::string_view(mode) == "concrete") {
         auto restored = std::dynamic_pointer_cast<PartitionFeatureLayer>(fixture.decode(true, bytes));
         REQUIRE(restored);
-        CHECK(restored->find("Road.1")->schemaReference().id == (replacement ? replacement : declared));
+        CHECK(
+            restored->find("Road.1")->schemaType().id() == (replacement ? replacement : declared));
         CHECK(restored->checkForErrors().empty());
     }
     else
@@ -575,7 +731,7 @@ TEST_CASE("Hydrated partitions release borrowed resolvers while retaining graph 
         auto subset = std::make_shared<PartitionSubsetLayer>(
             TileId::fromValue(131073), fixture.info.stringPoolId_, fixture.info.mapId_,
             fixture.info.getLayer("Road"), fixture.strings, "test", 1);
-        auto imported = subset->importSchema({foreign.graph->binding(), foreign.properties[0]});
+        auto imported = subset->importSchema(foreign.graph->schemaType(foreign.properties[0]));
         REQUIRE(imported);
         auto object = subset->newObject();
         REQUIRE(object->setSchema(*imported));
@@ -620,17 +776,17 @@ TEST_CASE("Hydrated partitions release borrowed resolvers while retaining graph 
     CHECK(resolverLifetime.expired());
     layer.reset();
     auto& model = dynamic_cast<simfil::ModelPool&>(*restored);
-    CHECK_FALSE(model.schemaBinding("uninstalled-artifact"));
+    CHECK_FALSE(model.schemaPool("uninstalled-artifact"));
     if (std::string_view(kind) == "subset") {
         auto id = foreign.graph->schemaId();
         auto valueId = foreign.values[0];
         foreign.info = {};
         foreign.graph.reset();
-        auto binding = model.schemaBinding(id);
-        REQUIRE(binding);
-        REQUIRE(binding->lookup(valueId));
-        CHECK(binding->lookup(valueId)->namedValue("UNLIMITED"));
+        auto owner = model.schemaPool(id);
+        REQUIRE(owner);
+        REQUIRE(owner->schemaType(valueId));
+        CHECK(owner->schemaType(valueId).namedValue("UNLIMITED"));
     }
     else
-        CHECK(model.hasDirectSchemaBinding(fixture.graph->schemaId()));
+        CHECK(model.hasDirectSchemaPool(fixture.graph->schemaId()));
 }

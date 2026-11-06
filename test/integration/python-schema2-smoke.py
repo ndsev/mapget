@@ -109,8 +109,11 @@ class Schema2PythonTest(unittest.TestCase):
         self.assertEqual(layer.name, "Road")
         self.assertEqual(layer.map_schema.schema_id, schema.schema_id)
         self.assertEqual(layer.produced_feature_types, ("Road",))
-        self.assertIsInstance(layer.feature_types, tuple)
-        feature_type = layer.get_type_info("Road")
+        self.assertIsInstance(schema.feature_identities, tuple)
+        self.assertEqual(tuple(info.name for info in schema.feature_identities), ("Road",))
+        self.assertFalse(hasattr(layer, "feature_types"))
+        feature_type = schema.get_type_info("Road")
+        self.assertIsInstance(feature_type, mapget.FeatureIdentity)
         parts = feature_type.unique_id_compositions
         self.assertIsInstance(parts, tuple)
         self.assertIsInstance(parts[0], tuple)
@@ -124,6 +127,10 @@ class Schema2PythonTest(unittest.TestCase):
             feature_type.name = "mutated"
         with self.assertRaises(AttributeError):
             schema.schema_id = "other"
+        with self.assertRaises(AttributeError):
+            schema.feature_identities = ()
+        with self.assertRaises(KeyError):
+            schema.get_type_info("Missing")
         with self.assertRaises(KeyError):
             layer.get_type_info("Missing")
         with self.assertRaises(KeyError):
@@ -132,15 +139,88 @@ class Schema2PythonTest(unittest.TestCase):
         gc.collect()
         self.assertEqual(part.name, "variant")
 
-    def test_type_references_and_inspection_are_read_only(self) -> None:
+    def test_feature_identities_are_map_owned_and_shared_between_layers(self) -> None:
+        metadata = legacy_metadata()
+        road = metadata["layers"]["Road"]
+        reference = copy.deepcopy(road["featureTypes"][0])
+        reference["name"] = "Intersection"
+        road["featureTypes"].append(reference)
+        hidden = copy.deepcopy(reference)
+        hidden["name"] = "Hidden"
+        road["featureTypes"].append(hidden)
+        road["featureModelSchema"] = {
+            "oneOf": [{"$ref": "#/definitions/Road"}, {"$ref": "#/definitions/Hidden"}],
+            "definitions": {
+                "Road": {
+                    "type": "object",
+                    "x-mapget": {"metaType": "Feature", "featureType": "Road"},
+                },
+                "Hidden": {
+                    "type": "object",
+                    "x-mapget": {
+                        "metaType": "Feature", "featureType": "Hidden", "produced": False,
+                    },
+                },
+            },
+        }
+        metadata["layers"]["RoadCopy"] = copy.deepcopy(road)
+        copied_identity = metadata["layers"]["RoadCopy"]["featureTypes"][0]
+        copied_identity["uniqueIdCompositions"][0][0]["description"] = "Same ID, other prose."
+        lane = copy.deepcopy(reference)
+        lane["name"] = "Lane"
+        metadata["layers"]["Lane"] = {"featureTypes": [lane]}
+
+        schema = mapget.MapSchema.from_metadata(metadata)
+        restored = mapget.MapSchema.read(schema.write(), expected_id=schema.schema_id)
+        retained = []
+        for owner in (schema, restored):
+            with self.subTest(schema_id=owner.schema_id):
+                identities = owner.feature_identities
+                self.assertEqual(len(identities), 4)
+                self.assertEqual(
+                    {info.name for info in identities}, {"Road", "Intersection", "Hidden", "Lane"}
+                )
+                self.assertEqual(owner.layer("Road").produced_feature_types, ("Road",))
+                self.assertEqual(owner.layer("RoadCopy").produced_feature_types, ("Road",))
+                self.assertEqual(owner.layer("Lane").produced_feature_types, ("Lane",))
+                self.assertEqual(owner.layer("Raw").produced_feature_types, ())
+                self.assertEqual(owner.layer("Road").feature_schema("Intersection"), 0)
+                self.assertEqual(owner.layer("Road").get_type_info("Lane").name, "Lane")
+                self.assertEqual(owner.layer("Raw").get_type_info("Hidden").name, "Hidden")
+                for info in identities:
+                    self.assertEqual(owner.get_type_info(info.name).name, info.name)
+                    self.assertEqual(
+                        info.unique_id_compositions[0][0].datatype, mapget.IdPartDataType.U64
+                    )
+                retained.append(next(info for info in identities if info.name == "Intersection"))
+        del schema, restored, owner, identities, info
+        gc.collect()
+        for info in retained:
+            self.assertEqual(info.unique_id_compositions[0][0].name, "id")
+            self.assertEqual(info.unique_id_compositions[1][0].name, "alias")
+
+    def test_conflicting_map_wide_feature_identities_are_rejected(self) -> None:
+        metadata = legacy_metadata()
+        other = copy.deepcopy(metadata["layers"]["Road"])
+        other["featureTypes"][0]["uniqueIdCompositions"][0][0]["datatype"] = "I64"
+        metadata["layers"]["Other"] = other
+        with self.assertRaises((ValueError, RuntimeError)):
+            mapget.MapSchema.from_metadata(metadata)
+
+    def test_schema_types_and_inspection_are_read_only(self) -> None:
         schema = mapget.MapSchema.from_metadata(legacy_metadata())
         type_id = schema.layer("Raw").root_schema
         self.assertGreater(schema.type_count, 0)
         self.assertGreater(type_id, 0)
-        reference = schema.type_reference(type_id)
+        reference = schema.schema_type(type_id)
+        self.assertIsInstance(reference, mapget.SchemaType)
+        self.assertFalse(hasattr(mapget, "SchemaReference"))
         self.assertTrue(reference)
         self.assertEqual(reference.type_id, type_id)
         self.assertEqual(reference.schema_id, schema.schema_id)
+        self.assertIsInstance(reference.type_name, str)
+        self.assertTrue(reference.kind)
+        type_name, kind = reference.type_name, reference.kind
         self.assertEqual(schema.type_descriptor(type_id)["$ref"], type_id)
         self.assertFalse(hasattr(reference, "domain"))
         self.assertFalse(hasattr(schema, "domain_count"))
@@ -149,13 +229,15 @@ class Schema2PythonTest(unittest.TestCase):
         with self.assertRaises(AttributeError):
             reference.type_id = 0
         with self.assertRaises(AttributeError):
+            reference.kind = "mutated"
+        with self.assertRaises(AttributeError):
             schema.type_count = 0
         with self.assertRaises(TypeError):
             mapget.MapSchema()
         for invalid in (0, 65535):
             with self.subTest(type_id=invalid):
                 with self.assertRaises(KeyError):
-                    schema.type_reference(invalid)
+                    schema.schema_type(invalid)
                 with self.assertRaises(KeyError):
                     schema.type_descriptor(invalid)
         schema_id = schema.schema_id
@@ -163,6 +245,8 @@ class Schema2PythonTest(unittest.TestCase):
         gc.collect()
         self.assertEqual(reference.schema_id, schema_id)
         self.assertEqual(reference.type_id, type_id)
+        self.assertEqual(reference.type_name, type_name)
+        self.assertEqual(reference.kind, kind)
         self.assertTrue(reference)
 
     def test_native_descriptors_preserve_named_values_and_exact_references(self) -> None:
@@ -228,7 +312,7 @@ class Schema2PythonTest(unittest.TestCase):
         self.assertEqual(restored.format, schema.format)
         self.assertEqual(set(restored.layer_names), {"Road", "Raw"})
         self.assertEqual(restored.write(), wire)
-        self.assertEqual(restored.layer("Road").get_type_info("Road").name, "Road")
+        self.assertEqual(restored.get_type_info("Road").name, "Road")
         for invalid in (b"", wire[:12], wire[:-1], b"not a schema"):
             with self.subTest(size=len(invalid)):
                 with self.assertRaises((ValueError, RuntimeError)):
@@ -321,7 +405,7 @@ class Schema2PythonTest(unittest.TestCase):
             tiles = list(client.request(request))
             self.assertEqual(len(tiles), 1)
             self.assertEqual(tiles[0].map_schema.schema_id, expected_id)
-            retained = tiles[0].layer_schema.get_type_info("Road")
+            retained = tiles[0].map_schema.get_type_info("Road")
             self.assertEqual(len(callback_owners), 1)
             del client, request, tiles, owner
         finally:

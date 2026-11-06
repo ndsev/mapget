@@ -422,7 +422,7 @@ locateGeoJsonFeature(LocateRequest const& request, DataSourceInfo const& info)
         if (request.canonicalFeatureId_ &&
             !parseFeatureIdString(*request.canonicalFeatureId_, *layer, parsed))
             continue;
-        if (!layer->getTypeInfo(parsed.typeId_, false))
+        if (!layer->layerSchema()->producesFeatureType(parsed.typeId_))
             continue;
 
         auto const composition = layer->matchingFeatureIdCompositionIndex(

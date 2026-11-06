@@ -64,7 +64,7 @@ public:
             charge(512);  // Response framing, statistics and bounded root-navigation framing.
             for (root_ = 0; root_ < roots_.size() && step(); ++root_) {
                 auto id = roots_[root_];
-                if (!layer_.hasSchema(id))
+                if (!owner_->schemaType(id))
                     throw std::invalid_argument("Unknown schema search root.");
                 if (!types_.empty() &&
                     (!layer_.producesFeatureType(types_[root_]) ||
@@ -100,14 +100,15 @@ public:
             try {
                 if (!step())
                     break;
-                auto literals = layer_.enumValues(id);
-                if (!literals.empty()) {
+                auto type = owner_->schemaType(id);
+                auto literals = type.enumValueCount();
+                if (literals) {
                     auto preview = Json::array();
                     charge(96);
-                    for (size_t i = 0; i < std::min<size_t>(literals.size(), 8); ++i)
-                        preview.push_back(scalar(literals[i]));
+                    for (size_t i = 0; i < std::min<size_t>(literals, 8); ++i)
+                        preview.push_back(scalar(type.enumValueAt(i)));
                     match->item["enum"]["literalPreview"] = std::move(preview);
-                    match->item["enum"]["literalsOmitted"] = literals.size() > 8;
+                    match->item["enum"]["literalsOmitted"] = literals > 8;
                 }
                 items.push_back(std::move(match->item));
             }
@@ -254,7 +255,8 @@ private:
     }
 
     /** Preview literals losslessly, sharing the native MCP integer/bytes/mask tag contract. */
-    Json scalar(simfil::ScalarValueType const& value)
+    template <class Variant>
+    Json scalar(Variant const& value)
     {
         charge(96);
         return std::visit(
@@ -291,7 +293,7 @@ private:
                 }
                 else if constexpr (std::is_same_v<T, simfil::Bitmask>) {
                     if (v.type)
-                        chargeText(v.type.binding->identity());
+                        chargeText(v.type.pool()->identity());
                     return v.toJson();
                 }
                 else
@@ -353,7 +355,7 @@ private:
         return result;
     }
 
-    /** Score every incoming edge, but expand each domain only once per selected root. */
+    /** Score every incoming edge, but expand each type only once per selected root. */
     void walk(simfil::TypeId id, std::string_view field, size_t depth = 0)
     {
         if (!step() || id == simfil::NoTypeId)
@@ -363,9 +365,10 @@ private:
             reason_ = "serialization_limit";
             return;
         }
-        auto fieldMatch = matching(field), typeMatch = matching(layer_.typeName(id));
+        auto type = owner_->schemaType(id);
+        auto fieldMatch = matching(field), typeMatch = matching(type.typeName());
         int rank = fieldMatch == 2 ? 1 : typeMatch == 2 ? 2 : fieldMatch ? 3 : typeMatch ? 5 : 6;
-        auto symbols = layer_.directEnumSymbols(id);
+        auto symbols = type.directEnumSymbols();
         std::vector<std::string_view> matchedSymbols, matchedNames;
         size_t symbolMatches = 0, namedCount = 0, namedMatches = 0;
         auto remember = [](std::vector<std::string_view>& preview, std::string_view text, int score)
@@ -378,7 +381,8 @@ private:
             else if (preview.size() < 8)
                 preview.push_back(text);
         };
-        for (auto symbol : symbols) {
+        for (auto symbolId : symbols) {
+            auto symbol = owner_->dictionary().resolve(symbolId).value();
             auto score = matching(symbol);
             if (!score)
                 continue;
@@ -386,9 +390,8 @@ private:
             rank = std::min(rank, score == 2 ? 0 : 4);
             remember(matchedSymbols, symbol, score);
         }
-        layer_.forEachNamedValue(
-            id,
-            [&](simfil::Schema::NamedValue const& value)
+        type.forEachNamedValue(
+            [&](simfil::SchemaType::NamedValue const& value)
             {
                 ++namedCount;
                 auto score = matching(value.name);
@@ -424,13 +427,13 @@ private:
                         Json item{
                             {"typeId", id},
                             {"kind",
-                             copyText(owner_->strings()
-                                          ->resolve(simfil::Schema::kindNameId(layer_.kind(id)))
+                             copyText(owner_->dictionary()
+                                          .resolve(simfil::SchemaType::kindNameId(type.kind()))
                                           .value_or("unknown"))},
                             {"contexts", Json::array()},
                             {"contextsOmitted", false}};
-                        if (!layer_.typeName(id).empty())
-                            item["typename"] = copyText(layer_.typeName(id));
+                        if (!type.typeName().empty())
+                            item["typename"] = copyText(type.typeName());
                         if (namedCount) {
                             charge(160);
                             item["namedValues"] = {
@@ -440,8 +443,8 @@ private:
                             for (auto name : matchedNames)
                                 item["namedValues"]["matchingNames"].push_back(copyText(name));
                         }
-                        auto literals = layer_.enumValues(id);
-                        if (!symbols.empty() || !literals.empty()) {
+                        auto literals = type.enumValueCount();
+                        if (!symbols.empty() || literals) {
                             charge(384);
                             auto& enumeration = item["enum"];
                             enumeration = {
@@ -450,15 +453,14 @@ private:
                                 {"matchingSymbols", Json::array()},
                                 {"symbolsOmitted", symbols.size() > 8},
                                 {"preview", Json::array()},
-                                {"literalCount", literals.size()},
+                                {"literalCount", literals},
                                 {"symbolSemantics",
-                                 layer_.kind(id) == LayerSchema::BitmaskKind ?
-                                     "flags" :
-                                     "string_literals"}};
+                                 type.isBitmask() ? "flags" : "string_literals"}};
                             for (auto symbol : matchedSymbols)
                                 enumeration["matchingSymbols"].push_back(copyText(symbol));
                             for (size_t i = 0; i < std::min<size_t>(symbols.size(), 8); ++i)
-                                enumeration["preview"].push_back(copyText(symbols[i]));
+                                enumeration["preview"].push_back(
+                                    copyText(owner_->dictionary().resolve(symbols[i]).value()));
                         }
                         item["contexts"].push_back(context(field));
                         best_.emplace(id, Match{rank, before - remainingBytes_, std::move(item)});
@@ -500,30 +502,29 @@ private:
         if (!visited_.insert(id).second)
             return;
         // The packed enumerable edge view skips only context roles, never '$'-prefixed data.
-        owner_->type(id)->forEachEnumerableField(
-            [&](simfil::StringId field, auto children)
+        type.forEachField(
+            [&](simfil::SchemaField const& field)
             {
+                if (field.role() == simfil::SchemaType::FieldRole::Context)
+                    return;
                 if (!step())
                     throw std::length_error("Schema search field work budget.");
-                auto name = owner_->strings()->resolve(field).value();
+                auto name = field.name();
                 path_.push_back(name);
                 elementSteps_.push_back(false);
-                for (auto child : children)
+                for (auto child : field.types())
                     walk(child, name, depth + 1);
                 path_.pop_back();
                 elementSteps_.pop_back();
             });
-        layer_.forEachElementSchema(
-            id,
-            [&](simfil::TypeId child)
-            {
-                path_.emplace_back("*");
-                elementSteps_.push_back(true);
-                walk(child, {}, depth + 1);
-                path_.pop_back();
-                elementSteps_.pop_back();
-            });
-        for (auto alternative : layer_.alternatives(id))
+        for (auto child : type.itemTypes()) {
+            path_.emplace_back("*");
+            elementSteps_.push_back(true);
+            walk(child, {}, depth + 1);
+            path_.pop_back();
+            elementSteps_.pop_back();
+        }
+        for (auto alternative : type.alternatives())
             walk(alternative, field, depth + 1);
     }
 };

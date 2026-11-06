@@ -177,11 +177,11 @@ TEST_CASE("Incoming discovery includes every declared forward family without opt
         std::span(reinterpret_cast<uint8_t const*>(bytes.data()), bytes.size()),
         source->metadata.schemaId_);
     auto imported = std::make_shared<MapSchema>();
-    auto jsonLayer = imported->importLayer(
-        "Lane",
-        LayerType::Features,
-        schema->toJsonSchema(),
-        schema->featureTypeInfos());
+    std::vector<FeatureTypeInfo> identities;
+    for (auto identity : schema->mapSchema()->featureIdentities())
+        identities.push_back(identity.toDeclaration());
+    auto jsonLayer =
+        imported->importLayer("Lane", LayerType::Features, schema->toJsonSchema(), identities);
     imported->finalize();
     for (auto roundtrip : std::vector<LayerSchema::Ptr>{binary->layer("Lane"), jsonLayer}) {
         auto declarations = roundtrip->relationDeclarations();
@@ -399,17 +399,15 @@ TEST_CASE("Incoming callback failures terminate without publishing a complete bu
     {
         auto owner = std::make_shared<MapSchema>();
         auto schema = owner->newLayer("Lane", LayerType::Features);
-        auto root = schema->addSchema(simfil::Schema::Kind::Object, LayerSchema::featureKey("Lane"), "Lane");
+        for (auto identity : source->metadata.mapSchema_->featureIdentities())
+            owner->addFeatureType(identity);
+        schema->addFeatureType("Lane");
+        auto root = schema->featureSchema("Lane");
         schema->setJsonSchemaAnnotations(
             root,
             {{"x-mapget",
               {{"relationDeclarations",
                 {{{"ownerType", "Lane"}, {"name", "visible"}, {"targetTypes", "invalid"}}}}}}});
-        for (auto const& type : source->metadata.getLayer("Lane")->featureTypes())
-            schema->addFeatureType(
-                type,
-                type.name_ == "Lane" ? root : simfil::NoTypeId,
-                type.name_ == "Lane");
         REQUIRE_THROWS(owner->finalize());
         CHECK(manifests == 0);
         return;

@@ -138,22 +138,7 @@ bool IncomingRequestExecution::compatibleTarget(LayerInfo const& provider, Featu
 {
     auto expected = target.model().layerInfo()->getTypeInfo(target.typeId(), false);
     auto declared = provider.getTypeInfo(target.typeId(), false);
-    if (!expected || !declared)
-        return false;
-    return std::ranges::equal(
-        expected->uniqueIdCompositions_,
-        declared->uniqueIdCompositions_,
-        [](auto const& a, auto const& b)
-        {
-            return std::ranges::equal(
-                a,
-                b,
-                [](IdPart const& x, IdPart const& y)
-                {
-                    return x.idPartLabel_ == y.idPartLabel_ && x.datatype_ == y.datatype_ &&
-                        x.isOptional_ == y.isOptional_;
-                });
-        });
+    return expected && declared && expected.sameIdentity(declared);
 }
 
 void IncomingRequestExecution::discover(RequestStatus status)

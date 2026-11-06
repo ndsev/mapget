@@ -27,20 +27,24 @@ public:
         std::string_view compileContext,
         CompileFunction const& compile)
     {
+        // Only MapSchema's verified content identity establishes graph equivalence across
+        // readers. Generic pools may be anonymous or carry arbitrary caller-supplied names.
+        auto const* rootOwner = dynamic_cast<MapSchema const*>(options.rootSchema.pool());
+        bool cacheable = !options.rootSchema || (rootOwner && rootOwner->finalized());
         CacheKey key{
             std::string(query),
             options.any,
             options.rewriteMode,
-            options.rootSchema,
-            schemaIdentity ?
-                std::pair(
-                    std::string(schemaIdentity->mapSchema()->schemaId()),
-                    std::string(schemaIdentity->name())) :
-                std::pair<std::string, std::string>{},
+            options.rootSchema.id(),
+            std::pair(
+                options.rootSchema ? std::string(options.rootSchema.pool()->identity()) :
+                    schemaIdentity ? std::string(schemaIdentity->mapSchema()->schemaId()) :
+                                     std::string{},
+                schemaIdentity ? std::string(schemaIdentity->name()) : std::string{}),
             std::string(compileContext),
         };
 
-        {
+        if (cacheable) {
             std::shared_lock lock(mutex_);
             if (auto found = cache_.find(key); found != cache_.end()) {
                 ++hits_;
@@ -51,9 +55,11 @@ public:
         // Serializing misses prevents a large worker set from compiling the
         // same first-use expression concurrently. Hits remain shared-lock only.
         std::unique_lock lock(mutex_);
-        if (auto found = cache_.find(key); found != cache_.end()) {
-            ++hits_;
-            return found->second.result();
+        if (cacheable) {
+            if (auto found = cache_.find(key); found != cache_.end()) {
+                ++hits_;
+                return found->second.result();
+            }
         }
         ++misses_;
 
@@ -77,7 +83,7 @@ public:
             ++failedCompiles_;
         }
 
-        if (cache_.size() >= maxEntries_)
+        if (!cacheable || cache_.size() >= maxEntries_)
             return entry.result();
 
         auto inserted = cache_.emplace(std::move(key), std::move(entry));

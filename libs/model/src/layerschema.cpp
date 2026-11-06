@@ -12,10 +12,13 @@
 
 namespace mapget
 {
+simfil::SchemaType LayerSchema::rootType() const
+{
+    return mapSchema()->schemaType(rootSchema());
+}
+
 namespace
 {
-using Kind = simfil::Schema::Kind;
-using Composition = simfil::Schema::Composition;
 constexpr size_t kMaxNormalizedAttributeScopes = 8;
 /** Quote one string as a SIMFIL string literal. */
 std::string simfilStringLiteral(std::string_view value)
@@ -111,14 +114,14 @@ bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation 
 /** Convert one compile-local SchemaPath into field names. Array markers are ignored for
  * source-level path rewrites. */
 std::optional<std::vector<std::string>>
-schemaPathFieldNames(simfil::Environment& env, simfil::SchemaPath const& path)
+schemaPathFieldNames(simfil::StringPool const& strings, simfil::SchemaPath const& path)
 {
     std::vector<std::string> result;
     for (auto const& segment : path) {
         if (segment.kind != simfil::SchemaPathSegment::Kind::Field) {
             continue;
         }
-        auto fieldName = env.strings()->resolve(segment.field);
+        auto fieldName = strings.resolve(segment.field);
         if (!fieldName) {
             return std::nullopt;
         }
@@ -129,7 +132,7 @@ schemaPathFieldNames(simfil::Environment& env, simfil::SchemaPath const& path)
 
 /** Convert one compile-local SchemaPath into SIMFIL path segments, preserving array wildcards. */
 std::optional<std::vector<std::string>>
-schemaPathExpressionSegments(simfil::Environment& env, simfil::SchemaPath const& path)
+schemaPathExpressionSegments(simfil::StringPool const& strings, simfil::SchemaPath const& path)
 {
     std::vector<std::string> result;
     for (auto const& segment : path) {
@@ -137,7 +140,7 @@ schemaPathExpressionSegments(simfil::Environment& env, simfil::SchemaPath const&
             result.emplace_back("*");
             continue;
         }
-        auto fieldName = env.strings()->resolve(segment.field);
+        auto fieldName = strings.resolve(segment.field);
         if (!fieldName) {
             return std::nullopt;
         }
@@ -369,24 +372,25 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
 {
     auto strings = std::make_shared<StringPool>("SearchQueryNormalization");
     auto env = makeEnvironment(strings);
-    auto registryPtr = LayerSchema::Ptr(registry);
-    installCompletionLayerSchema(*env, std::move(registryPtr), strings);
+    env->setSchema(registry.rootType());
 
     auto const featureSchemaId = registry.featureSchema(featureType);
+    auto graph = registry.mapSchema();
+    auto featureSchema = graph->schemaType(featureSchemaId);
     auto ast = simfil::compile(
         *env,
         query,
         simfil::CompileOptions{
             .any = false,
             .rewriteMode = simfil::RewriteMode::Schema,
-            .rootSchema = featureSchemaId});
+            .rootSchema = featureSchema});
     if (!ast) {
         return tl::unexpected(ast.error());
     }
 
     FeatureQueryAnalysis result;
     result.astDebug = (*ast)->expr().toString();
-    auto references = simfil::referencedSchemaPaths(*env, **ast, featureSchemaId);
+    auto references = simfil::referencedSchemaPaths(*env, **ast, featureSchema);
     if (!references) {
         return tl::unexpected(references.error());
     }
@@ -402,8 +406,8 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
         std::optional<std::string>>>
         seenReferences;
     for (auto const& reference : references->paths) {
-        auto fieldPath = schemaPathFieldNames(*env, reference.path);
-        auto expressionPath = schemaPathExpressionSegments(*env, reference.path);
+        auto fieldPath = schemaPathFieldNames(graph->dictionary(), reference.path);
+        auto expressionPath = schemaPathExpressionSegments(graph->dictionary(), reference.path);
         if (!fieldPath || !expressionPath) {
             result.hasDynamicReference = true;
             continue;
@@ -442,340 +446,261 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
 
 }  // namespace
 
-namespace
+tl::expected<std::vector<LayerSchema::SearchInterpretation>, simfil::Error>
+LayerSchema::searchInterpretations(std::string_view query, SearchQueryRequestedScope requested)
+    const
 {
-/** SIMFIL schema adapter that resolves StringIds without inserting schema field names. */
-class BoundSchema final : public simfil::Schema
-{
-public:
-    BoundSchema(
-        LayerSchema::Ptr registry,
-        std::shared_ptr<simfil::StringPool const> strings,
-        simfil::TypeId id,
-        bool materializeSchemaStrings = false)
-        : registry_(std::move(registry)), strings_(std::move(strings)), id_(id)
-    {
-        if (materializeSchemaStrings) {
-            auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
-            materializeStringIds(mutableStrings);
-        }
-    }
-
-    auto numericDomain() const -> std::optional<NumericDomain> override
-    {
-        return registry_->numericDomain(id_);
-    }
-    auto bitWidth() const -> uint8_t override { return registry_->bitWidth(id_); }
-    void forEachNamedValue(std::function<void(NamedValue const&)> const& fn) const override
-    {
-        registry_->forEachNamedValue(id_, fn);
-    }
-
-    /** Return the object/array/value kind for the stable mapget TypeId. */
-    auto kind() const -> Kind override { return registry_ ? registry_->kind(id_) : Kind::Unknown; }
-
-    /** Preserve producer metadata on the same lazy binding used by traversal. */
-    auto typeName() const -> std::string_view override { return registry_->typeName(id_); }
-    /** Retain the logical operator rather than pretending alternatives are fields. */
-    auto composition() const -> Composition override { return registry_->composition(id_); }
-    /** Visit alternative definitions at the same value position. */
-    auto alternatives() const& -> std::span<const simfil::TypeId> override
-    {
-        return registry_->alternatives(id_);
-    }
-    /** Share non-string literals; canonical string symbols stay pool-local. */
-    auto enumValues() const& -> std::span<const simfil::ScalarValueType> override
-    {
-        return registry_->enumValues(id_);
-    }
-    /** Expose unknown/optional nullability independently of field presence. */
-    auto nullable() const -> std::optional<bool> override { return registry_->nullable(id_); }
-    /** Unknown/open metadata never proves a field absent. */
-    auto open() const -> bool override { return registry_->open(id_); }
-    /** Keep incomplete indexes conservative even after finalization. */
-    auto reachabilityComplete() const -> bool override
-    {
-        return registry_->reachabilityComplete(id_);
-    }
-    /** Definitions are immutable for the lifetime of an installed binding. */
-    auto finalized() const -> bool override { return true; }
-    /** Resolve edge metadata through this binding's namespace. */
-    auto fieldRequired(simfil::StringId field) const -> std::optional<bool> override
-    {
-        auto name = strings_->resolve(canonicalField(field));
-        return name ? registry_->fieldRequired(id_, *name) : std::nullopt;
-    }
-    /** Preserve edge roles while translating between completion and schema dictionaries. */
-    auto fieldRole(simfil::StringId field) const -> FieldRole override
-    {
-        auto name = strings_->resolve(canonicalField(field));
-        return name ? registry_->fieldRole(id_, *name) : FieldRole::Data;
-    }
-
-    /** Translate only the requested name; the immutable graph owns member lookup. */
-    auto fieldSchema(simfil::StringId field) const -> simfil::TypeId override
-    {
-        auto name = strings_->resolve(field);
-        auto owner = registry_->mapSchema();
-        auto domain = owner->type(id_);
-        if (!name || !domain)
-            return simfil::NoTypeId;
-        auto schemaField = owner->strings()->get(*name);
-        // An absent name must not resolve to an explicitly declared empty key.
-        if (schemaField == simfil::StringPool::Empty && !name->empty())
-            return simfil::NoTypeId;
-        return domain->fieldSchema(schemaField);
-    }
-
-    /** Reuse the graph's prepared element domain without materializing alternatives. */
-    auto itemSchema() const -> simfil::TypeId override
-    {
-        auto domain = registry_->mapSchema()->type(id_);
-        return domain ? domain->itemSchema() : simfil::NoTypeId;
-    }
-
-    /** Match Feature::get's attributes alias while keeping field enumeration canonical. */
-    auto canonicalField(simfil::StringId field) const -> simfil::StringId override
-    {
-        if (field == StringPool::AttributesStr &&
-            simfil::Schema::kindNameId(kind()) ==
-                simfil::Schema::kindNameId(LayerSchema::FeatureKind))
-        {
-            auto fields = registry_->directFields(id_);
-            if (std::ranges::find(fields, "attributes") == fields.end() &&
-                std::ranges::find(fields, "properties") != fields.end())
-                return StringPool::PropertiesStr;
-        }
-        return field;
-    }
-
-    /** Resolve the field id through the datasource-owned pool and match by name. */
-    auto canHaveField(simfil::StringId fieldId) const -> bool override
-    {
-        if (!registry_ || !strings_) {
-            return true;
-        }
-        auto fieldName = strings_->resolve(fieldId);
-        return !fieldName || registry_->canHaveField(id_, *fieldName);
-    }
-
-    /** Resolve enum-like string symbols through the datasource-owned pool and match by name. */
-    auto canHaveEnumSymbol(simfil::StringId symbolId) const -> bool override
-    {
-        if (!registry_ || !strings_) {
-            return false;
-        }
-        auto symbolName = strings_->resolve(symbolId);
-        return symbolName && registry_->canHaveEnumSymbol(id_, *symbolName);
-    }
-
-    /** Return nested schema fields when this adapter was built for completion. */
-    auto nestedFields() const& -> std::span<const simfil::StringId> override
-    {
-        return nestedFields_;
-    }
-
-    /** Return completion-local ids for direct schema fields, if materialized. */
-    auto directFields() const& -> std::span<const simfil::StringId> override
-    {
-        return directFields_;
-    }
-
-    /** Return nested schema enum symbols when this adapter was built for completion. */
-    auto nestedEnumSymbols() const& -> std::span<const simfil::StringId> override
-    {
-        return nestedEnumSymbols_;
-    }
-
-    /** Return direct schema enum symbols when this adapter was built for completion/compile. */
-    auto directEnumSymbols() const& -> std::span<const simfil::StringId> override
-    {
-        return directEnumSymbols_;
-    }
-
-    /** Runtime literals live in value storage, not necessarily in the datasource dictionary. */
-    auto
-    hasDirectEnumSymbol(std::string_view symbol, simfil::StringPool const&) const -> bool override
-    {
-        auto names = registry_->directEnumSymbols(id_);
-        return std::ranges::find(names, symbol) != names.end();
-    }
-
-    /** Match a query overlay's use-site names without choosing a physical Attribute owner. */
-    auto symbolEqualityPaths(
-        simfil::StringId symbolId,
-        const std::function<const simfil::Schema*(simfil::TypeId)>&) const
-        -> std::vector<simfil::SchemaPath> override
-    {
-        if (!registry_ || !strings_) {
-            return {};
-        }
-
-        auto symbolName = strings_->resolve(symbolId);
-        auto payload = registry_->mapSchema()->baseSchema(id_);
-        if (!symbolName || symbolName->empty() || !payload) {
-            return {};
-        }
-
-        // Only an owned attribute-query overlay has the runtime $name member.
-        // A matching label or similarly named fields on a raw payload are insufficient.
-        auto nameId = strings_->get("$name");
-        if (!nameId || !registry_->childSchema(id_, "$name")) {
-            return {};
-        }
-        for (auto const& owner : registry_->attributeOwners(id_)) {
-            // One physical type may serve several names, layers and features. The
-            // prepared query identity selects the feature; $name selects the use site.
-            if (owner.attributeName_ == *symbolName &&
-                (owner.featureLayer_.empty() || owner.featureLayer_ == registry_->name()) &&
-                registry_->attributeQuerySchema(owner.featureType_, payload) == id_)
-            {
-                return {simfil::SchemaPath{{simfil::SchemaPathSegment::Kind::Field, nameId}}};
+    auto strings = std::make_shared<StringPool>("SearchInterpretations");
+    auto env = makeEnvironment(strings);
+    env->setSchema(rootType());
+    auto standalone = simfil::standaloneQuerySymbol(*env, query);
+    if (!standalone)
+        return tl::unexpected(standalone.error());
+    if (!*standalone) {
+        auto symbols = simfil::predicateQuerySymbols(*env, query);
+        if (!symbols)
+            return tl::unexpected(symbols.error());
+        if (!symbols->empty()) {
+            // Bind predicate-position names before wrappers or boolean
+            // operators can turn them into scalar shorthand. Ordinary RHS
+            // literals and explicit paths remain in their operand contexts.
+            bool featureContext = requested == SearchQueryRequestedScope::Feature;
+            for (auto const& feature : featureTypes()) {
+                auto analyzed = analyzeFeatureQueryAst(*this, query, feature);
+                if (!analyzed)
+                    return tl::unexpected(analyzed.error());
+                featureContext |= analyzed->hasFeatureOwnedReference;
             }
-        }
-        return {};
-    }
-
-    /** Return scalar shorthand paths without guessing a shared query payload's owner name. */
-    auto scalarFieldPathsForSymbol(
-        simfil::StringId symbolId,
-        const std::function<const simfil::Schema*(simfil::TypeId)>&) const
-        -> std::vector<simfil::SchemaPath> override
-    {
-        if (!registry_ || !strings_) {
-            return {};
-        }
-
-        auto symbolName = strings_->resolve(symbolId);
-        if (!symbolName) {
-            return {};
-        }
-
-        if (registry_->mapSchema()->baseSchema(id_)) {
-            auto owners = registry_->attributeOwners(id_);
-            // A path alone cannot guard $name. In a shared query context the
-            // shorthand would read another owner's payload; use an explicit
-            // field or normalizeSearchQuery's guarded feature-root rewrite instead.
-            if (!owners.empty() &&
-                std::ranges::any_of(
-                    owners,
-                    [&](auto const& owner)
-                    { return owner.attributeName_ != owners.front().attributeName_; }))
-                return {};
-        }
-
-        auto namedPaths = registry_->scalarFieldPathsForAttribute(id_, *symbolName);
-        std::vector<simfil::SchemaPath> result;
-        result.reserve(namedPaths.size());
-        auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
-        for (auto const& namedPath : namedPaths) {
-            simfil::SchemaPath path;
-            path.reserve(namedPath.size());
-            bool complete = true;
-            for (auto const& segment : namedPath) {
-                if (segment.kind_ == simfil::SchemaPathSegment::Kind::ArrayElement) {
-                    path.push_back({simfil::SchemaPathSegment::Kind::ArrayElement, 0});
-                    continue;
+            auto scope = featureContext ? SearchQueryRequestedScope::Feature : requested;
+            std::vector<std::vector<SearchInterpretation>> meanings;
+            for (auto const& symbol : *symbols) {
+                auto choices = searchInterpretations(simfilStringLiteral(symbol.name), scope);
+                if (!choices)
+                    return tl::unexpected(choices.error());
+                if (choices->empty())
+                    choices->push_back(
+                        {.id_ = "absent:" + symbol.name,
+                         .label_ = symbol.name + " is not declared here",
+                         .kind_ = "expression",
+                         .query_ = "false"});
+                featureContext |= std::ranges::any_of(
+                    *choices,
+                    [](auto const& choice) {
+                        return choice.scope_ == SearchQueryConcreteScope::Feature &&
+                            choice.kind_ != "expression";
+                    });
+                meanings.push_back(std::move(*choices));
+            }
+            if (featureContext && scope != SearchQueryRequestedScope::Feature)
+                return searchInterpretations(query, SearchQueryRequestedScope::Feature);
+            std::vector<SearchInterpretation> result;
+            std::vector<size_t> selected(meanings.size());
+            while (true) {
+                if (result.size() >= 64)
+                    return tl::unexpected(simfil::Error{
+                        simfil::Error::InvalidArguments,
+                        "Too many possible interpretations. Qualify predicate names with explicit "
+                        "fields."});
+                SearchInterpretation interpretation;
+                interpretation.kind_ = "expression";
+                interpretation.scope_ = featureContext ?
+                    SearchQueryConcreteScope::Feature :
+                    SearchQueryConcreteScope::Attribute;
+                interpretation.featureTypes_ = featureTypes();
+                std::vector<SourceRewrite> rewrites;
+                for (size_t i = 0; i < meanings.size(); ++i) {
+                    auto const& meaning = meanings[i][selected[i]];
+                    interpretation.id_ += (i ? ";" : "") + meaning.id_;
+                    interpretation.label_ += (i ? "; " : "") + meaning.label_;
+                    interpretation.attributeScopes_.insert(
+                        interpretation.attributeScopes_.end(),
+                        meaning.attributeScopes_.begin(),
+                        meaning.attributeScopes_.end());
+                    rewrites.push_back(
+                        {(*symbols)[i].location.offset,
+                         (*symbols)[i].location.size,
+                         parenthesized(meaning.query_)});
                 }
-                auto fieldId = mutableStrings->get(segment.field_);
-                if (fieldId == simfil::StringPool::Empty) {
-                    complete = false;
+                interpretation.query_ =
+                    applySourceRewrites(std::string(query), std::move(rewrites));
+                result.push_back(std::move(interpretation));
+                size_t index = 0;
+                for (; index < selected.size(); ++index) {
+                    if (++selected[index] < meanings[index].size())
+                        break;
+                    selected[index] = 0;
+                }
+                if (index == selected.size())
                     break;
-                }
-                path.push_back({simfil::SchemaPathSegment::Kind::Field, fieldId});
             }
-            if (complete) {
-                result.push_back(std::move(path));
-            }
+            return result;
         }
-        return result;
+        auto normalized = normalizeSearchQuery(query, requested);
+        if (!normalized)
+            return tl::unexpected(normalized.error());
+        if (normalized->rewriteSuppressed_)
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                normalized->rewriteSuppressionReason_});
+        return std::vector<SearchInterpretation>{
+            {.id_ = "expression",
+             .label_ = "Explicit expression",
+             .kind_ = "expression",
+             .query_ = normalized->normalizedQuery_,
+             .scope_ = normalized->concreteScope_,
+             .attributeScopes_ = normalized->attributeScopes_,
+             .featureTypes_ = normalized->matchedFeatureTypes_}};
     }
 
-private:
-    /** Visit direct fields using ids from the completion/compile-local pool. */
-    auto forEachDirectField(
-        const std::function<void(simfil::StringId, std::span<const simfil::TypeId>)>& fn) const
-        -> void override
+    auto const& symbol = **standalone;
+    auto graph = mapSchema();
+    auto const& schemaStrings = graph->dictionary();
+    std::map<std::string, SearchInterpretation> meanings;
+    auto contribute =
+        [&](std::string id,
+            std::string label,
+            std::string kind,
+            std::string predicate,
+            AttributePathOwner const& owner)
     {
-        if (!registry_ || !strings_) {
-            return;
+        auto [it, inserted] = meanings.try_emplace(id);
+        auto& interpretation = it->second;
+        if (inserted) {
+            interpretation.id_ = std::move(id);
+            interpretation.label_ = std::move(label);
+            interpretation.kind_ = std::move(kind);
+            interpretation.symbol_ = symbol;
+            interpretation.scope_ = requested == SearchQueryRequestedScope::Feature ?
+                SearchQueryConcreteScope::Feature :
+                SearchQueryConcreteScope::Attribute;
         }
-
-        auto mutableStrings = std::const_pointer_cast<simfil::StringPool>(strings_);
-        registry_->forEachDirectField(
-            id_,
-            [&](std::string_view fieldName, std::span<const simfil::TypeId> schemas)
-            {
-                auto fieldId = mutableStrings->get(fieldName);
-                if (fieldId != simfil::StringPool::Empty) {
-                    fn(fieldId, schemas);
-                }
-            });
-    }
-
-    /** Visit possible array element schemas. */
-    auto
-    forEachElementSchema(const std::function<void(simfil::TypeId)>& fn) const -> void override
-    {
-        if (!registry_) {
-            return;
+        // Feature mode retains containing-feature semantics explicitly. Each
+        // attribute branch is evaluated within its owning layer/assignment.
+        auto branch = parenthesized(attributeScopeGuard(owner) + " and (" + predicate + ")");
+        if (interpretation.scope_ == SearchQueryConcreteScope::Feature) {
+            auto path = "properties.layer[" + simfilStringLiteral(owner.attributeLayerName_) +
+                "][" + simfilStringLiteral(owner.attributeName_) + "]";
+            branch = "(typeId == " + simfilStringLiteral(owner.featureType_) + " and any(" + path +
+                ".(" + predicate + ")))";
         }
-        registry_->forEachElementSchema(id_, fn);
-    }
+        interpretation.query_ = interpretation.query_.empty() ?
+            branch :
+            interpretation.query_ + " or " + branch;
+        interpretation.attributeScopes_.push_back(owner);
+        if (std::ranges::find(interpretation.featureTypes_, owner.featureType_) ==
+            interpretation.featureTypes_.end())
+            interpretation.featureTypes_.push_back(owner.featureType_);
+    };
 
-    /** Insert schema-owned strings into the completion-local pool. */
-    auto materializeStringIds(std::shared_ptr<simfil::StringPool> const& strings) -> void
+    std::map<simfil::TypeId, std::vector<simfil::TypeId>> symbolTypes;
+    auto declaringTypes = [&](simfil::TypeId root) -> std::vector<simfil::TypeId> const&
     {
-        if (!registry_ || !strings) {
-            return;
+        auto [it, inserted] = symbolTypes.try_emplace(root);
+        if (inserted)
+            it->second = graph->schemaType(root).symbolTypes(symbol);
+        return it->second;
+    };
+    auto owners = attributeScopes();
+    for (auto const& owner : owners) {
+        if (owner.attributeName_ == symbol || attributeTypeCode(owner.attributeSchema_) == symbol)
+            contribute(
+                "attribute:" + owner.attributeName_,
+                owner.attributeName_ + " attribute",
+                "attribute",
+                "true",
+                owner);
+        auto root = owner.attributeSchema_;
+        // Enumerating paths is only evidence of a declared symbol. Runtime
+        // hasSymbol follows actual finite data, preserving recursive schemas
+        // and named-value provenance instead of serializing truncated paths.
+        auto stringId = schemaStrings.get(symbol);
+        auto fields = stringId ?
+            graph->schemaType(root).fieldPaths(stringId) :
+            std::vector<simfil::SchemaPath>{};
+        if (!fields.empty())
+            contribute(
+                "field:" + owner.attributeName_ + ":" + symbol,
+                owner.attributeName_ + "." + symbol + " field",
+                "field",
+                isIdentifier(symbol) ? "**." + symbol : "**[" + simfilStringLiteral(symbol) + "]",
+                owner);
+        for (auto type : declaringTypes(root)) {
+            auto declaredName = graph->schemaType(type).typeName();
+            auto name = declaredName.empty() ?
+                "type-" + std::to_string(type) :
+                std::string(declaredName);
+            // Anonymous type numbers are graph-local; equal numbers in two
+            // unrelated artifacts must never silently become one meaning.
+            auto identity = declaredName.empty() ?
+                std::string(mapSchema()->schemaId()) + ":" + name :
+                name;
+            auto id = "enum:attribute:" + identity + ":" + symbol;
+            contribute(
+                id,
+                name + " = " + symbol,
+                "enum",
+                fmt::format(
+                    "hasSymbol(_, {}, {}, {})",
+                    simfilStringLiteral(symbol),
+                    simfilStringLiteral(mapSchema()->schemaId()),
+                    type),
+                owner);
         }
-
-        materialize(registry_->directFields(id_), *strings, directFields_);
-        materialize(registry_->nestedFields(id_), *strings, nestedFields_);
-        materialize(registry_->nestedEnumSymbols(id_), *strings, nestedEnumSymbols_);
-        materialize(registry_->directEnumSymbols(id_), *strings, directEnumSymbols_);
     }
 
-    /** Convert schema-owned strings into StringIds in the provided temporary pool. */
-    static auto materialize(
-        std::span<const std::string_view> names,
-        simfil::StringPool& strings,
-        std::vector<simfil::StringId>& ids) -> void
-    {
-        ids.reserve(names.size());
-        for (auto const& name : names) {
-            auto id = strings.emplace(name);
-            if (!id)
-                throw std::length_error(id.error().message);
-            ids.push_back(*id);
+    auto symbolId = schemaStrings.get(symbol);
+    for (auto const& feature : featureTypes()) {
+        auto root = featureSchema(feature);
+        auto typeView = graph->schemaType(root);
+        auto excluded = std::array{attributeLayerMapSchema(feature)};
+        for (auto type : typeView.symbolTypes(symbol, excluded)) {
+            auto declaredName = graph->schemaType(type).typeName();
+            auto typeLabel = declaredName.empty() ?
+                "type-" + std::to_string(type) :
+                std::string(declaredName);
+            auto identity = declaredName.empty() ?
+                std::string(graph->schemaId()) + ":" + typeLabel :
+                typeLabel;
+            auto id = "enum:feature:" + identity + ":" + symbol;
+            auto& candidate = meanings[id];
+            candidate.id_ = id;
+            candidate.kind_ = "enum";
+            candidate.symbol_ = symbol;
+            candidate.label_ = typeLabel + " = " + symbol;
+            auto predicate = fmt::format(
+                "(typeId == {} and hasSymbol(_, {}, {}, {}))",
+                simfilStringLiteral(feature),
+                simfilStringLiteral(symbol),
+                simfilStringLiteral(mapSchema()->schemaId()),
+                type);
+            candidate.query_ = candidate.query_.empty() ?
+                predicate :
+                candidate.query_ + " or " + predicate;
+            candidate.featureTypes_.push_back(feature);
+        }
+        for (auto const& path :
+             symbolId ? typeView.fieldPaths(symbolId) : std::vector<simfil::SchemaPath>{})
+        {
+            auto names = schemaPathFieldNames(schemaStrings, path);
+            if (!names || ownerForPath(feature, root, *names).kind_ != PathOwnerKind::Feature)
+                continue;
+            auto& candidate = meanings["field:" + symbol];
+            candidate.id_ = "field:" + symbol;
+            candidate.label_ = symbol + " feature field";
+            candidate.kind_ = "field";
+            candidate.symbol_ = symbol;
+            candidate.query_ = isIdentifier(symbol) ?
+                "**." + symbol :
+                "**[" + simfilStringLiteral(symbol) + "]";
+            candidate.featureTypes_.push_back(feature);
+            break;
         }
     }
-
-    /** Runtime pruning calls canHaveField directly, so no recursive StringId cache is built here.
-     */
-    auto collectNestedFields(
-        const std::function<Schema*(simfil::TypeId)>&,
-        TypeIdStack&,
-        std::vector<simfil::StringId>&) const -> void override
-    {
-    }
-
-    LayerSchema::Ptr registry_;
-    std::shared_ptr<simfil::StringPool const> strings_;
-    simfil::TypeId id_ = simfil::NoTypeId;
-    std::vector<simfil::StringId> directFields_;
-    std::vector<simfil::StringId> nestedFields_;
-    std::vector<simfil::StringId> nestedEnumSymbols_;
-    std::vector<simfil::StringId> directEnumSymbols_;
-};
-
-}  // namespace
-
-void installLayerSchemaImpl(
-    simfil::Environment& env,
-    LayerSchema::Ptr registry,
-    std::shared_ptr<simfil::StringPool const> strings,
-    bool materializeSchemaStrings);
+    std::vector<SearchInterpretation> result;
+    for (auto& [_, interpretation] : meanings)
+        result.push_back(std::move(interpretation));
+    return result;
+}
 
 tl::expected<LayerSchema::SearchQueryNormalization, simfil::Error>
 LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedScope requestedScope)
@@ -977,47 +902,6 @@ LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedSc
     }
     result.normalizedQuery_ = joinOr(std::move(branches));
     return result;
-}
-
-void installLayerSchema(
-    simfil::Environment& env,
-    LayerSchema::Ptr registry,
-    std::shared_ptr<simfil::StringPool const> strings)
-{
-    installLayerSchemaImpl(env, std::move(registry), std::move(strings), false);
-}
-
-void installCompletionLayerSchema(
-    simfil::Environment& env,
-    LayerSchema::Ptr registry,
-    std::shared_ptr<simfil::StringPool> strings)
-{
-    installLayerSchemaImpl(env, std::move(registry), std::move(strings), true);
-}
-
-void installLayerSchemaImpl(
-    simfil::Environment& env,
-    LayerSchema::Ptr registry,
-    std::shared_ptr<simfil::StringPool const> strings,
-    bool materializeSchemaStrings)
-{
-    auto schemas = std::make_shared<std::map<simfil::TypeId, std::unique_ptr<BoundSchema>>>();
-    env.querySchemaCallback =
-        [registry = std::move(registry),
-         strings = std::move(strings),
-         schemas = std::move(schemas),
-         materializeSchemaStrings](simfil::TypeId schemaId)
-    {
-        if (!registry || schemaId == simfil::NoTypeId) {
-            return static_cast<simfil::Schema const*>(nullptr);
-        }
-        auto [it, inserted] = schemas->try_emplace(schemaId);
-        if (inserted) {
-            it->second = std::make_unique<
-                BoundSchema>(registry, strings, schemaId, materializeSchemaStrings);
-        }
-        return static_cast<simfil::Schema const*>(it->second.get());
-    };
 }
 
 }  // namespace mapget

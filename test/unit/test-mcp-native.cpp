@@ -42,14 +42,14 @@ public:
     /** Attach a small native schema, including a recursive type. */
     explicit NativeSource(std::string idDescription = {}, size_t rawLayers = 0)
     {
-        auto schema = newSchema(rawLayers);
+        auto [owner, schema] = newSchema(rawLayers);
         auto root = schema->addSchema(
-            simfil::Schema::Kind::Object,
+            simfil::SchemaType::Kind::Object,
             LayerSchema::featureKey("Road"),
             "Feature");
-        auto text = schema->addSchema(simfil::Schema::Kind::String);
-        schema->addFieldSchema(root, "typeId", text);
-        schema->setOpen(root, true);
+        auto text = schema->addSchema(simfil::SchemaType::Kind::String);
+        owner->schemaType(root).asObject().addField("typeId", owner->schemaType(text));
+        owner->schemaType(root).asObject().setOpen(true);
         for (size_t i = 0; i < rawLayers; ++i) {
             auto name = "Raw-" + std::to_string(i);
             auto raw = std::make_shared<LayerInfo>();
@@ -61,7 +61,7 @@ public:
     }
 
     /** Build privately with every advertised raw root, before freezing the feature contract. */
-    static LayerSchema::Ptr newSchema(size_t rawLayers = 0)
+    static std::pair<std::shared_ptr<MapSchema>, LayerSchema::Ptr> newSchema(size_t rawLayers = 0)
     {
         auto owner = std::make_shared<MapSchema>();
         auto schema = owner->newLayer("Road", LayerType::Features);
@@ -71,7 +71,7 @@ public:
                 "Raw-" + std::to_string(i),
                 LayerType::SourceData,
                 NativeJson::object());
-        return schema;
+        return {owner, schema};
     }
 
     /** Declare identities once and publish a new immutable fixture incarnation. */
@@ -472,29 +472,32 @@ TEST_CASE("Native metadata and conversions need neither browser nor tile loads",
 TEST_CASE("Native schema discovery retains every feature type beside deep types", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
-    auto deep =
-        schema
-            ->addSchema(simfil::Schema::Kind::Object, LayerSchema::featureKey("ADeep"), "Feature");
+    auto [owner, schema] = NativeSource::newSchema();
+    auto deep = schema->addSchema(
+        simfil::SchemaType::Kind::Object,
+        LayerSchema::featureKey("ADeep"),
+        "Feature");
     auto parent = deep;
     for (size_t i = 0; i < 20; ++i) {
-        auto child = schema->addSchema(simfil::Schema::Kind::Object);
-        schema->addFieldSchema(parent, "next", child);
+        auto child = schema->addSchema(simfil::SchemaType::Kind::Object);
+        owner->schemaType(parent).asObject().addField("next", owner->schemaType(child));
         parent = child;
     }
-    schema->setTypeName(parent, "DeepTarget");
+    owner->schemaType(parent).setTypeName("DeepTarget");
     auto intersection = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::featureKey("Intersection"),
         "Feature");
-    auto properties = schema->addSchema(simfil::Schema::Kind::Object);
-    auto roads = schema->addSchema(simfil::Schema::Kind::Array);
-    auto road = schema->addSchema(simfil::Schema::Kind::Int);
-    schema->addFieldSchema(intersection, "properties", properties);
-    schema->addFieldSchema(properties, "connectedRoads", roads);
-    schema->addFieldSchema(properties, "choice", roads);
-    schema->addFieldSchema(properties, "choice", road);
-    schema->addElementSchema(roads, road);
+    auto properties = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto roads = schema->addSchema(simfil::SchemaType::Kind::Array);
+    auto road = schema->addSchema(simfil::SchemaType::Kind::Int);
+    owner->schemaType(intersection)
+        .asObject()
+        .addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("connectedRoads", owner->schemaType(roads));
+    owner->schemaType(properties).asObject().addField("choice", owner->schemaType(roads));
+    owner->schemaType(properties).asObject().addField("choice", owner->schemaType(road));
+    owner->schemaType(roads).asArray().addElement(owner->schemaType(road));
     source->setSchema(schema, {"ADeep", "Intersection"});
     NativeFixture fixture(false, source);
     auto args = NativeJson{{"mapId", "Native"}, {"layerId", "Road"}};
@@ -694,24 +697,24 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     auto feature =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
-    auto properties = schema->addSchema(simfil::Schema::Kind::Object);
-    auto layers = schema->addSchema(simfil::Schema::Kind::Object);
-    auto rules = schema->addSchema(simfil::Schema::Kind::Object);
+    auto properties = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto layers = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto rules = schema->addSchema(simfil::SchemaType::Kind::Object);
     auto speed = schema->addSchema(LayerSchema::AttributeKind);
-    auto value = schema->addSchema(simfil::Schema::Kind::Int);
-    auto geometry = schema->addSchema(simfil::Schema::Kind::Object);
-    schema->addFieldSchema(feature, "properties", properties);
-    schema->addFieldSchema(feature, "geometry", geometry);
-    schema->addFieldSchema(properties, "layer", layers);
-    schema->addFieldSchema(layers, "rules", rules);
-    schema->addFieldSchema(rules, "speed", speed);
-    schema->addFieldSchema(speed, "speedLimitKmh", value);
-    schema->setTypeName(speed, "SpeedLimit");
+    auto value = schema->addSchema(simfil::SchemaType::Kind::Int);
+    auto geometry = schema->addSchema(simfil::SchemaType::Kind::Object);
+    owner->schemaType(feature).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(feature).asObject().addField("geometry", owner->schemaType(geometry));
+    owner->schemaType(properties).asObject().addField("layer", owner->schemaType(layers));
+    owner->schemaType(layers).asObject().addField("rules", owner->schemaType(rules));
+    owner->schemaType(rules).asObject().addField("speed", owner->schemaType(speed));
+    owner->schemaType(speed).asObject().addField("speedLimitKmh", owner->schemaType(value));
+    owner->schemaType(speed).setTypeName("SpeedLimit");
     schema->setAttributeMetadata(speed, {"Road", "rules", "speed", speed}, "SpeedLimit");
-    schema->addFieldSchema(geometry, "coordinateCount", value);
+    owner->schemaType(geometry).asObject().addField("coordinateCount", owner->schemaType(value));
     source->setSchema(schema);
     NativeFixture fixture(false, source);
     NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}};
@@ -893,13 +896,13 @@ TEST_CASE(
 TEST_CASE("Native schema enum previews retain explicit access to all choices", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
-    auto category = schema->addSchema(simfil::Schema::Kind::Int);
+    auto category = schema->addSchema(simfil::SchemaType::Kind::Int);
     for (int64_t i = 0; i < 40; ++i)
-        schema->addEnumValue(category, i);
-    schema->addFieldSchema(root, "category", category);
+        owner->schemaType(category).asEnum().addValue(i);
+    owner->schemaType(root).asObject().addField("category", owner->schemaType(category));
     source->setSchema(schema);
     NativeFixture fixture(false, source);
     NativeJson args{{"mapId", "Native"}, {"layerId", "Road"}, {"typeId", category}};
@@ -929,12 +932,12 @@ TEST_CASE("Native schema enum previews retain explicit access to all choices", "
 TEST_CASE("Native validation pages independently compiled feature contexts", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     for (auto type : {"First", "Second", "Third"}) {
         auto root =
             schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey(type), "Feature");
-        auto value = schema->addSchema(simfil::Schema::Kind::Int);
-        schema->addFieldSchema(root, "value", value);
+        auto value = schema->addSchema(simfil::SchemaType::Kind::Int);
+        owner->schemaType(root).asObject().addField("value", owner->schemaType(value));
     }
     source->setSchema(schema, {"First", "Second", "Third"});
     NativeFixture fixture(false, source);
@@ -962,17 +965,17 @@ TEST_CASE("Native validation pages independently compiled feature contexts", "[m
 TEST_CASE("Native validation recognizes feature attributes aliases", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     auto root = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::featureKey("Intersection"),
         "Feature");
-    auto properties = schema->addSchema(simfil::Schema::Kind::Object);
-    auto roads = schema->addSchema(simfil::Schema::Kind::Array);
-    auto road = schema->addSchema(simfil::Schema::Kind::Int);
-    schema->addFieldSchema(root, "properties", properties);
-    schema->addFieldSchema(properties, "connectedRoads", roads);
-    schema->addElementSchema(roads, road);
+    auto properties = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto roads = schema->addSchema(simfil::SchemaType::Kind::Array);
+    auto road = schema->addSchema(simfil::SchemaType::Kind::Int);
+    owner->schemaType(root).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("connectedRoads", owner->schemaType(roads));
+    owner->schemaType(roads).asArray().addElement(owner->schemaType(road));
     source->setSchema(schema, {"Intersection"});
     NativeFixture fixture(false, source);
     for (auto expression : {"#attributes.connectedRoads > 3", "#properties.connectedRoads > 3"}) {
@@ -1376,7 +1379,7 @@ TEST_CASE(
 TEST_CASE("Native imported schemas preserve aliases in recursive queries", "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     schema->setRootSchema(schema->addJsonSchema(NativeJson::parse(R"({
         "oneOf":[{"$ref":"#/$defs/RoadFeature"}],"$defs":{"RoadFeature":{
             "type":"object", "additionalProperties":false,
@@ -1411,27 +1414,27 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
-    auto properties = schema->addSchema(simfil::Schema::Kind::Object);
-    auto layers = schema->addSchema(simfil::Schema::Kind::Object);
-    auto rules = schema->addSchema(simfil::Schema::Kind::Object);
+    auto properties = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto layers = schema->addSchema(simfil::SchemaType::Kind::Object);
+    auto rules = schema->addSchema(simfil::SchemaType::Kind::Object);
     auto speed = schema->addSchema(LayerSchema::AttributeKind);
-    auto number = schema->addSchema(simfil::Schema::Kind::Int);
-    auto conditions = schema->addSchema(simfil::Schema::Kind::Array);
-    auto vehicle = schema->addSchema(simfil::Schema::Kind::String);
-    schema->addFieldSchema(root, "properties", properties);
-    schema->addFieldSchema(properties, "layer", layers);
-    schema->addFieldSchema(layers, "rules", rules);
-    schema->addFieldSchema(rules, "SPEED_LIMIT", speed);
+    auto number = schema->addSchema(simfil::SchemaType::Kind::Int);
+    auto conditions = schema->addSchema(simfil::SchemaType::Kind::Array);
+    auto vehicle = schema->addSchema(simfil::SchemaType::Kind::String);
+    owner->schemaType(root).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("layer", owner->schemaType(layers));
+    owner->schemaType(layers).asObject().addField("rules", owner->schemaType(rules));
+    owner->schemaType(rules).asObject().addField("SPEED_LIMIT", owner->schemaType(speed));
     schema->setAttributeMetadata(speed, {"Road", "rules", "SPEED_LIMIT", speed}, "SPEED_LIMIT");
-    schema->addFieldSchema(speed, "speedLimit", number);
-    schema->addFieldSchema(speed, "conditions", conditions);
-    schema->addElementSchema(conditions, vehicle);
-    schema->addEnumSymbol(vehicle, "TRUCK");
-    schema->addEnumSymbol(vehicle, "SPEED_SIGN");
-    schema->addFieldSchema(properties, "cycle", properties);
+    owner->schemaType(speed).asObject().addField("speedLimit", owner->schemaType(number));
+    owner->schemaType(speed).asObject().addField("conditions", owner->schemaType(conditions));
+    owner->schemaType(conditions).asArray().addElement(owner->schemaType(vehicle));
+    owner->schemaType(vehicle).asEnum().addSymbol("TRUCK");
+    owner->schemaType(vehicle).asEnum().addSymbol("SPEED_SIGN");
+    owner->schemaType(properties).asObject().addField("cycle", owner->schemaType(properties));
     source->setSchema(schema);
     NativeFixture fixture(false, source);
     auto args =
@@ -1981,19 +1984,21 @@ TEST_CASE(
     "[mcp-native]")
 {
     auto source = std::make_shared<NativeSource>();
-    auto schema = NativeSource::newSchema();
+    auto [owner, schema] = NativeSource::newSchema();
     auto root =
         schema->addSchema(LayerSchema::FeatureKind, LayerSchema::featureKey("Road"), "Feature");
-    auto text = schema->addSchema(simfil::Schema::Kind::String);
-    auto type = schema->addSchema(simfil::Schema::Kind::String);
-    schema->setTypeName(type, "Direction");
+    auto text = schema->addSchema(simfil::SchemaType::Kind::String);
+    auto type = schema->addSchema(simfil::SchemaType::Kind::String);
+    owner->schemaType(type).setTypeName("Direction");
     for (int i = 0; i < 40; ++i) {
-        schema->addFieldSchema(root, "forwardField" + std::to_string(i), text);
-        schema->addEnumSymbol(type, "A_FORWARD_" + std::to_string(i));
+        owner->schemaType(root)
+            .asObject()
+            .addField("forwardField" + std::to_string(i), owner->schemaType(text));
+        owner->schemaType(type).asEnum().addSymbol("A_FORWARD_" + std::to_string(i));
     }
-    schema->addEnumSymbol(type, "FORWARD");
-    schema->addFieldSchema(root, "direction", type);
-    schema->addFieldSchema(root, "otherDirection", type);
+    owner->schemaType(type).asEnum().addSymbol("FORWARD");
+    owner->schemaType(root).asObject().addField("direction", owner->schemaType(type));
+    owner->schemaType(root).asObject().addField("otherDirection", owner->schemaType(type));
     source->setSchema(schema);
     NativeFixture fixture(false, source);
     auto args =

@@ -61,7 +61,7 @@ TEST_CASE(
           {"text", "42.with%characters"},
           {"large", std::numeric_limits<int64_t>::max()}}}};
 
-    CHECK(info->getTypeInfo("Road", false) == nullptr);
+    CHECK_FALSE(info->getTypeInfo("Road", false));
     CHECK(reference->toJson() == expected);
     CHECK(reference->keyValuePairs() == parts);
     CHECK(reference->mapId() == "Target/Map");
@@ -115,7 +115,7 @@ TEST_CASE(
         auto copied = clone->at(0)->getRelation(0)->target();
         CHECK(copied->toJson() == expected);
         CHECK(copied->externalMapId() == reference->externalMapId());
-        CHECK(info->getTypeInfo("Road", false) == nullptr);
+        CHECK_FALSE(info->getTypeInfo("Road", false));
     }
 
     SECTION("Strict GeoJSON roundtrip does not require the foreign type")

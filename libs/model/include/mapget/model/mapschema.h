@@ -3,10 +3,7 @@
 #include "mapget/model/layerschema.h"
 #include "simfil/model/schema-pool.h"
 
-namespace simfil
-{
-class SchemaBinding;
-}
+#include <array>
 
 namespace mapget
 {
@@ -20,7 +17,7 @@ class MapSchema : public simfil::SchemaPool
 public:
     using Ptr = std::shared_ptr<MapSchema>;
     using ConstPtr = std::shared_ptr<MapSchema const>;
-    using Composition = simfil::Schema::Composition;
+    using Composition = simfil::SchemaType::Composition;
 
     /** Mapget-owned runtime shapes. Numeric type IDs remain artifact-local. */
     enum class Builtin {
@@ -46,6 +43,19 @@ public:
     [[nodiscard]] LayerSchema::Ptr newLayer(std::string_view name, LayerType type);
     [[nodiscard]] LayerSchema::Ptr layer(std::string_view name) const;
     [[nodiscard]] std::vector<std::string> layerNames() const;
+    /** Define an identity once for the map, even if no served layer produces it.
+     * Equivalent declarations reuse the first description; conflicting compositions fail. */
+    void addFeatureType(FeatureTypeInfo info);
+    /** Copy another owner's canonical identity without reconstructing a declaration DTO. */
+    void addFeatureType(FeatureIdentity identity);
+    /** Borrow canonical identity values; keep the schema alive while traversing. */
+    auto featureIdentities() const
+    {
+        return std::views::iota(size_t{0}, identityCount()) |
+            std::views::transform([this](size_t index) { return FeatureIdentity(this, index); });
+    }
+    [[nodiscard]] FeatureIdentity
+    getTypeInfo(std::string_view name, bool throwIfMissing = true) const;
     /** Import one legacy layer transactionally. Foreign numeric identities are remapped.
      * Existing names may only be re-imported with an identical contract.
      */
@@ -56,7 +66,8 @@ public:
         std::span<FeatureTypeInfo const> features = {});
 
     [[nodiscard]] bool finalized() const;
-    /** Validate, compact and freeze. Repeated calls are no-ops; no mutation is allowed afterwards.
+    /** Validate, prepare lookup indexes and freeze. Repeated calls are no-ops; no mutation is
+     * allowed afterwards.
      */
     void finalize();
     [[nodiscard]] MapFormat const& format() const;
@@ -97,10 +108,6 @@ public:
         std::function<ConstPtr()> builder,
         std::function<bool()> cancel = {});
 
-    /** Schema-local lookup. The returned binding pins this graph without an owner cycle. */
-    [[nodiscard]] std::shared_ptr<simfil::SchemaBinding const> binding() const;
-    using SchemaPool::type;
-    [[nodiscard]] simfil::Schema const* type(simfil::TypeId id) const;
     [[nodiscard]] simfil::ModelNode::Ptr typeNode(simfil::TypeId id) const;
     using ModelPool::resolve;
     tl::expected<void, simfil::Error>
@@ -110,7 +117,7 @@ public:
     /** Canonical unqualified scalar type; returned types cannot be modified.
      * Use addSchema for declarations with their own units, constraints or annotations. */
     [[nodiscard]] simfil::TypeId
-    primitive(simfil::Schema::Kind kind, std::span<std::string const> symbols = {});
+    primitive(simfil::SchemaType::Kind kind, std::span<std::string const> symbols = {});
     /** Canonical immutable array, retaining a reference to its element type. */
     [[nodiscard]] simfil::TypeId arrayOf(simfil::TypeId element);
     /** Nullable variant of a completed type. Seals the original as well as its variant. */
@@ -119,35 +126,18 @@ public:
     [[nodiscard]] simfil::TypeId builtin(Builtin type);
     /** Create an extensible physical Attribute with mapget's common fields.
      * Register names/owners separately through LayerSchema::bindAttribute. */
-    [[nodiscard]] simfil::TypeId
+    [[nodiscard]] AttributeSchemaType
     newAttribute(std::string key = {}, std::string typeName = {}, bool open = false);
 
     /** Graph-global declarations, shared by all layers. All borrowed input is copied. */
     [[nodiscard]] simfil::TypeId addSchema(
-        simfil::Schema::Kind kind,
+        simfil::SchemaType::Kind kind,
         std::string key = {},
         std::string metaType = {},
         std::string jsonPointer = {});
     [[nodiscard]] simfil::TypeId addJsonSchema(nlohmann::json const& schema);
     void registerSchemaKey(std::string key, simfil::TypeId id);
     void setJsonSchemaAnnotations(simfil::TypeId id, nlohmann::json annotations);
-    void addFieldSchema(
-        simfil::TypeId parent,
-        std::string field,
-        simfil::TypeId child = simfil::NoTypeId,
-        bool multimap = false);
-    void addElementSchema(simfil::TypeId parent, simfil::TypeId child);
-    void addEnumSymbol(simfil::TypeId id, std::string name);
-    void addEnumSymbols(simfil::TypeId id, std::span<std::string const> names);
-    void addEnumValue(simfil::TypeId id, simfil::ScalarValueType value);
-    void setComposition(simfil::TypeId id, Composition composition);
-    void addAlternative(simfil::TypeId id, simfil::TypeId alternative);
-    void setTypeName(simfil::TypeId id, std::string name);
-    void setOpen(simfil::TypeId id, bool open);
-    void setNullable(simfil::TypeId id, std::optional<bool> nullable);
-    void setFieldRequired(simfil::TypeId id, std::string field, std::optional<bool> required);
-    /** Mark a declared edge as enumerable data or explicit-lookup-only context. */
-    void setFieldRole(simfil::TypeId id, std::string field, simfil::Schema::FieldRole role);
     void setZserioType(simfil::TypeId id, std::string name);
     /** Discriminator provenance, independent of payload typename and named use sites. */
     void setAttributeType(simfil::TypeId id, std::string name);
@@ -156,28 +146,47 @@ public:
         LayerSchema::AttributePathOwner owner,
         std::string attributeType,
         std::string zserioType = {});
-    /** Copy exact numeric semantics; input views need not outlive this call. */
-    void setNumericDomain(simfil::TypeId id, simfil::Schema::NumericDomain const& domain);
-    void addNamedValue(simfil::TypeId id, simfil::Schema::NamedValue const& value);
-    void setBitWidth(simfil::TypeId id, uint8_t width);
-    [[nodiscard]] std::optional<simfil::Schema::NumericDomain>
-    numericDomain(simfil::TypeId id) const;
-    void forEachNamedValue(
-        simfil::TypeId id,
-        std::function<void(simfil::Schema::NamedValue const&)> const& fn) const;
-    [[nodiscard]] uint8_t bitWidth(simfil::TypeId id) const;
-
     [[nodiscard]] simfil::TypeId findSchema(std::string_view key) const;
     [[nodiscard]] size_t typeCount() const;
+
+protected:
+    /** Protect mapget-reserved fields through all generic typed mutation paths. */
+    void validateFieldMutation(simfil::TypeId id, std::string_view field) const override;
+    /** Prevent kind/base/composition changes from bypassing native envelope contracts. */
+    void validateStructureMutation(simfil::TypeId id) const override;
+    /** Copy declarations and mutation policy, but never clone use-site ownership. */
+    void cloneTypeExtension(simfil::TypeId source, simfil::TypeId target) override;
+    /** Bind an attribute-use symbol to this query context's actual runtime name field. */
+    std::vector<simfil::SchemaPath>
+    symbolEqualityPaths(simfil::TypeId id, simfil::StringId symbol) const override;
+    /** Resolve payload shorthand without choosing an arbitrary shared Attribute owner. */
+    std::vector<simfil::SchemaPath>
+    scalarFieldPathsForSymbol(simfil::TypeId id, simfil::StringId symbol) const override;
+    /** Count mapget metadata members directly from the canonical type row. */
+    uint32_t descriptorExtensionSize(simfil::TypeId id) const override;
+    /** Enumerate only metadata with a value, without constructing descriptor children. */
+    simfil::StringId descriptorExtensionKeyAt(simfil::TypeId id, uint32_t position) const override;
+    /** Retain a metadata value from this same pool, never an adapter model. */
+    simfil::ModelNode::Ptr
+    descriptorExtensionGet(simfil::TypeId id, simfil::StringId key) const override;
 
 private:
     friend class LayerSchema;
     friend simfil::model_ptr<LayerSchema>
     resolveInternal(simfil::res::tag<LayerSchema>, MapSchema const&, simfil::ModelNode const&);
     struct Impl;
+    friend class FeatureIdentity;
+    friend class FeatureIdentity::Composition;
+    friend class FeatureIdentity::Part;
+    size_t identityCount() const;
     std::unique_ptr<Impl> schema_;
     void requireMutable() const;
     void requireMutableType(simfil::TypeId id) const;
+    /** Resolve stable owner rows and their per-type membership containers in this same pool. */
+    tl::expected<void, simfil::Error>
+    resolveAttributeOwners(simfil::ModelNode const& node, ResolveFn const& callback) const;
+    /** Borrow the six optional textual metadata values in descriptor-key order. */
+    std::array<simfil::ModelNodeAddress, 6> descriptorMetadata(simfil::TypeId id) const;
 };
 
 }  // namespace mapget

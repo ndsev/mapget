@@ -172,7 +172,7 @@ TEST_CASE(
     CHECK_FALSE(published.contains("featureTypes"));
     CHECK_FALSE(published.contains("schemaFeatureTypes"));
     CHECK_FALSE(published.contains("featureModelSchema"));
-    CHECK(layer->featureTypes().size() == 2);
+    CHECK(layer->schemaOwner()->featureIdentities().size() == 2);
     CHECK(layer->layerSchema()->featureTypes() == std::vector<std::string>{"Carrier"});
     CHECK_FALSE(layer->layerSchema()->producesFeatureType("ReferenceOnly"));
     metadata.erase("featureModelSchema");
@@ -359,7 +359,7 @@ TEST_CASE("LayerInfo imports legacy featureModelSchema without publishing it", "
     REQUIRE_FALSE(json.contains("featureModelSchema"));
     REQUIRE_FALSE(json.contains("featureTypes"));
     REQUIRE(layerInfo->schemaOwner()->finalized());
-    REQUIRE(layerInfo->getTypeInfo("Way")->uniqueIdCompositions_.size() == 1);
+    REQUIRE(layerInfo->getTypeInfo("Way").compositions().size() == 1);
 }
 
 TEST_CASE(
@@ -406,7 +406,7 @@ TEST_CASE(
     REQUIRE_NOTHROW(tile->validateSchema());
 
     // Published graphs cannot be changed underneath a live partition.
-    REQUIRE_THROWS(layerInfo->layerSchema()->addSchema(simfil::Schema::Kind::Int));
+    REQUIRE_THROWS(layerInfo->layerSchema()->addSchema(simfil::SchemaType::Kind::Int));
     REQUIRE_NOTHROW(tile->validateSchema());
 }
 
@@ -417,53 +417,44 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
 
     REQUIRE(registry);
 
-    auto const* carrierSchema = registry->getSchema("Carrier");
-    REQUIRE(carrierSchema != nullptr);
-    REQUIRE(carrierSchema->id_ != simfil::NoTypeId);
-    REQUIRE(registry->schemaId("Feature:Carrier") == carrierSchema->id_);
+    auto carrierSchema = registry->mapSchema()->schemaType(registry->featureSchema("Carrier"));
+    REQUIRE(carrierSchema);
+    auto const& names = carrierSchema.pool()->dictionary();
+    REQUIRE(carrierSchema.id() != simfil::NoTypeId);
+    REQUIRE(registry->schemaId("Feature:Carrier") == carrierSchema.id());
 
     auto const propertiesId = registry->featurePropertiesSchema("Carrier");
     auto const layerMapId = registry->attributeLayerMapSchema("Carrier");
     REQUIRE(propertiesId != simfil::NoTypeId);
     REQUIRE(layerMapId != simfil::NoTypeId);
 
-    auto const limitsId = registry->childSchema(
-        layerMapId,
-        "limits",
-        simfil::Schema::Kind::Object);
-    auto const speedId = registry->childSchema(
-        limitsId,
-        "speed",
-        simfil::Schema::Kind::Object);
+    auto const limitsId =
+        registry->childSchema(layerMapId, "limits", simfil::SchemaType::Kind::Object);
+    auto const speedId = registry->childSchema(limitsId, "speed", simfil::SchemaType::Kind::Object);
     REQUIRE(limitsId != simfil::NoTypeId);
     REQUIRE(speedId != simfil::NoTypeId);
 
-    REQUIRE(registry->canHaveField(carrierSchema->id_, "properties"));
-    REQUIRE(registry->canHaveField(carrierSchema->id_, "value"));
+    REQUIRE(carrierSchema.canHaveField(names.get("properties")));
+    REQUIRE(carrierSchema.canHaveField(names.get("value")));
     // JSON Schema objects are open unless additionalProperties explicitly closes them.
-    REQUIRE(registry->canHaveField(carrierSchema->id_, "notDeclaredBySchema"));
+    REQUIRE(carrierSchema.canHaveField(names.get("notDeclaredBySchema")));
 
-    auto const typeIdId = registry->childSchema(
-        carrierSchema->id_,
-        "typeId",
-        simfil::Schema::Kind::Value);
-    auto const unitId = registry->childSchema(
-        speedId,
-        "unit",
-        simfil::Schema::Kind::Value);
+    auto const typeIdId =
+        registry->childSchema(carrierSchema.id(), "typeId", simfil::SchemaType::Kind::Value);
+    auto const unitId = registry->childSchema(speedId, "unit", simfil::SchemaType::Kind::Value);
     REQUIRE(typeIdId != simfil::NoTypeId);
     REQUIRE(unitId != simfil::NoTypeId);
-    REQUIRE(registry->kind(typeIdId) == simfil::Schema::Kind::String);
-    REQUIRE(registry->kind(unitId) == simfil::Schema::Kind::String);
-    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "Carrier"));
-    REQUIRE(registry->canHaveEnumSymbol(carrierSchema->id_, "km/h"));
-    REQUIRE(registry->canHaveEnumSymbol(unitId, "mph"));
-    REQUIRE_FALSE(registry->canHaveEnumSymbol(carrierSchema->id_, "notAnEnum"));
+    REQUIRE(registry->mapSchema()->schemaType(typeIdId).kind() == simfil::SchemaType::Kind::String);
+    REQUIRE(registry->mapSchema()->schemaType(unitId).kind() == simfil::SchemaType::Kind::String);
+    REQUIRE(carrierSchema.canHaveEnumSymbol(names.get("Carrier")));
+    REQUIRE(carrierSchema.canHaveEnumSymbol(names.get("km/h")));
+    REQUIRE(registry->mapSchema()->schemaType(unitId).canHaveEnumSymbol(names.get("mph")));
+    REQUIRE_FALSE(carrierSchema.canHaveEnumSymbol(names.get("notAnEnum")));
     REQUIRE(
-        registry->constantTypeNames(carrierSchema->id_, "km/h") ==
+        registry->constantTypeNames(carrierSchema.id(), "km/h") ==
         std::vector<std::string>{"synthetic.SpeedUnit"});
     REQUIRE(
-        registry->constantTypeNames(carrierSchema->id_, "speed") ==
+        registry->constantTypeNames(carrierSchema.id(), "speed") ==
         std::vector<std::string>{"synthetic.SpeedAttributeType"});
 
     auto strings = std::make_shared<StringPool>("LayerSchemaEnums");
@@ -471,12 +462,14 @@ TEST_CASE("LayerInfo builds LayerSchema from x-mapget annotations", "[DataSource
     auto speedUnitSymbol = strings->emplace("km/h").value();
     auto missingSymbol = strings->emplace("missing").value();
     simfil::Environment env(strings);
-    installLayerSchema(env, registry, strings);
-    auto schema = env.querySchema(carrierSchema->id_);
-    REQUIRE(schema != nullptr);
-    REQUIRE(schema->canHaveEnumSymbol(carrierSymbol));
-    REQUIRE(schema->canHaveEnumSymbol(speedUnitSymbol));
-    REQUIRE_FALSE(schema->canHaveEnumSymbol(missingSymbol));
+    env.setSchema(registry->rootType());
+    auto schema = env.schema().pool()->schemaType(carrierSchema.id());
+    REQUIRE(schema);
+    auto const& dictionary = schema.pool()->dictionary();
+    REQUIRE(schema.canHaveEnumSymbol(dictionary.get(strings->resolve(carrierSymbol).value())));
+    REQUIRE(schema.canHaveEnumSymbol(dictionary.get(strings->resolve(speedUnitSymbol).value())));
+    REQUIRE_FALSE(
+        schema.canHaveEnumSymbol(dictionary.get(strings->resolve(missingSymbol).value())));
 }
 
 TEST_CASE("LayerSchema does not mutate datasource StringPool", "[DataSourceInfo]")
@@ -509,34 +502,41 @@ TEST_CASE(
     auto owner = std::make_shared<MapSchema>();
     auto schema = owner->newLayer("Layer", LayerType::Features);
     auto const featureSchema = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::featureKey("Road"),
         "Feature");
     auto const propertiesSchema = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::featurePropertiesKey("Road"),
         "FeatureProperties");
     auto const layerMapSchema = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::attributeLayerMapKey("Road"),
         "AttributeLayerMap");
     auto const rulesSchema = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::attributeContainerKey("Road", "rules"),
         "AttributeContainer");
     auto const speedSchema = schema->addSchema(
-        simfil::Schema::Kind::Object,
+        simfil::SchemaType::Kind::Object,
         LayerSchema::attributeKey("Road", "rules", "speed.limit"),
         "Attribute");
-    auto const valueSchema = schema->addSchema(
-        simfil::Schema::Kind::Value,
-        "Road.rules.speed-limit.value");
+    auto const valueSchema =
+        schema->addSchema(simfil::SchemaType::Kind::Value, "Road.rules.speed-limit.value");
 
-    schema->addFieldSchema(featureSchema, "properties", propertiesSchema);
-    schema->addFieldSchema(propertiesSchema, "layer", layerMapSchema);
-    schema->addFieldSchema(layerMapSchema, "rules", rulesSchema);
-    schema->addFieldSchema(rulesSchema, "speed.limit", speedSchema);
-    schema->addFieldSchema(speedSchema, "value.with.dot", valueSchema);
+    owner->schemaType(featureSchema)
+        .asObject()
+        .addField("properties", owner->schemaType(propertiesSchema));
+    owner->schemaType(propertiesSchema)
+        .asObject()
+        .addField("layer", owner->schemaType(layerMapSchema));
+    owner->schemaType(layerMapSchema).asObject().addField("rules", owner->schemaType(rulesSchema));
+    owner->schemaType(rulesSchema)
+        .asObject()
+        .addField("speed.limit", owner->schemaType(speedSchema));
+    owner->schemaType(speedSchema)
+        .asObject()
+        .addField("value.with.dot", owner->schemaType(valueSchema));
     schema->setAttributeMetadata(
         speedSchema,
         LayerSchema::AttributePathOwner{"Road", "rules", "speed.limit", speedSchema},
@@ -547,11 +547,13 @@ TEST_CASE(
              {"uniqueIdCompositions", {{{{"partId", "id"}, {"datatype", "I64"}}}}}}),
         featureSchema);
     schema->setZserioType(valueSchema, "synthetic.SpeedValue");
-    schema->addEnumSymbol(valueSchema, "FAST");
+    owner->schemaType(valueSchema).asEnum().addSymbol("FAST");
     schema->finalize();
 
     REQUIRE(schema->featureTypes() == std::vector<std::string>{"Road"});
-    REQUIRE(schema->canHaveField(featureSchema, "value.with.dot"));
+    REQUIRE(schema->mapSchema()
+                ->schemaType(featureSchema)
+                .canHaveField(schema->mapSchema()->dictionary().get("value.with.dot")));
     REQUIRE(schema->constantTypeNames(speedSchema, "speed.limit") ==
             std::vector<std::string>{"synthetic.SpeedAttribute"});
 
@@ -578,12 +580,12 @@ TEST_CASE(
     auto restored = restoredOwner->layer("Layer");
     REQUIRE(restored->featureTypes() == std::vector<std::string>{"Road"});
     REQUIRE(restored->featureSchema("Road") == featureSchema);
-    REQUIRE(restored->kind(speedSchema) == LayerSchema::AttributeKind);
+    REQUIRE(restored->mapSchema()->schemaType(speedSchema).kind() == LayerSchema::AttributeKind);
 }
 
 TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard path", "[DataSourceInfo]")
 {
-    using Kind = simfil::Schema::Kind;
+    using Kind = simfil::SchemaType::Kind;
     auto owner = std::make_shared<MapSchema>();
     auto schema = owner->newLayer("Layer", LayerType::Features);
     auto feature = schema->addSchema(Kind::Object, LayerSchema::featureKey("Link"), "Feature");
@@ -593,12 +595,12 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
     auto attribute = schema->addSchema(Kind::Object, LayerSchema::attributeKey("Link", "Guidance", "NUM_LANES"), "Attribute");
     auto numLanes = schema->addSchema(Kind::Object, "NumLanes");
     auto number = schema->addSchema(Kind::Value, "NormalLanes");
-    schema->addFieldSchema(feature, "properties", properties);
-    schema->addFieldSchema(properties, "layer", layers);
-    schema->addFieldSchema(layers, "Guidance", guidance);
-    schema->addFieldSchema(guidance, "NUM_LANES", attribute);
-    schema->addFieldSchema(attribute, "numLanes", numLanes);
-    schema->addFieldSchema(numLanes, "normalLanes", number);
+    owner->schemaType(feature).asObject().addField("properties", owner->schemaType(properties));
+    owner->schemaType(properties).asObject().addField("layer", owner->schemaType(layers));
+    owner->schemaType(layers).asObject().addField("Guidance", owner->schemaType(guidance));
+    owner->schemaType(guidance).asObject().addField("NUM_LANES", owner->schemaType(attribute));
+    owner->schemaType(attribute).asObject().addField("numLanes", owner->schemaType(numLanes));
+    owner->schemaType(numLanes).asObject().addField("normalLanes", owner->schemaType(number));
     schema->setAttributeMetadata(attribute,
         LayerSchema::AttributePathOwner{"Link", "Guidance", "NUM_LANES", attribute}, "NumLanesAttribute");
 
@@ -611,7 +613,7 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
     SECTION("Direct schema graph") {}
     SECTION("Same field under basic properties makes scope ambiguous")
     {
-        schema->addFieldSchema(properties, "numLanes", numLanes);
+        owner->schemaType(properties).asObject().addField("numLanes", owner->schemaType(numLanes));
         mixedPaths = true;
     }
     SECTION("Canonical transport with a large shared conditions graph")
@@ -622,17 +624,19 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
         auto condition = schema->addSchema(Kind::Int, "ConditionValue");
         for (auto depth = 0; depth < 15; ++depth) {
             auto parent = schema->addSchema(Kind::Object, "Condition" + std::to_string(depth));
-            schema->addFieldSchema(parent, "left", condition);
-            schema->addFieldSchema(parent, "right", condition);
+            owner->schemaType(parent).asObject().addField("left", owner->schemaType(condition));
+            owner->schemaType(parent).asObject().addField("right", owner->schemaType(condition));
             condition = parent;
         }
-        schema->addFieldSchema(attribute, "conditions", condition);
+        owner->schemaType(attribute)
+            .asObject()
+            .addField("conditions", owner->schemaType(condition));
         schema->finalize();
         // The produced feature alias, not an optional descriptor type name, identifies Link.
-        REQUIRE(schema->mapSchema()->type(feature)->typeName().empty());
+        REQUIRE(schema->mapSchema()->schemaType(feature).typeName().empty());
         schema = LayerSchema::fromJsonSchema(schema->toJsonSchema());
         REQUIRE(schema->featureSchema("Link") == feature);
-        REQUIRE(schema->mapSchema()->type(feature)->typeName().empty());
+        REQUIRE(schema->mapSchema()->schemaType(feature).typeName().empty());
         REQUIRE(schema->featureTypes() == std::vector<std::string>{"Link"});
     }
     schema->finalize();
@@ -801,8 +805,10 @@ TEST_CASE("LayerSchema scalar attribute shorthand skips metadata fields", "[Data
         "properties.layer.limits.priority.value"});
 
     auto const layerMapSchema = registry->attributeLayerMapSchema("Carrier");
-    auto const limitsSchema = registry->childSchema(layerMapSchema, "limits", simfil::Schema::Kind::Object);
-    auto const prioritySchema = registry->childSchema(limitsSchema, "priority", simfil::Schema::Kind::Object);
+    auto const limitsSchema =
+        registry->childSchema(layerMapSchema, "limits", simfil::SchemaType::Kind::Object);
+    auto const prioritySchema =
+        registry->childSchema(limitsSchema, "priority", simfil::SchemaType::Kind::Object);
     auto attributePaths = registry->scalarFieldPathsForAttribute(prioritySchema, "priority");
     REQUIRE(attributePaths.size() == 1);
     REQUIRE(namedSchemaPathString(attributePaths.front()) == "value");
@@ -917,18 +923,13 @@ TEST_CASE("PartitionFeatureLayer exposes SchemaIds on feature-model nodes", "[Da
     REQUIRE(speed->addField("unit", "km/h").has_value());
 
     simfil::ModelNode::Ptr featureNode = feature;
-    REQUIRE(featureNode->schema() == tile->getSchema("Carrier")->id_);
+    REQUIRE(featureNode->schemaType().id() == registry->featureSchema("Carrier"));
     REQUIRE(attrs->schema() == registry->featurePropertiesSchema("Carrier"));
 
     auto const layerMapId = registry->attributeLayerMapSchema("Carrier");
-    auto const limitsId = registry->childSchema(
-        layerMapId,
-        "limits",
-        simfil::Schema::Kind::Object);
-    auto const speedId = registry->childSchema(
-        limitsId,
-        "speed",
-        simfil::Schema::Kind::Object);
+    auto const limitsId =
+        registry->childSchema(layerMapId, "limits", simfil::SchemaType::Kind::Object);
+    auto const speedId = registry->childSchema(limitsId, "speed", simfil::SchemaType::Kind::Object);
     REQUIRE(feature->attributeLayers()->schema() == layerMapId);
     REQUIRE(layer->schema() == limitsId);
 

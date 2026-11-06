@@ -59,7 +59,7 @@ void preservesAcceptance(Json const& original, std::initializer_list<Sample> sam
             }
             else if (std::string_view(transport) == "offset JSON import") {
                 auto owner = std::make_shared<MapSchema>();
-                (void)owner->addSchema(simfil::Schema::Kind::String, "preexisting");
+                (void)owner->addSchema(simfil::SchemaType::Kind::String, "preexisting");
                 layer =
                     owner->importLayer("Validation", LayerType::SourceData, native->toJsonSchema());
                 owner->finalize();

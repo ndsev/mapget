@@ -315,198 +315,6 @@ nlohmann::json IdPart::toJson() const
         {"isOptional", isOptional_}};
 }
 
-std::optional<uint32_t> IdPart::compositionMatchEndIndex(
-    const std::vector<IdPart>& candidateComposition,
-    uint32_t compositionMatchStartIdx,
-    const KeyValueViewPairs& featureIdParts,
-    size_t matchLength,
-    std::string* error)
-{
-    auto featureIdIter = featureIdParts.begin();
-    auto compositionIter = candidateComposition.begin();
-
-    while (compositionMatchStartIdx > 0) {
-        ++compositionIter;
-        --compositionMatchStartIdx;
-    }
-
-    while (matchLength > 0 && compositionIter != candidateComposition.end()) {
-        // Have we exhausted feature ID parts?
-        if (featureIdIter == featureIdParts.end()) {
-            return std::nullopt;
-        }
-
-        auto [idPartKey, idPartValue] = *featureIdIter;
-
-        // Does this ID part's field name match?
-        if (compositionIter->idPartLabel_ != idPartKey) {
-            if (compositionIter->isOptional_) {
-                // Optional composition slots may be absent entirely, so keep
-                // scanning until we either find the requested part or hit a
-                // required mismatch.
-                ++compositionIter;
-                continue;
-            }
-            return std::nullopt;
-        }
-
-        // Does the ID part's value match?
-        if (!compositionIter->validate(idPartValue, error))
-            return std::nullopt;
-
-        ++featureIdIter;
-        ++compositionIter;
-        --matchLength;
-    }
-
-    if (matchLength != 0) {
-        return std::nullopt;
-    }
-
-    return static_cast<uint32_t>(std::distance(candidateComposition.begin(), compositionIter));
-}
-
-bool IdPart::idPartsMatchComposition(
-    const std::vector<IdPart>& candidateComposition,
-    uint32_t compositionMatchStartIdx,
-    const KeyValueViewPairs& featureIdParts,
-    size_t matchLength,
-    bool requireCompositionEnd,
-    std::string* error)
-{
-    auto const matchEndIndex = compositionMatchEndIndex(
-        candidateComposition,
-        compositionMatchStartIdx,
-        featureIdParts,
-        matchLength,
-        error);
-    if (!matchEndIndex) {
-        return false;
-    }
-
-    if (requireCompositionEnd) {
-        auto compositionIter = candidateComposition.begin() + *matchEndIndex;
-        while (compositionIter != candidateComposition.end()) {
-            if (!compositionIter->isOptional_) {
-                // Exact feature ids must consume every remaining required part
-                // of the composition. Only optional tail fields may be omitted.
-                return false;
-            }
-            ++compositionIter;
-        }
-    }
-
-    return true;
-}
-
-bool IdPart::validate(std::variant<int64_t, std::string>& val, std::string* error) const
-{
-    if (std::holds_alternative<std::string>(val)) {
-        auto& strVal = std::get<std::string>(val);
-        auto result = std::variant<int64_t, std::string_view>(strVal);
-        auto resultBool = validate(result, error);
-        // Numeric id parts accept string input during parsing, but normalize to
-        // integers once validation succeeds.
-        if (std::holds_alternative<int64_t>(result)) {
-            val = std::get<int64_t>(result);
-        }
-        return resultBool;
-    }
-    auto result = std::variant<int64_t, std::string_view>(std::get<int64_t>(val));
-    return validate(result, error);
-}
-
-bool IdPart::validate(std::variant<int64_t, std::string_view>& val, std::string* error) const
-{
-    // U64 nodes deliberately project through simfil's signed scalar storage.
-    // Decimal transport still parses the full unsigned domain without overflow.
-    if (datatype_ == IdPartDataType::U64) {
-        if (auto text = std::get_if<std::string_view>(&val)) {
-            auto parsed = from_chars<uint64_t>(*text);
-            if (!parsed) {
-                if (error)
-                    *error = "Expected an unsigned 64-bit decimal ID.";
-                return false;
-            }
-            val = std::bit_cast<int64_t>(*parsed);
-        }
-        return true;
-    }
-    std::optional<int64_t> intVal;
-    if (std::holds_alternative<std::string_view>(val)) {
-        intVal = from_chars<int64_t>(std::get<std::string_view>(val));
-    }
-    else {
-        intVal = std::get<int64_t>(val);
-    }
-
-    auto expectInteger = [this, &error, &intVal, &val](auto const minVal, auto const maxVal) -> bool {
-        if (!intVal) {
-            if (error)
-                *error = fmt::format(
-                    "Value '{}' for {} is not an integer!",
-                    std::get<std::string_view>(val),
-                    idPartLabel_);
-            return false;
-        }
-        if (intVal < minVal) {
-            if (error)
-                *error = fmt::format("Value {} for {} is smaller than allowed ({}).", *intVal, idPartLabel_, minVal);
-            return false;
-        }
-        if (intVal > maxVal) {
-            if (error)
-                *error = fmt::format("Value {} for {} is larger than allowed ({}).", *intVal, idPartLabel_, maxVal);
-            return false;
-        }
-        val = *intVal;
-        return true;
-    };
-
-    auto expectString = [this, &error, &val](auto const& validator) -> bool {
-        if (!std::holds_alternative<std::string_view>(val)) {
-            if (error)
-                *error = fmt::format(
-                    "Value for {} must be a string!",
-                    idPartLabel_);
-            return false;
-        }
-        return validator(std::get<std::string_view>(val), error);
-    };
-
-    auto expectUuid128 = [&expectString]() -> bool {
-        return expectString([](auto const& strVal, auto error){
-            // UUID128 ids are stored as the mapget-specific 16-character token,
-            // not a hyphenated RFC 4122 string.
-            if (strVal.size() != 16) {
-                if (error)
-                    *error = fmt::format("Value for {} must have 16 characters!", strVal);
-                return false;
-            }
-            return true;
-        });
-    };
-
-    switch (datatype_) {
-    case IdPartDataType::I32:
-        return expectInteger(INT32_MIN, INT32_MAX);
-    case IdPartDataType::U32:
-        return expectInteger(0, UINT32_MAX);
-    case IdPartDataType::U64:
-        return expectInteger(0, UINT64_MAX);
-    case IdPartDataType::I64:
-        return expectInteger(INT64_MIN, INT64_MAX);
-    case IdPartDataType::UUID128:
-        return expectUuid128();
-    case IdPartDataType::STR:
-        return expectString([](auto s, auto e){return true;});
-    }
-
-    if (error)
-        *error = fmt::format("Part datatype {} is not supported.", static_cast<std::underlying_type_t<IdPartDataType>>(datatype_));
-    return false;
-}
-
 FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
 {
     try {
@@ -520,19 +328,57 @@ FeatureTypeInfo FeatureTypeInfo::fromJson(const nlohmann::json& j)
         }
 
         auto name = j.at("name").get<std::string>();
-        validateIdentifierName("feature type name", name, ".");
-        return {std::move(name), idCompositions};
+        FeatureTypeInfo result{std::move(name), std::move(idCompositions)};
+        result.validate();
+        return result;
     }
     catch (nlohmann::json::out_of_range const& e) {
         throw missing_field(e.what(), "FeatureTypeInfo");
     }
 }
 
+void FeatureTypeInfo::validate() const
+{
+    validateIdentifierName("feature type name", name_, ".");
+    if (name_.empty() || uniqueIdCompositions_.empty() || uniqueIdCompositions_.size() > 256)
+        throw std::invalid_argument("Feature identity requires a name and 1..256 ID compositions.");
+    for (auto const& composition : uniqueIdCompositions_) {
+        if (composition.size() > 16)
+            throw std::invalid_argument("Feature ID composition exceeds 16 parts: " + name_);
+        std::set<std::string_view> names;
+        for (auto const& part : composition) {
+            validateIdentifierName("id-part label", part.idPartLabel_, ".");
+            if (part.idPartLabel_.empty() || !names.insert(part.idPartLabel_).second ||
+                unsigned(part.datatype_) > unsigned(IdPartDataType::STR))
+                throw std::invalid_argument("Invalid or duplicate feature ID part: " + name_);
+        }
+    }
+}
+
+bool FeatureTypeInfo::sameIdentity(FeatureTypeInfo const& other) const
+{
+    return name_ == other.name_ &&
+        std::ranges::equal(
+               uniqueIdCompositions_,
+               other.uniqueIdCompositions_,
+               [](auto const& left, auto const& right)
+               {
+                   return std::ranges::equal(
+                       left,
+                       right,
+                       [](IdPart const& a, IdPart const& b)
+                       {
+                           return a.idPartLabel_ == b.idPartLabel_ && a.datatype_ == b.datatype_ &&
+                               a.isSynthetic_ == b.isSynthetic_ && a.isOptional_ == b.isOptional_;
+                       });
+               });
+}
+
 nlohmann::json FeatureTypeInfo::toJson() const
 {
     std::vector<nlohmann::json> idCompositions;
     for (auto& item : uniqueIdCompositions_) {
-        nlohmann::json idParts;
+        auto idParts = nlohmann::json::array();
         for (auto& part : item) {
             idParts.push_back(part.toJson());
         }
@@ -685,14 +531,6 @@ std::shared_ptr<MapSchema const> LayerInfo::schemaOwner() const
     return schemaOwner_;
 }
 
-std::span<FeatureTypeInfo const> LayerInfo::featureTypes() const
-{
-    auto schema = layerSchema();
-    if (!schema)
-        throw std::logic_error("Layer metadata has no installed MapSchema: " + layerId_);
-    return schema->featureTypeInfos();
-}
-
 void LayerInfo::validateIdentifiers() const
 {
     if (partitionKind_ != PartitionKind::Tile && partitionKind_ != PartitionKind::Object)
@@ -703,24 +541,13 @@ void LayerInfo::validateIdentifiers() const
     if (partitionKind_ == PartitionKind::Tile && tileAssociationLevel_)
         throw std::invalid_argument("Tile layers do not have an object association level.");
     validateIdentifierName("layer id", layerId_);
-    if (!schemaOwner_)
-        return;  // Catalog metadata can be parsed before local schema installation.
-    for (auto const& featureType : featureTypes()) {
-        validateIdentifierName("feature type name", featureType.name_, ".");
-        for (auto const& composition : featureType.uniqueIdCompositions_) {
-            for (auto const& idPart : composition) {
-                validateIdentifierName("id-part label", idPart.idPartLabel_, ".");
-            }
-        }
-    }
 }
 
-FeatureTypeInfo const* LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
+FeatureIdentity LayerInfo::getTypeInfo(const std::string_view& sv, bool throwIfMissing) const
 {
-    auto schema = layerSchema();
-    if (!schema)
+    if (!schemaOwner_)
         throw std::logic_error("Layer metadata has no installed MapSchema: " + layerId_);
-    return schema->getTypeInfo(sv, throwIfMissing);
+    return schemaOwner_->getTypeInfo(sv, throwIfMissing);
 }
 
 std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
@@ -732,29 +559,11 @@ std::optional<uint8_t> LayerInfo::matchingFeatureIdCompositionIndex(
     if (validateForNewFeature && !layerSchema()->producesFeatureType(typeId))
         return std::nullopt;
 
-    for (uint32_t compositionIndex = 0;
-         compositionIndex < typeInfo->uniqueIdCompositions_.size();
-         ++compositionIndex) {
-        auto const& candidateComposition = typeInfo->uniqueIdCompositions_[compositionIndex];
-        if (IdPart::idPartsMatchComposition(
-            candidateComposition,
-            0,
-            featureIdParts,
-            featureIdParts.size(),
-            true))
-        {
-            return static_cast<uint8_t>(std::min<uint32_t>(compositionIndex, 255));
-        }
-
-        // References may use alternative ID compositions,
-        // but the feature itself must always use the first (primary) one.
-        if (validateForNewFeature)
-            // Once the primary composition failed, later alternatives are not
-            // considered for concrete feature creation.
-            return std::nullopt;
-    }
-
-    return std::nullopt;
+    return typeInfo.matchingCompositionIndex(
+        featureIdParts,
+        validateForNewFeature ?
+            FeatureIdentity::MatchMode::PrimaryOnly :
+            FeatureIdentity::MatchMode::AnyComposition);
 }
 
 bool LayerInfo::validFeatureId(

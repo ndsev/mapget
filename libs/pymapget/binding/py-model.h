@@ -73,14 +73,14 @@ struct BoundModelNodeBase : public BoundModelNode
             geometry, feature ids, subset entries, and other typed nodes.
         )pbdoc")
             .def_property_readonly(
-                "schema_reference",
+                "schema_type",
                 [](BoundModelNode& self)
                 {
                     auto node = self.node();
-                    return node ? node->schemaReference() : simfil::SchemaReference{};
+                    return node ? node->schemaType().retain() : simfil::SchemaType{};
                 },
                 R"pbdoc(
-                Return an explicit, owner-retaining SchemaReference for this node.
+                Return an explicit, owner-retaining SchemaType for this node.
                 Unqualified scalar leaves may be described only by their parent edge;
                 a detached leaf cannot recover that context. Empty means unknown.
                 Ordinary JSON export keeps qualified primitive values primitive.
