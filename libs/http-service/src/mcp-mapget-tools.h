@@ -62,7 +62,7 @@ public:
      * Stop admission and block until calls/help refresh finish. Invoke before
      * destroying the service, and outside its workers or completion callbacks.
      */
-    void stop();
+    void stop() noexcept;
 
 private:
     class Call;

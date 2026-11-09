@@ -12,6 +12,7 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <future>
+#include <thread>
 
 using namespace mapget;
 using NativeJson = nlohmann::json;
@@ -1278,6 +1279,43 @@ TEST_CASE(
     release->set_value();
     REQUIRE(future.wait_for(5s) == std::future_status::ready);
     CHECK(future.get()["result"]["complete"] == false);
+}
+
+TEST_CASE("Native shutdown cancels every queued call and drains throwing callbacks", "[mcp-native]")
+{
+    NativeFixture fixture;
+    static_assert(noexcept(fixture.tools->stop()));
+    auto release = std::make_shared<std::promise<void>>();
+    auto gate = release->get_future().share();
+    REQUIRE(fixture.service.scheduleTask([gate](bool admitted) {
+        if (admitted)
+            gate.wait();
+    }));
+    std::atomic_size_t completed{0};
+    auto callback = [&completed](NativeJson) {
+        ++completed;
+        throw std::runtime_error("Transport closed during shutdown");
+    };
+    auto first = fixture.tools->invoke(
+        fixture.principal, "mapget_list_sources", NativeJson::object(), callback);
+    auto second = fixture.tools->invoke(
+        fixture.principal, "mapget_list_sources", NativeJson::object(), callback);
+    auto stopped = std::async(std::launch::async, [&fixture] { fixture.tools->stop(); });
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (first && second && (!first->load() || !second->load()) &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(1ms);
+    bool bothCancelled = first && second && first->load() && second->load();
+    bool waitingForWorkers = stopped.wait_for(0ms) == std::future_status::timeout;
+    // Release the worker even when an assertion fails, so fixture teardown cannot hang.
+    release->set_value();
+    CHECK(bothCancelled);
+    CHECK(waitingForWorkers);
+    REQUIRE(stopped.wait_for(5s) == std::future_status::ready);
+    REQUIRE_NOTHROW(stopped.get());
+    CHECK(completed == 2);
+    REQUIRE_NOTHROW(fixture.tools->stop());
+    CHECK(fixture.call("mapget_list_sources")["error"]["code"] == "busy");
 }
 
 TEST_CASE("Native object extraction and value budgets preserve exact identity", "[mcp-native]")

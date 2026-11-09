@@ -36,7 +36,7 @@ public:
     void run(bool admitted);
 
     /** Stop a queued/running read and detach a child request without blocking the event loop. */
-    void cancel();
+    void cancel() noexcept;
 
 private:
     class Query;

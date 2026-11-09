@@ -201,20 +201,31 @@ void McpMapgetTools::cancel(std::shared_ptr<std::atomic_bool> const& token)
         call->cancel();
 }
 
-void McpMapgetTools::stop()
+void McpMapgetTools::stop() noexcept
 {
     std::unique_lock lock(mutex_);
     stopped_ = true;
     auto continuations = std::move(continuations_);
-    auto calls = calls_;
-
     // Cancellation can submit service work and complete callbacks; release the
-    // admission lock before invoking it, then wait for retirement to drain owners.
+    // admission lock before invoking it. Do not allocate a snapshot of calls
+    // during destructor-driven shutdown: cancel marks each retained call before
+    // submitting its abort, so already-cancelled calls can simply drain.
     lock.unlock();
     continuations.clear();
-    for (auto const& call : calls)
-        call->cancel();
     lock.lock();
+    for (;;) {
+        auto pending = std::find_if(calls_.begin(), calls_.end(), [](auto const& call) {
+            return !call->cancelled->load();
+        });
+        if (pending == calls_.end())
+            break;
+        auto call = *pending;
+        lock.unlock();
+        call->cancel();
+        // Release query/tile storage outside the admission lock as well.
+        call.reset();
+        lock.lock();
+    }
     idle_.wait(lock, [this] { return calls_.empty() && !helpRefreshPending_; });
 }
 

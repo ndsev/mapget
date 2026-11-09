@@ -45,11 +45,18 @@ McpMapgetTools::Call::
 
 McpMapgetTools::Call::~Call() = default;
 
-void McpMapgetTools::Call::cancel()
+void McpMapgetTools::Call::cancel() noexcept
 {
     cancelled->store(true);
-    if (extraction_)
-        extraction_->cancel();
+    try {
+        if (extraction_)
+            extraction_->cancel();
+    }
+    catch (...) {
+        // Scheduling abort can allocate. If it fails, the published cancellation
+        // still stops evaluation when the existing load returns; stop() must wait
+        // for that retirement rather than destroy an owner used by its callback.
+    }
 }
 
 bool McpMapgetTools::Call::step(size_t count)
