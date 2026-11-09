@@ -197,6 +197,10 @@ endif()
             "-DSOURCE_DIR=<SOURCE_DIR>"
             "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/drogon-async-close.patch"
             -P "${CMAKE_CURRENT_LIST_DIR}/apply-dependency-patch.cmake"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DSOURCE_DIR=<SOURCE_DIR>"
+            "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/drogon-websocket-fragments.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/apply-dependency-patch.cmake"
         OPTIONS
             "BUILD_CTL OFF"
             "BUILD_EXAMPLES OFF"
