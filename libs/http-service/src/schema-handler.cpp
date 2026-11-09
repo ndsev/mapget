@@ -10,7 +10,10 @@ namespace mapget
 namespace
 {
 
-/** Return a caller-facing schema error as non-cacheable plain text. */
+/** Return a caller-facing schema error as non-cacheable plain text.
+ * Callers must supply public messages, without revealing token existence or
+ * backend exception details; this helper does not sanitize the supplied text.
+ */
 drogon::HttpResponsePtr schemaError(drogon::HttpStatusCode status, std::string message)
 {
     auto response = drogon::HttpResponse::newHttpResponse();
@@ -208,15 +211,17 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     return;
                 }
 
-                // Schema descriptors expose type metadata and references to child
-                // types, allowing the browser to navigate shared or cyclic graphs.
+                // Traverse schema metadata, not data edges. Canonical descriptors expose
+                // references to child types so the browser can navigate shared or
+                // cyclic graphs without expanding every referenced type here.
                 body = {
                     {"mapSchemaId", artifact},
                     {"typeId", id},
                     {"descriptor", nlohmann::json::object()}};
 
-                // Add mapget's layer-specific feature identity/relation contracts.
-                // Their discovery and allocation share the descriptor's limits.
+                // Identity/relation contracts belong to mapget's layer, not generic
+                // simfil types. Their discovery and allocation share the descriptor's
+                // limits.
                 for (auto const& name : owner->layerNames()) {
                     checkpoint();
                     auto layer = owner->layer(name);

@@ -1192,9 +1192,10 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
 
         if (!startReached && start <= coveredLength) {
             innerIndexStart = i;
-            // Distances select the segment on the sphere; interpolate its stored
-            // lon/lat/elevation coordinates linearly. Accuracy depends on segment
-            // length and latitude, so this is not an exact geodesic interpolation.
+            // We use a fast linear calculation instead of proper geodesic trigonometry:
+            // distances select the segment on the sphere, then its stored lon/lat/elevation
+            // coordinates are interpolated linearly. Accuracy depends on segment length
+            // and latitude; this is not an exact geodesic interpolation.
             auto lerp = static_cast<double>(dist - (coveredLength - start)) /
                 static_cast<double>(dist);
             startPos = pos + (posNext - pos) * lerp;

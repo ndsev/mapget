@@ -161,8 +161,11 @@ public:
     struct Reader
     {
         /**
-         * Resolve installed LayerInfo by (mapId, layerId) and dictionaries by
-         * stringPoolId, then deliver decoded layers synchronously from read().
+         * Construct a Reader with a callback for parsed result layers, a dictionary
+         * cache and a provider of installed LayerInfo by (mapId, layerId).
+         * Resolve dictionaries by stringPoolId and deliver decoded layers
+         * synchronously from read().
+         *
          * schemas resolves exact installed artifacts for nested model bindings;
          * it must not fetch missing schemas. An omitted dictionary cache creates
          * a reader-local cache. Control-message string_views last only for the
@@ -230,10 +233,12 @@ public:
     struct Writer
     {
         /**
-         * Deliver complete framed messages synchronously through onMessage.
-         * The referenced offset map must outlive the writer and records the
-         * highest dictionary ID already sent for each stringPoolId. Writers
-         * sharing it must serialize access and target the same receiver state.
+         * Construct a Writer with a callback for serialized messages and a reference
+         * to the sent-string offset map. Complete framed messages are delivered
+         * synchronously through onMessage; dictionary updates advance the offsets.
+         * The map must outlive the writer and records the highest dictionary ID already
+         * sent for each stringPoolId. Writers sharing it must serialize access and
+         * target the same receiver state.
          *
          * Setting differentialStringUpdates=false is necessary when using
          * the Writer with a Cache database, because it is not desirable

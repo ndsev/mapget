@@ -19,6 +19,9 @@ namespace
 {
 model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model, uint32_t index)
 {
+    // The root column must contain only feature references, in feature-column order.
+    // Procedural views use the same index for both; newFeature() maintains this invariant.
+    // Protected ModelPool inheritance could help prevent callers from adding other roots.
     auto rootResult = model.root(index);
     if (!rootResult || !*rootResult) {
         return {};

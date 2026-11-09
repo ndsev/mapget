@@ -141,7 +141,9 @@ public:
     [[nodiscard]] double length() const;
 
     /**
-     * Project position bounds onto a line, then copy the intervening vertices.
+     * Return geometric points on a Polyline within the defined position bounds.
+     * Project those bounds onto the line, then copy the intervening vertices.
+     *
      * Requires at least two points and an in-segment x/y projection for each
      * bound. Among eligible segments, selection compares distance to each start
      * vertex, not distance to the segment; coordinates are interpolated linearly.
@@ -158,6 +160,9 @@ public:
      * swapped and clamped to [0, length()]. An omitted end returns one point.
      * Empty geometry returns no points; a single/zero-length path returns its
      * first point. Segment endpoints use linear coordinate interpolation.
+     *
+     * @param start Beginning of the bounded range, in metres.
+     * @param end Optional end of the range, in metres; omission returns one point at start.
      */
     [[nodiscard]] std::vector<Point> pointsFromLengthBound(double start, std::optional<double> end) const;
 

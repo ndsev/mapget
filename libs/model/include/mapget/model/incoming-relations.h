@@ -47,7 +47,8 @@ struct IncomingRelationCollection
     [[nodiscard]] static IncomingRelationCollection fromJson(nlohmann::json const& json);
 };
 
-/** Match a primary-ID reference within the target model; secondary IDs require locate resolution.
+/** Match a primary-ID reference within the target model, without loading data.
+ * Secondary IDs require locate resolution.
  */
 [[nodiscard]] bool relationTargetsFeature(Relation const& relation, Feature const& target);
 

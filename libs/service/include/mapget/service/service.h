@@ -579,7 +579,8 @@ public:
     void remove(DataSource::Ptr const& dataSource);
 
     /**
-     * Admit a bundle of partition requests against the current source registrations.
+     * Request map data for a bundle of tile or object partitions, admitting it
+     * against the current source registrations.
      * A missing or unauthorized member rejects the bundle and aborts its otherwise
      * open siblings. False reports rejected admission, including shutdown/reload.
      * Configure each request once and submit it to only one service.
@@ -624,6 +625,7 @@ public:
         std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
+     * Locate a feature matching the request's typeId and idParts.
      * Ask authorized providers for cheap candidates, load those partitions through
      * the normal scheduler, then evaluate their selectors to return canonical IDs
      * and owning partition keys. Results are deduplicated and sorted. This call

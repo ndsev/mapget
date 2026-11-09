@@ -142,8 +142,9 @@ public:
     installSchemaResolver(simfil::ModelPool& model, SchemaResolveFun const& schemas = {}) const;
 
     /**
-     * Spatial tile identity; access/set on an object partition throws. This
-     * selects the tile container, not a bound on every contained geometry.
+     * Get or set the spatial tile identity; access on an object partition throws.
+     * This identifies the rough geographic extent of the tile data, not a strict
+     * bound on every contained geometry.
      */
     [[nodiscard]] TileId tileId() const;
     void setTileId(const TileId& id);

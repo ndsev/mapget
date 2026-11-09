@@ -25,7 +25,9 @@ std::string encodeStreamMessage(TileLayerStream::MessageType type, std::string_v
     return message;
 }
 
-/** Preserve the transport's existing substring test; q=0 is not interpreted here. */
+/** Check for gzip advertisement using the transport's existing substring test;
+ * q=0 is not interpreted here.
+ */
 bool containsGzip(std::string_view acceptEncoding)
 {
     return !acceptEncoding.empty() && acceptEncoding.find("gzip") != std::string_view::npos;

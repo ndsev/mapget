@@ -20,7 +20,8 @@ using namespace mapget::gridsource;
 namespace
 {
 
-// Unknown names retain the caller's default; generic generator options are permissive.
+// Helper to parse an enum from a string. Unknown names retain the caller's
+// default; generic generator options are permissive.
 template <typename T>
 T parseEnum(const std::string& str, const std::map<std::string, T>& mapping, T defaultValue)
 {
@@ -28,7 +29,8 @@ T parseEnum(const std::string& str, const std::map<std::string, T>& mapping, T d
     return (it != mapping.end()) ? it->second : defaultValue;
 }
 
-// Callers supply a non-empty placeholder; replacement advances past the inserted text.
+// String replacement helper. Callers supply a non-empty placeholder;
+// replacement advances past the inserted text.
 std::string replaceAll(std::string str, const std::string& from, const std::string& to)
 {
     size_t pos = 0;
@@ -549,8 +551,9 @@ Config Config::fromYAML(const YAML::Node& node)
 TileSpatialContext::TileSpatialContext(TileId tid, double gridSize)
     : tileId(tid), cellSize(gridSize)
 {
-    // Derive topology from the tile ID. std::hash and truncation do not promise
-    // collision-free seeds or identical output across standard-library implementations.
+    // Seed from the whole tile ID so tiles at the same latitude do not all start
+    // with the same input. std::hash and truncation do not promise collision-free
+    // seeds or identical output across standard-library implementations.
     std::hash<uint64_t> hasher;
     seed = static_cast<uint32_t>(hasher(tid.value()));
 }
@@ -1218,8 +1221,9 @@ void GridDataSource::generateRoadGrid(
     const LayerConfig& config,
     PartitionFeatureLayer::Ptr const& tile)
 {
-    // Share one completed road topology per context. call_once retries on an
-    // exception, but this in-place builder does not roll back partial vector appends.
+    // Use std::call_once to synchronize one-time road generation for this context.
+    // It retries after an exception, but the in-place builder does not roll back
+    // partial vector appends.
     std::call_once(
         ctx.gridGeneratedOnce,
         [&]()

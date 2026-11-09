@@ -278,7 +278,9 @@ struct HttpClient::Impl
         return result;
     }
 
-    /** Look up a schema installed during catalog loading; return null for an unknown ID. */
+    /** Look up an installed schema; return null for an unknown ID.
+     * Binary readers only consult installed owners: parsing must never trigger network I/O.
+     */
     std::shared_ptr<MapSchema const> resolveSchema(std::string_view id) const
     {
         auto found = schemas_.find(std::string(id));
@@ -442,7 +444,8 @@ HttpClient::filter(FeatureLayerFilterTilesRequest::Ptr const& request)
         [this, request](auto&& mapId, auto&& layerId)
         {
             // sourceId selects the requested root's owner. Related snapshots can
-            // come from another map/layer and use that layer's own source lookup.
+            // belong to another map/layer: never apply the root's selector there.
+            // Use that layer's own source lookup instead.
             return impl_->resolve(
                 mapId,
                 layerId,

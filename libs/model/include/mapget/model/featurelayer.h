@@ -47,10 +47,12 @@ struct FeatureLayerSelector;
 class SimfilExpressionCache;
 
 /**
- * Owns the complete features and model storage of one tile or object partition.
+ * The PartitionFeatureLayer class represents a specific map layer within a tile or
+ * object partition. It is a container for complete map features and their model storage.
+ * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
+ *
  * Every returned node address belongs to this layer; retain the layer or its
  * model_ptr views while using feature, geometry or attribute nodes.
- * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
  */
 class PartitionFeatureLayer : public PartitionFeatureModelLayerBase
 {
@@ -113,7 +115,8 @@ public:
     /**
      * This constructor initializes a new PartitionFeatureLayer instance.
      * The partition kind must match layerInfo, whose finalized schema is retained.
-     * @param tileId Tagged tile or object partition owning the features.
+     * @param tileId Tagged tile or object partition owning the features. For a spatial
+     *  tile, features should lie roughly within its area; this is not a strict geometry bound.
      * @param stringPoolId Producer dictionary namespace, distinct from catalog sourceId.
      * @param mapId ID of the map which the layer belongs to.
      * @param layerInfo Information about the map layer this feature is associated with.
@@ -240,7 +243,8 @@ public:
         const model_ptr<Geometry>& base) override;
 
     /**
-     * Copy references whose string IDs already belong to this layer's dictionary.
+     * Create a new list of qualified source-data references by copying the supplied
+     * items. Their string IDs must already belong to this layer's dictionary.
      * The compact address supports at most 15 entries and a 20-bit start index;
      * callers must keep both limits when appending to the shared reference arena.
      */
@@ -366,7 +370,7 @@ public:
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
 
-    /** Find by primary identity, ignoring optional ID parts. Parts must follow
+    /** Find a feature by primary identity, ignoring optional ID parts. Parts must follow
      * composition order and include the layer prefix. The string overload returns
      * null on parse failure; an unknown explicit type may throw during lookup.
      */
@@ -414,9 +418,14 @@ public:
     };
 
     /**
-     * Evaluate on the supplied node using cached compilation. anyMode wraps the
-     * query in any(...); autoWildcard enables schema shorthand only when the
-     * node has a schema. This layer serializes access to its shared evaluator.
+     * Evaluate a potentially cached simfil query on the supplied model node.
+     * This layer serializes access to its shared evaluator.
+     *
+     * @param query Simfil query.
+     * @param node Model root node to query.
+     * @param anyMode Auto-wrap the expression in any(...).
+     * @param autoWildcard Compatibility flag for schema-backed shorthand rewrites.
+     *  It has no effect without a node schema.
      */
     tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> evaluate(
         std::string_view query,

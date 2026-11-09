@@ -39,12 +39,10 @@ struct DataSourceServer::Impl
         cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
-    /** Shared encoding/cache policy with the public endpoint; authorization stays at each boundary.
-     */
+    /** Shared encoding/cache policy with the public endpoint; authorization stays at each boundary. */
     detail::SchemaResponseCache schemaResponses_;
 
-    /** Bound queued requests as well as thread count; an idle datasource starts no schema worker.
-     */
+    /** Bound queued requests as well as thread count; an idle datasource starts no schema worker. */
     std::atomic_size_t schemaRequests_{0};
     std::mutex schemaTasksMutex_;
     std::unique_ptr<trantor::ConcurrentTaskQueue> schemaTasks_;

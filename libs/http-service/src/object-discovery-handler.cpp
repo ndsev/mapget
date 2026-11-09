@@ -15,7 +15,9 @@ public:
     {
     }
 
-    /** Publish a result; callers must complete each slot exactly once. */
+    /** Publish a result; callers must complete each slot exactly once.
+     * Datasource discovery itself runs on service workers, off the HTTP event loop.
+     */
     void complete(size_t index, ObjectDiscoveryRequest const& request, ObjectDiscoveryResult result)
     {
         auto item = result.toJson();

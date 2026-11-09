@@ -15,8 +15,8 @@ namespace mapget::detail
 {
 
 /**
- * Locate the module containing anchor, including a Python extension.
- * Fall back to the process working directory when the platform lookup fails.
+ * Locate resources beside the module containing anchor, including a Python extension.
+ * Return that module's directory, or the process working directory if lookup fails.
  */
 inline std::filesystem::path moduleDirectory(void const* anchor)
 {

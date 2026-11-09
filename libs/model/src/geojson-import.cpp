@@ -183,7 +183,8 @@ void validateIdPartValue(FeatureIdentity::Part idPart, std::variant<int64_t, std
     return json.is_object() && json.size() == 1 && json.contains("$mapgetRelation");
 }
 
-/** Recursively check whether generic JSON import needs mapget-specific relation-reference handling.
+/** Recursively check whether generic JSON import needs mapget-specific
+ * relation-reference handling.
  */
 [[nodiscard]] bool containsRelationReferenceJson(nlohmann::json const& json)
 {
@@ -937,14 +938,17 @@ struct DeferredAttributeValidity
     nlohmann::json validityJson_;
 };
 
-/** Defer relations until host geometry and shared AttrPointSequence definitions exist. */
+/** Defer relation import until feature IDs, host geometry and shared
+ * AttrPointSequence definitions exist.
+ */
 struct DeferredRelation
 {
     model_ptr<Feature> feature_;
     nlohmann::json relationJson_;
 };
 
-/** Defer property import until top-level relations are available for `$mapgetRelation` references.
+/** Defer property import until top-level relations are available for
+ * `$mapgetRelation` references.
  */
 struct DeferredProperties
 {
@@ -1473,8 +1477,9 @@ void importGeoJson(
     // validities resolve their compact sequence references.
     auto attrPointSequences = importAttrPointSequences(tile, geoJson);
 
-    // Relation validities can now resolve shared sequence definitions. Their
-    // feature-local ordinals must exist before properties import relation tokens.
+    // All target IDs are now present, and relation validities can resolve shared
+    // sequence definitions. Feature-local relation ordinals must exist before properties
+    // import relation tokens.
     for (auto& deferred : deferredRelations) {
         if (!deferred.relationJson_.is_array()) {
             raiseImport("Feature relations must be encoded as an array.");

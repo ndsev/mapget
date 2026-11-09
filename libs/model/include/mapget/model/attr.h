@@ -11,8 +11,9 @@ namespace mapget
 class Geometry;
 
 /**
- * Named attribute stored in an AttributeLayer, with optional Validity and
- * source-data references plus producer-defined payload fields.
+ * Represents a named feature attribute which belongs to an AttributeLayer.
+ * It may reference several Validity objects and carry source-data references
+ * in addition to arbitrary producer-defined payload fields.
  */
 class Attribute : public simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>
 {

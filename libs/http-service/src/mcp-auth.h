@@ -13,8 +13,10 @@ namespace mapget::detail
 {
 
 /**
- * Own MCP trust configuration and a bounded set of issuer keys. The server
- * serializes key refresh and verification on its control loop; this class adds no lock.
+ * Own MCP trust configuration and a bounded set of issuer keys. Permission checks
+ * use configured claim/value mappings, without built-in provider-specific role rules.
+ * The server serializes key refresh and verification on its control loop;
+ * this class adds no lock.
  */
 class McpAuthentication
 {

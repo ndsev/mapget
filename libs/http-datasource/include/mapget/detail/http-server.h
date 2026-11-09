@@ -40,9 +40,11 @@ public:
      *
      * @param interfaceAddr Network interface to bind to.
      * @param port Port which the HTTP server shall bind to.
-     *  With port=0, a random free port will be chosen. On startup,
-     *  the chosen port is available from port(). The startup message goes to the
-     *  logger unless the derived server enables printPortToStdOut().
+     *  With port=0, the OS chooses an available port. On startup,
+     *  the chosen port is available from port(). The message
+     *  "====== Running on port <port> ======" goes to the logger unless the
+     *  derived server enables printPortToStdOut(). RemoteDataSourceProcess reads
+     *  this message from stdout to connect to its child server.
      * @param waitMs Number of milliseconds to wait for the server to start up.
      */
     void go(std::string const& interfaceAddr = "0.0.0.0",

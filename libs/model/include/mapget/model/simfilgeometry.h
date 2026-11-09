@@ -92,8 +92,9 @@ struct Polygon
 
 /** Convert geometry nodes into transient 2D query values, discarding elevation.
  * Reads either the input's geometry member or the input itself, and expands one
- * GeometryCollection level. Multi geometries use result emissions rather than a
- * separate Multi type; this is not a lossless GeoJSON import/export interface.
+ * GeometryCollection level. There is no Multi* struct: geo() returns Multi*
+ * geometries as multiple result emissions. This is not a lossless GeoJSON
+ * import/export interface.
  */
 class GeoFn : public simfil::Function
 {

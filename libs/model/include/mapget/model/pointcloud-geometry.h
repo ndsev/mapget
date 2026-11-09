@@ -68,7 +68,8 @@ struct PointCloudGeometrySample
         });
     }
 
-    /** Copy at most maxPoints records; zero selects none, and sourceCount reports all candidates.
+    /** Retain a sample for backend subset materialization, copying at most maxPoints
+     * records. Zero selects none; sourceCount reports all candidates.
      */
     static PointCloudGeometrySample build(
         model_ptr<GeometryCollection> const& source,

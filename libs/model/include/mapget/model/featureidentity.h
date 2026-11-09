@@ -16,9 +16,12 @@ namespace mapget
 class MapSchema;
 
 /**
- * Ordered feature-ID parts. KeyValuePairs owns its strings; KeyValueViewPairs
- * borrows them from the caller. Both keep up to 16 pairs inline, matching the
- * maximum declared ID composition; larger temporary inputs may allocate.
+ * Ordered feature-ID parts, with one name and an integer-or-string value per pair.
+ * KeyValuePairs owns std::string keys/values; KeyValueViewPairs borrows string_views
+ * from the caller. Integer values use int64_t in both forms.
+ *
+ * Using sfl::small_vector instead of std::vector keeps up to 16 pairs inline,
+ * matching the maximum declared ID composition. Larger temporary inputs may allocate.
  */
 using KeyValueViewPairs =
     sfl::small_vector<std::pair<std::string_view, std::variant<int64_t, std::string_view>>, 16>;
@@ -95,13 +98,36 @@ struct FeatureTypeInfo
     [[nodiscard]] bool sameIdentity(FeatureTypeInfo const& other) const;
 
     /**
-     * Parse and validate a legacy identity declaration, for example:
-     * {"name":"Road","uniqueIdCompositions":[[{"partId":"id","datatype":"I64"}]]}
-     * The first composition identifies concrete features; later compositions
-     * are alternatives for references. Missing datatype defaults to I64;
-     * description defaults to empty, isSynthetic and isOptional to false.
-     * Requires 1..256 compositions, at most 16 distinct named parts each.
-     * Missing fields, invalid names/types or exceeded limits throw.
+     * Deserialize and validate a legacy FeatureTypeInfo identity declaration.
+     * For example:
+     *
+     * @code{.json}
+     * {
+     *   "name": "Road",
+     *   "uniqueIdCompositions": [
+     *     [
+     *       {
+     *         "partId": "id",
+     *         "description": "Road identifier",
+     *         "datatype": "I64",
+     *         "isSynthetic": false,
+     *         "isOptional": false
+     *       }
+     *     ]
+     *   ]
+     * }
+     * @endcode
+     *
+     * name, uniqueIdCompositions and each partId are required. The legacy key is
+     * spelled datatype, not dataType; it accepts an IdPartDataType name and defaults
+     * to I64. description defaults to empty; isSynthetic and isOptional default to false.
+     *
+     * The first composition identifies concrete features; later compositions are
+     * alternatives for references. Requires 1..256 compositions and at most 16 distinct
+     * named parts each. Missing fields, invalid names/types or exceeded limits throw.
+     *
+     * @param j The JSON to deserialize.
+     * @return The deserialized FeatureTypeInfo object.
      */
     static FeatureTypeInfo fromJson(const nlohmann::json& j);
 

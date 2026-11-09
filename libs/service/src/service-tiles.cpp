@@ -668,7 +668,8 @@ void LayerTilesRequest::notifyStatus()
 void LayerTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
-    // Empty requests can already be terminal before any notifier runs.
+    // Check before waiting to avoid an indefinite block: empty requests can
+    // already be terminal before any notifier runs.
     if (!isDone()) {
         statusConditionVariable_.wait(doneLock, [this] { return isDone(); });
     }

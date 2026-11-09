@@ -11,8 +11,9 @@ namespace mapget
 
 /**
  * Address within one source-data layer. BitRange layers interpret it as an
- * absolute bit offset and bit length; Unknown-format layers treat u64() as an
- * opaque identity. Layer/map/partition context must accompany an address.
+ * absolute bit offset and bit length, for example the position and length of
+ * data within a zserio buffer. Unknown-format layers treat u64() as an opaque
+ * identity. Layer/map/partition context must accompany an address.
  */
 struct SourceDataAddress
 {

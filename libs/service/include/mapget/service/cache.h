@@ -45,7 +45,8 @@ public:
     void putTileLayer(PartitionLayer::Ptr const& l);
 
     /**
-     * Decode using the supplied datasource metadata and the cached string pool.
+     * Retrieve a cached PartitionLayer for a DataSource, decoding it with the
+     * supplied datasource metadata and cached string pool.
      * Missing, unreadable and expired blobs return an empty tile; only expiry
      * sets expiredAt so the service can notify the datasource before reloading.
      */
@@ -59,7 +60,9 @@ public:
      */
     void invalidateMap(std::string_view mapId);
 
-    /** Reuse the source dictionary in memory, loading its persisted blob on first access. */
+    /** Override TileLayerStream::StringPoolCache::getStringPool() to reuse the source
+     * dictionary in memory, loading its persisted blob on first access.
+     */
     std::shared_ptr<StringPool> getStringPool(std::string_view const&) override;
 
     // You need to implement these methods:
@@ -97,7 +100,9 @@ public:
     virtual nlohmann::json getStatistics() const;
 
 protected:
-    /** Highest persisted dictionary ID, or zero when no dictionary was written yet. */
+    /** Used by DataSource::cachedStringPoolOffset(): return the highest persisted
+     * dictionary ID, or zero when no dictionary was written yet.
+     */
     simfil::StringId cachedStringPoolOffset(std::string const& stringPoolId);
 
     // Mutex for stringPoolOffsets_

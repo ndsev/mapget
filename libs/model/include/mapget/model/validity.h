@@ -173,15 +173,17 @@ public:
     [[nodiscard]] std::optional<std::pair<Point, Point>> offsetRange() const;
 
     /**
-     * Bind a logical position in a sequence owned by this layer; invalid ownership
-     * or an out-of-range index throws. The getter is null for other validity kinds.
+     * Bind one logical position in a shared interwoven AttrPointSequence owned
+     * by this layer; invalid ownership or an out-of-range index throws.
+     * The getter is null for other validity kinds.
      */
     void setAttrPointIndex(model_ptr<AttrPointSequence> const& sequence, uint32_t index);
     [[nodiscard]] model_ptr<AttrPointIndex> attrPointIndex() const;
 
     /**
-     * Bind an inclusive range in a sequence owned by this layer. Requires
-     * start <= end < positionCount(); invalid ownership or indices throw.
+     * Bind an inclusive logical range in a shared interwoven AttrPointSequence
+     * owned by this layer. Requires start <= end < positionCount();
+     * invalid ownership or indices throw.
      */
     void setAttrPointIndexRange(
         model_ptr<AttrPointSequence> const& sequence,

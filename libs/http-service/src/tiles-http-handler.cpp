@@ -273,7 +273,9 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requests_.push_back(std::move(request));
     }
 
-    /** Choose one exact MIME value (or responseType alias); Accept lists/quality weights are not parsed. */
+    /** Choose the stream payload format from Accept or a responseType override.
+     * Accept must be one exact MIME value; lists and quality weights are not parsed.
+     */
     [[nodiscard]] bool setResponseType(
         std::string_view acceptHeader,
         std::optional<std::string> responseType,

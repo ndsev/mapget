@@ -201,7 +201,9 @@ struct Service::Impl
     /** Register a catalog callback and return its removable subscription ID. */
     uint64_t addSourceCatalogCallback(Service::DataSourceCatalogCallback callback);
 
-    /** Remove future subscription snapshots; an already copied callback may still run. */
+    /** Remove a previously registered catalog callback.
+     * An already copied subscription snapshot may still invoke it.
+     */
     void removeSourceCatalogCallback(uint64_t id);
 };
 

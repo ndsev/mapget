@@ -12,9 +12,12 @@ namespace mapget
 {
 
 /**
- * HTTP adapter for one datasource with fixed, schema-bound metadata. Configure
- * callbacks before go(); callbacks can overlap and must synchronize shared state.
- * The adapter constructs partition models and serializes the data filled by them.
+ * Small server, which implements the data source protocol expected by a mapget server.
+ * Construct it with DataSourceInfo metadata describing the map data it provides.
+ * The metadata is fixed and bound to a finalized schema.
+ *
+ * Configure callbacks before go(); callbacks can overlap and must synchronize shared
+ * state. The adapter constructs partition models and serializes the data they fill.
  */
 class DataSourceServer : public HttpServer
 {

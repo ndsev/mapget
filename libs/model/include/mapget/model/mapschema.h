@@ -116,7 +116,8 @@ public:
     schemaRemap(std::string_view sourceIdentity) const;
 
     /**
-     * Write a finalized artifact with its dictionary, type columns and model payload.
+     * Write the finalized artifact's canonical binary envelope, dictionary,
+     * type columns and ModelPool payload.
      * An unfinished owner or failed write returns an EncodeDecodeError.
      */
     tl::expected<void, simfil::Error> write(std::ostream& output) override;

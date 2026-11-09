@@ -223,6 +223,7 @@ protected:
 
     /**
      * Obtain the internal relation array, creating it on mutable access.
+     * Keep this accessor nonpublic to ensure the array contains only relations.
      * Callers add relations through addRelation so canonical node ownership
      * and feature-local relation indices are checked before insertion.
      */

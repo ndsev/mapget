@@ -402,9 +402,10 @@ std::optional<TransitionSegment> resolveTransitionSegment(
 
     if (accumulatedMeters + 1.0e-6 < kTransitionLegLengthMeters && result.innerToOuter_.size() >= 2)
     {
-        // Preserve the short road, then extend its outer endpoint tangent by
-        // the missing distance. Linear lon/lat interpolation approximates a
-        // ten-metre semantic leg; it is not an exact geodesic extension.
+        // Preserve the complete short road, then extend its outer endpoint tangent
+        // by the missing distance to keep a readable ten-metre semantic leg.
+        // Linear lon/lat interpolation makes this approximate, not an exact
+        // geodesic extension.
         auto const& previous = result.innerToOuter_[result.innerToOuter_.size() - 2];
         auto const& outer = result.innerToOuter_.back();
         auto const tangentMeters = previous.geographicDistanceTo(outer);
@@ -1173,7 +1174,7 @@ SelfContainedGeometry Validity::computeGeometry(
         return applyDirectionToGeometry(geometry->toSelfContained(), direction());
     }
 
-    // Resolve the stored bound interpretation only after selecting its line.
+    // Now resolve OffsetPointValidity or OffsetRangeValidity against the selected line.
     auto offsetType = geometryOffsetType();
     if (offsetType == InvalidOffsetType) {
         if (error) {

@@ -290,8 +290,9 @@ public:
     using PullResultCallback = std::function<void(PullFrameResult)>;
 
     /**
-     * Select a payload/terminal result now or retain a FIFO waiter. Even an
-     * immediately available result is dispatched on Drogon's loop, never inline.
+     * Resolve one /interactive/payload request now or retain a FIFO waiter.
+     * Select a payload or terminal result; even an immediately available result
+     * is dispatched on Drogon's loop, never inline.
      * maxBatchBytes is a whole-frame target and may be exceeded by the first frame.
      */
     void requestNextTileFrameAsync(
@@ -597,7 +598,8 @@ public:
     }
 
     /**
-     * Parse a candidate before taking the session lock, then replace demand and
+     * Reconcile one complete pending-output snapshot.
+     * Parse the candidate before taking the session lock, then replace demand and
      * output ownership under that lock. Service callbacks run after unlock; this
      * sequencing does not provide rollback if allocation or submission throws.
      */
@@ -2280,8 +2282,9 @@ namespace
 }
 
 /**
- * Clamp a stoll-parsed numeric prefix; trailing text is accepted. Missing or
- * unparsable values return defaultValue unchanged, so callers supply a valid default.
+ * Parse and clamp an integer query parameter using stoll; trailing text is accepted.
+ * Missing or unparsable values return defaultValue unchanged, so callers must
+ * supply a valid default.
  */
 [[nodiscard]] int64_t parseClampedInt64Parameter(
     const drogon::HttpRequestPtr& req,
@@ -2492,8 +2495,9 @@ void tilesWsHandleNextRequest(
 }
 
 /**
- * Sample live sessions and relaxed counters for diagnostics. Separate per-session
- * lock acquisitions mean these totals are approximate, not one atomic snapshot.
+ * Build status-data diagnostics for websocket queues and payload pulls by sampling
+ * live sessions and relaxed counters. Separate per-session lock acquisitions
+ * mean these totals are approximate, not one atomic snapshot.
  */
 nlohmann::json tilesWebSocketMetricsSnapshotImpl()
 {

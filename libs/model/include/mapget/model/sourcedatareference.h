@@ -36,8 +36,8 @@ public:
     bool iterate(IterCallback const& cb) const override;
 
     /**
-     * Call fn synchronously for each reference in stored order. The callback
-     * borrows each item only for that invocation; copy values needed afterward.
+     * Call fn synchronously for each SourceDataReferenceItem in stored order.
+     * The callback borrows each item only for that invocation; copy values needed afterward.
      * Exceptions propagate and stop iteration.
      */
     void forEachReference(std::function<void(const SourceDataReferenceItem&)> fn) const;

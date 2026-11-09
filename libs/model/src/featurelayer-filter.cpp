@@ -142,8 +142,9 @@ simfil::Value bindingValue(FeatureLayerFilterBinding const& binding)
 }
 
 /**
- * Encode typed compile-time bindings for the process-local expression cache.
- * Native scalar bytes and size_t lengths make this an in-process identity, not a wire format.
+ * Encode compile-time bindings without conflating types or adjacent names.
+ * These keys identify programs in the process-local expression cache: native scalar
+ * bytes and size_t lengths make this an in-process identity, not a wire format.
  */
 std::string bindingCompileContext(std::map<std::string, FeatureLayerFilterBinding> const& bindings)
 {
@@ -720,6 +721,7 @@ private:
     }
 
     /**
+     * Compile on first use and evaluate one expression in this environment.
      * Bind cached immutable programs to this evaluator's dictionary and environment.
      * Projection limits reject the entire expression result; predicate evaluation uses any mode.
      */
@@ -961,7 +963,9 @@ private:
         size_t channelIndex,
         Channel& channel);
 
-    /** Expand source-local recursive roots, leaving unresolved targets for the service. */
+    /** Expand admitted source-local recursive relation roots into portable target
+     * descriptors, leaving unresolved targets for the service.
+     */
     void collectStoredRelationDescriptors(size_t channelIndex, Channel& channel);
 
     /** Copy one selected attribute validity geometry into the output model. */

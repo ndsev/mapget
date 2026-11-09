@@ -19,7 +19,8 @@ using namespace simfil;
 namespace mapget
 {
 
-// Read the first two numeric coordinate members; elevation is intentionally ignored.
+// Parse a single Point from a node's first two numeric coordinate members;
+// elevation is intentionally ignored.
 static auto parseCoordinatePoint(const ModelNode& node, Point& pt)
 {
     auto nx = node.at(0);

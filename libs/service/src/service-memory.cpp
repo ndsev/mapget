@@ -29,7 +29,9 @@ namespace mapget::detail
 namespace
 {
 
-/** Parse an unsigned decimal prefix, allowing suffixes such as Linux's "kB" unit. */
+/** Trim surrounding ASCII whitespace and parse an unsigned decimal prefix,
+ * allowing suffixes such as Linux's "kB" unit.
+ */
 [[nodiscard]] std::optional<uint64_t> parseUnsigned(std::string_view text)
 {
     auto const first = text.find_first_not_of(" \t\r\n");

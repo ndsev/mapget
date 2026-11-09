@@ -1507,12 +1507,20 @@ inline void BoundRelation::bind(py::module_& m)
 }
 
 /**
- * Recursively build Python values without invoking virtual toJson() overrides.
- * Bytes become a tagged dictionary and bitmasks retain their bound native value.
- * Ordinary object conversion overwrites duplicate names. checkMultimap enables
- * a bounded duplicate pre-scan for this object only: a duplicate of one of the
- * first 32 field IDs groups every field's values into lists and adds _multimap.
- * Nested objects use ordinary conversion; later-only duplicates are not detected.
+ * Recursively convert a ModelNode tree to native Python objects. Like simfil's
+ * generic ModelNode::toJson() traversal, this walks objects, arrays and scalars,
+ * but builds py::dict/py::list/scalars directly, avoiding JSON serialization.
+ * It does not invoke virtual toJson() overrides.
+ *
+ * Special cases:
+ * - ByteArray scalars become {"_bytes": True, "hex": ..., "number": ...}; number
+ *   is None when the bytes cannot be decoded as a big-endian signed integer.
+ * - Bitmasks retain their bound native value.
+ * - Ordinary objects overwrite duplicate names. checkMultimap enables a bounded
+ *   duplicate pre-scan for this object only: a duplicate of one of the first 32
+ *   field IDs groups every field's values into lists and adds a "_multimap" marker.
+ *   Nested objects use ordinary conversion; later-only duplicates are not detected.
+ *   Callers enable this for attribute-layer objects to avoid the scan elsewhere.
  */
 py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model, bool checkMultimap)
 {
@@ -1520,7 +1528,8 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
     if (type == ValueType::Object) {
         py::dict d;
         if (checkMultimap) {
-            // Bound the pre-scan storage. Recursive calls do not inherit multimap mode.
+            // Pre-scan duplicate field IDs using a bounded stack array and cheap
+            // uint16_t comparisons. Recursive calls do not inherit multimap mode.
             bool isMultiMap = false;
             {
                 uint16_t seen[32];

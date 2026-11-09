@@ -119,10 +119,14 @@ void validateIdentifierName(
     std::string_view extraReserved = {},
     std::string_view allowedReserved = {});
 
-/** Borrow keys and string values; the source container and strings must remain alive. */
+/** Convert owned ID parts to KeyValueViewPairs by borrowing keys and string values.
+ * The source container and strings must remain alive.
+ */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
 
-/** Borrow keys and string values; the source container and strings must remain alive. */
+/** Convert owned ID parts to KeyValueViewPairs by borrowing keys and string values.
+ * The source container and strings must remain alive.
+ */
 KeyValueViewPairs castToKeyValueView(KeyValuePairVec const& kvp);
 
 /** Convert KeyValueViewPairs to KeyValuePairs. */
@@ -192,8 +196,7 @@ struct Coverage
      * {
      *   "min": <int32_t>,                 // Mandatory: The signed packed minimum tile ID.
      *   "max": <int32_t>,                 // Mandatory: The signed packed maximum tile ID.
-     *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled
-     * tiles. Defaults to an empty list.
+     *   "filled": [<bool>...]             // Optional: Flags for filled tiles; default is empty.
      * }
      *
      * Alternatively, a single integer is interpreted as a Coverage
@@ -368,23 +371,49 @@ struct DataSourceInfo
     void validateIdentifiers() const;
 
     /**
-     * Parse a catalog record or legacy inline schema input. A minimal canonical
-     * record identifies its map, layers and exact schema artifact:
+     * Deserialize a DataSourceInfo catalog record or legacy inline schema input.
+     * The canonical form identifies a map, its layers and an exact schema artifact.
+     * This expanded example also shows optional runtime and layer metadata:
      *
      * @code{.json}
      * {
      *   "mapId": "roads",
-     *   "layers": {"geometry": {"type": "Features"}},
-     *   "schemaId": "<identity advertised by MapSchema::schemaId()>"
+     *   "layers": {
+     *     "geometry": {
+     *       "type": "Features",
+     *       "partitionKind": "tile",
+     *       "zoomLevels": [13],
+     *       "coverage": [],
+     *       "canRead": true,
+     *       "canWrite": false,
+     *       "version": {"major": 1, "minor": 0, "patch": 0}
+     *     }
+     *   },
+     *   "mapFormat": {
+     *     "name": "ExampleFormat",
+     *     "version": "1.0",
+     *     "subsystems": [{"name": "geometry", "version": "1.0"}]
+     *   },
+     *   "schemaId": "<identity advertised by MapSchema::schemaId()>",
+     *   "maxParallelJobs": 8,
+     *   "extraJsonAttachment": {},
+     *   "addOn": false
      * }
      * @endcode
      *
-     * Optional runtime fields include maxParallelJobs (default 8), addOn (false),
-     * extraJsonAttachment (empty object), protocolVersion (current protocol), and
-     * stringPoolId (a generated dictionary namespace when omitted). Layer metadata
-     * accepts zoomLevels, coverage, read/write flags, version and partition addressing.
-     * mapFormat describes the source format; its subsystems array contains objects
-     * with name and version fields so one subsystem may appear at several versions.
+     * mapId and layers are required. Layer defaults are type=Features,
+     * partitionKind=tile, empty zoomLevels/coverage, canRead=true and canWrite=false.
+     * version is optional; when supplied, its major, minor and patch fields are required.
+     * Object-backed layers can also supply tileAssociationLevel for spatial discovery.
+     *
+     * maxParallelJobs defaults to 8, addOn to false and extraJsonAttachment to an
+     * empty object. Optional protocolVersion uses the same major/minor/patch shape
+     * and defaults to the current protocol. Optional stringPoolId identifies the
+     * producer dictionary; omission generates a namespace, so normally let it default.
+     *
+     * mapFormat describes the source format; schemaId identifies the projected schema
+     * artifact. The subsystems array contains name/version pairs, allowing one subsystem
+     * at several versions. The format must agree with the referenced MapSchema artifact.
      *
      * Canonical catalog metadata references one MapSchema; it never embeds per-layer
      * featureTypes or featureModelSchema. With a resolver, that exact artifact is installed

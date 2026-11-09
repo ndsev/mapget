@@ -271,6 +271,9 @@ void TileLayerStream::Writer::write(PartitionLayer::Ptr const& tileLayer)
 
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
+    // TODO: Refactor preparation of tile-layer and string-dictionary storage formats
+    // so the encoding logic is not split over multiple functions.
+
     // Reserve headroom for the fixed 11-byte wire header (6 version, 1 type,
     // 4 payload length). This estimate affects allocation only, not encoding.
     constexpr size_t estimatedHeaderSize = 20;

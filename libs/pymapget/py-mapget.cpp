@@ -40,8 +40,10 @@ PYBIND11_MODULE(pymapget, m)
     m.attr("TileSourceDataLayer") = m.attr("PartitionSourceDataLayer");
     m.attr("MapTileKey") = m.attr("MapPartitionKey");
 
-    // Only the first two CLI parameters are exposed. The C++ command-extension
-    // callback depends on CLI11 types that this module does not bind.
+    // Only the first two parameters of runFromCommandLine are exposed.
+    // The third, additionalCommandLineSetupFun, lets C++ applications embedding
+    // mapget add custom CLI11 commands. Exposing it to Python would require
+    // bindings for the CLI11 types, which this module does not provide.
     m.def("run",
         [](const std::vector<std::string>& args, bool requireSubcommand) {
             return mapget::runFromCommandLine(args, requireSubcommand);
