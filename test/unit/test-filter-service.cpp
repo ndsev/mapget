@@ -1651,9 +1651,14 @@ TEST_CASE(
         root(westernTile, 1),
     };
 
+    std::mutex resultsMutex;
     std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(resultsMutex);
+            results.push_back(std::move(layer));
+        });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1675,6 +1680,122 @@ TEST_CASE(
     }
     REQUIRE(westernRelations == 0);
     REQUIRE(easternRelations == 1);
+}
+
+TEST_CASE(
+    "Filter success waits for relation result callbacks",
+    "[feature-layer-filter][Service][relation][concurrency]")
+{
+    using namespace std::chrono_literals;
+    std::string_view const action = GENERATE("retain", "cancel", "throw", "throw nonstandard");
+    CAPTURE(action);
+
+    auto const westernTile = TileId::fromTileXY(10, 5, 4);
+    auto const easternTile = westernTile.eastNeighbour();
+    auto const emptyTile = westernTile.westNeighbour();
+    std::mutex doneMutex;
+    std::condition_variable doneChanged;
+    bool done = false;
+    std::atomic_bool callbackReturned = false;
+    bool callbackReturnedAtSuccess = false;
+    bool callbackReturnedAfterWait = false;
+    size_t resultCount = 0;
+    size_t resultCountAtSuccess = 0;
+    RequestStatus statusDuringCallback = RequestStatus::Aborted;
+    RequestStatus finalStatus = RequestStatus::Open;
+    bool accepted = false;
+    bool finished = false;
+
+    {
+        // One worker finishes both source evaluations before delivering the
+        // dynamically requested relation target. Source-evaluation accounting
+        // therefore cannot mask premature completion in the result callback.
+        Service service(std::make_shared<MemCache>(32), false, 0ms, 1);
+        service.add(std::make_shared<RelationDataSource>(westernTile, easternTile));
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<PartitionId>{emptyTile, westernTile},
+            FeatureLayerFilterRequest{
+                .filterId_ = "relation-result-completion",
+                .generation_ = 1,
+                .channels_ = {FeatureLayerFilterChannel{
+                    .channelId_ = "connected",
+                    .featureFilter_ = "typeId == 'Road'",
+                    .scope_ = FeatureLayerFilterScope::Relation,
+                    .featureTypes_ = {"Road"},
+                    .geometryName_ = "relation",
+                    .relation_ =
+                        FeatureLayerStoredRelationOptions{
+                            .relationNamePattern_ = "connected",
+                        },
+                }},
+            });
+        request->onFilterResult(
+            [&, weakRequest = std::weak_ptr(request)](PartitionSubsetLayer::Ptr layer)
+            {
+                ++resultCount;
+                if (layer->tileId() != westernTile) {
+                    return;
+                }
+                auto current = weakRequest.lock();
+                // Pruning the already-delivered empty output re-enters the
+                // completion check deterministically, without another worker
+                // or sleeps. Success must still wait for this callback.
+                service.retainOutputs(current, {westernTile});
+                statusDuringCallback = current->getStatus();
+                if (action == "cancel") {
+                    service.abort(current);
+                }
+                else if (action == "throw") {
+                    throw std::runtime_error("synthetic result callback failure");
+                }
+                else if (action == "throw nonstandard") {
+                    throw 42;
+                }
+                callbackReturned = true;
+            });
+        request->onDone_ = [&](RequestStatus status)
+        {
+            std::lock_guard lock(doneMutex);
+            if (status == RequestStatus::Success) {
+                callbackReturnedAtSuccess = callbackReturned;
+                resultCountAtSuccess = resultCount;
+            }
+            done = true;
+            doneChanged.notify_all();
+        };
+
+        accepted = service.request(request);
+        {
+            std::unique_lock lock(doneMutex);
+            finished = doneChanged.wait_for(lock, 5s, [&] { return done; });
+        }
+        if (!finished) {
+            // A missing terminal notification must fail instead of hanging
+            // the test or leaving a worker referencing destroyed captures.
+            service.abort(request);
+        }
+        request->wait();
+        finalStatus = request->getStatus();
+        callbackReturnedAfterWait = callbackReturned;
+    }
+
+    // Service destruction joins callbacks even for cancellation and failures,
+    // whose terminal notification intentionally need not wait for delivery.
+    REQUIRE(accepted);
+    REQUIRE(finished);
+    REQUIRE(statusDuringCallback == RequestStatus::Open);
+    REQUIRE(resultCount == 2);
+    if (action == "retain") {
+        REQUIRE(finalStatus == RequestStatus::Success);
+        REQUIRE(callbackReturnedAtSuccess);
+        REQUIRE(callbackReturnedAfterWait);
+        REQUIRE(resultCountAtSuccess == 2);
+    }
+    else {
+        REQUIRE(finalStatus == RequestStatus::Aborted);
+    }
 }
 
 TEST_CASE(
