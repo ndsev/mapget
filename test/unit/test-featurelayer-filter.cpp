@@ -1208,6 +1208,11 @@ TEST_CASE("Explicit point-cloud filtering shares an object quota and preserves e
         return true;
     });
     REQUIRE(delivered == 201);
+    // A requested detail count is not a safety ceiling or a reservation size.
+    request.channels_[0].pointCloudMaxPoints_ = 50'000'000;
+    result = request.filter(*source);
+    REQUIRE(result);
+    REQUIRE((*result)->info()["PointCloud/DeliveredRecords"] == 201);
 }
 
 TEST_CASE("Point-cloud quotas belong to each object and each channel", "[pointcloud][filter]")

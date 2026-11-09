@@ -8,7 +8,8 @@
 namespace mapget
 {
 
-inline constexpr uint32_t DefaultPointCloudMaxPoints = 13'999'999;
+/** Default visualization detail; callers may request any representable quota. */
+inline constexpr uint32_t DefaultPointCloudMaxPoints = 14'000'000;
 
 /**
  * Select min(sourceCount, quota) evenly spaced original indices. Two or more

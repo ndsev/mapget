@@ -324,8 +324,8 @@ FeatureLayerFilterChannel parseChannel(
     }
     if (auto found = channelJson.find("pointCloudMaxPoints"); found != channelJson.end()) {
         if (!found->is_number_integer() || found->get<int64_t>() < 0 ||
-            found->get<int64_t>() > DefaultPointCloudMaxPoints)
-            throw std::invalid_argument("channel.pointCloudMaxPoints must be an integer in 0..13999999");
+            found->get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+            throw std::invalid_argument("channel.pointCloudMaxPoints must be an unsigned 32-bit integer");
         channel.pointCloudMaxPoints_ = found->get<uint32_t>();
     }
     if (auto found = channelJson.find("group");

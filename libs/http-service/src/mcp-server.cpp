@@ -470,10 +470,12 @@ nlohmann::json McpServer::toolResult(nlohmann::json reply, std::string_view acti
         }
     }
     content.push_back({{"type", "text"}, {"text", body.dump()}});
-    return {
-        {"isError", failed},
-        {"structuredContent", std::move(body)},
-        {"content", std::move(content)}};
+    nlohmann::json result{{"isError", failed}, {"content", std::move(content)}};
+    // Output schemas describe successful application data. Keep actionable errors in text,
+    // rather than publishing structuredContent that strict hosts reject against that schema.
+    if (!failed)
+        result["structuredContent"] = std::move(body);
+    return result;
 }
 
 void McpServer::initialize(nlohmann::json const& message, Reply const& reply)
