@@ -412,7 +412,11 @@ public:
     /** Optional exact relation roots grouped by their requested origin tile. */
     std::vector<FeatureLayerFilterRoot> exactRoots_;
 
-    /** Callback for each emitted PartitionSubsetLayer. */
+    /**
+     * Receive each emitted subset; callbacks for different outputs may overlap.
+     * Local service success waits for these callbacks to return. Cancellation
+     * and failure may finish the request while other callbacks are still running.
+     */
     template <class Fun>
     FeatureLayerFilterTilesRequest& onFilterResult(Fun&& callback)
     {

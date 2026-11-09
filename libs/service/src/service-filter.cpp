@@ -2117,16 +2117,45 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
         if (!terminal && ready.outputIndex_ < outputs.size() &&
             outputs[ready.outputIndex_].state_ == OutputTileState::State::Taken)
         {
+            // Claim delivery before calling consumers so reentrant pruning
+            // cannot also count this output as pruned.
             outputs[ready.outputIndex_].state_ = OutputTileState::State::Emitted;
-            ++emittedOutputTiles;
-            entriesEmitted += entryCount;
             emit = true;
         }
     }
+    std::optional<simfil::Error> deliveryError;
     if (emit) {
-        request->notifyResult(std::move(ready.layer_));
+        // Relation-target deliveries run outside evaluate()'s exception handler.
+        // Route consumer failures through the same request-abort path instead
+        // of leaving an output permanently short of completion.
+        try {
+            request->notifyResult(std::move(ready.layer_));
+        }
+        catch (std::exception const& exception) {
+            deliveryError = simfil::Error{
+                simfil::Error::InternalError,
+                fmt::format("Filter result callback failed: {}", exception.what()),
+            };
+        }
+        catch (...) {
+            deliveryError = simfil::Error{
+                simfil::Error::InternalError,
+                "Filter result callback failed: non-standard exception.",
+            };
+        }
+        if (!deliveryError) {
+            // Success must wait for callbacks to return, not merely for their
+            // output ownership to be claimed. Otherwise another finalizer can
+            // close the request before notifyResult accepts this last result.
+            std::lock_guard lock(mutex);
+            ++emittedOutputTiles;
+            entriesEmitted += entryCount;
+        }
     }
     memory->outputSubsetModels.subtract(finalLayerBytes);
+    if (deliveryError) {
+        return tl::unexpected(std::move(*deliveryError));
+    }
     return emit ? std::optional<size_t>{entryCount} : std::nullopt;
 }
 
