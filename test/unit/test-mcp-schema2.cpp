@@ -1,4 +1,4 @@
-#include "../../libs/http-service/src/mcp-native-tools.h"
+#include "../../libs/http-service/src/mcp-mapget-tools.h"
 #include "mapget/model/mapschema.h"
 #include "mapget/model/sourcedatalayer.h"
 #include "mapget/service/memcache.h"
@@ -147,16 +147,16 @@ public:
         values->addField("speed", tile->newValue(int64_t{255}));
         values->addField("count", tile->newValue(int64_t{255}));
         values
-            ->addField("detached", tile->newQualifiedValue(int64_t{255}, owner->schemaType(speed)));
+            ->addField("detached", tile->newTypedValue(int64_t{255}, owner->schemaType(speed)));
         values->addField("plain", tile->newValue(int64_t{255}));
         values->addField(
             "flags",
             tile->newBitmask(UINT64_C(0x8000000000000001), owner->schemaType(flags)));
         values->addField("zeroFlags", tile->newBitmask(0, owner->schemaType(flags)));
         values->addField("allFlags", tile->newBitmask(UINT64_MAX, owner->schemaType(flags)));
-        values->addField("enabled", tile->newQualifiedValue(true, owner->schemaType(enabled)));
+        values->addField("enabled", tile->newTypedValue(true, owner->schemaType(enabled)));
         simfil::ByteArray bytes(std::string("\x00\x01\xff", 3));
-        values->addField("payload", tile->newQualifiedValue(bytes, owner->schemaType(payload)));
+        values->addField("payload", tile->newTypedValue(bytes, owner->schemaType(payload)));
         values->addField("plainPayload", tile->newValue(bytes));
         auto compound = tile->newObject();
         if (auto result = compound->setSchema(properties); !result)
@@ -190,9 +190,9 @@ class Schema2NativeFixture
 public:
     Service service{std::make_shared<MemCache>(8), false, 0ms, 1};
     std::shared_ptr<Schema2NativeSource> source;
-    detail::McpNativeTools::Principal
+    detail::McpMapgetTools::Principal
         principal{"schema2", "reader", std::chrono::system_clock::now() + 1h, true, false};
-    std::shared_ptr<detail::McpNativeTools> tools;
+    std::shared_ptr<detail::McpMapgetTools> tools;
 
     /** Register the already-ready source before native discovery. */
     explicit Schema2NativeFixture(
@@ -200,7 +200,7 @@ public:
         : source(std::move(source))
     {
         service.add(this->source);
-        tools = std::make_shared<detail::McpNativeTools>(
+        tools = std::make_shared<detail::McpMapgetTools>(
             service,
             McpConfig{},
             [] { return Schema2Json::object(); },

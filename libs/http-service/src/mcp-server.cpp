@@ -20,6 +20,7 @@ constexpr auto initializeProtocol = "2025-11-25";
 constexpr auto previousInitializeProtocol = "2025-06-18";
 constexpr size_t maxQueuedInputs = 256;
 constexpr size_t maxRequestBytes = 64 * 1024;
+
 /** Describe tool ownership; workflows belong in the hot-reloadable help corpus. */
 constexpr auto serverInstructions =
     "Mapget provides native map-data tools without requiring a browser. Viewer actions control "
@@ -47,7 +48,7 @@ bool accepts(std::string const& header, std::string const& mime)
 }
 }  // namespace
 
-McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native, ProxyAuthentication proxyAuth)
+McpServer::McpServer(McpConfig const& config, std::shared_ptr<McpMapgetTools> native, ProxyAuthentication proxyAuth)
     : auth_(config, std::move(proxyAuth)),
       catalogWriteTime_(
           config.catalogPath.empty() ?

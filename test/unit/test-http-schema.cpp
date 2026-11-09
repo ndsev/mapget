@@ -1,5 +1,5 @@
 #include "test-http-service-fixture.h"
-#include "../../libs/http-service/src/mcp-native-tools.h"
+#include "../../libs/http-service/src/mcp-mapget-tools.h"
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-datasource/detail/schema-response.h"
@@ -585,14 +585,14 @@ TEST_CASE(
     CHECK_FALSE(rest["items"][0].contains("expandArguments"));
     CHECK_FALSE(rest.contains("rootMatches"));
 
-    auto tools = std::make_shared<detail::McpNativeTools>(
+    auto tools = std::make_shared<detail::McpMapgetTools>(
         fixture.service_,
         McpConfig{},
         [] { return Json::object(); },
         nullptr,
         [] { return Json::object(); },
         [](auto const&, auto const&) { return Json::object(); });
-    detail::McpNativeTools::Principal principal{
+    detail::McpMapgetTools::Principal principal{
         "schema-search",
         "reader",
         std::chrono::system_clock::now() + std::chrono::hours(1),

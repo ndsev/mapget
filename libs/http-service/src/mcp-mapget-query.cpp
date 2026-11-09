@@ -1,4 +1,4 @@
-#include "mcp-native-call.h"
+#include "mcp-mapget-query.h"
 
 #include "mapget/model/attr.h"
 #include "mapget/model/attrlayer.h"
@@ -23,13 +23,15 @@ using Json = nlohmann::json;
 using simfil::ValueType;
 
 /** Native trace capture serializes bounded samples immediately, never retaining source models. */
-class McpNativeTools::Call::Trace final : public simfil::Function
+class McpMapgetTools::Call::Query::Trace final : public simfil::Function
 {
 public:
     /** Bind samples and budgets to the invocation owning this environment. */
-    explicit Trace(Call& call) : call_(call) {}
+    explicit Trace(Query& query) : query_(query) {}
+
     /** Keep the normal simfil signature and compilation semantics. */
     simfil::FnInfo const& ident() const override { return simfil::TraceFn::Fn.ident(); }
+
     /** Forward values regardless of capture, honoring both simfil and native resource limits. */
     tl::expected<simfil::Result, simfil::Error> eval(
         simfil::Context ctx,
@@ -83,17 +85,19 @@ public:
                     simfil::Error::InvalidArguments,
                     "Missing trace argument"});
         }
-        auto const capture = call_.arguments.value("trace", false);
+        auto const capture = query_.call_.arguments.value("trace", false);
         auto started = std::chrono::steady_clock::now();
         if (capture &&
-            (name.size() > 512 || (!call_.traces_.contains(name) && call_.traces_.size() >= 16))) {
-            call_.truncate("trace_limit");
+            (name.size() > 512 ||
+             (!query_.call_.traces_.contains(name) && query_.call_.traces_.size() >= 16)))
+        {
+            query_.call_.truncate("trace_limit");
             return simfil::Stop;
         }
-        if (capture && !call_.traces_.contains(name)) {
-            call_.chargeString(name);
-            call_.charge(128);
-            call_.traces_[name] = {
+        if (capture && !query_.call_.traces_.contains(name)) {
+            query_.chargeString(name);
+            query_.call_.charge(128);
+            query_.call_.traces_[name] = {
                 {"calls", 0},
                 {"totalUs", 0},
                 {"values", Json::array()},
@@ -108,22 +112,22 @@ public:
                 {
                     try {
                         if (capture) {
-                            auto& trace = call_.traces_[name];
+                            auto& trace = query_.call_.traces_[name];
                             auto max = limit < 0 ? size_t{100} : std::min<size_t>(limit, 100);
                             if (trace["values"].size() < max)
-                                trace["values"].push_back(call_.valueJson(v));
+                                trace["values"].push_back(query_.valueJson(v));
                             else
                                 trace["samplesTruncated"] = true;
                         }
                         return result(context, v);
                     }
                     catch (...) {
-                        call_.truncate("trace_limit");
+                        query_.call_.truncate("trace_limit");
                         return simfil::Stop;
                     }
                 }));
-        if (capture && call_.traces_.contains(name)) {
-            auto& trace = call_.traces_[name];
+        if (capture && query_.call_.traces_.contains(name)) {
+            auto& trace = query_.call_.traces_[name];
             trace["calls"] = trace["calls"].get<size_t>() + 1;
             trace["totalUs"] = trace["totalUs"].get<int64_t>() +
                 std::chrono::duration_cast<std::chrono::microseconds>(
@@ -134,30 +138,30 @@ public:
     }
 
 private:
-    Call& call_;
+    Query& query_;
 };
 
-void McpNativeTools::Call::chargeString(std::string_view text)
+void McpMapgetTools::Call::Query::chargeString(std::string_view text)
 {
     // Reject oversized input before walking it. UTF-8 bytes are preserved by JSON dumping.
-    charge(text.size() + 2);
+    call_.charge(text.size() + 2);
     for (unsigned char c : text) {
         if (c == '"' || c == '\\' || c == '\b' || c == '\f' || c == '\n' || c == '\r' || c == '\t')
-            charge(1);
+            call_.charge(1);
         else if (c < 0x20)
-            charge(5);
+            call_.charge(5);
     }
 }
 
-Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
+Json McpMapgetTools::Call::Query::boundedJson(Json const& value, size_t depth)
 {
-    if (!step())
+    if (!call_.step())
         throw std::length_error("work");
     if (depth > SerializationNestingLimit) {
-        truncate("serialization_limit");
+        call_.truncate("serialization_limit");
         throw std::length_error("depth");
     }
-    charge(24);
+    call_.charge(24);
     if (value.is_string()) {
         chargeString(value.get_ref<std::string const&>());
         return value;
@@ -184,22 +188,22 @@ Json McpNativeTools::Call::boundedJson(Json const& value, size_t depth)
         result;
 }
 
-Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
+Json McpMapgetTools::Call::Query::valueJson(simfil::Value const& value, size_t depth)
 {
-    if (!step())
+    if (!call_.step())
         throw std::length_error("work");
     if (depth > SerializationNestingLimit) {
-        truncate("serialization_limit");
+        call_.truncate("serialization_limit");
         throw std::length_error("depth");
     }
-    charge(32);
+    call_.charge(32);
     auto scalar = [&](Json raw)
     {
         // Provenance is explicit response metadata, never inferred from a numeric code.
         auto type = value.schemaType();
         if (!type)
             return raw;
-        charge(64);
+        call_.charge(64);
         chargeString(type.pool()->identity());
         return Json{
             {"$mapget", "qualified"},
@@ -236,13 +240,13 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
     }
     case ValueType::Bytes: {
         auto const& bytes = value.as<ValueType::Bytes>();
-        charge(bytes.bytes.size() * 2);
+        call_.charge(bytes.bytes.size() * 2);
         return scalar({{"$mapget", "bytes"}, {"hex", bytes.toHex(false)}});
     }
     case ValueType::Bitmask: {
         auto const& mask = value.as<ValueType::Bitmask>();
         // simfil owns the full-width tag and type validation; no mapget-specific codec.
-        charge(96);
+        call_.charge(96);
         if (mask.type)
             chargeString(mask.type.pool()->identity());
         return mask.toJson();
@@ -270,14 +274,14 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
                         // still consumes this call's cancellation, work and byte budgets.
                         descriptorJson = descriptor->toJson(
                             {.maxDepth = SerializationNestingLimit - depth,
-                             .maxNodes = remainingWork_,
-                             .maxBytes = remainingBytes_,
+                             .maxNodes = call_.remainingWork_,
+                             .maxBytes = call_.remainingBytes_,
                              .reserve =
                                  [&](size_t nodes, size_t bytes)
                              {
-                                 if (!step(nodes))
+                                 if (!call_.step(nodes))
                                      throw std::length_error("work");
-                                 charge(bytes);
+                                 call_.charge(bytes);
                              },
                              .scalar =
                                  [&](simfil::ModelNode const& scalar)
@@ -306,7 +310,7 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
         std::set<std::string> repeated;
         for (uint32_t i = 0; i < node->size(); ++i) {
             // Empty/missing children still consume traversal work.
-            if (!step())
+            if (!call_.step())
                 throw std::length_error("work");
             auto child = node->at(i);
             if (!child)
@@ -344,12 +348,12 @@ Json McpNativeTools::Call::valueJson(simfil::Value const& value, size_t depth)
             result;
     }
     default:
-        truncate("unsupported_value_type");
+        call_.truncate("unsupported_value_type");
         throw std::length_error("Cannot serialize transient values");
     }
 }
 
-void McpNativeTools::Call::environment(std::shared_ptr<simfil::StringPool> strings)
+void McpMapgetTools::Call::Query::environment(std::shared_ptr<simfil::StringPool> strings)
 {
     expressions_.clear();
     if (strings)
@@ -357,13 +361,13 @@ void McpNativeTools::Call::environment(std::shared_ptr<simfil::StringPool> strin
     else
         strings = std::make_shared<StringPool>("mcp-query");
     env_ = makeEnvironment(strings);
-    if (layer_ && layer_->layerSchema())
-        env_->setSchema(layer_->layerSchema()->rootType());
+    if (call_.layer_ && call_.layer_->layerSchema())
+        env_->setSchema(call_.layer_->layerSchema()->rootType());
     traceFunction_ = std::make_unique<Trace>(*this);
     env_->functions["trace"] = traceFunction_.get();
 }
 
-void McpNativeTools::Call::diagnostics(
+void McpMapgetTools::Call::Query::diagnostics(
     simfil::Diagnostics const& data,
     std::string const& expression)
 {
@@ -372,7 +376,8 @@ void McpNativeTools::Call::diagnostics(
         return;
     for (auto const& message : *messages) {
         auto text = message.message;
-        if (name == "mapget_extract_features" && arguments.value("scope", "feature") == "feature" &&
+        if (call_.name == "mapget_extract_features" &&
+            call_.arguments.value("scope", "feature") == "feature" &&
             (text == "No matches for field '$feature'" || text == "No matches for field '$'"))
             text +=
                 ". Feature scope starts at the feature: use _.properties or properties. "
@@ -381,8 +386,8 @@ void McpNativeTools::Call::diagnostics(
         // Sparse optional fields commonly emit the same warning for hundreds of records.
         // Keep its frequency and expression without stopping before a later matching record.
         auto existing = std::find_if(
-            issues_.begin(),
-            issues_.end(),
+            call_.issues_.begin(),
+            call_.issues_.end(),
             [&](Json const& issue)
             {
                 return issue.value("expression", "") == expression &&
@@ -390,18 +395,18 @@ void McpNativeTools::Call::diagnostics(
                     issue["offset"] == message.location.offset &&
                     issue["size"] == message.location.size;
             });
-        if (existing != issues_.end()) {
+        if (existing != call_.issues_.end()) {
             auto previous = (*existing)["occurrences"].get<size_t>();
             if (std::to_string(previous).size() < std::to_string(previous + 1).size())
-                charge(1);
+                call_.charge(1);
             (*existing)["occurrences"] = previous + 1;
             continue;
         }
-        if (issues_.size() >= 100) {
-            truncate("diagnostic_limit");
+        if (call_.issues_.size() >= 100) {
+            call_.truncate("diagnostic_limit");
             break;
         }
-        issues_.push_back(boundedJson(
+        call_.issues_.push_back(boundedJson(
             {{"message", text},
              {"expression", expression},
              {"occurrences", 1},
@@ -410,27 +415,27 @@ void McpNativeTools::Call::diagnostics(
     }
 }
 
-Json McpNativeTools::Call::evaluate(
+Json McpMapgetTools::Call::Query::evaluate(
     std::string const& query,
     simfil::ModelNode const& root,
     simfil::TypeId schema,
     bool predicate)
 {
     auto result = Json::array();
-    if (!step())
+    if (!call_.step())
         return result;
     auto key = std::make_tuple(query, schema, predicate);
     auto found = expressions_.find(key);
     if (found == expressions_.end()) {
         auto expression = query;
-        if (predicate && name == "mapget_extract_features" && arguments.value("rewrite", false) &&
-            layer_->layerSchema())
+        if (predicate && call_.name == "mapget_extract_features" &&
+            call_.arguments.value("rewrite", false) && call_.layer_->layerSchema())
         {
-            auto scope = arguments.value("scope", "feature") == "attribute" ?
+            auto scope = call_.arguments.value("scope", "feature") == "attribute" ?
                 LayerSchema::SearchQueryRequestedScope::Attribute :
                 LayerSchema::SearchQueryRequestedScope::Feature;
             // Extraction has installed the actual partition's owner, not a catalog replacement.
-            auto normal = layer_->layerSchema()->normalizeSearchQuery(query, scope);
+            auto normal = call_.layer_->layerSchema()->normalizeSearchQuery(query, scope);
             if (!normal)
                 throw std::invalid_argument("Invalid predicate normalization");
             expression = normal->normalizedQuery_;
@@ -440,15 +445,16 @@ Json McpNativeTools::Call::evaluate(
             expression,
             {.any = predicate,
              .rewriteMode = simfil::RewriteMode::Schema,
-             .rootSchema =
-                 layer_ ? layer_->schemaOwner()->schemaType(schema) : simfil::SchemaType{}});
+             .rootSchema = call_.layer_ ?
+                 call_.layer_->schemaOwner()->schemaType(schema) :
+                 simfil::SchemaType{}});
         if (!ast) {
-            issues_.push_back(boundedJson(
+            call_.issues_.push_back(boundedJson(
                 {{"phase", "compile"},
                  {"message", ast.error().message},
                  {"offset", ast.error().location.offset},
                  {"size", ast.error().location.size}}));
-            truncate("query_error");
+            call_.truncate("query_error");
             return result;
         }
         found = expressions_.emplace(std::move(key), std::move(*ast)).first;
@@ -463,11 +469,11 @@ Json McpNativeTools::Call::evaluate(
                 simfil::Value const& value) -> tl::expected<simfil::Result, simfil::Error>
             {
                 try {
-                    // Probe one extra value to distinguish a complete exact-limit sequence from
-                    // a truncated one. Item and expression limits must not suppress geometry
-                    // output.
-                    if (result.size() >= limit_) {
-                        truncate("expression_result_limit");
+                    // Probe one extra value to distinguish a complete exact-limit sequence
+                    // from truncation. Nested geometry vertices consume serialization work
+                    // and byte budgets, rather than this expression-result count.
+                    if (result.size() >= call_.limit_) {
+                        call_.truncate("expression_result_limit");
                         return simfil::Stop;
                     }
                     // Predicate results are internal decisions, not response payload.
@@ -479,20 +485,20 @@ Json McpNativeTools::Call::evaluate(
                     return simfil::Continue;
                 }
                 catch (...) {
-                    if (incomplete_.empty())
-                        truncate("serialization_failed");
+                    if (call_.incomplete_.empty())
+                        call_.truncate("serialization_failed");
                     return simfil::Stop;
                 }
             }),
-        {.maxResults = predicate ? size_t{2} : limit_ + 1,
-         .maxWork = remainingWork_,
-         .deadline = deadline_,
-         .cancel = cancelled.get()},
+        {.maxResults = predicate ? size_t{2} : call_.limit_ + 1,
+         .maxWork = call_.remainingWork_,
+         .deadline = call_.deadline_,
+         .cancel = call_.cancelled.get()},
         &data);
     if (summary) {
-        remainingWork_ -= std::min(remainingWork_, summary->work);
+        call_.remainingWork_ -= std::min(call_.remainingWork_, summary->work);
         if (summary->reason != simfil::EvaluationSummary::Reason::Complete)
-            truncate(
+            call_.truncate(
                 summary->reason == simfil::EvaluationSummary::Reason::Timeout ?
                     "timeout" :
                     summary->reason == simfil::EvaluationSummary::Reason::Canceled ?
@@ -500,30 +506,30 @@ Json McpNativeTools::Call::evaluate(
                     "evaluation_limit");
     }
     else {
-        issues_.push_back(boundedJson(
+        call_.issues_.push_back(boundedJson(
             {{"phase", "evaluate"},
              {"message", summary.error().message},
              {"offset", summary.error().location.offset},
              {"size", summary.error().location.size}}));
-        truncate("query_error");
+        call_.truncate("query_error");
     }
-    if (incomplete_.empty())
+    if (call_.incomplete_.empty())
         diagnostics(data, query);
     return result;
 }
 
-Json McpNativeTools::Call::schemaOverview(
+Json McpMapgetTools::Call::Query::schemaOverview(
     simfil::ModelNode const& node,
     std::set<simfil::TypeId> const& expanded,
     size_t depth)
 {
-    if (!step())
+    if (!call_.step())
         throw std::length_error("work");
     if (depth > SerializationNestingLimit) {
-        truncate("serialization_limit");
+        call_.truncate("serialization_limit");
         throw std::length_error("nesting");
     }
-    charge(32);
+    call_.charge(32);
     auto result = Json::object();
     auto reference = node.get(simfil::StringPool::SchemaRef);
     bool expand = false;
@@ -537,7 +543,7 @@ Json McpNativeTools::Call::schemaOverview(
         result["$ref"] = std::move(ids);
     }
     for (uint32_t i = 0; i < node.size(); ++i) {
-        if (!step())
+        if (!call_.step())
             throw std::length_error("work");
         auto key = node.keyAt(i);
         if (key == simfil::StringPool::SchemaRef)
@@ -588,33 +594,33 @@ Json McpNativeTools::Call::schemaOverview(
     return result;
 }
 
-void McpNativeTools::Call::querySchema()
+void McpMapgetTools::Call::Query::querySchema()
 {
-    if (!selectSchemaLayer())
+    if (!call_.selectSchemaLayer())
         return;
-    auto schema = layer_->layerSchema();
+    auto schema = call_.layer_->layerSchema();
     if (!schema) {
-        fail("unavailable", "Layer has no bound schema.");
+        call_.fail("unavailable", "Layer has no bound schema.");
         return;
     }
     auto reserveContract = [&](size_t bytes)
     {
-        if (!step())
+        if (!call_.step())
             throw std::length_error("Schema contract work budget.");
-        charge(bytes);
+        call_.charge(bytes);
     };
-    auto types = arguments.contains("featureType") ?
-        std::vector<std::string>{arguments["featureType"]} :
+    auto types = call_.arguments.contains("featureType") ?
+        std::vector<std::string>{call_.arguments["featureType"]} :
         schema->featureTypes();
-    if (layer_->type_ != LayerType::Features && arguments.contains("featureType"))
+    if (call_.layer_->type_ != LayerType::Features && call_.arguments.contains("featureType"))
         throw std::invalid_argument("featureType requires a feature layer");
     std::vector<simfil::TypeId> roots;
-    if (arguments.contains("typeId")) {
-        if (arguments.contains("featureType"))
+    if (call_.arguments.contains("typeId")) {
+        if (call_.arguments.contains("featureType"))
             throw std::invalid_argument("Choose featureType or typeId");
-        auto id = arguments["typeId"].get<simfil::TypeId>();
+        auto id = call_.arguments["typeId"].get<simfil::TypeId>();
         if (!schema->mapSchema()->schemaType(id)) {
-            fail(
+            call_.fail(
                 "unknown_schema",
                 "The selected layer has no such typeId. Read mapget_query_schema "
                 "with the same mapId/layerId and no typeId to discover its current roots.");
@@ -622,20 +628,22 @@ void McpNativeTools::Call::querySchema()
         }
         roots.push_back(id);
     }
-    else if (layer_->type_ != LayerType::Features) {
+    else if (call_.layer_->type_ != LayerType::Features) {
         roots.push_back(schema->rootSchema());
     }
     else {
         for (auto const& type : types) {
             // A map-wide identity can exist without a produced root in this layer.
-            if (arguments.contains("featureType") && schema->getTypeInfo(type, false) &&
+            if (call_.arguments.contains("featureType") && schema->getTypeInfo(type, false) &&
                 !schema->producesFeatureType(type))
             {
-                if (arguments.contains("query") || arguments.contains("find")) {
-                    fail("unknown_feature_type", "This featureType is an identity-only reference.");
+                if (call_.arguments.contains("query") || call_.arguments.contains("find")) {
+                    call_.fail(
+                        "unknown_feature_type",
+                        "This featureType is an identity-only reference.");
                     return;
                 }
-                append(
+                call_.append(
                     {{"featureType", type},
                      {"typeId", nullptr},
                      {"contract", boundedJson(schema->featureTypeContract(type, reserveContract))},
@@ -644,7 +652,7 @@ void McpNativeTools::Call::querySchema()
             }
             auto id = schema->featureSchema(type);
             if (id == simfil::NoTypeId) {
-                fail(
+                call_.fail(
                     "unknown_feature_type",
                     "The selected layer has no schema root for this featureType. "
                     "Omit featureType to list its roots. Some reference-only identifier types "
@@ -654,7 +662,7 @@ void McpNativeTools::Call::querySchema()
             roots.push_back(id);
         }
     }
-    if (arguments.contains("find")) {
+    if (call_.arguments.contains("find")) {
         findSchema(roots, types);
         return;
     }
@@ -664,28 +672,28 @@ void McpNativeTools::Call::querySchema()
     environment(owner->strings());
     // These are metadata objects, not instances of the layer's feature type.
     env_->setSchema({});
-    for (size_t i = 0; i < roots.size() && step(); ++i) {
+    for (size_t i = 0; i < roots.size() && call_.step(); ++i) {
         auto id = roots[i];
         auto root = owner->typeNode(id);
         Json values;
-        if (arguments.contains("query")) {
+        if (call_.arguments.contains("query")) {
             // Explicit queries see the whole lazy graph, never the overview's projection.
-            values = evaluate(arguments["query"], *root, simfil::NoTypeId);
+            values = evaluate(call_.arguments["query"], *root, simfil::NoTypeId);
         }
         else {
             // Unfocused discovery is a type inventory. Opening a type/definition is shallow:
             // compound types remain directly followable $refs instead of exhausting a page.
             std::set<simfil::TypeId> expanded;
-            if (arguments.contains("featureType") || arguments.contains("typeId") ||
-                layer_->type_ != LayerType::Features)
+            if (call_.arguments.contains("featureType") || call_.arguments.contains("typeId") ||
+                call_.layer_->type_ != LayerType::Features)
                 expanded.insert(id);
-            if (arguments.contains("featureType")) {
+            if (call_.arguments.contains("featureType")) {
                 auto properties = owner->schemaType(id).fieldTypes(StringPool::PropertiesStr);
                 expanded.insert(properties.begin(), properties.end());
             }
             // Logical alternatives describe the same selected value position.
             std::vector<simfil::TypeId> pending(expanded.begin(), expanded.end());
-            while (!pending.empty() && step()) {
+            while (!pending.empty() && call_.step()) {
                 auto current = pending.back();
                 pending.pop_back();
                 for (auto alternative : owner->schemaType(current).alternatives())
@@ -696,57 +704,57 @@ void McpNativeTools::Call::querySchema()
             values = Json::array({schemaOverview(*root, expanded)});
         }
         Json item{{"typeId", id}, {"values", std::move(values)}};
-        if (arguments.contains("featureType") && !arguments.contains("query"))
+        if (call_.arguments.contains("featureType") && !call_.arguments.contains("query"))
             item["contract"] = boundedJson(schema->featureTypeContract(types[i], reserveContract));
-        if (!arguments.contains("typeId") && layer_->type_ == LayerType::Features)
+        if (!call_.arguments.contains("typeId") && call_.layer_->type_ == LayerType::Features)
             item["featureType"] = types[i];
-        else if (layer_->type_ != LayerType::Features)
-            item["layerId"] = layer_->layerId_;
-        if (!append(std::move(item)))
+        else if (call_.layer_->type_ != LayerType::Features)
+            item["layerId"] = call_.layer_->layerId_;
+        if (!call_.append(std::move(item)))
             break;
     }
 }
 
-void McpNativeTools::Call::findSchema(
+void McpMapgetTools::Call::Query::findSchema(
     std::vector<simfil::TypeId> const& roots,
     std::vector<std::string> const& types)
 {
-    auto schema = layer_->layerSchema();
+    auto schema = call_.layer_->layerSchema();
     simfil::EvaluationSummary summary;
     auto found = schema->find(
-        arguments.at("find").get<std::string>(),
+        call_.arguments.at("find").get<std::string>(),
         roots,
-        !arguments.contains("typeId") && layer_->type_ == LayerType::Features ?
+        !call_.arguments.contains("typeId") && call_.layer_->type_ == LayerType::Features ?
             std::span<std::string const>(types) :
             std::span<std::string const>{},
-        {.maxResults = limit_,
-         .maxWork = remainingWork_,
-         .deadline = deadline_,
-         .cancel = cancelled.get()},
-        remainingBytes_,
+        {.maxResults = call_.limit_,
+         .maxWork = call_.remainingWork_,
+         .deadline = call_.deadline_,
+         .cancel = call_.cancelled.get()},
+        call_.remainingBytes_,
         &summary);
-    remainingWork_ -= std::min(remainingWork_, summary.work);
-    if (!step(0)) {
-        discovery_ = std::move(found["discovery"]);
-        discovery_["returnedTypes"] = 0;
-        discovery_["omittedTypes"] = discovery_["matchedTypes"];
+    call_.remainingWork_ -= std::min(call_.remainingWork_, summary.work);
+    if (!call_.step(0)) {
+        call_.discovery_ = std::move(found["discovery"]);
+        call_.discovery_["returnedTypes"] = 0;
+        call_.discovery_["omittedTypes"] = call_.discovery_["matchedTypes"];
         return;
     }
     auto selection = Json{
-        {"layerId", arguments.at("layerId")},
-        {"mapSchemaId", layer_->schemaOwner()->schemaId()}};
+        {"layerId", call_.arguments.at("layerId")},
+        {"mapSchemaId", call_.layer_->schemaOwner()->schemaId()}};
     for (auto const* key : {"mapId", "sourceId", "mapFormat"})
-        if (arguments.contains(key))
-            selection[key] = arguments[key];
+        if (call_.arguments.contains(key))
+            selection[key] = call_.arguments[key];
     // Only this transport adapter knows tool argument names or recommends follow-up calls.
     for (auto const& root : found["rootMatches"]) {
         auto next = selection;
-        next["find"] = arguments["find"];
+        next["find"] = call_.arguments["find"];
         if (root.contains("featureType"))
             next["featureType"] = root["featureType"];
         else
             next["typeId"] = root["typeId"];
-        narrowing_.push_back({{"arguments", next}, {"matchedTypes", root["matchedTypes"]}});
+        call_.narrowing_.push_back({{"arguments", next}, {"matchedTypes", root["matchedTypes"]}});
     }
     for (auto& item : found["items"]) {
         try {
@@ -768,58 +776,59 @@ void McpNativeTools::Call::findSchema(
                         item["enum"]["literalCount"].get<size_t>());
                 item["enum"]["valuesArguments"] = std::move(read);
             }
-            if (roots.size() == 1 && narrowing_.size() < 8) {
+            if (roots.size() == 1 && call_.narrowing_.size() < 8) {
                 auto next = expand;
                 for (auto const& context : item["contexts"])
                     if (context.contains("attributeContext")) {
                         next["typeId"] = context["attributeContext"]["typeId"];
                         break;
                     }
-                next["find"] = arguments["find"];
+                next["find"] = call_.arguments["find"];
                 auto same = std::any_of(
-                    narrowing_.begin(),
-                    narrowing_.end(),
+                    call_.narrowing_.begin(),
+                    call_.narrowing_.end(),
                     [&](auto const& choice) { return choice["arguments"] == next; });
                 if (!same && next["typeId"] != roots.front())
-                    narrowing_.push_back({{"arguments", next}});
+                    call_.narrowing_.push_back({{"arguments", next}});
             }
-            if (!append(boundedJson(item)))
+            if (!call_.append(boundedJson(item)))
                 break;
         }
         catch (std::length_error const&) {
             break;
         }
     }
-    discovery_ = std::move(found["discovery"]);
-    discovery_["returnedTypes"] = items_.size();
-    discovery_["omittedTypes"] = discovery_["matchedTypes"].get<size_t>() - items_.size();
+    call_.discovery_ = std::move(found["discovery"]);
+    call_.discovery_["returnedTypes"] = call_.items_.size();
+    call_.discovery_["omittedTypes"] = call_.discovery_["matchedTypes"].get<size_t>() -
+        call_.items_.size();
     if (!found["complete"].get<bool>())
-        truncate(
+        call_.truncate(
             found["reason"] == "cancelled" ?
                 "cancelled_or_authority_expired" :
                 found["reason"].get<std::string>());
 }
 
-void McpNativeTools::Call::validateExpression()
+void McpMapgetTools::Call::Query::validateExpression()
 {
-    if (!selectSchemaLayer())
+    if (!call_.selectSchemaLayer())
         return;
     environment();
-    auto query = arguments.at("expression").get<std::string>();
-    auto schema = layer_->layerSchema();
+    auto query = call_.arguments.at("expression").get<std::string>();
+    auto schema = call_.layer_->layerSchema();
     Json item{
         {"valid", true},
         {"schemaAvailable", bool(schema)},
         {"runtimeValidated", false},
         {"contexts", Json::array()},
         {"normalizedExpression", query}};
-    auto scope = arguments.value("scope", "feature");
-    auto featureLayer = layer_->type_ == LayerType::Features;
+    auto scope = call_.arguments.value("scope", "feature");
+    auto featureLayer = call_.layer_->type_ == LayerType::Features;
     if (!featureLayer &&
-        (arguments.contains("featureType") || arguments.contains("attributeTypeId") ||
+        (call_.arguments.contains("featureType") || call_.arguments.contains("attributeTypeId") ||
          scope == "attribute"))
         throw std::invalid_argument("Feature/attribute context requires a feature layer");
-    if ((arguments.value("rewrite", false) || scope == "auto") && schema && featureLayer) {
+    if ((call_.arguments.value("rewrite", false) || scope == "auto") && schema && featureLayer) {
         auto normal = schema->normalizeSearchQuery(
             query,
             scope == "attribute" ? LayerSchema::SearchQueryRequestedScope::Attribute :
@@ -828,7 +837,7 @@ void McpNativeTools::Call::validateExpression()
         if (!normal) {
             item["valid"] = false;
             item["normalizationError"] = normal.error().message;
-            append(boundedJson(item));
+            call_.append(boundedJson(item));
             return;
         }
         query = normal->normalizedQuery_;
@@ -839,22 +848,22 @@ void McpNativeTools::Call::validateExpression()
         item["rewriteSuppressed"] = normal->rewriteSuppressed_;
         item["rewriteSuppressionReason"] = normal->rewriteSuppressionReason_;
     }
-    auto types = arguments.contains("featureType") ?
-        std::vector<std::string>{arguments["featureType"]} :
+    auto types = call_.arguments.contains("featureType") ?
+        std::vector<std::string>{call_.arguments["featureType"]} :
         schema && featureLayer ?
         schema->featureTypes() :
         std::vector<std::string>{""};
     std::set<std::pair<std::string, simfil::TypeId>> contexts;
     for (auto const& type : types) {
-        if (!step())
+        if (!call_.step())
             break;
         auto id = schema ?
             (featureLayer ? schema->featureSchema(type) : schema->rootSchema()) :
             simfil::NoTypeId;
-        if (arguments.contains("featureType") && schema &&
+        if (call_.arguments.contains("featureType") && schema &&
             (id == simfil::NoTypeId || !schema->producesFeatureType(type)))
         {
-            fail(
+            call_.fail(
                 "unknown_feature_type",
                 "The selected layer has no schema root for this featureType. "
                 "Use mapget_query_schema without featureType to list its roots. "
@@ -864,17 +873,17 @@ void McpNativeTools::Call::validateExpression()
         if (scope == "attribute" && schema) {
             bool found = false;
             for (auto const& attribute : schema->attributeScopes()) {
-                if (!step())
+                if (!call_.step())
                     break;
                 if (attribute.featureType_ != type ||
-                    (arguments.contains("attributeTypeId") &&
-                     arguments["attributeTypeId"] != attribute.attributeSchema_))
+                    (call_.arguments.contains("attributeTypeId") &&
+                     call_.arguments["attributeTypeId"] != attribute.attributeSchema_))
                     continue;
                 contexts
                     .emplace(type, schema->attributeQuerySchema(type, attribute.attributeSchema_));
                 found = true;
             }
-            if (!found && arguments.contains("attributeTypeId"))
+            if (!found && call_.arguments.contains("attributeTypeId"))
                 throw std::invalid_argument("attribute schema");
             if (!found)
                 contexts.emplace(type, simfil::NoTypeId);
@@ -882,7 +891,7 @@ void McpNativeTools::Call::validateExpression()
         else
             contexts.emplace(type, id);
     }
-    auto const offset = arguments.value("offset", size_t{0});
+    auto const offset = call_.arguments.value("offset", size_t{0});
     item["contextCount"] = contexts.size();
     item["contextOffset"] = offset;
     item["scope"] = scope;
@@ -891,23 +900,23 @@ void McpNativeTools::Call::validateExpression()
     for (auto const& [type, id] : contexts) {
         if (position++ < offset)
             continue;
-        if (item["contexts"].size() >= limit_) {
-            nextOffset_ = position - 1;
-            truncate("item_limit");
+        if (item["contexts"].size() >= call_.limit_) {
+            call_.nextOffset_ = position - 1;
+            call_.truncate("item_limit");
             break;
         }
-        if (!step())
+        if (!call_.step())
             break;
         auto ast = simfil::compile(
             *env_,
             query,
-            {.any = arguments.value("predicate", false),
+            {.any = call_.arguments.value("predicate", false),
              .rewriteMode = simfil::RewriteMode::Schema,
              .rootSchema = schema->mapSchema()->schemaType(id)});
         Json context{{"featureType", type}, {"typeId", id}, {"schemaCertain", false}};
         if (!featureLayer) {
             context.erase("featureType");
-            context["layerId"] = layer_->layerId_;
+            context["layerId"] = call_.layer_->layerId_;
         }
         if (!ast) {
             item["valid"] = false;
@@ -935,7 +944,7 @@ void McpNativeTools::Call::validateExpression()
             break;  // Keep successful context diagnostics when a later one exceeds the budget.
         }
     }
-    append(std::move(item));
+    call_.append(std::move(item));
 }
 
 }  // namespace mapget::detail

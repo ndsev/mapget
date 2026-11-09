@@ -1,5 +1,5 @@
 #include "../../libs/http-service/src/mcp-auth.h"
-#include "../../libs/http-service/src/mcp-native-tools.h"
+#include "../../libs/http-service/src/mcp-mapget-tools.h"
 #include "mapget/http-service/cli.h"
 #include "mapget/model/layerschema.h"
 #include "mapget/model/mapschema.h"
@@ -229,7 +229,7 @@ public:
     std::shared_ptr<NativeSource> source;
     detail::McpViewerRelay::Principal
         principal{"test", "reader", std::chrono::system_clock::now() + 1h, true, false};
-    std::shared_ptr<detail::McpNativeTools> tools;
+    std::shared_ptr<detail::McpMapgetTools> tools;
 
     /** Enable native contracts while retaining independent caller permissions. */
     explicit NativeFixture(
@@ -251,7 +251,7 @@ public:
     {
         if (tools)
             tools->stop();
-        tools = std::make_shared<detail::McpNativeTools>(
+        tools = std::make_shared<detail::McpMapgetTools>(
             service,
             config,
             []

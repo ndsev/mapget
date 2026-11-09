@@ -1,10 +1,60 @@
-#include "mcp-native-tools.h"
+#include "mcp-mapget-catalog.h"
+#include "mcp-action-catalog.h"
 #include "simfil/model/schema-type.h"
 
 namespace mapget::detail
 {
+using Json = nlohmann::json;
 
-void McpNativeTools::buildCatalog()
+Json McpMapgetTools::Catalog::tools(std::function<bool(std::string_view)> const& permitted) const
+{
+    auto result = Json::array();
+    for (auto const& [name, action] : actions_) {
+        if (permitted(name)) {
+            auto tool = action.tool;
+            tool["inputSchema"] =
+                McpActionCatalog::clientInputSchema(std::move(tool["inputSchema"]));
+            result.push_back(std::move(tool));
+        }
+    }
+    return result;
+}
+
+bool McpMapgetTools::Catalog::contains(std::string_view name) const
+{
+    return actions_.contains(name);
+}
+
+bool McpMapgetTools::Catalog::acceptsArguments(
+    std::string_view name,
+    Json const& value,
+    Json* issues) const
+{
+    try {
+        auto const& action = actions_.at(std::string(name));
+        return McpActionCatalog::validateArguments(
+            action.input,
+            action.tool.at("inputSchema"),
+            value,
+            issues);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool McpMapgetTools::Catalog::acceptsResult(std::string_view name, Json const& value) const
+{
+    try {
+        actions_.at(std::string(name)).output.validate(value);
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+McpMapgetTools::Catalog::Catalog()
 {
     using Json = nlohmann::json;
     auto string = [](size_t max = 512) -> Json
@@ -75,7 +125,9 @@ void McpNativeTools::buildCatalog()
     };
 
     add("mapget_docs",
-        "Search documentation and workflow examples by plain keywords, or read one exact returned "
+        "Search documentation and workflow examples by concise English keywords (omit "
+        "conversational "
+        "filler), or read one exact returned "
         "title. Returns Markdown for the top three matches and up to five further titles. "
         "An empty call lists sections. Use component to restrict to classicsource, livesource, "
         "mapget, erdblick, mapviewer or simfil; offset/nextOffset page matches. "
@@ -434,12 +486,14 @@ void McpNativeTools::buildCatalog()
         "Search the offline Who's On First gazetteer by name. Returns stable wof: IDs, place "
         "types, WGS84 longitude/latitude, bounds and geometry availability, without loading "
         "polygons. Use mapget_get_place_geometry only when the full boundary is needed.",
-        {{"name", string(200)}}, {"name"});
+        {{"name", string(200)}},
+        {"name"});
     add("mapget_get_place_geometry",
         "Resolve a stable wof: place ID, including its complete GeoJSON Polygon/MultiPolygon "
         "when available. Point-only records never fabricate a polygon. Large boundaries may "
         "exceed response budgets; an incomplete response retains metadata, never a partial ring.",
-        {{"id", string(64)}}, {"id"});
+        {{"id", string(64)}},
+        {"id"});
     for (auto& [_, action] : actions_) {
         McpActionCatalog::compileSchema(action.input, action.tool["inputSchema"]);
         McpActionCatalog::compileSchema(action.output, action.tool["outputSchema"]);

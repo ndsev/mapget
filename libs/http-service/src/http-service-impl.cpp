@@ -48,7 +48,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
     // Validate trust/catalog and establish borrowed collectors before maintenance threads start.
     if (config_.mcp.mode != McpConfig::Mode::Off) {
-        auto native = std::make_shared<detail::McpNativeTools>(
+        auto native = std::make_shared<detail::McpMapgetTools>(
             self_,
             config_.mcp,
             [this] { return statusSnapshot(); },

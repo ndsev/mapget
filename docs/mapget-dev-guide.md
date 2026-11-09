@@ -84,7 +84,7 @@ describe owner-retaining access from bindings.
 
 Service statistics count each registered `MapSchema` owner once, including its
 dictionary, type columns and indexes; small metadata snapshots are counted
-separately. Partition counters include qualified scalars, bitmasks and schema
+separately. Partition counters include typed scalars, bitmasks and schema
 binding tables. These are capacity-based lower bounds, not a complete heap census:
 binding wrapper/control-block allocations, temporary construction/codec buffers
 and graphs retained only by retired partitions or clients are not fully attributed.
@@ -692,10 +692,16 @@ MCP transport/authorization is separate from tile scheduling; native execution r
   authenticates each call, installs the MCP/info/metadata routes, marshals
   WebSocket lifecycle events, drives deadlines, and owns bounded asynchronous
   POST streams. It does not own a second viewer-session identity or tile work queue.
-- `mcp-native-tools.*` owns native contracts, permission checks and bounded admission;
-  its private `Call` owns query state and a single outstanding partition request.
-  `mcp-native-catalog.cpp`, `mcp-native-query.cpp`, and `mcp-native-extract.cpp`
-  implement the catalog, shared bounded simfil/JSON evaluation, and partition traversal.
+- `mcp-mapget-tools.*` owns permission checks, bounded admission and shutdown.
+  Its nested `Catalog` in `mcp-mapget-catalog.*` owns the immutable mapget tool
+  definitions and compiled validators. `Call` in `mcp-mapget-call.*` owns one
+  invocation's authority, budgets, result and completion. Each call owns a
+  `Query` in `mcp-mapget-query.*` for private simfil state and bounded conversion;
+  extraction calls additionally own an `Extraction` in `mcp-mapget-extraction.*`
+  for scan position, continuation state and one outstanding partition request.
+  Every implementation owner has a matching header/source pair. Child callbacks
+  lock a weak reference to the enclosing Call, so no independent query/extraction
+  lifetime or back-reference ownership cycle is introduced.
   Metadata operations use `Service::scheduleTask` on homogeneous workers; callbacks
   must never synchronously wait for another service job. Extraction evaluates the
   delivering worker's model before advancing to the next partition. No second pool
