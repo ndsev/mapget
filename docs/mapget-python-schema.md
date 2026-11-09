@@ -201,7 +201,7 @@ and `scope` contains admitted provider partition keys, including providers retur
 matches. `complete` is scoped to those providers, never a claim about the whole map.
 `from_json()` validates the version and status/completeness consistency.
 
-MCP projections use an explicit qualified-scalar envelope; see
+MCP projections use an explicit typed-scalar envelope; see
 [the MCP value contract](mapget-mcp.md#results-and-budgets).
 
 ## Validation

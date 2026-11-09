@@ -278,7 +278,7 @@ MemoryUsageBreakdown PartitionSourceDataLayer::memoryUsage() const
     result.add("model-pool.object-schemas", model.objectSchemas);
     result.add("model-pool.array-members", model.arrayMembers);
     result.add("model-pool.array-schemas", model.arraySchemas);
-    result.add("model-pool.qualified-scalars", model.qualifiedScalars);
+    result.add("model-pool.typed-scalars", model.typedScalars);
     result.add("model-pool.bitmasks", model.bitmasks);
     result.add("model-pool.schema-owners", model.schemaOwners);
     result.add("source-data.compounds", impl_->compounds_.memory_usage());

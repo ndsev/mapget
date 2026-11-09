@@ -44,58 +44,61 @@ namespace bitsery
 {
 
 template <typename S>
-void serialize(S& s, glm::vec3& v) {
+void serialize(S& s, glm::vec3& v)
+{
     s.value4b(v.x);
     s.value4b(v.y);
     s.value4b(v.z);
 }
 
-}
+}  // namespace bitsery
 
 namespace
 {
-    using GeometryPointBufferArena =
-        simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize * 2>;
+using GeometryPointBufferArena = simfil::ArrayArena<glm::vec3, simfil::detail::ColumnPageSize * 2>;
 
-    void checkModelNodeIndex(size_t index)
-    {
-        if (!simfil::ModelNodeAddress::checkIndex(index))
-            mapget::raise<std::length_error>("Model node index exceeds its 24-bit representation");
-    }
-
-    template <typename Arena>
-    simfil::ArrayIndex newModelArray(Arena& arena, size_t capacity, bool fixedSize)
-    {
-        if (!arena.check_capacity(capacity, fixedSize))
-            mapget::raise<std::length_error>("Array capacity exceeds model storage representation");
-        return arena.new_array(capacity, fixedSize);
-    }
-
-    /**
-     * Views into the sourceDataAddresses_ array are stored as a single u32, which
-     * uses 20 bits for the index and 4 bits for the length.
-     */
-    constexpr uint32_t SourceAddressArenaIndexBits = 20;
-    constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
-    constexpr uint32_t SourceAddressArenaSizeBits  = 4;
-    constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaSizeBits);
-    std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
-    {
-        const auto index = addr >> SourceAddressArenaSizeBits;
-        const auto size = addr & SourceAddressArenaSizeMax;
-
-        return {index, size};
-    }
-
-    uint32_t sourceDataAddressListToModelAddress(uint32_t index, uint32_t size)
-    {
-        if (index > SourceAddressArenaIndexMax)
-            throw std::out_of_range("Index out of range");
-        if (size > SourceAddressArenaIndexMax)
-            throw std::out_of_range("Size out of range");
-        return (index << SourceAddressArenaSizeBits) | size;
-    }
+void checkModelNodeIndex(size_t index)
+{
+    if (!simfil::ModelNodeAddress::checkIndex(index))
+        mapget::raise<std::length_error>("Model node index exceeds its 24-bit representation");
 }
+
+template <typename Arena>
+simfil::ArrayIndex newModelArray(Arena& arena, size_t capacity, bool fixedSize)
+{
+    if (!arena.check_capacity(capacity, fixedSize))
+        mapget::raise<std::length_error>("Array capacity exceeds model storage representation");
+    return arena.new_array(capacity, fixedSize);
+}
+
+/**
+ * Views into the sourceDataAddresses_ array are stored as a single u32, which
+ * uses 20 bits for the index and 4 bits for the length.
+ */
+constexpr uint32_t SourceAddressArenaIndexBits = 20;
+constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >>
+    (32 - SourceAddressArenaIndexBits);
+constexpr uint32_t SourceAddressArenaSizeBits = 4;
+constexpr uint32_t SourceAddressArenaSizeMax = (~static_cast<uint32_t>(0)) >>
+    (32 - SourceAddressArenaSizeBits);
+
+std::tuple<size_t, size_t> modelAddressToSourceDataAddressList(uint32_t addr)
+{
+    const auto index = addr >> SourceAddressArenaSizeBits;
+    const auto size = addr & SourceAddressArenaSizeMax;
+
+    return {index, size};
+}
+
+uint32_t sourceDataAddressListToModelAddress(uint32_t index, uint32_t size)
+{
+    if (index > SourceAddressArenaIndexMax)
+        throw std::out_of_range("Index out of range");
+    if (size > SourceAddressArenaIndexMax)
+        throw std::out_of_range("Size out of range");
+    return (index << SourceAddressArenaSizeBits) | size;
+}
+}  // namespace
 
 namespace mapget
 {
@@ -105,40 +108,29 @@ namespace
 bool isBufferedGeometryColumn(uint8_t column)
 {
     using Col = PartitionFeatureLayer::ColumnId;
-    return column == Col::LineGeometries ||
-           column == Col::PolygonGeometries ||
-           column == Col::MeshGeometries ||
-           column == Col::AabbGeometries ||
-           column == Col::GltfNodeIndexGeometries;
+    return column == Col::LineGeometries || column == Col::PolygonGeometries ||
+        column == Col::MeshGeometries || column == Col::AabbGeometries ||
+        column == Col::GltfNodeIndexGeometries;
 }
 
 bool isBaseGeometryColumn(uint8_t column)
 {
     using Col = PartitionFeatureLayer::ColumnId;
-    return column == Col::PointGeometries ||
-           column == Col::GltfNodeIndexGeometries ||
-           isBufferedGeometryColumn(column);
+    return column == Col::PointGeometries || column == Col::GltfNodeIndexGeometries ||
+        isBufferedGeometryColumn(column);
 }
 
 GeomType geometryTypeForColumn(uint8_t column)
 {
     using Col = PartitionFeatureLayer::ColumnId;
     switch (column) {
-    case Col::PointGeometries:
-        return GeomType::Points;
-    case Col::LineGeometries:
-        return GeomType::Line;
-    case Col::PolygonGeometries:
-        return GeomType::Polygon;
-    case Col::MeshGeometries:
-        return GeomType::Mesh;
-    case Col::AabbGeometries:
-        return GeomType::AABB;
-    case Col::GltfNodeIndexGeometries:
-        return GeomType::GltfNodeIndex;
-    default:
-        raiseFmt("Unexpected geometry column {}.", column);
-        return GeomType::Points;
+    case Col::PointGeometries: return GeomType::Points;
+    case Col::LineGeometries: return GeomType::Line;
+    case Col::PolygonGeometries: return GeomType::Polygon;
+    case Col::MeshGeometries: return GeomType::Mesh;
+    case Col::AabbGeometries: return GeomType::AABB;
+    case Col::GltfNodeIndexGeometries: return GeomType::GltfNodeIndex;
+    default: raiseFmt("Unexpected geometry column {}.", column); return GeomType::Points;
     }
 }
 
@@ -153,7 +145,6 @@ void ensureGeometrySourceRefCapacity(
         refs.emplace_back(simfil::ModelNodeAddress{});
     }
 }
-
 
 uint32_t extraGeometryDataStorageIndex(simfil::ArrayIndex geometryIndex)
 {
@@ -195,7 +186,7 @@ void ensureFeatureComplexDataRefCapacity(
         refs.emplace_back(simfil::ModelNodeAddress{});
     }
 }
-}
+}  // namespace
 
 struct PartitionFeatureLayer::Impl
 {
@@ -204,15 +195,18 @@ struct PartitionFeatureLayer::Impl
     std::optional<std::string> glbAttachmentName_;
 
     simfil::ModelColumn<Feature::BasicData, simfil::detail::ColumnPageSize / 4> features_;
-    simfil::ModelColumn<Feature::ComplexData, simfil::detail::ColumnPageSize / 4> complexFeatureData_;
-    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2> complexFeatureDataRefs_;
+    simfil::ModelColumn<Feature::ComplexData, simfil::detail::ColumnPageSize / 4>
+        complexFeatureData_;
+    simfil::ModelColumn<simfil::ModelNodeAddress, simfil::detail::ColumnPageSize / 2>
+        complexFeatureDataRefs_;
     simfil::ModelColumn<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
     simfil::ModelColumn<Validity::Data, simfil::detail::ColumnPageSize> validities_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
     simfil::ModelColumn<AttrPoint::Data, simfil::detail::ColumnPageSize> attrPoints_;
-    simfil::ModelColumn<AttrPointSequence::Data, simfil::detail::ColumnPageSize> attrPointSequences_;
+    simfil::ModelColumn<AttrPointSequence::Data, simfil::detail::ColumnPageSize>
+        attrPointSequences_;
 
     /** Shared insertion/lookup index; equal hashes still require full identity comparison. */
     std::unordered_multimap<uint32_t, ModelNodeAddress> featureHashIndex_;
@@ -293,19 +287,17 @@ struct PartitionFeatureLayer::Impl
     }
 
     // (De-)Serialization
-    template<typename S>
-    void readWrite(S& s) {
+    template <typename S>
+    void readWrite(S& s)
+    {
         s.value8b(geometryAnchor_.x);
         s.value8b(geometryAnchor_.y);
         s.value8b(geometryAnchor_.z);
         s.ext(
             glbAttachmentName_,
             bitsery::ext::StdOptional{},
-            [](S& serializer, std::string& name) {
-                serializer.text1b(
-                    name,
-                    std::numeric_limits<uint32_t>::max());
-            });
+            [](S& serializer, std::string& name)
+            { serializer.text1b(name, std::numeric_limits<uint32_t>::max()); });
         s.object(features_);
         s.object(complexFeatureData_);
         s.object(complexFeatureDataRefs_);
@@ -395,7 +387,8 @@ PartitionFeatureLayer::PartitionFeatureLayer(
         if (declared == simfil::NoTypeId)
             raise("Explicit feature schema has no declared feature type.");
         // Custom feature records are outside ModelPool's generic container-schema columns.
-        (void)checkedContainerSchema(feature.typeId_.schemaId_, declared, simfil::ValueType::Object);
+        (void)
+            checkedContainerSchema(feature.typeId_.schemaId_, declared, simfil::ValueType::Object);
     }
 }
 
@@ -471,22 +464,26 @@ namespace
 /**
  * Create a string representation of the given id parts.
  */
-std::string idPartsToString(KeyValueViewPairs const& idParts) {
+std::string idPartsToString(KeyValueViewPairs const& idParts)
+{
     fmt::memory_buffer result;
     fmt::format_to(std::back_inserter(result), FMT_STRING("{{"));
     for (auto i = 0; i < idParts.size(); ++i) {
         if (i > 0) {
             fmt::format_to(std::back_inserter(result), FMT_STRING(", "));
         }
-        std::visit([&result, key = idParts[i].first](auto&& value){
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, bool>) {
-                fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {:d}"), key, value);
-            }
-            else {
-                fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {}"), key, value);
-            }
-        }, idParts[i].second);
+        std::visit(
+            [&result, key = idParts[i].first](auto&& value)
+            {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, bool>) {
+                    fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {:d}"), key, value);
+                }
+                else {
+                    fmt::format_to(std::back_inserter(result), FMT_STRING("{}: {}"), key, value);
+                }
+            },
+            idParts[i].second);
     }
     fmt::format_to(std::back_inserter(result), FMT_STRING("}}"));
     return fmt::to_string(result);
@@ -550,9 +547,7 @@ simfil::ArrayIndex idPartValuesToArrayIndex(
         auto const& idPart = composition.parts()[compositionIndex];
         if (idPartsIter != idParts.end() && idPart.name() == idPartsIter->first) {
             idValues->append(std::visit(
-                [&](auto&& v) -> simfil::ModelNode::Ptr {
-                    return layer.newValue(v);
-                },
+                [&](auto&& v) -> simfil::ModelNode::Ptr { return layer.newValue(v); },
                 idPartsIter->second));
             ++idPartsIter;
             continue;
@@ -564,10 +559,9 @@ simfil::ArrayIndex idPartValuesToArrayIndex(
                 idPart.name());
         }
 
-        idValues->append(
-            layer.resolve<simfil::ModelNode>(
-                simfil::ModelNodeAddress{simfil::Model::Null, 1},
-                simfil::ScalarValueType{}));
+        idValues->append(layer.resolve<simfil::ModelNode>(
+            simfil::ModelNodeAddress{simfil::Model::Null, 1},
+            simfil::ScalarValueType{}));
     }
 
     if (idPartsIter != idParts.end()) {
@@ -604,12 +598,13 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
                 [&](auto&& v)
                 {
                     using T = std::decay_t<decltype(v)>;
-                    if constexpr (std::is_same_v<T, std::monostate> ||
-                                  std::is_same_v<T, double> ||
-                                  std::is_same_v<T, simfil::ByteArray>) {
+                    if constexpr (
+                        std::is_same_v<T, std::monostate> || std::is_same_v<T, double> ||
+                        std::is_same_v<T, simfil::ByteArray>)
+                    {
                     }
-                    else if constexpr (std::is_same_v<T, std::string_view> ||
-                                       std::is_same_v<T, std::string>) {
+                    else if constexpr (
+                        std::is_same_v<T, std::string_view> || std::is_same_v<T, std::string>) {
                         fullFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
                         prefixFeatureIdParts.emplace_back(*keyStr, std::string_view(v));
                     }
@@ -623,7 +618,8 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
     }
     // Validation runs against the full logical feature id, even though only the
     // non-prefix suffix is materialized into the compact feature storage.
-    fullFeatureIdParts.insert(fullFeatureIdParts.end(), featureIdParts.begin(), featureIdParts.end());
+    fullFeatureIdParts
+        .insert(fullFeatureIdParts.end(), featureIdParts.begin(), featureIdParts.end());
 
     if (!layerInfo_->validFeatureId(typeId, fullFeatureIdParts, true)) {
         raise(fmt::format(
@@ -635,20 +631,20 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
     if (auto existing = find(typeId, fullFeatureIdParts)) {
         throw DuplicateFeatureIdError(fmt::format(
             "Duplicate feature ID '{}' of type '{}' with rejected parts {} in partition '{}'.",
-            existing->id()->toString(), typeId, idPartsToString(fullFeatureIdParts),
+            existing->id()->toString(),
+            typeId,
+            idPartsToString(fullFeatureIdParts),
             partitionKey().toString()));
     }
     auto const& primaryIdComposition = getPrimaryIdComposition(typeId);
+
     // Stored feature ids omit the common tile prefix to save space, so we first
     // determine where the feature-local suffix starts within the composition.
     auto const localStartIndex = prefixFeatureIdParts.empty() ?
         0U :
         *primaryIdComposition.matchEndIndex(0, prefixFeatureIdParts, prefixFeatureIdParts.size());
-    auto idPartValues = idPartValuesToArrayIndex(
-        *this,
-        primaryIdComposition,
-        featureIdParts,
-        localStartIndex);
+    auto idPartValues =
+        idPartValuesToArrayIndex(*this, primaryIdComposition, featureIdParts, localStartIndex);
     auto res = strings()->emplace(typeId);
     if (!res)
         raise(res.error().message);
@@ -668,13 +664,13 @@ simfil::model_ptr<Feature> PartitionFeatureLayer::newFeature(
         mpKey_);
 
     // Add feature hash index entry.
-    auto fullStrippedFeatureId = stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
+    auto fullStrippedFeatureId =
+        stripOptionalIdParts(result.id()->keyValuePairs(), primaryIdComposition);
     auto hash = static_cast<uint32_t>(Hash().mix(typeId).mix(fullStrippedFeatureId).value());
     impl_->featureHashIndex_.emplace(hash, result.addr());
 
-    // Note: Here we rely on the assertion that the root_ collection
-    // contains only references to feature nodes, in the order
-    // of the feature node column.
+    // Procedural feature views use the root ordinal as the feature-column index;
+    // append roots in the same order as feature storage and do not add other roots.
     addRoot(ModelNode::Ptr(result));
     setInfo("Size/Features#features", numRoots());
     return result;
@@ -688,10 +684,8 @@ PartitionFeatureLayer::newRelation(const std::string_view& name, const model_ptr
     if (!nameStringId)
         raise(nameStringId.error().message);
     checkModelNodeIndex(impl_->relations_.size());
-    impl_->relations_.emplace_back(Relation::Data{
-        .name_ = *nameStringId,
-        .targetFeatureId_ = target->addr()
-    });
+    impl_->relations_
+        .emplace_back(Relation::Data{.name_ = *nameStringId, .targetFeatureId_ = target->addr()});
     return Relation(
         &impl_->relations_.back(),
         shared_from_this(),
@@ -739,10 +733,12 @@ model_ptr<AttrPointSequence> PartitionFeatureLayer::newAttrPointSequence(
 
     bool geometryBelongsToFeature = false;
     if (auto geometries = feature->geomOrNull()) {
-        geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-            geometryBelongsToFeature = candidate->addr().value_ == geometry->addr().value_;
-            return !geometryBelongsToFeature;
-        });
+        geometries->forEachGeometry(
+            [&](model_ptr<Geometry> const& candidate)
+            {
+                geometryBelongsToFeature = candidate->addr().value_ == geometry->addr().value_;
+                return !geometryBelongsToFeature;
+            });
     }
     if (!geometryBelongsToFeature) {
         raise("AttrPointSequence geometry must already be attached to its feature.");
@@ -774,10 +770,7 @@ model_ptr<AttrPointSequence> PartitionFeatureLayer::attrPointSequenceAt(uint32_t
             index,
             impl_->attrPointSequences_.size());
     }
-    return AttrPointSequence(
-        shared_from_this(),
-        {ColumnId::AttrPointSequences, index},
-        mpKey_);
+    return AttrPointSequence(shared_from_this(), {ColumnId::AttrPointSequences, index}, mpKey_);
 }
 
 AttrPoint::Data const& PartitionFeatureLayer::attrPointData(uint32_t index) const
@@ -819,23 +812,22 @@ model_ptr<AttrPoint> PartitionFeatureLayer::appendAttrPoint(
     }
     auto& sequence = attrPointSequenceData(sequenceIndex);
     if (sequence.firstAttrPoint_ + sequence.attrPointCount_ != impl_->attrPoints_.size()) {
-        raise(
-            "AttrPoints must be appended before another AttrPointSequence starts using storage.");
+        raise("AttrPoints must be appended before another AttrPointSequence starts using storage.");
     }
     if (logicalIndex == 0) {
         raise("AttrPoint cannot replace the first geometry shape point.");
     }
     if (sequence.attrPointCount_ > 0) {
-        auto const& previous = impl_->attrPoints_.at(
-            sequence.firstAttrPoint_ + sequence.attrPointCount_ - 1U);
+        auto const& previous =
+            impl_->attrPoints_.at(sequence.firstAttrPoint_ + sequence.attrPointCount_ - 1U);
         if (logicalIndex <= previous.index_) {
             raise("AttrPoints must be appended in strictly increasing logical-index order.");
         }
     }
 
     auto const geometry = resolve<Geometry>(sequence.geometry_);
-    auto const maximumInteriorIndex =
-        static_cast<uint64_t>(geometry->numPoints()) + sequence.attrPointCount_ - 1U;
+    auto const maximumInteriorIndex = static_cast<uint64_t>(geometry->numPoints()) +
+        sequence.attrPointCount_ - 1U;
     if (logicalIndex > maximumInteriorIndex) {
         raiseFmt(
             "AttrPoint index {} is outside the interwoven sequence's interior range 1..{}.",
@@ -848,17 +840,15 @@ model_ptr<AttrPoint> PartitionFeatureLayer::appendAttrPoint(
     checkModelNodeIndex(impl_->attrPoints_.size());
     impl_->attrPoints_.emplace_back(AttrPoint::Data{
         .index_ = logicalIndex,
-        .point_ = glm::fvec3{
-            static_cast<float>(point.x - anchor.x),
-            static_cast<float>(point.y - anchor.y),
-            static_cast<float>(point.z - anchor.z)},
+        .point_ =
+            glm::fvec3{
+                static_cast<float>(point.x - anchor.x),
+                static_cast<float>(point.y - anchor.y),
+                static_cast<float>(point.z - anchor.z)},
         .sourceData_ = sourceData ? sourceData->addr() : ModelNodeAddress{},
     });
     ++sequence.attrPointCount_;
-    return AttrPoint(
-        shared_from_this(),
-        {ColumnId::AttrPoints, pointIndex},
-        mpKey_);
+    return AttrPoint(shared_from_this(), {ColumnId::AttrPoints, pointIndex}, mpKey_);
 }
 
 model_ptr<Object> PartitionFeatureLayer::getIdPrefix()
@@ -900,7 +890,8 @@ PartitionFeatureLayer::newAttributeLayer(size_t initialCapacity, bool fixedSize)
 {
     auto layerIndex = impl_->attrLayers_.size();
     checkModelNodeIndex(impl_->attrLayers_.size());
-    impl_->attrLayers_.emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
+    impl_->attrLayers_
+        .emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
     return AttributeLayer(
         impl_->attrLayers_.back(),
         shared_from_this(),
@@ -913,7 +904,8 @@ PartitionFeatureLayer::newAttributeLayers(size_t initialCapacity, bool fixedSize
 {
     auto listIndex = impl_->attrLayerLists_.size();
     checkModelNodeIndex(impl_->attrLayerLists_.size());
-    impl_->attrLayerLists_.emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
+    impl_->attrLayerLists_
+        .emplace_back(newModelArray(objectMemberStorage(), initialCapacity, fixedSize));
     return AttributeLayerList(
         impl_->attrLayerLists_.back(),
         shared_from_this(),
@@ -936,8 +928,7 @@ PartitionFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity, bo
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
 
-    auto makeGeometry =
-        [this](uint8_t column, simfil::ArrayIndex vertexArray)
+    auto makeGeometry = [this](uint8_t column, simfil::ArrayIndex vertexArray)
     {
         auto const geometryAddress =
             simfil::ModelNodeAddress{column, static_cast<uint32_t>(vertexArray)};
@@ -949,28 +940,23 @@ PartitionFeatureLayer::newGeometry(GeomType geomType, size_t initialCapacity, bo
         auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PointGeometries, vertexArray);
     }
-    case GeomType::Line:
-    {
+    case GeomType::Line: {
         auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::LineGeometries, vertexArray);
     }
-    case GeomType::Polygon:
-    {
+    case GeomType::Polygon: {
         auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::PolygonGeometries, vertexArray);
     }
-    case GeomType::Mesh:
-    {
+    case GeomType::Mesh: {
         auto const vertexArray = newModelArray(pointBuffers_, initialCapacity, fixedSize);
         return makeGeometry(ColumnId::MeshGeometries, vertexArray);
     }
-    case GeomType::AABB:
-    {
+    case GeomType::AABB: {
         auto const vertexArray = newModelArray(pointBuffers_, 2, true);
         return makeGeometry(ColumnId::AabbGeometries, vertexArray);
     }
-    case GeomType::GltfNodeIndex:
-    {
+    case GeomType::GltfNodeIndex: {
         auto const vertexArray = newModelArray(pointBuffers_, 3, true);
         return makeGeometry(ColumnId::GltfNodeIndexGeometries, vertexArray);
     }
@@ -1010,9 +996,13 @@ model_ptr<SourceDataReferenceCollection> PartitionFeatureLayer::newSourceDataRef
 
     arena.insert(arena.end(), list.begin(), list.end());
 
-    return {
-    SourceDataReferenceCollection(index, size, shared_from_this(),
-        ModelNodeAddress(ColumnId::SourceDataReferenceCollections, sourceDataAddressListToModelAddress(index, size)),
+    return {SourceDataReferenceCollection(
+        index,
+        size,
+        shared_from_this(),
+        ModelNodeAddress(
+            ColumnId::SourceDataReferenceCollections,
+            sourceDataAddressListToModelAddress(index, size)),
         mpKey_)};
 }
 
@@ -1137,10 +1127,7 @@ resolveInternal(tag<RelationArrayView>, PartitionFeatureLayer const& model, Mode
     if (node.addr().column() != PartitionFeatureLayer::ColumnId::FeatureRelationsView)
         raise("Cannot cast this node to a RelationArrayView.");
 
-    auto result = RelationArrayView(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    auto result = RelationArrayView(model.shared_from_this(), node.addr(), model.mpKey_);
     return result;
 }
 
@@ -1151,7 +1138,8 @@ model_ptr<FeatureId> PartitionFeatureLayer::resolveFeatureIdNode(ModelNode const
         auto const featureIndex = node.addr().index();
         if (featureIndex >= impl_->features_.size()) {
             raiseFmt(
-                "Cannot cast FeatureIds node {} to a FeatureId: feature index out of range ({} features).",
+                "Cannot cast FeatureIds node {} to a FeatureId: feature index out of range ({} "
+                "features).",
                 featureIndex,
                 impl_->features_.size());
         }
@@ -1172,18 +1160,14 @@ model_ptr<FeatureId> PartitionFeatureLayer::resolveFeatureIdNode(ModelNode const
         auto const featureIdIndex = node.addr().index();
         if (featureIdIndex >= featureIds_.size()) {
             raiseFmt(
-                "Cannot cast ExternalFeatureIds node {} to a FeatureId: external feature-id index out of range ({} feature ids).",
+                "Cannot cast ExternalFeatureIds node {} to a FeatureId: external feature-id index "
+                "out of range ({} feature ids).",
                 featureIdIndex,
                 featureIds_.size());
         }
-        return FeatureId(
-            featureIds_.at(featureIdIndex),
-            shared_from_this(),
-            node.addr(),
-            mpKey_);
+        return FeatureId(featureIds_.at(featureIdIndex), shared_from_this(), node.addr(), mpKey_);
     }
-    default:
-        raise("Cannot cast this node to a FeatureId.");
+    default: raise("Cannot cast this node to a FeatureId.");
     }
 }
 
@@ -1210,10 +1194,7 @@ resolveInternal(tag<RelationReference>, PartitionFeatureLayer const& model, Mode
         raise("Cannot cast this node to a RelationReference.");
     if (node.addr().index() >= model.impl_->relations_.size())
         raise("RelationReference target index is out of range.");
-    return RelationReference(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    return RelationReference(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
 template <>
@@ -1270,7 +1251,8 @@ resolveInternal(tag<AttrPointIndex>, PartitionFeatureLayer const& model, ModelNo
         raise("Cannot cast this node to an AttrPointIndex.");
     }
     if (node.addr().index() >= model.impl_->validities_.size() ||
-        model.impl_->validities_.at(node.addr().index()).geomDescrType_ != Validity::AttrPointIndexValidity)
+        model.impl_->validities_.at(node.addr().index()).geomDescrType_ !=
+            Validity::AttrPointIndexValidity)
     {
         raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
     }
@@ -1285,7 +1267,8 @@ resolveInternal(tag<AttrPointIndexRange>, PartitionFeatureLayer const& model, Mo
         raise("Cannot cast this node to an AttrPointIndexRange.");
     }
     if (node.addr().index() >= model.impl_->validities_.size() ||
-        model.impl_->validities_.at(node.addr().index()).geomDescrType_ != Validity::AttrPointIndexRangeValidity)
+        model.impl_->validities_.at(node.addr().index()).geomDescrType_ !=
+            Validity::AttrPointIndexRangeValidity)
     {
         raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
     }
@@ -1296,15 +1279,11 @@ model_ptr<PointNode> PartitionFeatureLayer::resolvePointNode(ModelNode const& no
 {
     switch (node.addr().column()) {
     case PartitionFeatureLayer::ColumnId::Points:
-        return PointNode(
-            node,
-            static_cast<simfil::ArrayIndex>(node.addr().index()),
-            mpKey_);
+        return PointNode(node, static_cast<simfil::ArrayIndex>(node.addr().index()), mpKey_);
     case PartitionFeatureLayer::ColumnId::ValidityPoints:
         return PointNode(node, &impl_->validities_.at(node.addr().index()), mpKey_);
     case PartitionFeatureLayer::ColumnId::GeometryPointView: return PointNode(node, mpKey_);
-    default:
-        raise("Cannot cast this node to a Point.");
+    default: raise("Cannot cast this node to a Point.");
     }
 }
 
@@ -1317,7 +1296,8 @@ resolveInternal(tag<Validity>, PartitionFeatureLayer const& model, ModelNode con
         auto const validityIndex = node.addr().index();
         if (validityIndex >= model.impl_->validities_.size()) {
             raiseFmt(
-                "Cannot cast Validities node {} to a Validity: validity index out of range ({} validities).",
+                "Cannot cast Validities node {} to a Validity: validity index out of range ({} "
+                "validities).",
                 validityIndex,
                 model.impl_->validities_.size());
         }
@@ -1341,8 +1321,7 @@ resolveInternal(tag<Validity>, PartitionFeatureLayer const& model, ModelNode con
             node.runtimeData(),
             model.mpKey_);
     }
-    default:
-        raise("Cannot cast this node to a Validity.");
+    default: raise("Cannot cast this node to a Validity.");
     }
 }
 
@@ -1355,13 +1334,9 @@ PartitionFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveF
         return owner->resolve(n, cb);
     }
 
-    switch (n.addr().column())
-    {
-    case ColumnId::Features:
-        cb(*resolve<Feature>(n));
-        return {};
-    case ColumnId::FeatureProperties:
-    {
+    switch (n.addr().column()) {
+    case ColumnId::Features: cb(*resolve<Feature>(n)); return {};
+    case ColumnId::FeatureProperties: {
         auto rootResult = root(n.addr().index());
         if (!rootResult || !*rootResult) {
             raise("FeatureProperties index out of bounds.");
@@ -1369,120 +1344,56 @@ PartitionFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveF
         cb(Feature::FeaturePropertyView(resolve<Feature>(**rootResult), mpKey_));
         return {};
     }
-    case ColumnId::FeatureRelationsView:
-        cb(*resolve<RelationArrayView>(n));
-        return {};
-    case ColumnId::FeatureGeometryCollectionView:
-        cb(*resolve<GeometryCollection>(n));
-        return {};
-    case ColumnId::FeatureGeometryArrayView:
-        cb(*resolve<GeometryArrayView>(n));
-        return {};
-    case ColumnId::FeatureAttributeLayerListView:
-        cb(*resolve<AttributeLayerList>(n));
-        return {};
+    case ColumnId::FeatureRelationsView: cb(*resolve<RelationArrayView>(n)); return {};
+    case ColumnId::FeatureGeometryCollectionView: cb(*resolve<GeometryCollection>(n)); return {};
+    case ColumnId::FeatureGeometryArrayView: cb(*resolve<GeometryArrayView>(n)); return {};
+    case ColumnId::FeatureAttributeLayerListView: cb(*resolve<AttributeLayerList>(n)); return {};
     case ColumnId::FeatureIds:
-    case ColumnId::ExternalFeatureIds:
-        cb(*resolve<FeatureId>(n));
-        return {};
-    case ColumnId::Attributes:
-        cb(*resolve<Attribute>(n));
-        return {};
-    case ColumnId::AttributeLayers:
-        cb(*resolve<AttributeLayer>(n));
-        return {};
-    case ColumnId::AttributeLayerLists:
-        cb(*resolve<AttributeLayerList>(n));
-        return {};
-    case ColumnId::Relations:
-        cb(*resolve<Relation>(n));
-        return {};
-    case ColumnId::RelationReferences:
-        cb(*resolve<RelationReference>(n));
-        return {};
-    case ColumnId::AttrPoints:
-        cb(*resolve<AttrPoint>(n));
-        return {};
-    case ColumnId::AttrPointSequences:
-        cb(*resolve<AttrPointSequence>(n));
-        return {};
-    case ColumnId::AttrPointArrayView:
-        cb(*resolve<AttrPointArray>(n));
-        return {};
+    case ColumnId::ExternalFeatureIds: cb(*resolve<FeatureId>(n)); return {};
+    case ColumnId::Attributes: cb(*resolve<Attribute>(n)); return {};
+    case ColumnId::AttributeLayers: cb(*resolve<AttributeLayer>(n)); return {};
+    case ColumnId::AttributeLayerLists: cb(*resolve<AttributeLayerList>(n)); return {};
+    case ColumnId::Relations: cb(*resolve<Relation>(n)); return {};
+    case ColumnId::RelationReferences: cb(*resolve<RelationReference>(n)); return {};
+    case ColumnId::AttrPoints: cb(*resolve<AttrPoint>(n)); return {};
+    case ColumnId::AttrPointSequences: cb(*resolve<AttrPointSequence>(n)); return {};
+    case ColumnId::AttrPointArrayView: cb(*resolve<AttrPointArray>(n)); return {};
     case ColumnId::AttrPointSequenceReferences:
         cb(*resolve<AttrPointSequenceReference>(n));
         return {};
-    case ColumnId::AttrPointIndexView:
-        cb(*resolve<AttrPointIndex>(n));
-        return {};
-    case ColumnId::AttrPointIndexRangeView:
-        cb(*resolve<AttrPointIndexRange>(n));
-        return {};
-    case ColumnId::Points:
-        cb(*resolve<PointNode>(n));
-        return {};
+    case ColumnId::AttrPointIndexView: cb(*resolve<AttrPointIndex>(n)); return {};
+    case ColumnId::AttrPointIndexRangeView: cb(*resolve<AttrPointIndexRange>(n)); return {};
+    case ColumnId::Points: cb(*resolve<PointNode>(n)); return {};
     case ColumnId::PointBuffers:
-    case ColumnId::PointBuffersView:
-        cb(*resolve<PointBufferNode>(n));
-        return {};
-    case ColumnId::GeometryPointView:
-        cb(*resolve<PointNode>(n));
-        return {};
+    case ColumnId::PointBuffersView: cb(*resolve<PointBufferNode>(n)); return {};
+    case ColumnId::GeometryPointView: cb(*resolve<PointNode>(n)); return {};
     case ColumnId::PointGeometries:
     case ColumnId::LineGeometries:
     case ColumnId::PolygonGeometries:
     case ColumnId::MeshGeometries:
     case ColumnId::AabbGeometries:
     case ColumnId::GltfNodeIndexGeometries:
-    case ColumnId::GeometryViews:
-        cb(*resolve<Geometry>(n));
-        return {};
-    case ColumnId::GeometryCollections:
-        cb(*resolve<GeometryCollection>(n));
-        return {};
-    case ColumnId::GeometryArrayView:
-        cb(*resolve<GeometryArrayView>(n));
-        return {};
-    case ColumnId::GeometryBoundsInfoView:
-        cb(*resolve<BoundsInfoNode>(n));
-        return {};
+    case ColumnId::GeometryViews: cb(*resolve<Geometry>(n)); return {};
+    case ColumnId::GeometryCollections: cb(*resolve<GeometryCollection>(n)); return {};
+    case ColumnId::GeometryArrayView: cb(*resolve<GeometryArrayView>(n)); return {};
+    case ColumnId::GeometryBoundsInfoView: cb(*resolve<BoundsInfoNode>(n)); return {};
     case ColumnId::GeometryBoundsPolygonCoordinatesView:
         cb(*resolve<BoundsPolygonCoordinatesNode>(n));
         return {};
-    case ColumnId::GeometryBoundsRingView:
-        cb(*resolve<BoundsRingNode>(n));
-        return {};
-    case ColumnId::Polygon:
-        cb(*resolve<PolygonNode>(n));
-        return {};
-    case ColumnId::Mesh:
-        cb(*resolve<MeshNode>(n));
-        return {};
-    case ColumnId::MeshTriangleCollection:
-        cb(*resolve<MeshTriangleCollectionNode>(n));
-        return {};
-    case ColumnId::MeshTriangleLinearRing:
-        cb(*resolve<LinearRingNode>(n));
-        return {};
-    case ColumnId::LinearRing:
-        cb(*resolve<LinearRingNode>(n));
-        return {};
+    case ColumnId::GeometryBoundsRingView: cb(*resolve<BoundsRingNode>(n)); return {};
+    case ColumnId::Polygon: cb(*resolve<PolygonNode>(n)); return {};
+    case ColumnId::Mesh: cb(*resolve<MeshNode>(n)); return {};
+    case ColumnId::MeshTriangleCollection: cb(*resolve<MeshTriangleCollectionNode>(n)); return {};
+    case ColumnId::MeshTriangleLinearRing: cb(*resolve<LinearRingNode>(n)); return {};
+    case ColumnId::LinearRing: cb(*resolve<LinearRingNode>(n)); return {};
     case ColumnId::SourceDataReferenceCollections:
         cb(*resolve<SourceDataReferenceCollection>(n));
         return {};
-    case ColumnId::SourceDataReferences:
-        cb(*resolve<SourceDataReferenceItem>(n));
-        return {};
+    case ColumnId::SourceDataReferences: cb(*resolve<SourceDataReferenceItem>(n)); return {};
     case ColumnId::Validities:
-    case ColumnId::SimpleValidity:
-        cb(*resolve<Validity>(n));
-        return {};
-    case ColumnId::ValidityPoints:
-        cb(*resolve<PointNode>(n));
-        return {};
-    case ColumnId::ValidityCollections:
-        cb(*resolve<MultiValidity>(n));
-        return {};
+    case ColumnId::SimpleValidity: cb(*resolve<Validity>(n)); return {};
+    case ColumnId::ValidityPoints: cb(*resolve<PointNode>(n)); return {};
+    case ColumnId::ValidityCollections: cb(*resolve<MultiValidity>(n)); return {};
     }
 
     return ModelPool::resolve(n, cb);
@@ -1594,9 +1505,7 @@ void PartitionFeatureLayer::setIdPrefix(const KeyValueViewPairs& prefix)
     auto idPrefix = newObject(prefix.size(), true);
     for (auto const& [k, v] : prefix) {
         auto&& kk = k;
-        std::visit([&](auto&& x){
-            idPrefix->addField(kk, x);
-        }, v);
+        std::visit([&](auto&& x) { idPrefix->addField(kk, x); }, v);
     }
     impl_->featureIdPrefix_ = idPrefix->addr();
 }
@@ -1630,19 +1539,17 @@ nlohmann::json PartitionFeatureLayer::toJson() const
         result["mapgetTileId"] = partitionId_.value();
     result["mapId"] = mapId_;
     result["mapgetLayerId"] = layerInfo_->layerId_;
-    result["geometryAnchor"] = {
-        impl_->geometryAnchor_.x,
-        impl_->geometryAnchor_.y,
-        impl_->geometryAnchor_.z};
+    result["geometryAnchor"] =
+        {impl_->geometryAnchor_.x, impl_->geometryAnchor_.y, impl_->geometryAnchor_.z};
 
     if (impl_->glbAttachmentName_) {
-        result["glbAttachmentName"] =
-            *impl_->glbAttachmentName_;
+        result["glbAttachmentName"] = *impl_->glbAttachmentName_;
     }
 
     // Preserve the binary timestamp representation exactly in strict JSON.
-    result["timestamp"] = std::chrono::duration_cast<std::chrono::microseconds>(
-        timestamp_.time_since_epoch()).count();
+    result["timestamp"] =
+        std::chrono::duration_cast<std::chrono::microseconds>(timestamp_.time_since_epoch())
+            .count();
 
     // Add TTL if set (in milliseconds)
     if (ttl_)
@@ -1698,7 +1605,9 @@ std::vector<std::string> PartitionFeatureLayer::checkForErrors() const
                 continue;
             }
             (void)checkedContainerSchema(
-                feature->schema(), featureSchemaId(id->typeId()), simfil::ValueType::Object);
+                feature->schema(),
+                featureSchemaId(id->typeId()),
+                simfil::ValueType::Object);
             auto const& composition = getPrimaryIdComposition(id->typeId());
             auto requiredParts = stripOptionalIdParts(parts, composition);
             auto hash = static_cast<uint32_t>(Hash().mix(id->typeId()).mix(requiredParts).value());
@@ -1760,6 +1669,7 @@ void PartitionFeatureLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
         throw std::invalid_argument("Native feature model does not match its schema header.");
     auto owner = info->schemaOwner();
     (void)owner->schemaRemap(schemaId());
+
     std::vector<simfil::TypeId> featureTypes;
     featureTypes.reserve(impl_->features_.size());
     for (auto const& feature : impl_->features_) {
@@ -1770,6 +1680,7 @@ void PartitionFeatureLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
     }
     auto layerSchema = info->layerSchema();
     auto environment = Impl::makeSchemaAwareEnvironment(strings(), layerSchema);
+
     // All throwing validation/allocation precedes committing the custom feature
     // column. The common remapper handles object/array/scalar types transactionally.
     remapSchemas(
@@ -1937,14 +1848,13 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
     featureLayer["polygon-ring-starts"] = polygonRingStarts_.byte_size();
     featureLayer["point-buffers"] = pointBuffers_.byte_size();
     featureLayer["source-data-references"] = sourceDataReferences_.byte_size();
-    featureLayer["glb-attachment-present"] =
-        impl_->glbAttachmentName_.has_value();
-    featureLayer["glb-attachment-name"] =
-        impl_->glbAttachmentName_
-            ? impl_->glbAttachmentName_->size()
-            : 0;
+    featureLayer["glb-attachment-present"] = impl_->glbAttachmentName_.has_value();
+    featureLayer["glb-attachment-name"] = impl_->glbAttachmentName_ ?
+        impl_->glbAttachmentName_->size() :
+        0;
 
-    auto singletonStatsToJson = [](auto const& stats) {
+    auto singletonStatsToJson = [](auto const& stats)
+    {
         return nlohmann::json::object({
             {"handles", stats.handleCount},
             {"occupied", stats.occupiedCount},
@@ -1970,30 +1880,33 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         {"view", 0},
         {"with-source-data-references", 0},
         {"base-vertex-buffer-allocated", 0},
-        {"by-type", nlohmann::json::object({
-            {"points", 0},
-            {"line", 0},
-            {"polygon", 0},
-            {"mesh", 0},
-            {"aabb", 0},
-            {"gltf-node-index", 0},
-        })},
-        {"base-by-type", nlohmann::json::object({
-            {"points", 0},
-            {"line", 0},
-            {"polygon", 0},
-            {"mesh", 0},
-            {"aabb", 0},
-            {"gltf-node-index", 0},
-        })},
-        {"view-by-type", nlohmann::json::object({
-            {"points", 0},
-            {"line", 0},
-            {"polygon", 0},
-            {"mesh", 0},
-            {"aabb", 0},
-            {"gltf-node-index", 0},
-        })},
+        {"by-type",
+         nlohmann::json::object({
+             {"points", 0},
+             {"line", 0},
+             {"polygon", 0},
+             {"mesh", 0},
+             {"aabb", 0},
+             {"gltf-node-index", 0},
+         })},
+        {"base-by-type",
+         nlohmann::json::object({
+             {"points", 0},
+             {"line", 0},
+             {"polygon", 0},
+             {"mesh", 0},
+             {"aabb", 0},
+             {"gltf-node-index", 0},
+         })},
+        {"view-by-type",
+         nlohmann::json::object({
+             {"points", 0},
+             {"line", 0},
+             {"polygon", 0},
+             {"mesh", 0},
+             {"aabb", 0},
+             {"gltf-node-index", 0},
+         })},
     });
 
     auto validityUsage = nlohmann::json::object({
@@ -2004,33 +1917,38 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         {"with-geometry-name", 0},
         {"with-feature-id", 0},
         {"simple-geometry-with-address", 0},
-        {"by-direction", nlohmann::json::object({
-            {"empty", 0},
-            {"positive", 0},
-            {"negative", 0},
-            {"both", 0},
-            {"none", 0},
-        })},
-        {"by-geometry-description", nlohmann::json::object({
-            {"none", 0},
-            {"simple-geometry", 0},
-            {"offset-point", 0},
-            {"offset-range", 0},
-        })},
-        {"by-offset-type", nlohmann::json::object({
-            {"invalid", 0},
-            {"geo-pos", 0},
-            {"buffer", 0},
-            {"relative-length", 0},
-            {"metric-length", 0},
-        })},
+        {"by-direction",
+         nlohmann::json::object({
+             {"empty", 0},
+             {"positive", 0},
+             {"negative", 0},
+             {"both", 0},
+             {"none", 0},
+         })},
+        {"by-geometry-description",
+         nlohmann::json::object({
+             {"none", 0},
+             {"simple-geometry", 0},
+             {"offset-point", 0},
+             {"offset-range", 0},
+         })},
+        {"by-offset-type",
+         nlohmann::json::object({
+             {"invalid", 0},
+             {"geo-pos", 0},
+             {"buffer", 0},
+             {"relative-length", 0},
+             {"metric-length", 0},
+         })},
     });
 
-    auto increment = [](nlohmann::json& obj, std::string_view key) {
+    auto increment = [](nlohmann::json& obj, std::string_view key)
+    {
         obj[std::string(key)] = obj[std::string(key)].get<int64_t>() + 1;
     };
 
-    auto geometryTypeKey = [](GeomType type) -> const char* {
+    auto geometryTypeKey = [](GeomType type) -> const char*
+    {
         switch (type) {
         case GeomType::Points: return "points";
         case GeomType::Line: return "line";
@@ -2064,7 +1982,8 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         }
 
         if (!isBaseGeometryColumn(geometryAddress.column()) &&
-            geometryAddress.column() != ColumnId::GeometryViews) {
+            geometryAddress.column() != ColumnId::GeometryViews)
+        {
             return;
         }
 
@@ -2072,9 +1991,9 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
             return;
         }
 
-        auto geometryType = geometryAddress.column() == ColumnId::GeometryViews
-            ? geomViews_.at(geometryAddress.index()).type_
-            : geometryTypeForColumn(geometryAddress.column());
+        auto geometryType = geometryAddress.column() == ColumnId::GeometryViews ?
+            geomViews_.at(geometryAddress.index()).type_ :
+            geometryTypeForColumn(geometryAddress.column());
         auto typeKey = geometryTypeKey(geometryType);
 
         increment(geometryUsage, "total");
@@ -2094,6 +2013,8 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         increment(geometryUsage, "base-vertex-buffer-allocated");
     };
 
+    // Geometry counts cover distinct addresses directly attached to features;
+    // they are not a census of every allocated buffer or validity-only geometry.
     for (auto const& feature : *this) {
         if (auto geometry = feature->geomOrNull()) {
             geometry->forEachGeometry(
@@ -2157,12 +2078,8 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         case Validity::InvalidOffsetType:
             increment(validityUsage["by-offset-type"], "invalid");
             break;
-        case Validity::GeoPosOffset:
-            increment(validityUsage["by-offset-type"], "geo-pos");
-            break;
-        case Validity::BufferOffset:
-            increment(validityUsage["by-offset-type"], "buffer");
-            break;
+        case Validity::GeoPosOffset: increment(validityUsage["by-offset-type"], "geo-pos"); break;
+        case Validity::BufferOffset: increment(validityUsage["by-offset-type"], "buffer"); break;
         case Validity::RelativeLengthOffset:
             increment(validityUsage["by-offset-type"], "relative-length");
             break;
@@ -2174,13 +2091,14 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         if (validity.direction_ != Validity::Empty &&
             validity.geomDescrType_ == Validity::NoGeometry &&
             validity.geomOffsetType_ == Validity::InvalidOffsetType &&
-            validity.referencedGeometryName_ == 0 &&
-            !validity.featureAddress_) {
+            validity.referencedGeometryName_ == 0 && !validity.featureAddress_)
+        {
             increment(validityUsage, "direction-only");
         }
     }
 
-    auto countSimpleValidity = [&](Validity::Direction direction) {
+    auto countSimpleValidity = [&](Validity::Direction direction)
+    {
         increment(validityUsage, "total");
         increment(validityUsage, "simple-column");
 
@@ -2201,7 +2119,8 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
     };
 
     std::unordered_set<uint32_t> seenValidityCollections;
-    auto collectSimpleValidities = [&](simfil::ModelNodeAddress const& validityCollectionAddress) {
+    auto collectSimpleValidities = [&](simfil::ModelNodeAddress const& validityCollectionAddress)
+    {
         if (!validityCollectionAddress) {
             return;
         }
@@ -2261,8 +2180,7 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         {"model-pool", modelPool},
         {"feature-layer-total-bytes", featureLayerTotal},
         {"model-pool-total-bytes", modelPoolTotal},
-        {"total-bytes", featureLayerTotal + modelPoolTotal}
-    };
+        {"total-bytes", featureLayerTotal + modelPoolTotal}};
 }
 
 MemoryUsageBreakdown PartitionFeatureLayer::memoryUsage() const
@@ -2293,7 +2211,9 @@ MemoryUsageBreakdown PartitionFeatureLayer::memoryUsage() const
         {entryBytes,
          entryBytes + index.size() * 2 * sizeof(void*) + index.bucket_count() * sizeof(void*)});
     if (impl_->glbAttachmentName_) {
-        result.add("feature-layer.glb-attachment-name", stringMemoryUsage(*impl_->glbAttachmentName_));
+        result.add(
+            "feature-layer.glb-attachment-name",
+            stringMemoryUsage(*impl_->glbAttachmentName_));
     }
     result.add("feature-layer.expression-cache", impl_->expressionCache_.memoryUsage());
     return result;
@@ -2330,7 +2250,8 @@ PartitionFeatureLayer::find(const std::string_view& type, const KeyValueViewPair
     for (auto it = begin; it != end; ++it) {
         auto feature = resolve<Feature>(it->second);
         if (feature->id()->typeId() == type) {
-            auto featureIdParts = stripOptionalIdParts(feature->id()->keyValuePairs(), primaryIdComposition);
+            auto featureIdParts =
+                stripOptionalIdParts(feature->id()->keyValuePairs(), primaryIdComposition);
             if (featureIdParts == queryIdPartsStripped)
                 return feature;
         }
@@ -2439,18 +2360,19 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     PartitionFeatureLayer::Ptr const& otherLayer,
     ModelNode::Ptr const& otherNode)
 {
-    auto const targetFeatureAddress =
-        context.targetFeature_ ? context.targetFeature_->addr().value_ : 0U;
-    auto const cacheKey = CloneCacheKey{
-        otherLayer.get(),
-        otherNode->addr().value_,
-        targetFeatureAddress};
+    auto const targetFeatureAddress = context.targetFeature_ ?
+        context.targetFeature_->addr().value_ :
+        0U;
+    auto const cacheKey =
+        CloneCacheKey{otherLayer.get(), otherNode->addr().value_, targetFeatureAddress};
     auto it = cache.find(cacheKey);
     if (it != cache.end()) {
         return it->second;
     }
 
     using namespace simfil;
+    // Publish container addresses before descending so shared/cyclic children
+    // reuse them. Failure can leave this cache and destination partly populated.
     ModelNode::Ptr& newCacheNode = cache[cacheKey];
     auto copiedSchema = [this, &otherNode]
     {
@@ -2465,12 +2387,11 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     };
     auto cloneSourceDataReferences =
         [this, &context, &cache, &otherLayer](auto const& source, auto& target)
-        {
-            if (auto refs = source->sourceDataReferences()) {
-                target->setSourceDataReferences(
-                    cloneNode(context, cache, otherLayer, refs));
-            }
-        };
+    {
+        if (auto refs = source->sourceDataReferences()) {
+            target->setSourceDataReferences(cloneNode(context, cache, otherLayer, refs));
+        }
+    };
     switch (otherNode->addr().column()) {
     case Objects: {
         auto resolved = otherLayer->resolve<simfil::Object>(otherNode);
@@ -2522,21 +2443,18 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case ColumnId::AabbGeometries:
     case ColumnId::GltfNodeIndexGeometries:
     case ColumnId::GeometryViews: {
-        // TODO: This implementation is not great, because it does not respect
-        //  Geometry views - it just converts every Geometry to a self-contained one.
+        // Materialize the visible geometry into destination-owned storage. A view
+        // loses its shared base/range representation, but keeps its exposed points.
         auto resolved = otherLayer->resolve<Geometry>(*otherNode);
         auto newNode = newGeometry(resolved->geomType(), resolved->numPoints(), true);
         newCacheNode = newNode;
         switch (resolved->geomType()) {
         case GeomType::GltfNodeIndex:
             newNode->setGltfNodeIndex(resolved->gltfNodeIndex());
-            newNode->setGltfNodeBounds(
-                resolved->gltfNodeAabbOrigin(),
-                resolved->gltfNodeAabbSize());
+            newNode
+                ->setGltfNodeBounds(resolved->gltfNodeAabbOrigin(), resolved->gltfNodeAabbSize());
             break;
-        case GeomType::AABB:
-            newNode->setAabb(resolved->aabbOrigin(), resolved->aabbSize());
-            break;
+        case GeomType::AABB: newNode->setAabb(resolved->aabbOrigin(), resolved->aabbSize()); break;
         default:
             resolved->forEachPoint(
                 [&newNode](auto&& pt)
@@ -2566,8 +2484,8 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         resolved->forEachGeometry(
             [this, &newNode, &context, &cache, &otherLayer](auto&& geom)
             {
-                newNode->addGeometry(resolve<Geometry>(
-                    *cloneNode(context, cache, otherLayer, geom)));
+                newNode
+                    ->addGeometry(resolve<Geometry>(*cloneNode(context, cache, otherLayer, geom)));
                 return true;
             });
         break;
@@ -2577,7 +2495,7 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case String:
     case PooledString:
     case ByteArray:
-    case QualifiedScalar:
+    case TypedScalar:
     case Bitmask: {
         // Persistent scalar columns belong to the source pool. The common copier
         // preserves exact types and copies bytes instead of reusing foreign indices.
@@ -2610,19 +2528,15 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     }
     case ColumnId::FeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(
-            resolved->typeId(),
-            resolved->keyValuePairs(),
-            resolved->externalMapId());
+        auto newNode =
+            newFeatureId(resolved->typeId(), resolved->keyValuePairs(), resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }
     case ColumnId::ExternalFeatureIds: {
         auto resolved = otherLayer->resolve<FeatureId>(*otherNode);
-        auto newNode = newFeatureId(
-            resolved->typeId(),
-            resolved->keyValuePairs(),
-            resolved->externalMapId());
+        auto newNode =
+            newFeatureId(resolved->typeId(), resolved->keyValuePairs(), resolved->externalMapId());
         newCacheNode = newNode;
         break;
     }
@@ -2633,11 +2547,8 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             throw std::runtime_error(assigned.error().message);
         newCacheNode = newNode;
         if (resolved->validityOrNull()) {
-            newNode->setValidity(resolve<MultiValidity>(*cloneNode(
-                context,
-                cache,
-                otherLayer,
-                resolved->validityOrNull())));
+            newNode->setValidity(resolve<MultiValidity>(
+                *cloneNode(context, cache, otherLayer, resolved->validityOrNull())));
         }
         resolved->forEachField(
             [this, &newNode, &context, &cache, &otherLayer](auto&& key, auto&& value)
@@ -2654,8 +2565,7 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         newCacheNode = newNode;
         newNode->setDirection(resolved->direction());
         switch (resolved->geometryDescriptionType()) {
-        case Validity::NoGeometry:
-            break;
+        case Validity::NoGeometry: break;
         case Validity::SimpleGeometry:
             newNode->setSimpleGeometry(resolve<Geometry>(
                 *cloneNode(context, cache, otherLayer, resolved->simpleGeometry())));
@@ -2683,17 +2593,11 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             break;
         case Validity::FeatureTransition:
             newNode->setFeatureTransition(
-                resolve<FeatureId>(*cloneNode(
-                    context,
-                    cache,
-                    otherLayer,
-                    resolved->transitionFromFeatureId())),
+                resolve<FeatureId>(
+                    *cloneNode(context, cache, otherLayer, resolved->transitionFromFeatureId())),
                 *resolved->transitionFromConnectedEnd(),
-                resolve<FeatureId>(*cloneNode(
-                    context,
-                    cache,
-                    otherLayer,
-                    resolved->transitionToFeatureId())),
+                resolve<FeatureId>(
+                    *cloneNode(context, cache, otherLayer, resolved->transitionToFeatureId())),
                 *resolved->transitionToConnectedEnd(),
                 *resolved->transitionNumber());
             break;
@@ -2743,8 +2647,7 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
                 if (*keyStr == AttributeLayer::InstanceIdField) {
                     auto const idValue = value->value();
                     if (auto const* signedId = std::get_if<int64_t>(&idValue);
-                        signedId && *signedId >= 0)
-                    {
+                        signedId && *signedId >= 0) {
                         newNode->setId(static_cast<uint64_t>(*signedId));
                     }
                     continue;
@@ -2797,8 +2700,8 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case ColumnId::AttrPointSequences: {
         auto resolved = otherLayer->resolve<AttrPointSequence>(*otherNode);
         auto sourceFeatureId = resolved->featureId();
-        auto clonedGeometry = resolve<Geometry>(
-            *cloneNode(context, cache, otherLayer, resolved->geometry()));
+        auto clonedGeometry =
+            resolve<Geometry>(*cloneNode(context, cache, otherLayer, resolved->geometry()));
 
         model_ptr<Feature> host;
         if (context.targetFeature_ && context.sourceFeatureId_ &&
@@ -2822,11 +2725,12 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         }
         bool geometryAttached = false;
         if (auto geometries = host->geomOrNull()) {
-            geometries->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-                geometryAttached =
-                    candidate->addr().value_ == clonedGeometry->addr().value_;
-                return !geometryAttached;
-            });
+            geometries->forEachGeometry(
+                [&](model_ptr<Geometry> const& candidate)
+                {
+                    geometryAttached = candidate->addr().value_ == clonedGeometry->addr().value_;
+                    return !geometryAttached;
+                });
         }
         if (!geometryAttached) {
             host->addGeometry(clonedGeometry);
@@ -2844,9 +2748,8 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             newNode->appendAttrPoint(sourcePoint->index(), sourcePoint->point(), sourceData);
         }
         if (auto refs = resolved->sourceDataReferences()) {
-            newNode->setSourceDataReferences(
-                resolve<SourceDataReferenceCollection>(
-                    *cloneNode(context, cache, otherLayer, refs)));
+            newNode->setSourceDataReferences(resolve<SourceDataReferenceCollection>(
+                *cloneNode(context, cache, otherLayer, refs)));
         }
         break;
     }
@@ -2909,8 +2812,7 @@ void PartitionFeatureLayer::clone(
     if (!cloneTarget) {
         // Remove tile ID prefix from idParts to create a new feature.
         if (auto idPrefix = getIdPrefix(); idPrefix && idParts.size() >= idPrefix->size()) {
-            idParts = KeyValueViewPairs(
-                idParts.begin()+idPrefix->size(), idParts.end());
+            idParts = KeyValueViewPairs(idParts.begin() + idPrefix->size(), idParts.end());
         }
         cloneTarget = newFeature(type, idParts);
         auto schemaType = importSchema(remapSchemaType(otherFeature.schemaType()));
@@ -2923,8 +2825,7 @@ void PartitionFeatureLayer::clone(
         .sourceFeatureId_ = otherFeature.id(),
         .targetFeature_ = cloneTarget,
     };
-    auto lookupOrClone =
-        [&](ModelNode::Ptr const& n) -> ModelNode::Ptr
+    auto lookupOrClone = [&](ModelNode::Ptr const& n) -> ModelNode::Ptr
     {
         return cloneNode(context, clonedModelNodes, otherLayer, n);
     };
@@ -2970,15 +2871,14 @@ void PartitionFeatureLayer::clone(
     if (auto attrLayers = otherFeature.attributeLayersOrNull()) {
         auto baseAttrLayers = cloneTarget->attributeLayers();
         attrLayers->forEachLayer(
-            [this, &baseAttrLayers, &context, &clonedModelNodes, &owningLayer](
-                std::string_view layerName,
-                model_ptr<AttributeLayer> const& layer)
+            [this,
+             &baseAttrLayers,
+             &context,
+             &clonedModelNodes,
+             &owningLayer](std::string_view layerName, model_ptr<AttributeLayer> const& layer)
             {
-                auto cloned = cloneNode(
-                    context,
-                    clonedModelNodes,
-                    owningLayer(layer),
-                    ModelNode::Ptr(layer));
+                auto cloned =
+                    cloneNode(context, clonedModelNodes, owningLayer(layer), ModelNode::Ptr(layer));
                 baseAttrLayers->addLayer(layerName, resolve<AttributeLayer>(*cloned));
                 return true;
             });
@@ -2990,18 +2890,18 @@ void PartitionFeatureLayer::clone(
         geom->forEachGeometry(
             [this, &baseGeom, &context, &clonedModelNodes, &owningLayer](auto&& geomElement)
             {
-                auto clonedGeometry = resolve<Geometry>(
-                    *cloneNode(
-                        context,
-                        clonedModelNodes,
-                        owningLayer(geomElement),
-                        ModelNode::Ptr(geomElement)));
+                auto clonedGeometry = resolve<Geometry>(*cloneNode(
+                    context,
+                    clonedModelNodes,
+                    owningLayer(geomElement),
+                    ModelNode::Ptr(geomElement)));
                 bool alreadyAttached = false;
-                baseGeom->forEachGeometry([&](model_ptr<Geometry> const& candidate) {
-                    alreadyAttached =
-                        candidate->addr().value_ == clonedGeometry->addr().value_;
-                    return !alreadyAttached;
-                });
+                baseGeom->forEachGeometry(
+                    [&](model_ptr<Geometry> const& candidate)
+                    {
+                        alreadyAttached = candidate->addr().value_ == clonedGeometry->addr().value_;
+                        return !alreadyAttached;
+                    });
                 if (!alreadyAttached) {
                     baseGeom->addGeometry(clonedGeometry);
                 }
@@ -3014,11 +2914,8 @@ void PartitionFeatureLayer::clone(
         otherFeature.forEachRelation(
             [this, &cloneTarget, &context, &clonedModelNodes, &owningLayer](auto&& rel)
             {
-                auto newRel = resolve<Relation>(*cloneNode(
-                    context,
-                    clonedModelNodes,
-                    owningLayer(rel),
-                    ModelNode::Ptr(rel)));
+                auto newRel = resolve<Relation>(
+                    *cloneNode(context, clonedModelNodes, owningLayer(rel), ModelNode::Ptr(rel)));
                 cloneTarget->addRelation(newRel);
                 return true;
             });
@@ -3034,4 +2931,4 @@ model_ptr<Feature> PartitionFeatureLayer::find(const std::string_view& featureId
     return find(parsed.typeId_, parsed.keyValuePairs_);
 }
 
-}
+}  // namespace mapget

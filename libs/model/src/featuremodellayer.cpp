@@ -19,6 +19,8 @@ namespace
 
 using GeometryPointBufferArena = PartitionFeatureModelLayerBase::GeometryStorage;
 
+// A collection shares the model address's 24-bit index: 20 bits for the first
+// reference row and 4 bits for its contiguous count (at most 15 references).
 constexpr uint32_t SourceAddressArenaIndexBits = 20;
 constexpr uint32_t SourceAddressArenaIndexMax = (~static_cast<uint32_t>(0)) >> (32 - SourceAddressArenaIndexBits);
 constexpr uint32_t SourceAddressArenaSizeBits = 4;
@@ -191,7 +193,7 @@ MemoryUsageBreakdown PartitionFeatureModelLayerBase::memoryUsage() const
     result.add("model-pool.object-schemas", model.objectSchemas);
     result.add("model-pool.array-members", model.arrayMembers);
     result.add("model-pool.array-schemas", model.arraySchemas);
-    result.add("model-pool.qualified-scalars", model.qualifiedScalars);
+    result.add("model-pool.typed-scalars", model.typedScalars);
     result.add("model-pool.bitmasks", model.bitmasks);
     result.add("model-pool.schema-owners", model.schemaOwners);
 
@@ -609,6 +611,7 @@ model_ptr<FeatureId> PartitionFeatureModelLayerBase::newFeatureId(
         }
         data.idParts_ = parts->addr();
     }
+
     auto const address = appendFeatureId(data);
     return FeatureId(featureIds_.at(address.index()), shared_from_this(), address, mpKey_);
 }

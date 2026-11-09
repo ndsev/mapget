@@ -457,7 +457,7 @@ TEST_CASE(
     CHECK(fixture.tile->checkForErrors().empty());
 }
 
-TEST_CASE("Partition memory reports include qualified scalars, bitmasks and schema bindings", "[schema2][layer-binding][memory]")
+TEST_CASE("Partition memory reports include typed scalars, bitmasks and schema bindings", "[schema2][layer-binding][memory]")
 {
     auto kind = GENERATE("feature", "source", "subset");
     CAPTURE(kind);
@@ -474,15 +474,15 @@ TEST_CASE("Partition memory reports include qualified scalars, bitmasks and sche
     auto beforeLayer = layer->memoryUsage().total();
 
     auto scalar =
-        pool.newQualifiedValue(int64_t{255}, fixture.graph->schemaType(fixture.values[0]));
+        pool.newTypedValue(int64_t{255}, fixture.graph->schemaType(fixture.values[0]));
     auto mask =
         pool.newBitmask(UINT64_C(0x8000000000000001), fixture.graph->schemaType(fixture.bitmask));
-    CHECK(scalar->addr().column() == simfil::ModelPool::QualifiedScalar);
+    CHECK(scalar->addr().column() == simfil::ModelPool::TypedScalar);
     CHECK(mask->addr().column() == simfil::ModelPool::Bitmask);
     // Native partitions keep one graph; only subset results import a foreign graph namespace.
     if (std::string_view(kind) == "subset") {
         auto projected =
-            pool.newQualifiedValue(int64_t{255}, foreign.graph->schemaType(foreign.values[0]));
+            pool.newTypedValue(int64_t{255}, foreign.graph->schemaType(foreign.values[0]));
         CHECK(projected->schemaType().pool()->identity() == foreign.graph->schemaId());
     }
     else
@@ -491,7 +491,7 @@ TEST_CASE("Partition memory reports include qualified scalars, bitmasks and sche
     auto stats = pool.memoryUsageStats();
     auto report = layer->memoryUsage();
     for (auto const& [name, expected] : std::array{
-             std::pair{"model-pool.qualified-scalars", stats.qualifiedScalars},
+             std::pair{"model-pool.typed-scalars", stats.typedScalars},
              std::pair{"model-pool.bitmasks", stats.bitmasks},
              std::pair{"model-pool.schema-owners", stats.schemaOwners}})
     {
@@ -551,7 +551,7 @@ TEST_CASE("Native feature clones retain concrete property domains below a union"
         CHECK(properties->schemaType() == attributes->schemaType());
         auto value = properties->at(0);
         REQUIRE(value);
-        CHECK(value->addr().column() != simfil::ModelPool::QualifiedScalar);
+        CHECK(value->addr().column() != simfil::ModelPool::TypedScalar);
         auto domain = simfil::Value::at(*properties, *value, 0).schemaType();
         CHECK(domain == fixture.graph->schemaType(fixture.values[i]));
         REQUIRE(domain);

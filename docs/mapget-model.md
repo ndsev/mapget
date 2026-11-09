@@ -1061,7 +1061,7 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
 Binary readers and writers must both use protocol 6.3, including exact schema
-bindings, qualified scalars and version-2 incoming manifests. Error and empty-tile
+bindings, typed scalars and version-2 incoming manifests. Error and empty-tile
 expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
 string-pool caches are cleared by the normal startup compatibility check.
 
@@ -1118,7 +1118,7 @@ Both reject foreign or unknown types.
 `PartitionSubsetLayer` continues to store `values[expression][result]`. The shared
 simfil `copySequence()` path preserves typed compound containers, wraps a scalar
 only when its evaluated `Value` carries type provenance, and leaves computed
-unqualified scalars ordinary. Qualified-scalar and bitmask columns belong to the
+unqualified scalars ordinary. Typed-scalar and bitmask columns belong to the
 inherited ModelPool. There are no result-specific schema trees, per-row type
 side tables or guessed destination types. The pool retains exact referenced
 graphs once and remaps IDs when a result combines different graphs. Readers must

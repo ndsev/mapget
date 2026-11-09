@@ -103,7 +103,7 @@ public:
         else {
             if (auto added = properties->addField(
                     "count",
-                    tile->newQualifiedValue(int64_t{255}, graph->schemaType(valueDomain)));
+                    tile->newTypedValue(int64_t{255}, graph->schemaType(valueDomain)));
                 !added)
                 throw std::runtime_error(added.error().message);
             if (auto added = properties->addField(
@@ -127,7 +127,7 @@ public:
         root->setSourceDataAddressScope();
         if (auto added = root->object()->addField(
                 "count",
-                tile->newQualifiedValue(int64_t{255}, graph->schemaType(valueDomain)));
+                tile->newTypedValue(int64_t{255}, graph->schemaType(valueDomain)));
             !added)
             throw std::runtime_error(added.error().message);
         tile->addRoot(root);
@@ -240,7 +240,7 @@ TEST_CASE(
     metadata.setMapSchema(effective);
     Cache::Ptr cache = std::make_shared<MemCache>();
 
-    SECTION("Feature columns, qualified scalars, masks and independent owners")
+    SECTION("Feature columns, typed scalars, masks and independent owners")
     {
         auto native = std::static_pointer_cast<PartitionFeatureLayer>(base.native("Things", cache));
         auto independent =

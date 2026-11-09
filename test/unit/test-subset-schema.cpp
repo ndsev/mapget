@@ -233,7 +233,7 @@ public:
         for (size_t i = 0; i < 2; ++i) {
             auto scalar = sequence->at(i);
             REQUIRE(scalar->type() == simfil::ValueType::Int);
-            CHECK(scalar->addr().column() == simfil::ModelPool::QualifiedScalar);
+            CHECK(scalar->addr().column() == simfil::ModelPool::TypedScalar);
             CHECK(std::get<int64_t>(scalar->value()) == 255);
             auto domain = scalar->schemaType();
             REQUIRE(domain);
@@ -258,14 +258,14 @@ public:
             // Copying a bound subtree must not qualify every ordinary scalar leaf.
             auto leaf = compound->at(0);
             REQUIRE(leaf);
-            CHECK(leaf->addr().column() != simfil::ModelPool::QualifiedScalar);
+            CHECK(leaf->addr().column() != simfil::ModelPool::TypedScalar);
             CHECK_FALSE(leaf->schemaType());
             CHECK(simfil::Value::at(*compound, *leaf, 0).schemaType() == domain);
         }
         for (size_t i : {6, 7}) {
             auto plain = sequence->at(i);
             CHECK(plain->type() == simfil::ValueType::Int);
-            CHECK(plain->addr().column() != simfil::ModelPool::QualifiedScalar);
+            CHECK(plain->addr().column() != simfil::ModelPool::TypedScalar);
             CHECK_FALSE(plain->schemaType());
             CHECK(plain->toJson() == 255);
         }
