@@ -30,7 +30,7 @@ else()
     CPMAddPackage(
         NAME ndsmath
         GITHUB_REPOSITORY ndsev/ndslive-math
-        GIT_TAG 009bba06356dfd01f98c1570a003e31180788811
+        GIT_TAG 1152c940d15e06e00899d4c69665cadbf0dcc58b
         GIT_SHALLOW FALSE
         SOURCE_SUBDIR cpp
         OPTIONS
@@ -88,7 +88,7 @@ else()
     CPMAddPackage(
         NAME simfil
         GITHUB_REPOSITORY Klebert-Engineering/simfil
-        GIT_TAG 134cb7275c94db68fd355b11be255e99c9d14b84
+        GIT_TAG d7762eb428c9edb298d9ab4ebfb274e6e34f4fbd
         GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
