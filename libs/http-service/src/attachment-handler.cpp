@@ -20,55 +20,35 @@ namespace
 [[nodiscard]] int32_t parsePartitionId(std::string_view text)
 {
     if (text.empty()) {
-        throw std::runtime_error(
-            "Missing tileId.");
+        throw std::runtime_error("Missing tileId.");
     }
     int64_t value = 0;
-    auto const [end, error] =
-        std::from_chars(
-            text.data(),
-            text.data() + text.size(),
-            value);
-    if (error != std::errc{} ||
-        end != text.data() + text.size() ||
-        value < std::numeric_limits<int32_t>::min() ||
-        value > std::numeric_limits<int32_t>::max())
+    auto const [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        value < std::numeric_limits<int32_t>::min() || value > std::numeric_limits<int32_t>::max())
     {
-        throw std::runtime_error(
-            "tileId must be a signed 32-bit integer.");
+        throw std::runtime_error("tileId must be a signed 32-bit integer.");
     }
     return static_cast<int32_t>(value);
 }
 
-[[nodiscard]] drogon::HttpResponsePtr
-plainResponse(
-    drogon::HttpStatusCode status,
-    std::string body)
+[[nodiscard]] drogon::HttpResponsePtr plainResponse(drogon::HttpStatusCode status, std::string body)
 {
-    auto response =
-        drogon::HttpResponse::newHttpResponse();
+    auto response = drogon::HttpResponse::newHttpResponse();
     response->setStatusCode(status);
-    response->setContentTypeCode(
-        drogon::CT_TEXT_PLAIN);
+    response->setContentTypeCode(drogon::CT_TEXT_PLAIN);
     response->setBody(std::move(body));
     return response;
 }
 
-[[nodiscard]] std::string contentEtag(
-    AttachmentResponse const& response)
+[[nodiscard]] std::string contentEtag(AttachmentResponse const& response)
 {
     if (response.etag_) {
         return *response.etag_;
     }
-    static auto const emptyBytes =
-        std::vector<uint8_t>{};
-    auto const& bytes =
-        response.bytes_
-            ? *response.bytes_
-            : emptyBytes;
-    auto digest =
-        picosha2::hash256_hex_string(
-            bytes);
+    static auto const emptyBytes = std::vector<uint8_t>{};
+    auto const& bytes = response.bytes_ ? *response.bytes_ : emptyBytes;
+    auto digest = picosha2::hash256_hex_string(bytes);
     return "\"sha256-" + digest + "\"";
 }
 
@@ -76,21 +56,13 @@ plainResponse(
 
 void HttpService::Impl::handleAttachmentRequest(
     const drogon::HttpRequestPtr& req,
-    std::function<void(
-        const drogon::HttpResponsePtr&)>&&
-        callback) const
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
     try {
-        auto mapId =
-            req->getParameter("mapId");
-        auto layerId =
-            req->getParameter("layerId");
-        auto name =
-            req->getParameter("name");
-        if (mapId.empty() ||
-            layerId.empty() ||
-            name.empty())
-        {
+        auto mapId = req->getParameter("mapId");
+        auto layerId = req->getParameter("layerId");
+        auto name = req->getParameter("name");
+        if (mapId.empty() || layerId.empty() || name.empty()) {
             callback(plainResponse(
                 drogon::k400BadRequest,
                 "mapId, layerId, tileId, and name "
@@ -98,9 +70,7 @@ void HttpService::Impl::handleAttachmentRequest(
             return;
         }
         if (name.size() > 4096) {
-            callback(plainResponse(
-                drogon::k400BadRequest,
-                "Attachment name is too long."));
+            callback(plainResponse(drogon::k400BadRequest, "Attachment name is too long."));
             return;
         }
 
@@ -114,58 +84,33 @@ void HttpService::Impl::handleAttachmentRequest(
                     PartitionId::fromJson(nlohmann::json::parse(req->getParameter("partition")))),
             .name_ = std::move(name),
         };
-        if (auto sourceId =
-                req->getParameter("sourceId");
-            !sourceId.empty())
-        {
-            request.sourceId_ =
-                std::move(sourceId);
+        if (auto sourceId = req->getParameter("sourceId"); !sourceId.empty()) {
+            request.sourceId_ = std::move(sourceId);
         }
 
-        auto ifNoneMatch =
-            req->getHeader("if-none-match");
+        auto ifNoneMatch = req->getHeader("if-none-match");
         self_.requestAttachment(
             std::move(request),
             [callback = std::move(callback),
-             ifNoneMatch = std::move(ifNoneMatch)](
-                AttachmentResult result) mutable
+             ifNoneMatch = std::move(ifNoneMatch)](AttachmentResult result) mutable
             {
-                if (result.status_ ==
-                    RequestStatus::Unauthorized)
-                {
-                    callback(plainResponse(
-                        drogon::k403Forbidden,
-                        "Not authorized."));
+                if (result.status_ == RequestStatus::Unauthorized) {
+                    callback(plainResponse(drogon::k403Forbidden, "Not authorized."));
                     return;
                 }
-                if (result.status_ !=
-                        RequestStatus::Success ||
-                    !result.response_)
-                {
-                    auto status =
-                        result.status_ ==
-                                RequestStatus::Aborted
-                            ? drogon::
-                                  k503ServiceUnavailable
-                            : drogon::k404NotFound;
-                    callback(plainResponse(
-                        status,
-                        "Attachment not found."));
+                if (result.status_ != RequestStatus::Success || !result.response_) {
+                    auto status = result.status_ == RequestStatus::Aborted ?
+                        drogon::k503ServiceUnavailable :
+                        drogon::k404NotFound;
+                    callback(plainResponse(status, "Attachment not found."));
                     return;
                 }
 
-                auto etag =
-                    contentEtag(
-                        *result.response_);
+                auto etag = contentEtag(*result.response_);
                 if (ifNoneMatch == etag) {
-                    auto response =
-                        drogon::HttpResponse::
-                            newHttpResponse();
-                    response->setStatusCode(
-                        drogon::k304NotModified);
-                    response->addHeader(
-                        "ETag",
-                        etag);
+                    auto response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k304NotModified);
+                    response->addHeader("ETag", etag);
                     response->addHeader(
                         "Cache-Control",
                         "private, max-age=0, "
@@ -174,26 +119,18 @@ void HttpService::Impl::handleAttachmentRequest(
                     return;
                 }
 
-                auto response =
-                    drogon::HttpResponse::
-                        newHttpResponse();
-                response->setStatusCode(
-                    drogon::k200OK);
-                response->setContentTypeString(
-                    result.response_->mimeType_);
-                response->addHeader(
-                    "ETag",
-                    etag);
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setStatusCode(drogon::k200OK);
+                response->setContentTypeString(result.response_->mimeType_);
+                response->addHeader("ETag", etag);
                 response->addHeader(
                     "Cache-Control",
                     "private, max-age=0, "
                     "must-revalidate");
                 if (result.response_->bytes_) {
                     response->setBody(std::string(
-                        result.response_->bytes_
-                            ->begin(),
-                        result.response_->bytes_
-                            ->end()));
+                        result.response_->bytes_->begin(),
+                        result.response_->bytes_->end()));
                 }
                 callback(response);
             },
@@ -202,8 +139,7 @@ void HttpService::Impl::handleAttachmentRequest(
     catch (std::exception const& error) {
         callback(plainResponse(
             drogon::k400BadRequest,
-            std::string("Invalid attachment request: ") +
-                error.what()));
+            std::string("Invalid attachment request: ") + error.what()));
     }
 }
 

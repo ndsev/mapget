@@ -37,6 +37,7 @@ struct TileLoadState
     std::optional<std::chrono::system_clock::time_point> cacheExpiredAt;
     PartitionLayer::LoadState loadStatus = PartitionLayer::LoadState::LoadingQueued;
     uint64_t mapEpoch = 0;
+
     /** Monotonic abandonment, latched only under the scheduler mutex. */
     std::atomic_bool cancelled{false};
 };
@@ -81,10 +82,12 @@ public:
         size_t workerCount,
         std::chrono::milliseconds errorTileTtl,
         std::chrono::milliseconds emptyTileTtl);
+
     /** Stop and join workers before releasing scheduler-owned state. */
     ~ServiceScheduler() noexcept;
 
     ServiceScheduler(ServiceScheduler const&) = delete;
+
     ServiceScheduler& operator=(ServiceScheduler const&) = delete;
 
     /** Publish ready generations, preserving permits and fencing replaced cached work.
@@ -145,12 +148,14 @@ public:
 private:
     /** Fence one map under mutex_; return external callbacks for execution after unlocking. */
     std::function<void()> invalidateMapLocked(std::string const& mapId);
+
     /** One queued discovery callback, owned until completion or cancellation. */
     struct DiscoveryJob
     {
         RegisteredDataSource::Ptr source;
         ObjectDiscoveryRequest request;
         std::function<void(ObjectDiscoveryResult)> callback;
+
         /** Execute or report cancellation without letting consumer exceptions kill a worker. */
         void run(bool cancelled = false) noexcept;
     };
@@ -202,6 +207,7 @@ private:
         SourceConcurrency const& source,
         MapPartitionKey const& tileKey,
         std::vector<LayerTilesRequest::Ptr>& waitingRequests) const;
+
     /** Remove terminal requests and requests with no unscheduled keys. */
     void removeCompletedRequestsLocked();
 

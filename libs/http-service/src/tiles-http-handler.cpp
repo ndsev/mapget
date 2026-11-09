@@ -108,9 +108,10 @@ public:
     ~GzipCompressor() { deflateEnd(&strm_); }
 
     GzipCompressor(GzipCompressor const&) = delete;
+
     GzipCompressor(GzipCompressor&&) = delete;
 
-    /** Compress the next response bytes, preserving stream state across calls. */
+    /** Compress the next response bytes, preserving stream state; size must fit zlib's uInt. */
     std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH)
     {
         std::string result;
@@ -272,7 +273,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requests_.push_back(std::move(request));
     }
 
-    /** Interpret the Accept header or responseType override and choose the stream payload format. */
+    /** Choose one exact MIME value (or responseType alias); Accept lists/quality weights are not parsed. */
     [[nodiscard]] bool setResponseType(
         std::string_view acceptHeader,
         std::optional<std::string> responseType,

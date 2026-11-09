@@ -20,6 +20,7 @@ std::optional<Integer> parseInteger(std::string_view text)
         return {};
     return value;
 }
+
 bool validatePart(
     IdPartDataType datatype,
     std::string_view label,
@@ -144,6 +145,7 @@ bool IdPart::validate(std::variant<int64_t, std::string_view>& value, std::strin
 {
     return validatePart(datatype_, idPartLabel_, value, error);
 }
+
 bool IdPart::validate(std::variant<int64_t, std::string>& value, std::string* error) const
 {
     return validateOwnedPart(datatype_, idPartLabel_, value, error);
@@ -155,6 +157,7 @@ std::string_view FeatureIdentity::name() const
         owner_->schema_->name(owner_->schema_->identities[index_].name) :
         std::string_view{};
 }
+
 size_t FeatureIdentity::compositionCount() const
 {
     return owner_ ?
@@ -162,45 +165,54 @@ size_t FeatureIdentity::compositionCount() const
             .size(owner_->schema_->identities[index_].compositions) :
         0;
 }
+
 FeatureIdentity::Composition FeatureIdentity::compositionAt(size_t index) const
 {
     auto handle = owner_->schema_->identities[index_].compositions;
     return {owner_, owner_->schema_->identityCompositions.range(handle)[index]};
 }
+
 size_t FeatureIdentity::Composition::partCount() const
 {
     return owner_ ? owner_->schema_->identityParts.size(parts_) : 0;
 }
+
 FeatureIdentity::Part FeatureIdentity::Composition::partAt(size_t index) const
 {
     return {owner_, parts_, index};
 }
+
 std::string_view FeatureIdentity::Part::name() const
 {
     return owner_ ?
         owner_->schema_->name(owner_->schema_->identityParts.range(parts_)[index_].name) :
         std::string_view{};
 }
+
 IdPartDataType FeatureIdentity::Part::datatype() const
 {
     if (!owner_)
         throw std::logic_error("An absent identity part has no datatype.");
     return IdPartDataType(owner_->schema_->identityParts.range(parts_)[index_].datatype);
 }
+
 bool FeatureIdentity::Part::optional() const
 {
     return owner_ && (owner_->schema_->identityParts.range(parts_)[index_].flags & 2);
 }
+
 bool FeatureIdentity::Part::synthetic() const
 {
     return owner_ && (owner_->schema_->identityParts.range(parts_)[index_].flags & 1);
 }
+
 std::string_view FeatureIdentity::Part::description() const
 {
     return owner_ ?
         owner_->schema_->text(owner_->schema_->identityParts.range(parts_)[index_].description) :
         std::string_view{};
 }
+
 nlohmann::json FeatureIdentity::Part::toJson() const
 {
     return {
@@ -210,18 +222,21 @@ nlohmann::json FeatureIdentity::Part::toJson() const
         {"isSynthetic", synthetic()},
         {"isOptional", optional()}};
 }
+
 bool FeatureIdentity::Part::validateValue(
     std::variant<int64_t, std::string_view>& value,
     std::string* error) const
 {
     return owner_ && validatePart(datatype(), name(), value, error);
 }
+
 bool FeatureIdentity::Part::validateValue(
     std::variant<int64_t, std::string>& value,
     std::string* error) const
 {
     return owner_ && validateOwnedPart(datatype(), name(), value, error);
 }
+
 FeatureIdentity FeatureIdentity::retain() const
 {
     auto result = *this;
@@ -229,6 +244,7 @@ FeatureIdentity FeatureIdentity::retain() const
         result.retained_ = std::static_pointer_cast<MapSchema const>(owner_->shared_from_this());
     return result;
 }
+
 FeatureIdentity::Composition FeatureIdentity::Composition::retain() const
 {
     auto result = *this;
@@ -236,6 +252,7 @@ FeatureIdentity::Composition FeatureIdentity::Composition::retain() const
         result.retained_ = std::static_pointer_cast<MapSchema const>(owner_->shared_from_this());
     return result;
 }
+
 FeatureIdentity::Part FeatureIdentity::Part::retain() const
 {
     auto result = *this;
@@ -243,14 +260,17 @@ FeatureIdentity::Part FeatureIdentity::Part::retain() const
         result.retained_ = std::static_pointer_cast<MapSchema const>(owner_->shared_from_this());
     return result;
 }
+
 bool FeatureIdentity::Composition::operator==(Composition const& other) const noexcept
 {
     return owner_ == other.owner_ && parts_ == other.parts_;
 }
+
 bool FeatureIdentity::Part::operator==(Part const& other) const noexcept
 {
     return owner_ == other.owner_ && parts_ == other.parts_ && index_ == other.index_;
 }
+
 std::optional<uint32_t> FeatureIdentity::Composition::matchEndIndex(
     uint32_t start,
     KeyValueViewPairs const& values,
@@ -281,6 +301,7 @@ std::optional<uint32_t> FeatureIdentity::Composition::matchEndIndex(
     }
     return length ? std::nullopt : std::optional<uint32_t>{start};
 }
+
 bool FeatureIdentity::Composition::matches(
     uint32_t start,
     KeyValueViewPairs const& values,
@@ -299,6 +320,7 @@ bool FeatureIdentity::Composition::matches(
     }
     return true;
 }
+
 std::optional<uint8_t> FeatureIdentity::matchingCompositionIndex(
     KeyValueViewPairs const& values,
     MatchMode mode,
@@ -315,6 +337,7 @@ std::optional<uint8_t> FeatureIdentity::matchingCompositionIndex(
             return uint8_t(i);
     return {};
 }
+
 bool FeatureIdentity::sameIdentity(FeatureIdentity const& other) const
 {
     if (!*this || !other)
@@ -333,6 +356,7 @@ bool FeatureIdentity::sameIdentity(FeatureIdentity const& other) const
     }
     return true;
 }
+
 bool FeatureIdentity::sameIdentity(FeatureTypeInfo const& declaration) const
 {
     if (!*this || name() != declaration.name_)
@@ -354,6 +378,7 @@ bool FeatureIdentity::sameIdentity(FeatureTypeInfo const& declaration) const
     }
     return true;
 }
+
 FeatureTypeInfo FeatureIdentity::toDeclaration() const
 {
     if (!*this)
@@ -372,6 +397,7 @@ FeatureTypeInfo FeatureIdentity::toDeclaration() const
     }
     return result;
 }
+
 nlohmann::json FeatureIdentity::toJson() const
 {
     auto definitions = nlohmann::json::array();

@@ -330,6 +330,7 @@ nlohmann::json geoJsonEndpointSchema()
     return std::filesystem::current_path();
 }
 
+/** Accept inline metadata or resolve a local reference relative to the config file. */
 void applyStructuredDocumentOption(
     const YAML::Node& config,
     std::optional<nlohmann::json>& inlineJsonOut,
@@ -415,13 +416,11 @@ public:
         std::ifstream ifs(config_path);
         YAML::Node root = ifs ? YAML::Load(ifs) : YAML::Node();
 
-        // Create or clear the 'mapget' node
+        // Regenerate only mapget CLI settings, preserving unrelated top-level sections.
         auto mapgetNode = root["mapget"] = YAML::Node(YAML::NodeType::Map);
 
-        // Process current app configuration into 'mapget' node
         toYaml(mapgetNode, app, defaultAlso);
 
-        // Output the YAML content as a formatted string
         std::stringstream ss;
         ss << root;
         return ss.str();
@@ -863,7 +862,6 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
         httpConfig.watchConfig = config && *config;
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -887,8 +885,8 @@ struct ServeCommand
         HttpService srv(cache, httpConfig);
 
         if (config && *config) {
-            // Registration and schema assembly are side-effect free. Actual
-            // datasource construction must wait until the listener is bound.
+            // Register factories and schemas now; constructing datasource instances
+            // waits until the listener is bound.
             registerDefaultDatasourceTypes();
             loadConfigSchemaPatch(getPathToSchemaPatch());
         }
@@ -1028,6 +1026,7 @@ struct FetchCommand
 };
 
 std::string pathToSchema = "";
+
 int runFromCommandLine(
     std::vector<std::string> args,
     bool requireSubcommand,

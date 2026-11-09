@@ -12,6 +12,7 @@ nlohmann::json parseBoundedJson(std::string_view input, size_t maxBytes, size_t 
 {
     if (input.size() > maxBytes)
         throw std::invalid_argument("JSON exceeds its byte limit.");
+
     std::vector<std::set<std::string>> objectKeys;
     return nlohmann::json::parse(input, [maxDepth, &objectKeys](int depth, auto event, auto& value) {
         if (depth < 0 || static_cast<size_t>(depth) > maxDepth)

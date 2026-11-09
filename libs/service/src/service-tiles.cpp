@@ -580,6 +580,7 @@ void LayerTilesRequest::notifyResult(PartitionLayer::Ptr r)
         }
     }
 
+    // Invoke consumers outside statusMutex_; a claimed key prevents duplicate delivery.
     try {
         switch (type) {
         case LayerType::Features:
@@ -667,8 +668,7 @@ void LayerTilesRequest::notifyStatus()
 void LayerTilesRequest::wait()
 {
     std::unique_lock doneLock(statusMutex_);
-    // Extra doneness check is to avoid infinite locking, e.g.
-    // because empty requests were not considered by calling method.
+    // Empty requests can already be terminal before any notifier runs.
     if (!isDone()) {
         statusConditionVariable_.wait(doneLock, [this] { return isDone(); });
     }

@@ -36,8 +36,10 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
+
     /** Agent transport/authentication has its own bounded control loop, not service workers. */
     std::shared_ptr<detail::McpServer> mcp_;
+
     /** Lookup backend used by GET /location when location search is enabled. */
     std::shared_ptr<SqliteLocationLookup> locationLookup_;
 
@@ -51,7 +53,7 @@ struct HttpService::Impl
     bool stopMemoryTrim_ = false;
     std::thread memoryTrimThread_;
 
-    /** Lock-free diagnostics published after each periodic trim attempt. */
+    /** Atomic diagnostics published after each periodic trim attempt. */
     std::atomic<uint64_t> memoryTrimAttempts_{0};
     std::atomic<uint64_t> memoryTrimSuccesses_{0};
     std::atomic<uint64_t> memoryTrimLastDurationMicros_{0};
@@ -143,10 +145,16 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
-    /** Coalesce report callers and serialize expensive cache traversal. */
+    /**
+     * Coalesce report callers and serialize expensive cache traversal.
+     * Shutdown discards outstanding callbacks after HTTP teardown has begun.
+     */
     void runStatusCacheReportLoop();
 
-    /** Queue one control task unless HTTP service shutdown has begun. */
+    /**
+     * Queue a nonempty control task unless shutdown has begun. Acceptance does
+     * not guarantee execution: shutdown discards tasks that have not started.
+     */
     [[nodiscard]] bool enqueueInteractiveControlTask(std::function<void()> task);
 
     /** Execute interactive reconciliation without occupying Drogon's I/O loop. */
@@ -157,6 +165,7 @@ struct HttpService::Impl
         drogon::HttpRequestPtr const& req,
         std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
 
+    /** Resolve locate requests synchronously; preserve one response list per input request. */
     void handleLocateRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;

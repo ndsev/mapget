@@ -36,8 +36,10 @@ private:
  * Merge all matching add-on datasource tiles into one freshly loaded base tile.
  *
  * Add-ons reuse the worker executing the base tile and therefore do not consume
- * independent datasource permits. Return false if a contribution failed, so the
- * caller can bound the incomplete result's lifetime without discarding usable data.
+ * independent datasource permits. Missing, errored or incompatible contributions
+ * return false after adding warnings, allowing the caller to bound the partial
+ * result's lifetime. Exceptions from loading/cloning, including cancellation,
+ * propagate instead and fail the enclosing tile job.
  */
 bool loadAddOnTiles(
     PartitionFeatureLayer::Ptr const& baseTile,

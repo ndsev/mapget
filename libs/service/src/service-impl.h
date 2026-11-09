@@ -22,6 +22,7 @@ struct Service::Impl
     mutable std::shared_mutex catalogMutex_;
     std::unique_ptr<DataSourceConfigService::Subscription> configSubscription_;
     std::vector<DataSource::Ptr> dataSourcesFromConfig_;
+
     /** Constructor-input hashes indexed by YAML row, including disabled rows. */
     std::vector<std::string> dataSourceConfigFingerprints_;
     size_t dataSourceConstructionFailed_ = 0;
@@ -66,10 +67,12 @@ struct Service::Impl
         size_t workerCount,
         std::chrono::milliseconds errorTileTtl,
         std::chrono::milliseconds emptyTileTtl);
+
     /** Stop source construction before draining and joining homogeneous workers. */
     ~Impl();
 
     Impl(Impl const&) = delete;
+
     Impl& operator=(Impl const&) = delete;
 
     /** Register a ready datasource and publish it to the scheduler when primary. */
@@ -157,20 +160,24 @@ struct Service::Impl
     /** Publish normalized optional constructor progress for the current generation. */
     void
     updateCatalogProgress(uint64_t generation, uint32_t configIndex, std::optional<float> progress);
+
     /** Mark one current-generation catalog row failed and preserve diagnostics. */
     void
     markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message, bool retrying = false);
+
     /** Atomically register a constructed source and attach it to its current catalog row. */
     bool markCatalogConstructionReady(
         uint64_t generation,
         uint32_t configIndex,
         DataSource::Ptr const& dataSource,
         std::optional<std::string> sourceId);
+
     /** Start one generation-guarded asynchronous datasource constructor. */
     void launchDataSourceConstruction(
         uint64_t generation,
         YAML::Node configNode,
         DataSourceDescriptor descriptor);
+
     /** Retain unchanged ready sources and replace other config-backed rows in YAML order. */
     void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes);
 
@@ -182,6 +189,7 @@ struct Service::Impl
     [[nodiscard]] DataSourceCatalogSnapshot
     getSourceCatalog(std::optional<ClientAuthorization> const& clientAuthorization, bool waitUntilReloadDone)
         const;
+
     /** Return the current monotonic catalog revision without cloning rows. */
     [[nodiscard]] uint64_t getSourceCatalogRevision() const;
 
@@ -189,10 +197,11 @@ struct Service::Impl
     [[nodiscard]] bool isSourceCatalogChangeVisible(
         DataSourceCatalogChange const& change,
         std::optional<ClientAuthorization> const& clientAuthorization) const;
+
     /** Register a catalog callback and return its removable subscription ID. */
     uint64_t addSourceCatalogCallback(Service::DataSourceCatalogCallback callback);
 
-    /** Remove a previously registered catalog callback. */
+    /** Remove future subscription snapshots; an already copied callback may still run. */
     void removeSourceCatalogCallback(uint64_t id);
 };
 

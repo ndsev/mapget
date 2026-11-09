@@ -31,7 +31,10 @@ namespace
 
 constexpr size_t CancellationCheckBatch = 1024;
 
-/** Amortizes cancellation checks inside large nested traversals. */
+/**
+ * Amortize a borrowed cancellation callback across explicit traversal checkpoints.
+ * The callback must outlive this probe. Checks do not interrupt an expression already evaluating.
+ */
 class CancellationProbe
 {
 public:
@@ -52,7 +55,7 @@ private:
 
 class FeatureArrayView;
 
-/** Request-local storage for an array spanning several immutable source pools. */
+/** Request-local array storage whose feature pointers retain all referenced source pools. */
 struct FeatureArrayViewStorage final : simfil::Model
 {
     explicit FeatureArrayViewStorage(std::vector<model_ptr<Feature>> features)
@@ -138,7 +141,10 @@ simfil::Value bindingValue(FeatureLayerFilterBinding const& binding)
         binding);
 }
 
-/** Encode compile-time bindings without conflating types or adjacent names. */
+/**
+ * Encode typed compile-time bindings for the process-local expression cache.
+ * Native scalar bytes and size_t lengths make this an in-process identity, not a wire format.
+ */
 std::string bindingCompileContext(std::map<std::string, FeatureLayerFilterBinding> const& bindings)
 {
     std::string result;
@@ -340,7 +346,7 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
 namespace
 {
 
-/** Native SIMFIL truth: only false, null, undefined, and no result reject. */
+/** Inspect the first result: only false, null, undefined, and an empty sequence reject. */
 bool filterMatches(std::vector<simfil::Value> const& values)
 {
     if (values.empty()) {
@@ -382,6 +388,8 @@ std::vector<bool> FeatureLayerFilterRequest::activeChannels() const
         }
         environment->traces.clear();
         auto ast = simfil::compile(*environment, *expression, true);
+        // An unknown result keeps the channel active so normal evaluation can
+        // report failures and retain observable traces in the source context.
         if (!ast || !(*ast)->expr().constant() || !environment->traces.empty()) {
             return std::nullopt;
         }
@@ -492,6 +500,8 @@ class FeatureLayerFilterRequest::ExpressionEvaluator
 {
 public:
     using ProgramKey = std::tuple<std::string, bool, simfil::TypeId>;
+
+    /** Reuse only within one unchanged context; the key intentionally omits model identity. */
     using ValueCache = std::map<ProgramKey, std::vector<simfil::Value>>;
 
     /** One result sequence per expression, with failures retaining their expression index. */
@@ -513,8 +523,12 @@ public:
             for (size_t index = 0; index < values_.size(); ++index) {
                 auto copied = target.copySequence(values_[index]);
                 if (!copied) {
-                    errors_.push_back({static_cast<uint32_t>(index), "materialization", copied.error().message});
-                    issues.add(channelId, expressions[index], scope,
+                    errors_.push_back(
+                        {static_cast<uint32_t>(index), "materialization", copied.error().message});
+                    issues.add(
+                        channelId,
+                        expressions[index],
+                        scope,
                         fmt::format("Projection materialization failure: {}", copied.error().message));
                     result.push_back(target.newArray(1, true));
                     continue;
@@ -705,7 +719,10 @@ private:
     {
     }
 
-    /** Compile on first use and evaluate one expression in this environment. */
+    /**
+     * Bind cached immutable programs to this evaluator's dictionary and environment.
+     * Projection limits reject the entire expression result; predicate evaluation uses any mode.
+     */
     [[nodiscard]] tl::expected<std::vector<simfil::Value>, Failure> evaluate(
         std::string_view expression,
         simfil::ModelNode const& context,
@@ -754,16 +771,22 @@ private:
             simfil::EvaluationOptions limits;
             limits.maxResults = 100000;
             limits.maxWork = 1000000;
-            auto summary = found->second.eval(context,
-                simfil::LambdaResultFn([&](simfil::Context, simfil::Value value) {
-                    values->push_back(std::move(value));
-                    return simfil::Continue;
-                }), limits, diagnostics ? &expressionDiagnostics : nullptr);
+            auto summary = found->second.eval(
+                context,
+                simfil::LambdaResultFn(
+                    [&](simfil::Context, simfil::Value value)
+                    {
+                        values->push_back(std::move(value));
+                        return simfil::Continue;
+                    }),
+                limits,
+                diagnostics ? &expressionDiagnostics : nullptr);
             if (!summary) {
                 values = tl::unexpected(summary.error());
             }
             else if (summary->reason != simfil::EvaluationSummary::Reason::Complete) {
-                values = tl::unexpected(simfil::Error{simfil::Error::RuntimeError,
+                values = tl::unexpected(simfil::Error{
+                    simfil::Error::RuntimeError,
                     "Projection evaluation budget exceeded; no partial results were published."});
             }
         }
@@ -938,7 +961,7 @@ private:
         size_t channelIndex,
         Channel& channel);
 
-    /** Expand admitted relation roots into portable target descriptors. */
+    /** Expand source-local recursive roots, leaving unresolved targets for the service. */
     void collectStoredRelationDescriptors(size_t channelIndex, Channel& channel);
 
     /** Copy one selected attribute validity geometry into the output model. */
@@ -1117,6 +1140,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::collectStoredRelationDescripto
     std::deque<RelationRoot> pending(channel.relationRoots_.begin(), channel.relationRoots_.end());
     std::set<std::string> visitedFeatures;
     auto const& entryFilter = channel.definition_.entryFilter_;
+    // A token-boundary text check gates preflight without parsing the expression.
+    // A matching spelling inside a string also defers evaluation until resolution.
     auto referencesResolvedTarget = [](std::string_view expression)
     {
         auto containsIdentifier = [&](std::string_view identifier)
@@ -1236,7 +1261,11 @@ void FeatureLayerFilterRequest::SourceEvaluation::collectStoredRelationDescripto
     }
 }
 
-/** Copy one selected geometry into a self-contained subset model node. */
+/**
+ * Copy geometry data into the subset owner.
+ * Retained GLTF indices refer to the output tile's attachment. Disable preservation
+ * for foreign indices to copy their bounds as AABBs instead.
+ */
 static model_ptr<Geometry> copyGeometry(
     PartitionSubsetLayer& target,
     model_ptr<Geometry> const& source,
@@ -1249,7 +1278,9 @@ static model_ptr<Geometry> copyGeometry(
         source->geomType();
     auto copied = target.newGeometry(targetType, std::max<size_t>(1, source->numPoints()), false);
     switch (source->geomType()) {
-    case GeomType::AABB: copied->setAabb(source->aabbOrigin(), source->aabbSize()); break;
+    case GeomType::AABB:
+        copied->setAabb(source->aabbOrigin(), source->aabbSize());
+        break;
     case GeomType::GltfNodeIndex:
         if (preserveGltfNodeIndex) {
             copied->setGltfNodeIndex(source->gltfNodeIndex());
@@ -1312,36 +1343,52 @@ static model_ptr<GeometryCollection> copyGeometryCollection(
 
 /** Sample one object's geometries together, before allocating subset point storage. */
 static model_ptr<GeometryCollection> copyPointCloudGeometry(
-    PartitionSubsetLayer& target, model_ptr<GeometryCollection> const& source,
-    std::optional<std::string> const& name, uint32_t quota)
+    PartitionSubsetLayer& target,
+    model_ptr<GeometryCollection> const& source,
+    std::optional<std::string> const& name,
+    uint32_t quota)
 {
     auto selected = PointCloudGeometrySample::build(source, quota, name);
     auto info = target.info();
-    target.setInfo("PointCloud/SourceRecords", info.value<uint64_t>("PointCloud/SourceRecords", 0) + selected.sourceCount);
-    target.setInfo("PointCloud/DeliveredRecords", info.value<uint64_t>("PointCloud/DeliveredRecords", 0) + selected.records.size());
+    target.setInfo(
+        "PointCloud/SourceRecords",
+        info.value<uint64_t>("PointCloud/SourceRecords", 0) + selected.sourceCount);
+    target.setInfo(
+        "PointCloud/DeliveredRecords",
+        info.value<uint64_t>("PointCloud/DeliveredRecords", 0) + selected.records.size());
     target.setInfo("PointCloud/Representation", "visualization/proportional-v1");
+
+    // The sampler keeps selected records in geometry order, so each contiguous
+    // address run becomes one output geometry without another temporary point array.
     size_t geometryCount = 0;
     uint32_t previousAddress = 0;
     for (auto const& record : selected.records) {
-        if (!geometryCount || record.geometryAddress != previousAddress) ++geometryCount;
+        if (!geometryCount || record.geometryAddress != previousAddress)
+            ++geometryCount;
         previousAddress = record.geometryAddress;
     }
     auto copied = target.newGeometryCollection(std::max<size_t>(1, geometryCount), false);
-    if (!source) return copied;
+    if (!source)
+        return copied;
+
     size_t cursor = 0;
-    source->forEachGeometry([&](auto const& geometry) {
-        size_t const first = cursor;
-        while (cursor < selected.records.size() &&
-               selected.records[cursor].geometryAddress == geometry->addr().value_)
-            ++cursor;
-        if (cursor != first) {
-            auto points = target.newGeometry(GeomType::Points, cursor - first, true);
-            points->setName(geometry->name());
-            for (size_t index = first; index < cursor; ++index) points->append(selected.records[index].point);
-            copied->addGeometry(points);
-        }
-        return true;
-    });
+    source->forEachGeometry(
+        [&](auto const& geometry)
+        {
+            size_t const first = cursor;
+            while (cursor < selected.records.size() &&
+                   selected.records[cursor].geometryAddress == geometry->addr().value_)
+                ++cursor;
+
+            if (cursor != first) {
+                auto points = target.newGeometry(GeomType::Points, cursor - first, true);
+                points->setName(geometry->name());
+                for (size_t index = first; index < cursor; ++index)
+                    points->append(selected.records[index].point);
+                copied->addGeometry(points);
+            }
+            return true;
+        });
     return copied;
 }
 
@@ -1474,24 +1521,43 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
 
     auto const quota = channel.definition_.pointCloudMaxPoints_.value_or(0);
     for (auto& candidate : channel.featureCandidates_) {
-        auto values = candidate.featureValues_.materialize(*resultLayer_,
-            channel.definition_.channelId_, channel.definition_.featureFields_, Scope::Feature, issues_);
+        auto values = candidate.featureValues_.materialize(
+            *resultLayer_,
+            channel.definition_.channelId_,
+            channel.definition_.featureFields_,
+            Scope::Feature,
+            issues_);
         channel.output_->newFeatureEntry(
             copyFeatureId(candidate.feature_->id(), featureIds),
             channel.definition_.pointCloudMaxPoints_.value_or(0) ?
-                copyPointCloudGeometry(*resultLayer_, candidate.feature_->geomOrNull(),
-                    channel.definition_.geometryName_, quota) :
-                copyGeometryCollection(*resultLayer_, candidate.feature_->geomOrNull(),
-                    channel.definition_.geometryTypes_, channel.definition_.geometryName_),
+                copyPointCloudGeometry(
+                    *resultLayer_,
+                    candidate.feature_->geomOrNull(),
+                    channel.definition_.geometryName_,
+                    quota) :
+                copyGeometryCollection(
+                    *resultLayer_,
+                    candidate.feature_->geomOrNull(),
+                    channel.definition_.geometryTypes_,
+                    channel.definition_.geometryName_),
             values,
             candidate.featureValues_.errors_);
     }
 
     for (auto& candidate : channel.attributeCandidates_) {
-        auto hostValues = candidate.hostValues_.materialize(*resultLayer_,
-            channel.definition_.channelId_, channel.definition_.featureFields_, Scope::Feature, issues_);
-        auto entryValues = candidate.entryValues_.materialize(*resultLayer_,
-            channel.definition_.channelId_, channel.definition_.entryFields_, Scope::Attribute, issues_);
+        auto hostValues = candidate.hostValues_.materialize(
+            *resultLayer_,
+            channel.definition_.channelId_,
+            channel.definition_.featureFields_,
+            Scope::Feature,
+            issues_);
+        auto entryValues = candidate.entryValues_.materialize(
+            *resultLayer_,
+            channel.definition_.channelId_,
+            channel.definition_.entryFields_,
+            Scope::Attribute,
+            issues_);
+
         uint32_t transitionPivotIndex = AttributeValidityEntry::InvalidTransitionPivotIndex;
         auto geometry = copyAttributeGeometry(candidate, channel, &transitionPivotIndex);
         auto geometryDescriptionType = candidate.hasValidity_ && candidate.validity_ ?
@@ -1501,6 +1567,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::materializeChannel(
         model_ptr<FeatureId> transitionToFeatureId;
         auto transitionFromConnectedEnd = ValidityData::Start;
         auto transitionToConnectedEnd = ValidityData::Start;
+        // Publish transition metadata only with a retained line and both endpoint
+        // identities. Geometry selection may remove the transition line entirely.
         if (geometryDescriptionType == ValidityData::FeatureTransition) {
             if (transitionPivotIndex != AttributeValidityEntry::InvalidTransitionPivotIndex) {
                 auto const from = candidate.validity_->transitionFromFeatureId();
@@ -1572,6 +1640,8 @@ model_ptr<GeometryCollection> FeatureLayerFilterRequest::copyRelationEffectiveGe
         return fallback;
     }
 
+    // Explicit validities replace the endpoint fallback, even if every validity
+    // fails or the channel's geometry selector removes all computed geometry.
     auto result = target.newGeometryCollection(std::max<uint32_t>(1, validities->size()), false);
     for (uint32_t index = 0; index < validities->size(); ++index) {
         auto node = validities->at(index);
@@ -1759,6 +1829,9 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
     }
     evaluation.evaluator_ = std::move(*evaluator);
     evaluation.prepare();
+
+    // Cancellation stops scans at checkpoints and can leave collected candidates.
+    // The service checks cancellation again before committing this partial result.
     evaluation.scanFeatures();
     evaluation.scanExactRoots();
     return evaluation.finish();
@@ -1863,7 +1936,9 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
 
     for (size_t channelIndex = 0; channelIndex < channels_.size(); ++channelIndex) {
         auto& channel = channels_[channelIndex];
-        if (!channel.active_ || channel.filterCompilationFailed_ || !featureTypeAllowed(feature, channel)) {
+        if (!channel.active_ || channel.filterCompilationFailed_ ||
+            !featureTypeAllowed(feature, channel))
+        {
             continue;
         }
         if (!materializeOutput_ && !channel.definition_.group_) {
@@ -1957,6 +2032,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
         return;
     }
 
+    // Project the host only after its first accepted validity, then share those
+    // values across the remaining rows for this feature and channel.
     std::optional<ExpressionEvaluator::Projection> hostValues;
     uint32_t attributeIndex = 0;
     attributeLayers->forEachLayer(
@@ -2055,6 +2132,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
                         }
                     }
                     else {
+                        // An attribute without validities still has one context;
+                        // materialization uses its host feature's geometry.
                         evaluateCandidate({}, false, 0, 1);
                     }
                     return !channel.filterCompilationFailed_;
@@ -2203,6 +2282,8 @@ FeatureLayerFilterRequest::completePointGroups(
         return fmt::format("{}:{}", feature->model().mapId(), feature->id()->toString());
     };
 
+    // Each completed group is appended immediately. Cancellation returns the
+    // current count; the service discards the output rather than rolling it back.
     for (auto& [groupId, groupMembers] : groups) {
         if (cancellation.boundary()) {
             return FeatureLayerPointGroupCompletion{
@@ -2301,8 +2382,12 @@ FeatureLayerFilterRequest::completePointGroups(
                     representativeId :
                     copyFeatureId(outputLayer, groupMembers[memberIndex].feature_->id()));
         }
-        auto materialized = values.materialize(outputLayer, definition.channelId_,
-            definition.entryFields_, Scope::Group, issues);
+        auto materialized = values.materialize(
+            outputLayer,
+            definition.channelId_,
+            definition.entryFields_,
+            Scope::Group,
+            issues);
         outputChannel->newGroupEntry(
             groupKey,
             representativeId,
@@ -2433,6 +2518,8 @@ FeatureLayerFilterRequest::completeRelations(
             bool twoway = false;
             std::string reverseId;
             if (definition.relation_->mergeTwoway_) {
+                // Consume at most one reverse edge per directed relation. Pairing
+                // uses endpoint identity after the channel's name selection.
                 auto const sourceIdentity = stableFeatureIdentity(descriptor->source_);
                 auto const targetIdentity = stableFeatureIdentity(descriptor->target_);
 
@@ -2495,6 +2582,8 @@ FeatureLayerFilterRequest::completeRelations(
             }
 
             if (twoway && exactRoots.empty()) {
+                // Ownership is permanent: omit the pair if its owner lies outside
+                // requested coverage, instead of moving it to the visible endpoint.
                 auto const sourceKey = MapPartitionKey(descriptor->source_->model());
                 auto const targetKey = descriptor->targetTileKey_.value_or(
                     MapPartitionKey(descriptor->target_->model()));
@@ -2519,6 +2608,8 @@ FeatureLayerFilterRequest::completeRelations(
                 }
             }
             else if (twoway) {
+                // Exact-root requests follow the first explicit root's output;
+                // reciprocal discovery from a later root must not duplicate it.
                 auto ownerRootOrdinal = descriptor->rootOrdinal_;
                 if (auto sourceRoot =
                         exactRootOrdinal(descriptor->source_, outputLayer, exactRoots)) {
@@ -2541,6 +2632,8 @@ FeatureLayerFilterRequest::completeRelations(
             {},
             [](Emission const& emission) -> std::string const& { return std::get<0>(emission); });
 
+        // Project and copy each endpoint once per channel, even when several
+        // emitted relations share it. Every entry belongs to the output model.
         std::map<std::string, model_ptr<FeatureEntry>> endpointEntries;
         auto endpointEntry = [&](model_ptr<Feature> const& feature)
             -> tl::expected<model_ptr<FeatureEntry>, simfil::Error>
@@ -2566,8 +2659,12 @@ FeatureLayerFilterRequest::completeRelations(
                         Scope::Feature,
                         issues);
             bool downgradedGltfNodeIndex = false;
-            auto materialized = values.materialize(outputLayer, definition.channelId_,
-                definition.featureFields_, Scope::Feature, issues);
+            auto materialized = values.materialize(
+                outputLayer,
+                definition.channelId_,
+                definition.featureFields_,
+                Scope::Feature,
+                issues);
             auto entry = outputChannel->newFeatureEntry(
                 copyFeatureId(outputLayer, feature->id()),
                 copyGeometryCollection(
@@ -2667,8 +2764,12 @@ FeatureLayerFilterRequest::completeRelations(
                 issues,
                 (*targetEntry)->geometry());
             auto sourceData = descriptor.relation_->sourceDataReferences();
-            auto materialized = relationValues.materialize(outputLayer, definition.channelId_,
-                definition.entryFields_, Scope::Relation, issues);
+            auto materialized = relationValues.materialize(
+                outputLayer,
+                definition.channelId_,
+                definition.entryFields_,
+                Scope::Relation,
+                issues);
             outputChannel->newRelationEntry(
                 relationId,
                 descriptor.relation_->name(),
@@ -2915,6 +3016,8 @@ PartitionFeatureLayer::find(
             continue;
         }
 
+        // An ID expression runs once at the first feature of the requested type;
+        // $features exposes the complete source layer for set-based lookup.
         environment->warnings.clear();
         environment->traces.clear();
         auto values = program.eval(*makeContext(representative->second));

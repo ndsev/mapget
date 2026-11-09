@@ -10,8 +10,9 @@ namespace mapget
 {
 
 /**
- * Type uniquely identifying the source of data. For data loaded from a zserio
- * buffer, this is the position and length in bits in the blob.
+ * Address within one source-data layer. BitRange layers interpret it as an
+ * absolute bit offset and bit length; Unknown-format layers treat u64() as an
+ * opaque identity. Layer/map/partition context must accompany an address.
  */
 struct SourceDataAddress
 {
@@ -48,10 +49,8 @@ struct SourceDataAddress
             static_cast<uint32_t>(size)};
     }
 
-    uint64_t u64() const
-    {
-        return (static_cast<uint64_t>(bitOffset_) << 32) | bitSize_;
-    }
+    /** Pack offset in the high 32 bits and size in the low 32 bits, without losing either. */
+    uint64_t u64() const { return (static_cast<uint64_t>(bitOffset_) << 32) | bitSize_; }
 
     uint32_t bitSize() const
     {

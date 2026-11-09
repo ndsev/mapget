@@ -9,6 +9,7 @@ class MapSchema::Impl::OwnerDescriptor final : public simfil::ModelNodeBase
 public:
     /** Support model_ptr's empty representation without inventing a metadata owner. */
     explicit OwnerDescriptor(simfil::detail::mp_key key) : ModelNodeBase(key) {}
+
     /** Bind either an owner row or a type's owner-list address. */
     OwnerDescriptor(
         simfil::ModelConstPtr model,
@@ -25,8 +26,10 @@ public:
             simfil::ValueType::Array :
             simfil::ValueType::Object;
     }
+
     /** Metadata does not inherit the represented feature's runtime schema. */
     TypeId schema() const override { return simfil::NoTypeId; }
+
     /** Count members without materializing a DTO or a descriptor graph. */
     uint32_t size() const override
     {
@@ -35,6 +38,7 @@ public:
             uint32_t(graph.owners.size(graph.data(TypeId(addr_.index())).owners)) :
             3u + bool(graph.ownerRows[addr_.index()].featureLayer);
     }
+
     /** Enumerate the same keys used by explicit lookup, omitting unknown feature layers. */
     StringId keyAt(int64_t position) const override
     {
@@ -47,6 +51,7 @@ public:
             StringPool::NameStr,
             keys[20]}[position];
     }
+
     /** Resolve one metadata field without interning its name. */
     simfil::ModelNode::Ptr get(StringId const& key) const override
     {
@@ -57,6 +62,7 @@ public:
                 return at(i);
         return {};
     }
+
     /** Follow membership IDs or borrow one dictionary-backed textual field. */
     simfil::ModelNode::Ptr at(int64_t position) const override
     {
@@ -76,6 +82,7 @@ public:
             ModelNodeAddress(simfil::Model::Scalar),
             simfil::ScalarValueType{graph.name(id)});
     }
+
     /** Preserve membership order and callback short-circuiting. */
     bool iterate(IterCallback const& callback) const override
     {

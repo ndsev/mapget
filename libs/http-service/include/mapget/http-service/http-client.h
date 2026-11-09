@@ -8,7 +8,8 @@
 namespace mapget {
 
 /**
- * Client class, which implements asynchronous fetching from a mapget HTTP service.
+ * Blocking client for a mapget HTTP service. HTTP I/O runs on an owned event loop;
+ * public calls wait for a complete response and deliver callbacks on the calling thread.
  */
 class HttpClient
 {
@@ -39,13 +40,19 @@ public:
         std::string const& sourceId, std::string const& schemaId);
 
     /**
-     * Post a Request for a number of tiles from a particular map layer.
+     * Fetch one layer request using a fully buffered /tiles response. Install callbacks
+     * before calling; they run before this method returns. Returns the same request
+     * with its final status. Transport or decoding failures set Aborted.
      */
     LayerTilesRequest::Ptr request(LayerTilesRequest::Ptr const& request);
 
-    /** Post a one-shot server-side multi-channel filter request. */
-    FeatureLayerFilterTilesRequest::Ptr filter(
-        FeatureLayerFilterTilesRequest::Ptr const& request);
+    /**
+     * Run one buffered /filter request and invoke its callbacks before returning.
+     * Incoming-relation results are published only after the complete manifest and
+     * snapshot set validates; ordinary subset results may precede a later failure.
+     * Returns the supplied request; inspect its terminal status for failure.
+     */
+    FeatureLayerFilterTilesRequest::Ptr filter(FeatureLayerFilterTilesRequest::Ptr const& request);
 
     /**
      * Discover associations through the public batch endpoint, without fetching payloads.
@@ -54,9 +61,8 @@ public:
      */
     ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request);
 
-    /** Fetch one separately transferred named tile attachment. */
-    std::optional<AttachmentResponse> attachment(
-        AttachmentRequest const& request);
+    /** Block for one named attachment; return nullopt on HTTP or decompression failure. */
+    std::optional<AttachmentResponse> attachment(AttachmentRequest const& request);
 
 private:
     struct Impl;

@@ -12,7 +12,9 @@
 namespace mapget::detail
 {
 
-/** Owns MCP trust configuration and bounded issuer keys; never interprets provider-specific roles.
+/**
+ * Own MCP trust configuration and a bounded set of issuer keys. The server
+ * serializes key refresh and verification on its control loop; this class adds no lock.
  */
 class McpAuthentication
 {
@@ -52,7 +54,7 @@ public:
     /** Determine whether a structurally plausible token needs a refreshed trusted key set. */
     [[nodiscard]] bool needsKeys(std::string const& token) const;
 
-    /** Atomically replace public keys after validating bounded RSA signing-key metadata. */
+    /** Validate the entire RSA key set before replacement; failure preserves the prior keys. */
     void installKeys(nlohmann::json const& jwks);
 
     /** Load bounded key/catalog-adjacent files without accepting URLs. */

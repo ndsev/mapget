@@ -45,7 +45,7 @@ struct CacheReportResult
     std::string body;
 };
 
-/** Traverse the cache once and package the resulting point-in-time report. */
+/** Collect cache diagnostics in one run; subsystem samples are not one atomic snapshot. */
 [[nodiscard]] CacheReportResult generateCacheReport(Service& service)
 {
     auto const started = std::chrono::steady_clock::now();
@@ -216,7 +216,7 @@ void HttpService::Impl::runStatusCacheReportLoop()
         }
 
         // Keep the callback list in place while traversing so callers arriving
-        // during this run receive the same point-in-time result.
+        // during this run receive the same collected result.
         lock.unlock();
         auto result = generateCacheReport(self_);
         lock.lock();

@@ -32,7 +32,7 @@ bool isSourceDataTileZeroSentinel(LayerType layer)
     return layer == LayerType::SourceData;
 }
 
-/** Parse packed tile IDs first, then accept the removed mapget layout for stale keys/blobs. */
+/** Parse packed tile IDs first, then accept the removed mapget layout for stale cache keys. */
 TileId parseRawTileIdValue(
     int64_t parsedTileId,
     std::string const& context,
@@ -40,7 +40,7 @@ TileId parseRawTileIdValue(
 {
     if (parsedTileId == 0 && isSourceDataTileZeroSentinel(layer)) {
         // This sentinel is intentionally not a spatial tile and is therefore
-        // the only invalid PackedTileId value accepted in persisted layers.
+        // the only invalid PackedTileId value accepted by this cache-key parser.
         return TileId();
     }
 

@@ -12,19 +12,20 @@ namespace mapget
 {
 
 /**
- * Small server, which implements the data source protocol expected
- * by a mapget server. The DataSource must be constructed with a
- * DataSourceInfo metadata instance, which describes the map data that
- * is provided by the source.
+ * HTTP adapter for one datasource with fixed, schema-bound metadata. Configure
+ * callbacks before go(); callbacks can overlap and must synchronize shared state.
+ * The adapter constructs partition models and serializes the data filled by them.
  */
 class DataSourceServer : public HttpServer
 {
 public:
     /**
-     * Construct a DataSource with complete, schema-bound DataSourceInfo.
+     * Construct a server with complete, schema-bound DataSourceInfo.
      * GET /info advertises the small catalog; GET /schema?schemaId=... serves the
-     * exact immutable binary artifact off the I/O thread. This endpoint is the
-     * trusted remote/process boundary, not the public service's source-auth gate.
+     * exact immutable binary artifact off the I/O thread. RemoteDataSource and
+     * RemoteDataSourceProcess use these endpoints to initialize a datasource
+     * connection. The public mapget service performs source authorization before
+     * serving that datasource's schema to its own clients.
      */
     explicit DataSourceServer(DataSourceInfo const& info);
 
@@ -33,8 +34,8 @@ public:
 
     /**
      * Set the callbacks which will be invoked when a `/tile`-request is received.
-     * The callback argument is a fresh Tile*Layer instance, which the callback
-     * must fill according to the set Tile*Layer's layer info and tile id.
+     * The callback receives a fresh partition layer to fill according to its
+     * metadata and tagged tile/object partition ID.
      * If an error occurs while filling the tile, the callback can use
      * PartitionLayer::setError(...) to signal the error downstream.
      */

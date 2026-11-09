@@ -31,14 +31,14 @@ namespace std {
 /**
  * This data source is a procedural map data generator for testing and development.
  * It generates spatially-coherent, deterministic map data including buildings,
- * roads, and POIs with realistic spatial relationships.
+ * roads, and intersections. Traffic layers add time-bucketed values to stable roads.
  *
  * Key features:
- * - Tile-based deterministic generation (same tile ID = same data)
+ * - Deterministic topology for a fixed tile and configuration
  * - Spatial coherence (roads avoid buildings, POIs align with roads)
  * - Highly configurable via YAML
  * - Flexible attribute generation system
- * - Relations between features
+ * - Traffic-to-road relations; configurable general relations are not generated
  */
 
 namespace mapget::gridsource {
@@ -87,11 +87,11 @@ struct TrafficConfig {
 enum class GeneratorType {
     Random,      // Random value from distribution
     Sequential,  // Sequential numbering with template
-    Computed,    // Derived from other attributes/geometry
-    Zoned,       // Distance-based zones
+    Computed,    // Placeholder formula support: geometryLength yields 100, others 0
+    Zoned,       // Random choice from configured zone values, without spatial zoning
     Fixed,       // Fixed value
-    Markov,      // Markov chain text generation
-    Spatial      // Perlin noise-based
+    Markov,      // Reserved configuration value; currently yields 0
+    Spatial      // Reserved configuration value; currently yields 0
 };
 
 /**
@@ -154,7 +154,8 @@ struct AttributeConfig {
 };
 
 /**
- * Layered attribute configuration (with validity support)
+ * Layered payload configuration. Validity and probability options are parsed
+ * but do not affect the current generator.
  */
 struct LayeredAttributeConfig {
     std::string name;
@@ -192,7 +193,9 @@ struct RelationConfig {
 };
 
 /**
- * Geometry configuration
+ * Geometry configuration. The current grid uses type plus building size/aspect
+ * ranges; density, complexity, curvature and road avoidance tuning are retained
+ * configuration fields but do not change the fixed road grid.
  */
 struct GeometryConfig {
     GeometryType type = GeometryType::Line;
@@ -311,8 +314,13 @@ struct TileSpatialContext {
     bool isCellOccupied(int gridX, int gridY) const;
     void markBuildingCells(const Building& building);
     bool doesLineIntersectBuilding(mapget::Point a, mapget::Point b) const;
+    /** Use planar coordinate distance; with no roads, return p and report double's maximum. */
     mapget::Point findNearestRoadPoint(mapget::Point p, double* outDistance = nullptr) const;
+
+    /** Radius is in the stored coordinate units (degrees for generated WGS84 data). */
     std::vector<uint32_t> findBuildingsNearPoint(mapget::Point p, double radius) const;
+
+    /** Return the nearest road within planar tolerance, or zero when none qualifies. */
     uint32_t findRoadAtPoint(mapget::Point p, double tolerance = 1.0) const;
 
 private:
@@ -322,7 +330,10 @@ private:
 };
 
 /**
- * Development data source with procedural generation
+ * Development datasource with deterministic geometry and optional traffic snapshots.
+ * The injected clock selects traffic epochs and must support concurrent calls.
+ * Construction parses YAML once and validates traffic contracts; fill() uses
+ * the stored configuration. Generic generator options remain permissive.
  */
 class GridDataSource : public mapget::DataSource
 {
@@ -335,6 +346,7 @@ public:
 
     mapget::DataSourceInfo info() override;
     void fill(mapget::PartitionFeatureLayer::Ptr const& tile) override;
+
     void fill(mapget::PartitionSourceDataLayer::Ptr const& tile) override
     {
         throw std::runtime_error("SourceDataLayer not supported by GridDataSource");
@@ -342,7 +354,7 @@ public:
     std::vector<mapget::LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
 
-    /** Estimate configuration and cached procedural spatial-context storage. */
+    /** Estimate configuration and context/index objects; mutable generated vectors are excluded. */
     [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
 
 private:

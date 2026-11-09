@@ -34,7 +34,7 @@ public:
     /** Replace the current sample and update the high-water mark. */
     void set(uint64_t bytes);
 
-    /** Render current and peak byte counts for diagnostics. */
+    /** Render independent atomic samples; concurrent updates can occur between loads. */
     [[nodiscard]] nlohmann::json toJson() const;
 
     /** Return the current retained-byte count. */

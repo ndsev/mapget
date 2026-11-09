@@ -368,11 +368,12 @@ void bindHttpClient(py::module_& m)
                 tiles: PackedTileId or PartitionId values to load.
                 on_feature_result: The callback function to be called when a result feature tile is available.
                 You can also iterate over this Request object instead of providing the callback.
-                on_sourcedata_result: The callback function to be callend when a result source-data tile
-                is available. You can also iterate over this Request object instead of porviding the callback.
+                on_sourcedata_result: The callback invoked when a source-data tile is available.
+                You can also iterate over this Request object to consume buffered results.
                 source_id: Optional catalog source assertion.
 
-            Note: The provided tile ids are processed in the given order.
+            Results are buffered in arrival order; concurrent source work may complete
+            in a different order from the supplied tile IDs.
         )pbdoc")
         .def(
             "__iter__",
@@ -397,14 +398,14 @@ void bindHttpClient(py::module_& m)
             "wait",
             &PyRequest::wait,
             R"pbdoc(
-            Wait for the request to be done.
+            Wait for a terminal request status.
 
-            This function blocks until all results have been processed.
+            This does not consume results retained for iteration.
         )pbdoc",
             py::call_guard<py::gil_scoped_release>());
 
     py::class_<PyFilterRequest, std::shared_ptr<PyFilterRequest>>(m, "FilterRequest", R"pbdoc(
-        Client request for server-side filter evaluation evaluation.
+        Client request for server-side filter evaluation.
 
         FilterRequest posts a simplified REST /filter request. Results are
         PartitionSubsetLayer objects and can be consumed with a callback or by
@@ -510,31 +511,51 @@ void bindHttpClient(py::module_& m)
         before a usable source or tile is exposed; raw catalog references are not
         sufficient to decode schema-bound payloads.
     )pbdoc")
-        .def("incoming_relations", [](HttpClient& client, std::string map, std::string layer,
-                                     py::object partitionValue, std::string featureId) {
-            auto partition = partitionIdFromPython(partitionValue);
-            FeatureLayerFilterRequest filter;
-            FeatureLayerFilterChannel channel;
-            channel.channelId_ = "incoming";
-            channel.scope_ = FeatureLayerFilterScope::Relation;
-            channel.relation_ = FeatureLayerStoredRelationOptions{};
-            channel.relation_->incoming_ = true;
-            filter.channels_.push_back(channel);
-            auto request = std::make_shared<FeatureLayerFilterTilesRequest>(map, layer,
-                std::vector<PartitionId>{partition}, filter);
-            FeatureLayerFilterRoot root;
-            root.partitionId_ = partition; root.canonicalFeatureId_ = featureId;
-            request->exactRoots_.push_back(root);
-            std::vector<PartitionFeatureLayer::Ptr> snapshots;
-            std::optional<IncomingRelationCollection> collection;
-            request->onFeatureSnapshot([&](auto const& value) { snapshots.push_back(value); });
-            request->onIncomingRelations([&](auto const& value) { collection = value; });
-            { py::gil_scoped_release release; client.filter(request); }
-            if (request->getStatus() != RequestStatus::Success || !collection)
-                throw std::runtime_error("Incoming inspection failed or is unsupported");
-            return std::make_unique<FeatureInspectionView>(std::move(*collection), std::move(snapshots));
-        }, py::arg("map_id"), py::arg("layer_id"), py::arg("partition"), py::arg("feature_id"),
-            "Load incoming context for an exact feature in the same partition. Conventional relations are excluded.")
+        .def(
+            "incoming_relations",
+            [](HttpClient& client,
+               std::string map,
+               std::string layer,
+               py::object partitionValue,
+               std::string featureId)
+            {
+                auto partition = partitionIdFromPython(partitionValue);
+                FeatureLayerFilterRequest filter;
+                FeatureLayerFilterChannel channel;
+                channel.channelId_ = "incoming";
+                channel.scope_ = FeatureLayerFilterScope::Relation;
+                channel.relation_ = FeatureLayerStoredRelationOptions{};
+                channel.relation_->incoming_ = true;
+                filter.channels_.push_back(channel);
+                auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+                    map,
+                    layer,
+                    std::vector<PartitionId>{partition},
+                    filter);
+                FeatureLayerFilterRoot root;
+                root.partitionId_ = partition;
+                root.canonicalFeatureId_ = featureId;
+                request->exactRoots_.push_back(root);
+                std::vector<PartitionFeatureLayer::Ptr> snapshots;
+                std::optional<IncomingRelationCollection> collection;
+                request->onFeatureSnapshot([&](auto const& value) { snapshots.push_back(value); });
+                request->onIncomingRelations([&](auto const& value) { collection = value; });
+                {
+                    py::gil_scoped_release release;
+                    client.filter(request);
+                }
+                if (request->getStatus() != RequestStatus::Success || !collection)
+                    throw std::runtime_error("Incoming inspection failed or is unsupported");
+                return std::make_unique<FeatureInspectionView>(
+                    std::move(*collection),
+                    std::move(snapshots));
+            },
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("partition"),
+            py::arg("feature_id"),
+            "Load incoming context for an exact feature in the same partition. Conventional "
+            "relations are excluded.")
         .def(
             "discover_objects",
             &HttpClient::discoverObjects,
@@ -607,8 +628,10 @@ void bindHttpClient(py::module_& m)
                 return std::move(request);
             },
             R"pbdoc(
-                Post a Request for a number of tiles from a particular map layer.
-                Returns the request object which was put in.
+                Fetch one layer request and buffer the complete HTTP response before returning.
+                Releases the GIL during I/O. Returns the supplied request with its final
+                status; iterate it to consume received layers, including any received
+                before a later decoding failure.
             )pbdoc",
             py::arg("request"))
         .def(
@@ -625,8 +648,10 @@ void bindHttpClient(py::module_& m)
                 return std::move(request);
             },
             R"pbdoc(
-                Post a FilterRequest to the REST /filter endpoint.
-                Returns the request object which was put in.
+                Run a buffered REST /filter request, releasing the GIL during I/O.
+                Returns the supplied request with its final status; received subsets
+                may remain available when a later part of the response fails. Use
+                incoming_relations() for typed incoming inspection results.
             )pbdoc",
             py::arg("request"));
 }

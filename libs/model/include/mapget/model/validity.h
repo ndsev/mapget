@@ -131,7 +131,9 @@ public:
     static constexpr TransitionEnd End = ValidityData::End;
 
     /**
-     * Feature on which the validity applies.
+     * Feature on which the validity applies. Explicit ID nodes must belong to
+     * this layer; null clears the explicit reference. Sequence validities fall
+     * back to the feature ID carried by their AttrPointSequence.
      */
     [[nodiscard]] model_ptr<FeatureId> featureId() const;
     void setFeatureId(model_ptr<FeatureId> feature);
@@ -170,11 +172,17 @@ public:
     void setOffsetRange(GeometryOffsetType offsetType, double start, double end);
     [[nodiscard]] std::optional<std::pair<Point, Point>> offsetRange() const;
 
-    /** Set/get one logical position in a shared interwoven AttrPointSequence. */
+    /**
+     * Bind a logical position in a sequence owned by this layer; invalid ownership
+     * or an out-of-range index throws. The getter is null for other validity kinds.
+     */
     void setAttrPointIndex(model_ptr<AttrPointSequence> const& sequence, uint32_t index);
     [[nodiscard]] model_ptr<AttrPointIndex> attrPointIndex() const;
 
-    /** Set/get one inclusive logical range in a shared interwoven AttrPointSequence. */
+    /**
+     * Bind an inclusive range in a sequence owned by this layer. Requires
+     * start <= end < positionCount(); invalid ownership or indices throw.
+     */
     void setAttrPointIndexRange(
         model_ptr<AttrPointSequence> const& sequence,
         uint32_t start,
@@ -182,15 +190,16 @@ public:
     [[nodiscard]] model_ptr<AttrPointIndexRange> attrPointIndexRange() const;
 
     /**
-     * Get or set a simple geometry for the validity.
+     * Reference a geometry owned by the same layer, or clear the restriction with null.
      */
     void setSimpleGeometry(model_ptr<Geometry>);
     [[nodiscard]] model_ptr<Geometry> simpleGeometry() const;
 
     /**
      * Get or set a semantic feature transition validity.
-     * The connected ends indicate which endpoint of each referenced feature ID touches the transition.
-     * Feature IDs are stored directly so transitions may reference features outside the current tile.
+     * The connected ends indicate which endpoint of each referenced feature ID touches the
+     * transition. Feature ID nodes must belong to this layer; their values may identify features
+     * outside it, although computeGeometry() resolves only locally available endpoints.
      */
     void setFeatureTransition(
         model_ptr<FeatureId> const& fromFeatureId,
@@ -223,19 +232,24 @@ public:
     /**
      * Compute the actual shape-points of the validity with respect to one
      * of the geometries in the given collection, or the geometry collection of
-     * the directly referenced feature. The geometry is picked based
-     * on the validity's geometryName when available. The return value may be one of the following:
-     * - An empty vector, indicating that the validity could not be applied.
-     *   If an error string was passed, then it would be set to an error message.
-     * - A vector containing a single point, if the validity resolved to a point geometry.
-     * - A vector containing more than one point, if the validity resolved to a poly-line.
-     * For feature transitions, transitionPivotIndex receives the point that
-     * separates the incoming and outgoing road slices when provided.
+     * the directly referenced feature. Line-based forms select the named line,
+     * or prefer an unnamed line and then the first line when no name was supplied.
+     * A missing local feature reference retains the supplied collection; foreign
+     * map references require external resolution and return empty here.
+     * The return value may be one of the following:
+     * - Empty points when no usable geometry is available. Some failure paths set
+     *   error; it is not cleared at entry or guaranteed to change on every failure.
+     * - Owned point/line coordinates for an offset or index validity.
+     * - An owned copy, including polygon rings, for a simple geometry.
+     * Negative direction reverses non-transition results, preserving polygon ring
+     * partitions. Transitions retain from-to order and use approximately ten-metre
+     * endpoint legs, extrapolating short roads. transitionPivotIndex receives the
+     * point separating those legs; it is UINT32_MAX for other forms or failure.
      */
-     SelfContainedGeometry computeGeometry(
-         model_ptr<GeometryCollection> geometryCollection,
-         std::string* error=nullptr,
-         uint32_t* transitionPivotIndex=nullptr) const;
+    SelfContainedGeometry computeGeometry(
+        model_ptr<GeometryCollection> geometryCollection,
+        std::string* error = nullptr,
+        uint32_t* transitionPivotIndex = nullptr) const;
 
 protected:
     using Data = ValidityData;
@@ -254,15 +268,19 @@ public:
              simfil::ModelNodeAddress a,
              simfil::ScalarValueType runtimeData,
              simfil::detail::mp_key key);
-    Validity(Data* data,
-             simfil::ModelConstPtr layer,
-             simfil::ModelNodeAddress a,
-             simfil::detail::mp_key key);
+    Validity(
+        Data* data,
+        simfil::ModelConstPtr layer,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     Validity() = delete;
 
 protected:
     /**
-     * Pointer to the actual data stored for the attribute.
+     * Materialize one direction-only occurrence and replace its collection slot.
+     * Requires the owner context supplied by MultiValidity; detached simple views
+     * cannot be upgraded because their compact address is shared by direction.
      */
     void ensureMaterialized();
 

@@ -33,25 +33,24 @@ struct DataSourceServer::Impl
     {
         throw std::runtime_error("PartitionSourceDataLayer callback is unset!");
     };
-    std::function<
-        std::vector<LocateCandidate>(
-            LocateRequest const&)>
-        locateCallback_;
-    std::function<std::optional<AttachmentResponse>(
-        AttachmentRequest const&)>
-        attachmentCallback_;
+    std::function<std::vector<LocateCandidate>(LocateRequest const&)> locateCallback_;
+    std::function<std::optional<AttachmentResponse>(AttachmentRequest const&)> attachmentCallback_;
     std::function<void(MapPartitionKey const&, std::chrono::system_clock::time_point)>
         cacheExpiredCallback_;
     std::shared_ptr<StringPool> strings_;
 
-    /** Shared encoding/cache policy with the public endpoint; authorization stays at each boundary. */
+    /** Shared encoding/cache policy with the public endpoint; authorization stays at each boundary.
+     */
     detail::SchemaResponseCache schemaResponses_;
-    /** Bound queued requests as well as thread count; an idle datasource starts no schema worker. */
+
+    /** Bound queued requests as well as thread count; an idle datasource starts no schema worker.
+     */
     std::atomic_size_t schemaRequests_{0};
     std::mutex schemaTasksMutex_;
     std::unique_ptr<trantor::ConcurrentTaskQueue> schemaTasks_;
 
-    explicit Impl(DataSourceInfo info) : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.stringPoolId_))
+    explicit Impl(DataSourceInfo info)
+        : info_(std::move(info)), strings_(std::make_shared<StringPool>(info_.stringPoolId_))
     {
         info_.validateSchema();
     }
@@ -61,7 +60,8 @@ struct DataSourceServer::Impl
         drogon::HttpRequestPtr const& req,
         std::function<void(drogon::HttpResponsePtr const&)>&& callback)
     {
-        auto error = [&](drogon::HttpStatusCode status, std::string message) {
+        auto error = [&](drogon::HttpStatusCode status, std::string message)
+        {
             auto response = drogon::HttpResponse::newHttpResponse();
             response->setStatusCode(status);
             response->addHeader("Cache-Control", "no-store");
@@ -86,20 +86,22 @@ struct DataSourceServer::Impl
             std::lock_guard lock(schemaTasksMutex_);
             if (!schemaTasks_)
                 schemaTasks_ = std::make_unique<trantor::ConcurrentTaskQueue>(1, "MapgetSchema");
-            schemaTasks_->runTaskInQueue([this, validator = req->getHeader("if-none-match"), callback] {
-                drogon::HttpResponsePtr response;
-                try {
-                    response = schemaResponses_.response(info_.mapSchema_, validator);
-                }
-                catch (...) {
-                    response = drogon::HttpResponse::newHttpResponse();
-                    response->setStatusCode(drogon::k500InternalServerError);
-                    response->addHeader("Cache-Control", "no-store");
-                    response->setBody("Schema serialization failed.");
-                }
-                --schemaRequests_;
-                callback(response);
-            });
+            schemaTasks_->runTaskInQueue(
+                [this, validator = req->getHeader("if-none-match"), callback]
+                {
+                    drogon::HttpResponsePtr response;
+                    try {
+                        response = schemaResponses_.response(info_.mapSchema_, validator);
+                    }
+                    catch (...) {
+                        response = drogon::HttpResponse::newHttpResponse();
+                        response->setStatusCode(drogon::k500InternalServerError);
+                        response->addHeader("Cache-Control", "no-store");
+                        response->setBody("Schema serialization failed.");
+                    }
+                    --schemaRequests_;
+                    callback(response);
+                });
         }
         catch (...) {
             --schemaRequests_;
@@ -141,17 +143,14 @@ DataSourceServer& DataSourceServer::onTileSourceDataRequest(
 }
 
 DataSourceServer& DataSourceServer::onLocateRequest(
-    std::function<
-        std::vector<LocateCandidate>(
-            LocateRequest const&)> const& callback)
+    std::function<std::vector<LocateCandidate>(LocateRequest const&)> const& callback)
 {
     impl_->locateCallback_ = callback;
     return *this;
 }
 
 DataSourceServer& DataSourceServer::onAttachmentRequest(
-    std::function<std::optional<AttachmentResponse>(
-        AttachmentRequest const&)> const& callback)
+    std::function<std::optional<AttachmentResponse>(AttachmentRequest const&)> const& callback)
 {
     impl_->attachmentCallback_ = callback;
     return *this;
@@ -165,14 +164,18 @@ DataSourceServer& DataSourceServer::onCacheExpired(
     return *this;
 }
 
-DataSourceInfo const& DataSourceServer::info() { return impl_->info_; }
+DataSourceInfo const& DataSourceServer::info()
+{
+    return impl_->info_;
+}
 
 void DataSourceServer::setup(drogon::HttpAppFramework& app)
 {
     app.registerHandler(
         "/schema",
-        [this](drogon::HttpRequestPtr const& req,
-               std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
         { impl_->handleSchemaRequest(req, std::move(callback)); },
         {drogon::Get});
 
@@ -212,7 +215,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
     app.registerHandler(
         "/tile",
-        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        [this](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             try {
                 auto const& layerIdParam = req->getParameter("layer");
@@ -268,7 +273,8 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                         return tileSourceLayer;
                     }
                     default:
-                        throw std::runtime_error(fmt::format("Unsupported layer type {}", (int)layer->type_));
+                        throw std::runtime_error(
+                            fmt::format("Unsupported layer type {}", (int)layer->type_));
                     }
                 }();
 
@@ -277,15 +283,18 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
                 if (responseType == "binary") {
                     std::string content;
-                    TileLayerStream::StringPoolOffsetMap stringPoolOffsets{{impl_->info_.stringPoolId_, stringPoolOffsetParam}};
+                    TileLayerStream::StringPoolOffsetMap stringPoolOffsets{
+                        {impl_->info_.stringPoolId_, stringPoolOffsetParam}};
                     TileLayerStream::Writer layerWriter{
-                        [&](std::string const& bytes, TileLayerStream::MessageType) { content.append(bytes); },
+                        [&](std::string const& bytes, TileLayerStream::MessageType)
+                        { content.append(bytes); },
                         stringPoolOffsets};
                     layerWriter.write(tileLayer);
 
                     resp->setContentTypeString("application/binary");
                     resp->setBody(std::move(content));
-                } else {
+                }
+                else {
                     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
                     resp->setBody(tileLayer->toServiceJson().dump());
                 }
@@ -304,7 +313,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
     app.registerHandler(
         "/info",
-        [this](const drogon::HttpRequestPtr&, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        [this](
+            const drogon::HttpRequestPtr&,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             auto resp = drogon::HttpResponse::newHttpResponse();
             resp->setStatusCode(drogon::k200OK);
@@ -316,7 +327,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
     app.registerHandler(
         "/locate",
-        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        [this](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             try {
                 LocateRequest parsedReq(nlohmann::json::parse(std::string(req->body())));
@@ -348,43 +361,26 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
         "/attachment",
         [this](
             const drogon::HttpRequestPtr& req,
-            std::function<void(
-                const drogon::HttpResponsePtr&)>&&
-                callback)
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             try {
-                auto layerId =
-                    req->getParameter("layer");
-                auto tileId =
-                    req->getParameter("tileId");
-                auto name =
-                    req->getParameter("name");
+                auto layerId = req->getParameter("layer");
+                auto tileId = req->getParameter("tileId");
+                auto name = req->getParameter("name");
                 if (layerId.empty() || (tileId.empty() && req->getParameter("partition").empty()) ||
                     name.empty()) {
-                    auto response =
-                        drogon::HttpResponse::
-                            newHttpResponse();
-                    response->setStatusCode(
-                        drogon::k400BadRequest);
+                    auto response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k400BadRequest);
                     response->setBody(
                         "Missing query parameter: "
                         "layer, tileId, and/or name");
                     callback(response);
                     return;
                 }
-                auto layer =
-                    impl_->info_.getLayer(
-                        layerId);
-                if (!layer ||
-                    layer->type_ !=
-                        LayerType::Features ||
-                    !impl_->attachmentCallback_)
-                {
-                    auto response =
-                        drogon::HttpResponse::
-                            newHttpResponse();
-                    response->setStatusCode(
-                        drogon::k404NotFound);
+                auto layer = impl_->info_.getLayer(layerId);
+                if (!layer || layer->type_ != LayerType::Features || !impl_->attachmentCallback_) {
+                    auto response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k404NotFound);
                     callback(response);
                     return;
                 }
@@ -400,70 +396,39 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
                                 nlohmann::json::parse(req->getParameter("partition")))),
                     .name_ = std::move(name),
                 };
-                auto attachment =
-                    impl_->attachmentCallback_(
-                        request);
-                if (!attachment ||
-                    attachment->name_ !=
-                        request.name_ ||
-                    !attachment->bytes_)
-                {
-                    auto response =
-                        drogon::HttpResponse::
-                            newHttpResponse();
-                    response->setStatusCode(
-                        drogon::k404NotFound);
+                auto attachment = impl_->attachmentCallback_(request);
+                if (!attachment || attachment->name_ != request.name_ || !attachment->bytes_) {
+                    auto response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k404NotFound);
                     callback(response);
                     return;
                 }
-                if (attachment->etag_ &&
-                    req->getHeader(
-                        "if-none-match") ==
-                        *attachment->etag_)
-                {
-                    auto response =
-                        drogon::HttpResponse::
-                            newHttpResponse();
-                    response->setStatusCode(
-                        drogon::k304NotModified);
-                    response->addHeader(
-                        "ETag",
-                        *attachment->etag_);
+                if (attachment->etag_ && req->getHeader("if-none-match") == *attachment->etag_) {
+                    auto response = drogon::HttpResponse::newHttpResponse();
+                    response->setStatusCode(drogon::k304NotModified);
+                    response->addHeader("ETag", *attachment->etag_);
                     callback(response);
                     return;
                 }
 
-                auto response =
-                    drogon::HttpResponse::
-                        newHttpResponse();
-                response->setStatusCode(
-                    drogon::k200OK);
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setStatusCode(drogon::k200OK);
                 response->setContentTypeString(
-                    attachment->mimeType_.empty()
-                        ? "application/octet-stream"
-                        : attachment->mimeType_);
+                    attachment->mimeType_.empty() ?
+                        "application/octet-stream" :
+                        attachment->mimeType_);
                 if (attachment->etag_) {
-                    response->addHeader(
-                        "ETag",
-                        *attachment->etag_);
+                    response->addHeader("ETag", *attachment->etag_);
                 }
-                response->setBody(std::string(
-                    attachment->bytes_->begin(),
-                    attachment->bytes_->end()));
+                response
+                    ->setBody(std::string(attachment->bytes_->begin(), attachment->bytes_->end()));
                 callback(response);
             }
             catch (std::exception const& error) {
-                auto response =
-                    drogon::HttpResponse::
-                        newHttpResponse();
-                response->setStatusCode(
-                    drogon::k400BadRequest);
-                response->setContentTypeCode(
-                    drogon::CT_TEXT_PLAIN);
-                response->setBody(
-                    std::string(
-                        "Invalid request: ") +
-                    error.what());
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setStatusCode(drogon::k400BadRequest);
+                response->setContentTypeCode(drogon::CT_TEXT_PLAIN);
+                response->setBody(std::string("Invalid request: ") + error.what());
                 callback(response);
             }
         },
@@ -471,7 +436,9 @@ void DataSourceServer::setup(drogon::HttpAppFramework& app)
 
     app.registerHandler(
         "/cache-expired",
-        [this](const drogon::HttpRequestPtr& req, std::function<void(const drogon::HttpResponsePtr&)>&& callback)
+        [this](
+            const drogon::HttpRequestPtr& req,
+            std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         {
             try {
                 if (impl_->cacheExpiredCallback_) {

@@ -25,10 +25,11 @@ struct ClientRequestChunk
     bool isLast = true;
 };
 
-/** Parse a JSON numeric field into non-negative int64 while handling missing keys. */
+/** Read an integer: missing/noninteger/negative becomes zero; unsigned overflow clamps to
+ * INT64_MAX. */
 [[nodiscard]] int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key);
 
-/** Parse optional chunk metadata from a client request envelope. */
+/** Validate optional chunk index/isLast fields; absence means one unchunked message. */
 [[nodiscard]] ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j);
 
 /** Build a canonical request key using map/layer/tile while normalizing layer type. */

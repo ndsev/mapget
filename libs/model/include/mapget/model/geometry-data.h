@@ -60,15 +60,9 @@ struct GeometryViewData
     MODEL_COLUMN_TYPE(20);
 
     GeometryViewData() = default;
-    GeometryViewData(
-        GeomType t,
-        uint32_t offset,
-        uint32_t size,
-        simfil::ModelNodeAddress base)
-        : type_(t),
-          offset_(offset),
-          size_(size),
-          baseGeometry_(base)
+
+    GeometryViewData(GeomType t, uint32_t offset, uint32_t size, simfil::ModelNodeAddress base)
+        : type_(t), offset_(offset), size_(size), baseGeometry_(base)
     {}
 
     GeomType type_ = GeomType::Points;

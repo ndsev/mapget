@@ -9,6 +9,7 @@
 namespace mapget
 {
 
+/** Persisted tagged union for materialized validity nodes; direction-only nodes can omit it. */
 struct ValidityData
 {
     MODEL_COLUMN_TYPE(64);
@@ -40,6 +41,8 @@ struct ValidityData
         AttrPointIndexValidity = 5,
         AttrPointIndexRangeValidity = 6,
     };
+
+    /** Scalar offsets use point.x: vertex index, fraction in 0..1, or metres along a line. */
     enum GeometryOffsetType : uint8_t {
         InvalidOffsetType = 0,
         GeoPosOffset = 1,

@@ -10,8 +10,9 @@
 namespace mapget
 {
 
+/** Construct an owned Simfil environment and register mapget's planar geometry functions. */
 template <class... Args>
-std::unique_ptr<simfil::Environment> makeEnvironment(Args&& ...args)
+std::unique_ptr<simfil::Environment> makeEnvironment(Args&&... args)
 {
     auto env = std::make_unique<simfil::Environment>(std::forward<Args>(args)...);
     env->functions["geo"] = &mapget::GeoFn::Fn;

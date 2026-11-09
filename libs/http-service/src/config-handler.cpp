@@ -97,7 +97,11 @@ constexpr std::string_view kUnavailableReasonConfigValidationFailed = "configVal
     return resp;
 }
 
-/** Atomically replaces a config with exact bytes and optional preserved mode. */
+/**
+ * Write a sibling temporary file, optionally restore mode bits, then replace the path.
+ * The stream uses platform text mode; this is not a byte-preserving binary writer
+ * or a crash-durability guarantee.
+ */
 [[nodiscard]] std::optional<std::string> replaceConfigFileContents(
     std::filesystem::path const& configFilePath,
     std::string const& contents,
@@ -527,7 +531,8 @@ void HttpService::Impl::handlePatchConfigRequest(
         return;
     }
 
-    // Close the parse/validation race with generic POST or an external file edit.
+    // Recheck after validation. The mutation lock excludes coordinated writers;
+    // external edits are detected here but can still race the final path replacement.
     if (configService.getConfigFileRevision() != currentRevision) {
         respondText(drogon::k412PreconditionFailed, "The config revision changed; refetch and retry.");
         return;

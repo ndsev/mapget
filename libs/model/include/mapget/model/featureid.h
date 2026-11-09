@@ -65,10 +65,12 @@ public:
               simfil::ModelConstPtr l,
               simfil::ModelNodeAddress a,
               simfil::detail::mp_key key);
-    FeatureId(Data const& data,
-              simfil::ModelConstPtr l,
-              simfil::ModelNodeAddress a,
-              simfil::detail::mp_key key);
+    FeatureId(
+        Data const& data,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     FeatureId() = delete;
 
 protected:

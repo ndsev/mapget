@@ -150,6 +150,7 @@ public:
 
 private:
     using Json = nlohmann::json;
+
     /** Retained-byte ownership follows a candidate when ranking evicts it. */
     struct Match
     {

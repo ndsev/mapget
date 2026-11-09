@@ -81,6 +81,7 @@ std::vector<std::weak_ptr<class TilesWsSession>> gTrackedSessions;
 std::mutex gSessionRegistryMutex;
 std::unordered_map<std::string, std::weak_ptr<class TilesWsSession>> gSessionRegistry;
 
+/** Encode catalog lifecycle states, falling back to failed for unknown values. */
 std::string_view catalogStatusToString(DataSourceCatalogStatus status)
 {
     switch (status) {
@@ -118,6 +119,7 @@ std::vector<PartitionId> prioritiesWithin(
     return result;
 }
 
+/** Identify payload frames that consume output ownership and establish handoffs. */
 [[nodiscard]] bool isTileDataMessage(TileLayerStream::MessageType type)
 {
     return type == TileLayerStream::MessageType::PartitionFeatureLayer ||
@@ -137,11 +139,17 @@ std::vector<PartitionId> prioritiesWithin(
  *
  * The session owns active backend requests, queued tile frames, string-pool
  * writer offsets, and long-poll waiters for one logical websocket connection.
+ * mutex_ serializes request ownership, writer access and payload handoff. Newest
+ * complete client snapshots replace pending demand; soft queue watermarks pause
+ * further backend admission while already admitted results can still be queued.
  */
 class TilesWsSession : public std::enable_shared_from_this<TilesWsSession>
 {
 public:
-    /** Construct one websocket session object bound 1:1 to a websocket connection. */
+    /**
+     * Bind one session to a weak socket and retained authorization value. The
+     * borrowed HttpService must outlive the session and its completion callbacks.
+     */
     TilesWsSession(
         HttpService& service,
         std::weak_ptr<drogon::WebSocketConnection> conn,
@@ -157,7 +165,7 @@ public:
         gTilesWsMetrics.activeSessions.fetch_add(1, std::memory_order_relaxed);
     }
 
-    /** Destroy the session and abort any in-flight backend work. */
+    /** Unregister this session and best-effort abort its remaining backend consumers. */
     ~TilesWsSession()
     {
         try {
@@ -183,6 +191,7 @@ public:
     }
 
     TilesWsSession(TilesWsSession const&) = delete;
+
     TilesWsSession& operator=(TilesWsSession const&) = delete;
 
     /** Subscribe after shared ownership exists so callbacks can safely capture weak_from_this(). */
@@ -204,7 +213,7 @@ public:
         gTrackedSessions.push_back(weak_from_this());
     }
 
-    /** Return currently queued controller frames/bytes. */
+    /** Return queued payload frame count and logical bytes, excluding direct socket controls. */
     [[nodiscard]] std::pair<int64_t, int64_t> pendingSnapshot()
     {
         std::lock_guard lock(mutex_);
@@ -280,7 +289,11 @@ public:
 
     using PullResultCallback = std::function<void(PullFrameResult)>;
 
-    /** Resolve one `/interactive/payload` request immediately or register an async waiter. */
+    /**
+     * Select a payload/terminal result now or retain a FIFO waiter. Even an
+     * immediately available result is dispatched on Drogon's loop, never inline.
+     * maxBatchBytes is a whole-frame target and may be exceeded by the first frame.
+     */
     void requestNextTileFrameAsync(
         std::chrono::milliseconds waitTimeout,
         size_t maxBatchBytes,
@@ -333,7 +346,10 @@ public:
         });
     }
 
-    /** Patch per-connection string-pool offsets supplied by the client request. */
+    /**
+     * Replace only the supplied dictionary offsets under the writer lock. This
+     * changes future serialization state; already queued bytes are not re-encoded.
+     */
     [[nodiscard]] bool applyStringPoolOffsetsPatch(const nlohmann::json& offsetsJson, std::string& errorMessage)
     {
         try {
@@ -351,7 +367,10 @@ public:
         }
     }
 
-    /** Allocate a request id while respecting optional client-provided request ids. */
+    /**
+     * Use a positive client ID or advance the automatic counter; supplied IDs need
+     * not be unique. The websocket controller must serialize calls to this counter.
+     */
     [[nodiscard]] uint64_t allocateRequestId(const nlohmann::json& requestJson)
     {
         uint64_t requestId = nextRequestId_++;
@@ -577,7 +596,11 @@ public:
         return true;
     }
 
-    /** Parse and atomically reconcile one complete pending-output snapshot. */
+    /**
+     * Parse a candidate before taking the session lock, then replace demand and
+     * output ownership under that lock. Service callbacks run after unlock; this
+     * sequencing does not provide rollback if allocation or submission throws.
+     */
     void updateFromClientRequest(
         const nlohmann::json& j,
         uint64_t requestId,
@@ -813,7 +836,11 @@ public:
         queueStatusMessage({});
     }
 
-    /** Cancel current requests, clear queued frames, and emit a terminal status. */
+    /**
+     * Permanently close admission, discard unsent payloads and abort this session's
+     * backend consumers. Resolve pending pulls as closed and queue terminal status;
+     * payload callbacks already dispatched to the event loop cannot be retracted.
+     */
     void cancel(std::string reason)
     {
         cancelled_ = true;
@@ -891,7 +918,11 @@ private:
         std::vector<MapPartitionKey> pendingKeys;
     };
 
-    /** Short-lived suppression after bytes leave the bounded payload queue. */
+    /**
+     * Suppress repeat work after dequeue until withdrawal or semantic expiry.
+     * Missing expiry keeps the record until that output is withdrawn or the session closes;
+     * TTL expiry is checked during the next snapshot reconciliation.
+     */
     struct HandoffRecord
     {
         std::optional<std::chrono::system_clock::time_point> expiresAt;
@@ -913,7 +944,7 @@ private:
         nlohmann::json envelope;
     };
 
-    /** One queued websocket frame plus metadata used for bookkeeping. */
+    /** One queued payload-pull frame plus output, dictionary and capacity bookkeeping. */
     struct OutgoingFrame
     {
         std::string bytes;
@@ -1149,7 +1180,10 @@ private:
             std::memory_order_relaxed);
     }
 
-    /** Recompute logical request status from current per-output ownership. */
+    /**
+     * Recompute backend completion from output ownership. Queued and handed-off
+     * outputs count as successful even if their HTTP response has not arrived yet.
+     */
     void refreshRequestStatusesLocked()
     {
         requestStatuses_.resize(requestInfos_.size(), RequestStatus::Success);
@@ -1382,7 +1416,10 @@ private:
         }
     }
 
-    /** Pop the highest-priority queued tile frame and account forwarding metrics. */
+    /**
+     * Dequeue the next ordered payload frame and commit its dictionary/handoff
+     * bookkeeping now. Forwarded metrics count dequeue, not confirmed HTTP receipt.
+     */
     [[nodiscard]] PullFrameResult popNextFrameLocked()
     {
         if (outgoing_.empty()) {
@@ -1393,6 +1430,9 @@ private:
         outgoing_.pop_front();
         untrackQueuedFrameLocked(frame);
         refreshWorkAdmissionLocked();
+
+        // Publication to the HTTP callback is the ownership boundary; there is
+        // no acknowledgement from the browser before these offsets advance.
         if (frame.stringPoolCommit) {
             committedStringPoolOffsets_[frame.stringPoolCommit->first] = frame.stringPoolCommit->second;
         }
@@ -1414,7 +1454,10 @@ private:
         };
     }
 
-    /** Pop and concatenate queued frames up to one batch byte budget. */
+    /**
+     * Concatenate whole frames toward the byte target. Always take the first frame,
+     * even when it exceeds the target; zero requests exactly one frame.
+     */
     [[nodiscard]] PullFrameResult popFrameBatchLocked(size_t maxBatchBytes)
     {
         if (outgoing_.empty()) {
@@ -1681,7 +1724,10 @@ private:
         }
     }
 
-    /** Append one frame to the websocket controller queue and update counters. */
+    /**
+     * Queue completed work even above the watermark; pause further admission
+     * instead of dropping results that have already been produced.
+     */
     void enqueueOutgoingLocked(OutgoingFrame&& frame)
     {
         refreshFramePriorityLocked(frame);
@@ -1731,7 +1777,8 @@ private:
         std::vector<FeatureLayerFilterTilesRequest::Ptr> filterRequestsToAbort;
         std::vector<PullDispatch> pullDispatches;
 
-        // Ensure we stop emitting any further frames.
+        // Detach pending owners and unsent payloads. Previously dispatched pull
+        // callbacks and socket controls are already owned by the event loop.
         {
             std::lock_guard lock(mutex_);
             clearOutgoingLocked();
@@ -1787,7 +1834,11 @@ private:
         currentWriteBatch_->push_back(WriterMessage{std::move(msg), type});
     }
 
-    /** Convert one owner-current backend result into queued transport frames. */
+    /**
+     * Serialize a still-owned output under the writer lock, keeping dictionary
+     * deltas ahead of dependent tiles. Completed work may exceed admission
+     * watermarks; a serialization failure cancels this session without a status frame.
+     */
     template <typename Request>
     void onTileLayer(PartitionLayer::Ptr const& layer, std::shared_ptr<Request> const& owner)
     {
@@ -1828,6 +1879,7 @@ private:
                 {
                     return;
                 }
+
                 if (currentWriteBatch_) {
                     raise("TilesWsSession writer callback re-entered");
                 }
@@ -1918,7 +1970,10 @@ private:
         }
     }
 
-    /** Forward filter progress only while that backend request owns current work. */
+    /**
+     * Queue progress if the request is current at the ownership check. The later
+     * socket send does not recheck ownership against intervening snapshots.
+     */
     void onFilterProgress(
         FeatureLayerFilterTilesRequest::Ptr const& owner,
         nlohmann::json const& status)
@@ -2224,7 +2279,10 @@ namespace
     return session;
 }
 
-/** Parse an integer query parameter, returning a bounded default on absence or parse failure. */
+/**
+ * Clamp a stoll-parsed numeric prefix; trailing text is accepted. Missing or
+ * unparsable values return defaultValue unchanged, so callers supply a valid default.
+ */
 [[nodiscard]] int64_t parseClampedInt64Parameter(
     const drogon::HttpRequestPtr& req,
     std::string_view key,
@@ -2377,7 +2435,7 @@ std::string tilesWsSessionClientId(const std::shared_ptr<TilesWsSession>& sessio
     return session ? session->clientId() : std::string{};
 }
 
-/** Apply a reconnect/resume string-pool offset patch to one session. */
+/** Apply client-reported dictionary offsets; this does not resume a canceled session. */
 bool tilesWsApplyStringPoolOffsetsPatch(
     const std::shared_ptr<TilesWsSession>& session,
     const nlohmann::json& offsetsJson,
@@ -2433,7 +2491,10 @@ void tilesWsHandleNextRequest(
     handleTilesNextRequest(req, std::move(callback));
 }
 
-/** Build the status-data object for websocket queues and pull endpoint counters. */
+/**
+ * Sample live sessions and relaxed counters for diagnostics. Separate per-session
+ * lock acquisitions mean these totals are approximate, not one atomic snapshot.
+ */
 nlohmann::json tilesWebSocketMetricsSnapshotImpl()
 {
     int64_t pendingControllerFrames = 0;

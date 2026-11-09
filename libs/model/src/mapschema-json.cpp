@@ -918,6 +918,7 @@ MapSchema::Impl::JsonCompiler::build(Json const& schema, std::string pointer, Co
     metadata(id, schema, context, pointer);
     return id;
 }
+
 /** Qualify only an Attribute root; its shared payload remains in the same type graph. */
 TypeId MapSchema::Impl::JsonCompiler::contextualAttribute(TypeId source, Context const& context)
 {
@@ -1119,6 +1120,7 @@ void MapSchema::Impl::JsonCompiler::metadata(
         });
     graph_.compileScalarMetadata(id, extra);
 }
+
 /** Compile one standalone layer before touching the destination's type or alias namespace. */
 LayerSchema::Ptr MapSchema::importLayer(
     std::string_view name,
@@ -1226,6 +1228,7 @@ LayerSchema::Ptr LayerSchema::fromJsonSchema(Json json)
     owner->finalize();
     return result;
 }
+
 /** Consume scalar semantics once, retaining only residual validation/descriptive CBOR. */
 void MapSchema::Impl::compileScalarMetadata(
     TypeId id,
@@ -1403,6 +1406,7 @@ void MapSchema::setJsonSchemaAnnotations(TypeId id, Json annotations)
                 });
         });
 }
+
 /** Project reachable canonical records directly; no builder-shaped graph survives or is rebuilt. */
 Json LayerSchema::toJsonSchema() const
 {

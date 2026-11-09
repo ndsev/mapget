@@ -20,6 +20,7 @@
 namespace mapget
 {
 
+/** Simfil array view of a feature's relation storage, retaining the owning layer. */
 class RelationArrayView : public MergedArrayView<RelationArrayView, simfil::ModelNode>
 {
 public:
@@ -57,7 +58,7 @@ private:
  *     <part-name-n>: <part-value-n>, ...
  *     geometry: <geojson-geometry>,
  *     properties: {  # `attributes` is accepted as a read/import alias.
- *       layers: {
+ *       layer: {
  *         <attr-layer-name>: {
  *           <attr-name>: {
  *             <attr-fields> ...,
@@ -104,7 +105,11 @@ public:
      */
     model_ptr<GeometryCollection> geom();
     [[nodiscard]] model_ptr<GeometryCollection> geomOrNull() const;
+
+    /** Copy the first stored geometry, or return an empty value when none is attached. */
     [[nodiscard]] SelfContainedGeometry firstGeometry() const;
+
+    /** Compatibility spelling for firstGeometry(); presentation chooses among alternatives. */
     [[nodiscard]] SelfContainedGeometry preferredGeometry() const;
 
     /**
@@ -115,19 +120,23 @@ public:
     [[nodiscard]] model_ptr<AttributeLayerList> attributeLayersOrNull() const;
 
     /**
-     * Get this feature's un-layered attributes.The non-const version adds a
+     * Get this feature's un-layered attributes. The non-const version adds a
      * generic attribute storage if the feature does not have one yet.
      */
     model_ptr<Object> attributes();
     [[nodiscard]] model_ptr<Object> attributesOrNull() const;
     [[nodiscard]] model_ptr<MergedBasicAttributesView> mergedAttributesOrNull() const;
+
     /** Bind a concrete root admitted by this feature type before populating its containers. */
     void setSchema(simfil::TypeId schemaId);
 
     /** Add a point to the feature. */
     void addPoint(Point const& p);
 
-    /** Attach an existing geometry to the feature. */
+    /** Attach an existing geometry from this same layer; null is a no-op.
+     * The stored address is shared, not cloned. A second geometry materializes
+     * a collection while preserving the first geometry's address.
+     */
     void addGeometry(model_ptr<Geometry> const& geom);
 
     /** Add multiple points to the feature. */
@@ -170,6 +179,8 @@ public:
      * (1) Creates a new feature id for the target, based on the given ID parts.
      * (2) Use an existing feature id for the target.
      * (3) Use an existing relation.
+     * Existing relations must be nonnull canonical nodes from this same layer.
+     * Insertion assigns the feature-local relation ordinal used by JSON references.
      */
     model_ptr<Relation> addRelation(std::string_view const& name, std::string_view const& targetType,
         KeyValueViewPairs const& targetIdParts);
@@ -192,7 +203,8 @@ public:
     [[nodiscard]] model_ptr<Relation> getRelation(uint32_t index) const;
 
     /**
-     * SourceData accessors.
+     * Source-data references retained by address in this layer. The setter requires
+     * a nonnull reference collection from the same layer; it does not clone data.
      */
     [[nodiscard]] model_ptr<SourceDataReferenceCollection> sourceDataReferences() const;
     void setSourceDataReferences(simfil::ModelNode::Ptr const& addresses);
@@ -210,11 +222,9 @@ protected:
     [[nodiscard]] bool iterate(IterCallback const& cb) const override;
 
     /**
-     * Get this feature's relation list.The non-const version adds a
-     * Relation list if the feature does not have one yet.
-     * Note: This accessor is private, to ensure that the relations
-     * array really only ever contains relations.
-     * TODO: Change relations to use a RelationCollection derived from BaseArray
+     * Obtain the internal relation array, creating it on mutable access.
+     * Callers add relations through addRelation so canonical node ownership
+     * and feature-local relation indices are checked before insertion.
      */
     [[nodiscard]] model_ptr<Array> relations();
     [[nodiscard]] model_ptr<Array> relationsOrNull() const;
@@ -224,6 +234,7 @@ protected:
         MODEL_COLUMN_TYPE(4);
 
         simfil::StringId typeId_ = 0;
+
         /** Zero uses the type's declared root; occupies the former two padding bytes. */
         simfil::TypeId schemaId_ = simfil::NoTypeId;
     };
@@ -258,11 +269,13 @@ public:
         : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
     {
     }
-    Feature(BasicData& d,
-            ComplexData* c,
-            simfil::ModelConstPtr l,
-            simfil::ModelNodeAddress a,
-            simfil::detail::mp_key key);
+    Feature(
+        BasicData& d,
+        ComplexData* c,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     Feature() = delete;
 
 protected:
@@ -311,6 +324,7 @@ public:
             simfil::ModelConstPtr model,
             simfil::ModelNodeAddress address,
             simfil::detail::mp_key key);
+
         MergedBasicAttributesView() = delete;
 
     private:
@@ -337,8 +351,8 @@ protected:
             : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>(key)
         {
         }
-        FeaturePropertyView(model_ptr<Feature> feature,
-                            simfil::detail::mp_key key);
+        FeaturePropertyView(model_ptr<Feature> feature, simfil::detail::mp_key key);
+
         FeaturePropertyView() = delete;
     };
 };

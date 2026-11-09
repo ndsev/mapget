@@ -15,12 +15,16 @@ class FeatureSchemaType : public simfil::SchemaObjectType
 public:
     /** Require a complete native Feature envelope; thin imported roots stay generic views. */
     explicit FeatureSchemaType(simfil::SchemaType type);
+
     /** Retain the same canonical record without changing its writable mode. */
     [[nodiscard]] FeatureSchemaType retain() const;
+
     /** Resolve the declared identity from the typeId discriminator, not the display typename. */
     [[nodiscard]] FeatureIdentity identity() const;
+
     /** Borrow extensible basic properties, excluding the immutable envelope itself. */
     [[nodiscard]] simfil::SchemaObjectType properties() const;
+
     /** Borrow the map of named attribute-layer containers. */
     [[nodiscard]] simfil::SchemaObjectType attributeLayers() const;
 };
@@ -34,10 +38,13 @@ class AttributeSchemaType : public simfil::SchemaObjectType
 public:
     /** Require the native Attribute kind and its shared optional members. */
     explicit AttributeSchemaType(simfil::SchemaType type);
+
     /** Retain this same canonical type without copying its graph. */
     [[nodiscard]] AttributeSchemaType retain() const;
+
     /** Borrow the common singular-or-collection validity type. */
     [[nodiscard]] simfil::SchemaType validities() const;
+
     /** Borrow the common source-data-reference array type. */
     [[nodiscard]] simfil::SchemaType sourceDataReferences() const;
 };

@@ -262,6 +262,8 @@ std::function<void()> ServiceScheduler::invalidateMapLocked(std::string const& m
 {
     std::vector<LayerTilesRequest::Ptr> abortedRequests;
     std::list<DiscoveryJob> cancelledDiscovery;
+    // Fence running results first, then detach queued consumers. Their callbacks
+    // are returned as a separate phase so catalog publication can release its lock.
     ++mapEpochs_[mapId];
     for (auto job = discoveryJobs_.begin(); job != discoveryJobs_.end();) {
         if (job->request.mapId_ == mapId) {
@@ -750,6 +752,8 @@ void ServiceScheduler::completeTileJob(
     std::vector<LayerTilesRequest::Ptr> notifyRequests;
     {
         std::lock_guard lock(mutex_);
+        // Cache publication and consumer selection share the invalidation lock.
+        // Delivery after unlocking may finish even if the map is then removed.
         if (!job.cancelled && job.mapEpoch == mapEpochs_[job.tileKey.mapId_]) {
             if (updateCache) {
                 cache_->putTileLayer(layer);

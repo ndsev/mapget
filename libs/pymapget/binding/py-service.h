@@ -66,7 +66,8 @@ void bindHttpService(py::module_& m)
             [](HttpService& self, const std::string& host, uint16_t port)
             { self.add(std::make_shared<RemoteDataSource>(host, port)); },
             R"pbdoc(
-                Add a remote DataSourceClient.
+                Connect a RemoteDataSource, resolving its metadata and schema before
+                adding it to this service. Connection or schema failures raise.
             )pbdoc",
             py::arg("host"),
             py::arg("port"))
@@ -77,8 +78,9 @@ void bindHttpService(py::module_& m)
             py::arg("port") = 0,
             py::arg("wait_ms") = HttpService::DefaultStartupWaitMs,
             R"pbdoc(
-                Launch the HttpService server in its own thread. The default
-                startup wait is 5000 milliseconds.
+                Launch the listener on its own thread and wait for startup, up to
+                wait_ms (default 5000 milliseconds). Only one HTTP server may run
+                in the process; a stopped instance cannot be restarted.
             )pbdoc")
         .def(
             "is_running",
@@ -97,7 +99,8 @@ void bindHttpService(py::module_& m)
             &HttpService::waitForSignal,
             py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
-                Blocks until SIGINT or SIGTERM is received, then shuts down the server.
+                Install process SIGINT/SIGTERM handlers and wait until the server stops.
+                Either signal requests shutdown; explicit stop() also ends the wait.
             )pbdoc")
         .def(
             "port",
@@ -109,7 +112,8 @@ void bindHttpService(py::module_& m)
             "mount",
             &HttpService::mountFileSystem,
             R"pbdoc(
-                Add a filesystem mount point in the format `<url-path-prefix>:<filesystem-path>`.
-                Returns true if successful, false otherwise.
+                Add a startup filesystem mount as `<url-path-prefix>:<filesystem-path>`.
+                Call before go(), which snapshots the mounts. Returns false for
+                an invalid or nonexistent directory.
              )pbdoc");
 }

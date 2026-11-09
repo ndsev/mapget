@@ -65,12 +65,12 @@ struct DataSourceDescriptor {
 
     /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
     AuthHeaderRegexMap authHeaderAlternatives;
+
     /** Enforce the same claims on initializing/failed catalog rows as on ready sources. */
     AuthClaimRequirements requiredClaims;
 };
 
-
-    /**
+/**
  * Singleton class that watches a particular YAML config file path.
  * The config YAML must have a top-level `sources:` key, which hosts
  * a list of datasource descriptors. Each descriptor must have a `type:`
@@ -78,7 +78,7 @@ struct DataSourceDescriptor {
  * The whole descriptor will be passed into the lambda that is registered
  * as the constructor for the given type name when calling makeDataSource().
  * Services will call subscribe() to be notified about the currently
- * active set of services from the config.
+ * active datasource descriptors from the config.
  */
 class DataSourceConfigService
 {
@@ -105,7 +105,8 @@ public:
 
     /**
      * Clear subscriptions, constructor, current config content and path,
-     * stop the file watch thread.
+     * stop the file watch thread. Requires quiescent callers: stop an active
+     * watcher with end() first, since reset clears shared state before joining.
      */
     void reset();
 
@@ -119,9 +120,12 @@ public:
          * Destructor that ensures unsubscription.
          */
         ~Subscription();
+
         Subscription(Subscription const& other) = delete;
+
         Subscription(Subscription&& other) = default;
-        Subscription& operator= (Subscription const& other) = delete;
+
+        Subscription& operator=(Subscription const& other) = delete;
 
     private:
         explicit Subscription(uint32_t id);
@@ -133,8 +137,11 @@ public:
 
     /**
      * Subscribes to configuration changes.
-     * The callback will be triggered once immediately, then whenever
-     * the config file path or content changes.
+     * If the current descriptor list is nonempty, invoke the callback synchronously
+     * before returning. Later callbacks run on the loading/watcher thread and
+     * must stay short; enqueue datasource construction elsewhere. Success callbacks
+     * hold the recursive member lock; error callbacks run after that lock is released.
+     * Unchanged file contents do not trigger notification.
      * @param successCallback Function to call with the current (new) set of service config nodes.
      * @param errorCallback Function to call when applying the config failed.
      * @return Unique pointer to a Subscription object.
@@ -146,7 +153,7 @@ public:
     /**
      * Loads the configuration from the file.
      * @param path The file path to the YAML configuration file.
-     * @param startWatchThread True to automatically reload of changes to config file occur.
+     * @param startWatchThread True to poll for and reload subsequent file changes.
      */
     void loadConfig(std::string const& path, bool startWatchThread = true);
 
@@ -158,12 +165,14 @@ public:
     /**
      * Instantiates a data source based on the provided descriptor.
      * @param descriptor The YAML node containing the data source descriptor.
-     * @return Shared pointer to the instantiated data source, or nullptr if instantiation failed.
+     * @return Constructed source, or null for a disabled/cancelled entry, unknown type
+     * or caught constructor failure. Malformed descriptor conversions can still throw.
      */
     DataSource::Ptr makeDataSource(YAML::Node const& descriptor);
 
     /**
-     * Instantiates a data source with progress/cancellation hooks for statusful startup.
+     * Construct synchronously with progress/cancellation hooks, outside the config
+     * member lock. Generic TTL/authorization settings are applied before return.
      */
     DataSource::Ptr makeDataSource(YAML::Node const& descriptor, DataSourceInitContext& initContext);
 
@@ -274,8 +283,8 @@ private:
     void unsubscribe(uint32_t id);
 
     /**
-     * Starts watching the configuration file for changes. Will load
-     * the config immmediately if not yet occurred.
+     * Poll the current path every 500 ms and reconcile existing file contents.
+     * The initial synchronous load belongs to loadConfig(path), not this thread.
      */
     void startConfigFileWatchThread();
 
@@ -334,7 +343,13 @@ private:
     mutable std::recursive_mutex configMutationMutex_;
 };
 
-/** Convert YAML to JSON, with optional secret masking. */
+/**
+ * Convert YAML scalars/containers to JSON. Scalars are tried as bool, int64 and
+ * double before string, even when originally quoted; this is not a lossless YAML
+ * round trip. Secret masking recognizes names such as
+ * apiKey, password and secret; it is not a general secret detector. When masking,
+ * maskedSecretMap must be supplied and retains token-to-original-value mappings.
+ */
 nlohmann::json yamlToJson(
     const YAML::Node& yamlNode,
     bool maskSecrets,

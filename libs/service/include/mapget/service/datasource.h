@@ -98,7 +98,8 @@ public:
     virtual void fill(PartitionSourceDataLayer::Ptr const& sourceData) = 0;
 
     /** Cooperative fills; legacy datasources remain supported through the one-argument methods.
-     * The probe becomes true only after the last consumer leaves the shared job.
+     * The probe becomes true when no consumers remain, the map is invalidated,
+     * or the service shuts down. It describes the shared job, not one subscriber.
      * Poll between expensive steps and throw TileLoadCancelled, not setError().
      * The default checks before/after the legacy fill; it cannot interrupt its I/O.
      */
@@ -185,6 +186,7 @@ public:
     }
 
 protected:
+    /** Last dictionary ID persisted by the cache, used for differential remote updates. */
     static StringId
     cachedStringPoolOffset(std::string const& stringPoolId, Cache::Ptr const& cache);
 

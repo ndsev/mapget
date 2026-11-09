@@ -27,13 +27,15 @@ static const std::string_view MultiPolygonStr("MultiPolygon");
 
 namespace
 {
-/** Project a point onto a finite line segment in the x/y plane. */
+/** Return the 3D offset from a to the x/y projection inside segment [a, b].
+ * Degenerate x/y segments and projections outside the endpoints return nullopt.
+ */
 std::optional<glm::dvec3>
 projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec3& b)
 {
     // Check if A and B are the same point (zero-length line segment).
     if (a == b) {
-        return std::nullopt; // Projection is undefined for a zero-length line segment.
+        return std::nullopt;  // Projection is undefined for a zero-length line segment.
     }
 
     // Calculate 2d vectors AB and AP (from A to Point).
@@ -43,7 +45,7 @@ projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec
     // Calculate the squared length of AB to check for numerical stability.
     double lengthSquaredAB = glm::dot(AB, AB);
     if (lengthSquaredAB == 0.0) {
-        return std::nullopt; // Avoid division by zero.
+        return std::nullopt;  // Avoid division by zero.
     }
 
     // Project AP onto AB using dot product.
@@ -52,13 +54,13 @@ projectPointOnLine(const glm::dvec3& point, const glm::dvec3& a, const glm::dvec
 
     // Check if projection extends beyond A or B.
     if (projectionFactor < 0 || projectionFactor > 1) {
-        return std::nullopt; // Projection outside the segment AB.
+        return std::nullopt;  // Projection outside the segment AB.
     }
 
-    // Calculate the 3d projection point.
+    // Interpolate the offset from a, including elevation; the caller adds a.
     return projectionFactor * (b - a);
 }
-}
+}  // namespace
 
 namespace mapget
 {
@@ -81,12 +83,9 @@ model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model,
 bool isBaseGeometryColumn(uint8_t column)
 {
     using Col = PartitionFeatureModelLayerBase::ColumnId;
-    return column == Col::PointGeometries ||
-           column == Col::LineGeometries ||
-           column == Col::PolygonGeometries ||
-           column == Col::MeshGeometries ||
-           column == Col::AabbGeometries ||
-           column == Col::GltfNodeIndexGeometries;
+    return column == Col::PointGeometries || column == Col::LineGeometries ||
+        column == Col::PolygonGeometries || column == Col::MeshGeometries ||
+        column == Col::AabbGeometries || column == Col::GltfNodeIndexGeometries;
 }
 
 /** Map storage columns back to their logical geometry type. */
@@ -94,21 +93,13 @@ GeomType geometryTypeForColumn(uint8_t column)
 {
     using Col = PartitionFeatureModelLayerBase::ColumnId;
     switch (column) {
-    case Col::PointGeometries:
-        return GeomType::Points;
-    case Col::LineGeometries:
-        return GeomType::Line;
-    case Col::PolygonGeometries:
-        return GeomType::Polygon;
-    case Col::MeshGeometries:
-        return GeomType::Mesh;
-    case Col::AabbGeometries:
-        return GeomType::AABB;
-    case Col::GltfNodeIndexGeometries:
-        return GeomType::GltfNodeIndex;
-    default:
-        raiseFmt("Unexpected geometry column {}.", column);
-        return GeomType::Points;
+    case Col::PointGeometries: return GeomType::Points;
+    case Col::LineGeometries: return GeomType::Line;
+    case Col::PolygonGeometries: return GeomType::Polygon;
+    case Col::MeshGeometries: return GeomType::Mesh;
+    case Col::AabbGeometries: return GeomType::AABB;
+    case Col::GltfNodeIndexGeometries: return GeomType::GltfNodeIndex;
+    default: raiseFmt("Unexpected geometry column {}.", column); return GeomType::Points;
     }
 }
 
@@ -127,37 +118,33 @@ nlohmann::json groundFootprintPolygon(Point const& origin, Point const& size)
     auto const maxX = origin.x + size.x;
     auto const maxY = origin.y + size.y;
 
-    return nlohmann::json::array({
-        nlohmann::json::array({
-            nlohmann::json::array({minX, minY, minZ}),
-            nlohmann::json::array({maxX, minY, minZ}),
-            nlohmann::json::array({maxX, maxY, minZ}),
-            nlohmann::json::array({minX, maxY, minZ}),
-            nlohmann::json::array({minX, minY, minZ}),
-        })
-    });
+    return nlohmann::json::array({nlohmann::json::array({
+        nlohmann::json::array({minX, minY, minZ}),
+        nlohmann::json::array({maxX, minY, minZ}),
+        nlohmann::json::array({maxX, maxY, minZ}),
+        nlohmann::json::array({minX, maxY, minZ}),
+        nlohmann::json::array({minX, minY, minZ}),
+    })});
 }
 
 /** Resolve the origin of an AABB-like geometry regardless of storage flavor. */
 Point boundsOrigin(model_ptr<Geometry> const& geometry)
 {
-    return geometry->geomType() == GeomType::AABB
-        ? geometry->aabbOrigin()
-        : geometry->gltfNodeAabbOrigin();
+    return geometry->geomType() == GeomType::AABB ?
+        geometry->aabbOrigin() :
+        geometry->gltfNodeAabbOrigin();
 }
 
 /** Resolve the size of an AABB-like geometry regardless of storage flavor. */
 Point boundsSize(model_ptr<Geometry> const& geometry)
 {
-    return geometry->geomType() == GeomType::AABB
-        ? geometry->aabbSize()
-        : geometry->gltfNodeAabbSize();
+    return geometry->geomType() == GeomType::AABB ?
+        geometry->aabbSize() :
+        geometry->gltfNodeAabbSize();
 }
 
 /** Reinterpret a base geometry address in one of the helper-view columns. */
-ModelNodeAddress geometryHelperAddress(
-    uint8_t helperColumn,
-    ModelNodeAddress baseGeometryAddress)
+ModelNodeAddress geometryHelperAddress(uint8_t helperColumn, ModelNodeAddress baseGeometryAddress)
 {
     return {helperColumn, baseGeometryAddress.index()};
 }
@@ -169,9 +156,8 @@ int64_t geometryHelperData(ModelNodeAddress baseGeometryAddress)
 }
 
 /** Encode base address plus point-view flavor for helper point nodes. */
-int64_t geometryPointHelperData(
-    ModelNodeAddress baseGeometryAddress,
-    GeometryPointViewKind pointKind)
+int64_t
+geometryPointHelperData(ModelNodeAddress baseGeometryAddress, GeometryPointViewKind pointKind)
 {
     return encodeGeometryHelperData(baseGeometryAddress, static_cast<uint8_t>(pointKind));
 }
@@ -252,7 +238,7 @@ void ensureGltfNodeStorageInitialized(StorageType& storage, simfil::ArrayIndex a
     }
 }
 
-}
+}  // namespace
 
 /** Model node impls. for GeometryCollection */
 
@@ -264,52 +250,63 @@ GeometryCollection::GeometryCollection(
           std::move(pool_),
           a,
           key)
-{}
+{
+}
 
-ValueType GeometryCollection::type() const {
+ValueType GeometryCollection::type() const
+{
     return ValueType::Object;
 }
 
-ModelNode::Ptr GeometryCollection::at(int64_t i) const {
+ModelNode::Ptr GeometryCollection::at(int64_t i) const
+{
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->at(i);
-    if (i == 0) return model_ptr<ValueNode>::make(GeometryCollectionStr, model_);
-    if (i == 1) return mergedGeometryArray();
+    if (i == 0)
+        return model_ptr<ValueNode>::make(GeometryCollectionStr, model_);
+    if (i == 1)
+        return mergedGeometryArray();
     throw std::out_of_range("geom collection: Out of range.");
 }
 
-uint32_t GeometryCollection::size() const {
+uint32_t GeometryCollection::size() const
+{
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->size();
     return 2;
 }
 
-ModelNode::Ptr GeometryCollection::get(const StringId& f) const {
+ModelNode::Ptr GeometryCollection::get(const StringId& f) const
+{
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->get(f);
-    if (f == StringPool::TypeStr) return at(0);
-    if (f == StringPool::GeometriesStr) return mergedGeometryArray();
+    if (f == StringPool::TypeStr)
+        return at(0);
+    if (f == StringPool::GeometriesStr)
+        return mergedGeometryArray();
     return {};
 }
 
-StringId GeometryCollection::keyAt(int64_t i) const {
+StringId GeometryCollection::keyAt(int64_t i) const
+{
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->keyAt(i);
-    if (i == 0) return StringPool::TypeStr;
-    if (i == 1) return StringPool::GeometriesStr;
+    if (i == 0)
+        return StringPool::TypeStr;
+    if (i == 1)
+        return StringPool::GeometriesStr;
     throw std::out_of_range("geom collection: Out of range.");
 }
 
-model_ptr<Geometry> GeometryCollection::newGeometry(
-    GeomType type,
-    size_t initialCapacity,
-    bool fixedSize)
+model_ptr<Geometry>
+GeometryCollection::newGeometry(GeomType type, size_t initialCapacity, bool fixedSize)
 {
     if (addr_.column() != PartitionFeatureModelLayerBase::ColumnId::GeometryCollections) {
         raise("Cannot append to a single-geometry view.");
     }
     auto result = model().newGeometry(type, initialCapacity, fixedSize);
-    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    auto array =
+        model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     array->append(result);
     return result;
 }
@@ -318,8 +315,10 @@ bool GeometryCollection::iterate(const IterCallback& cb) const
 {
     if (auto singleGeomEntry = singleGeom())
         return singleGeomEntry->iterate(cb);
-    if (!cb(*at(0))) return false;
-    if (!cb(*at(1))) return false;
+    if (!cb(*at(0)))
+        return false;
+    if (!cb(*at(1)))
+        return false;
     return true;
 }
 
@@ -329,9 +328,7 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
         return {};
     }
 
-    auto const localAddress = isFeatureScopedView()
-        ? featureScopedGeometryAddress()
-        : addr_;
+    auto const localAddress = isFeatureScopedView() ? featureScopedGeometryAddress() : addr_;
     if (!localAddress) {
         return {};
     }
@@ -341,7 +338,9 @@ ModelNode::Ptr GeometryCollection::singleGeom() const
         return model().resolve(localAddress);
     }
     if (model().arrayMemberStorage().size((ArrayIndex)localAddress.index()) == 1) {
-        auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
+        auto array = model().resolve<simfil::Array>(ModelNodeAddress{
+            simfil::ModelPool::Arrays,
+            localAddress.index()});
         return array->at(0);
     }
     return {};
@@ -357,7 +356,8 @@ void GeometryCollection::addGeometry(const model_ptr<Geometry>& geom)
     if (addr_.column() != PartitionFeatureModelLayerBase::ColumnId::GeometryCollections) {
         raise("Cannot append to a single-geometry view.");
     }
-    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
+    auto array =
+        model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, addr_.index()});
     array->append(ModelNode::Ptr(geom));
 }
 
@@ -375,9 +375,7 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
     if (i < 0) {
         return {};
     }
-    auto const localAddress = isFeatureScopedView()
-        ? featureScopedGeometryAddress()
-        : addr_;
+    auto const localAddress = isFeatureScopedView() ? featureScopedGeometryAddress() : addr_;
     if (!localAddress) {
         return {};
     }
@@ -389,7 +387,9 @@ ModelNode::Ptr GeometryCollection::localGeometryAt(int64_t i) const
         }
         return {};
     }
-    auto array = model().resolve<simfil::Array>(ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
+    auto array = model().resolve<simfil::Array>(ModelNodeAddress{
+        simfil::ModelPool::Arrays,
+        localAddress.index()});
     if (i >= static_cast<int64_t>(array->size())) {
         return {};
     }
@@ -424,9 +424,7 @@ model_ptr<GeometryArrayView> GeometryCollection::mergedGeometryArray() const
 
 uint32_t GeometryCollection::localMergedSize() const
 {
-    auto const localAddress = isFeatureScopedView()
-        ? featureScopedGeometryAddress()
-        : addr_;
+    auto const localAddress = isFeatureScopedView() ? featureScopedGeometryAddress() : addr_;
     if (!localAddress) {
         return 0;
     }
@@ -549,8 +547,9 @@ ModelNode::Ptr GeometryArrayView::localMergedAt(int64_t i) const
         {
             return i == 0 ? this->model().resolve(localAddress) : ModelNode::Ptr{};
         }
-        auto array = this->model().resolve<simfil::Array>(
-            ModelNodeAddress{simfil::ModelPool::Arrays, localAddress.index()});
+        auto array = this->model().resolve<simfil::Array>(ModelNodeAddress{
+            simfil::ModelPool::Arrays,
+            localAddress.index()});
         return i < static_cast<int64_t>(array->size()) ? array->at(i) : ModelNode::Ptr{};
     }
     if (singleGeometryAddress_) {
@@ -614,8 +613,12 @@ uint64_t Geometry::getHash() const
         auto const origin = gltfNodeAabbOrigin();
         auto const size = gltfNodeAabbSize();
         result.mix(gltfNodeIndex())
-            .mix(origin.x).mix(origin.y).mix(origin.z)
-            .mix(size.x).mix(size.y).mix(size.z);
+            .mix(origin.x)
+            .mix(origin.y)
+            .mix(origin.z)
+            .mix(size.x)
+            .mix(size.y)
+            .mix(size.z);
         return result.value();
     }
     Hash result;
@@ -626,11 +629,12 @@ uint64_t Geometry::getHash() const
             result.mix(polygonRingStart(ringIndex));
         }
     }
-    forEachPoint([&result](Point const& p)
-    {
-        result.mix(p.x).mix(p.y).mix(p.z);
-        return true;
-    });
+    forEachPoint(
+        [&result](Point const& p)
+        {
+            result.mix(p.x).mix(p.y).mix(p.z);
+            return true;
+        });
     return result.value();
 }
 
@@ -648,11 +652,12 @@ SelfContainedGeometry Geometry::toSelfContained() const
 {
     SelfContainedGeometry result{{}, {}, geomType()};
     result.points_.reserve(numPoints());
-    forEachPoint([&result](auto&& pt)
-    {
-        result.points_.emplace_back(pt);
-        return true;
-    });
+    forEachPoint(
+        [&result](auto&& pt)
+        {
+            result.points_.emplace_back(pt);
+            return true;
+        });
     if (geomType() == GeomType::Polygon) {
         auto const ringCount = numPolygonRings();
         result.polygonRingStarts_.reserve(ringCount);
@@ -668,11 +673,13 @@ nlohmann::json Geometry::toJson() const
     return simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>::toJson();
 }
 
-ValueType Geometry::type() const {
+ValueType Geometry::type() const
+{
     return ValueType::Object;
 }
 
-ModelNode::Ptr Geometry::at(int64_t i) const {
+ModelNode::Ptr Geometry::at(int64_t i) const
+{
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
     auto const geometryName = name();
     auto const type = geomType();
@@ -699,15 +706,18 @@ ModelNode::Ptr Geometry::at(int64_t i) const {
     throw std::out_of_range("geom: Out of range.");
 }
 
-uint32_t Geometry::size() const {
+uint32_t Geometry::size() const
+{
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
     auto const geometryName = name();
-    auto const extraFields =
-        geomType() == GeomType::AABB || geomType() == GeomType::GltfNodeIndex ? 1U : 0U;
+    auto const extraFields = geomType() == GeomType::AABB || geomType() == GeomType::GltfNodeIndex ?
+        1U :
+        0U;
     return 2 + extraFields + (sourceDataReferences ? 1 : 0) + (geometryName ? 1 : 0);
 }
 
-ModelNode::Ptr Geometry::get(const StringId& f) const {
+ModelNode::Ptr Geometry::get(const StringId& f) const
+{
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
     auto const geometryName = name();
     auto const type = geomViewData_ ? geomViewData_->type_ : geometryTypeForColumn(addr_.column());
@@ -720,18 +730,10 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
     if (f == StringPool::TypeStr) {
         std::string_view typeName;
         switch (type) {
-        case GeomType::Points:
-            typeName = MultiPointStr;
-            break;
-        case GeomType::Line:
-            typeName = LineStringStr;
-            break;
-        case GeomType::Polygon:
-            typeName = PolygonStr;
-            break;
-        case GeomType::Mesh:
-            typeName = MultiPolygonStr;
-            break;
+        case GeomType::Points: typeName = MultiPointStr; break;
+        case GeomType::Line: typeName = LineStringStr; break;
+        case GeomType::Polygon: typeName = PolygonStr; break;
+        case GeomType::Mesh: typeName = MultiPolygonStr; break;
         case GeomType::AABB:
             // Bounds-only geometries are exported as footprint polygons plus an
             // auxiliary `aabb` object containing the full 3D extent.
@@ -753,10 +755,8 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
     }
     if (f == StringPool::CoordinatesStr) {
         switch (type) {
-        case GeomType::AABB:
-            return makeBoundsPolygonCoordinatesView(model(), addr_);
-        case GeomType::GltfNodeIndex:
-            return makeBoundsPolygonCoordinatesView(model(), addr_);
+        case GeomType::AABB: return makeBoundsPolygonCoordinatesView(model(), addr_);
+        case GeomType::GltfNodeIndex: return makeBoundsPolygonCoordinatesView(model(), addr_);
         case GeomType::Polygon:
             if (geomViewData_) {
                 // Geometry views may expose only a point subrange, so they fall
@@ -774,15 +774,15 @@ ModelNode::Ptr Geometry::get(const StringId& f) const {
             return model().resolve(ModelNodeAddress{
                 PartitionFeatureModelLayerBase::ColumnId::Mesh,
                 addr_.index()});
-        default:
-            return model_ptr<PointBufferNode>::make(model_, addr_);
+        default: return model_ptr<PointBufferNode>::make(model_, addr_);
         }
         return model_ptr<PointBufferNode>::make(model_, addr_);
     }
     return {};
 }
 
-StringId Geometry::keyAt(int64_t i) const {
+StringId Geometry::keyAt(int64_t i) const
+{
     auto const sourceDataReferences = model().geometrySourceDataReferences(addr_);
     auto const geometryName = name();
     if (sourceDataReferences) {
@@ -795,10 +795,14 @@ StringId Geometry::keyAt(int64_t i) const {
             return StringPool::GeometryNameStr;
         i -= 1;
     }
-    if (i == 0) return StringPool::TypeStr;
-    if (i == 1) return StringPool::CoordinatesStr;
-    if (geomType() == GeomType::AABB && i == 2) return StringPool::AabbStr;
-    if (geomType() == GeomType::GltfNodeIndex && i == 2) return StringPool::GltfNodeIndexStr;
+    if (i == 0)
+        return StringPool::TypeStr;
+    if (i == 1)
+        return StringPool::CoordinatesStr;
+    if (geomType() == GeomType::AABB && i == 2)
+        return StringPool::AabbStr;
+    if (geomType() == GeomType::GltfNodeIndex && i == 2)
+        return StringPool::GltfNodeIndexStr;
     throw std::out_of_range("geom: Out of range.");
 }
 
@@ -825,13 +829,14 @@ void Geometry::append(Point const& p)
     }
 
     glm::vec3 storedPoint{};
-    if (geomType() == GeomType::AABB && storage_->size(static_cast<simfil::ArrayIndex>(addr_.index())) == 1) {
+    if (geomType() == GeomType::AABB &&
+        storage_->size(static_cast<simfil::ArrayIndex>(addr_.index())) == 1)
+    {
         // The second AABB slot stores size, not another anchor-relative point.
-        storedPoint = glm::vec3{
-            static_cast<float>(p.x),
-            static_cast<float>(p.y),
-            static_cast<float>(p.z)};
-    } else {
+        storedPoint =
+            glm::vec3{static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
+    }
+    else {
         // Regular geometry vertices are stored relative to the tile anchor to
         // preserve precision while keeping the on-disk representation compact.
         auto const anchor = model().geometryAnchor();
@@ -996,20 +1001,19 @@ Point Geometry::gltfNodeAabbSize() const
     if (!sizeSlot) {
         raise("Failed to access GLTF node bounds size.");
     }
-    return Point{
-        sizeSlot->get().x,
-        sizeSlot->get().y,
-        sizeSlot->get().z};
+    return Point{sizeSlot->get().x, sizeSlot->get().y, sizeSlot->get().z};
 }
 
-GeomType Geometry::geomType() const {
+GeomType Geometry::geomType() const
+{
     return geomViewData_ ? geomViewData_->type_ : geometryTypeForColumn(addr_.column());
 }
 
 bool Geometry::iterate(const IterCallback& cb) const
 {
     for (auto i = 0; i < size(); ++i) {
-        if (!cb(*at(i))) return false;
+        if (!cb(*at(i)))
+            return false;
     }
     return true;
 }
@@ -1066,19 +1070,21 @@ double Geometry::length() const
         return 0.0;
     }
     auto length = 0.0;
-    if (numPoints() < 2) return length;
-    for (auto i = 0; i < numPoints()-1; ++i)
-    {
+    if (numPoints() < 2)
+        return length;
+    for (auto i = 0; i < numPoints() - 1; ++i) {
         auto pos = pointAt(i);
-        auto posNext = pointAt(i+1);
+        auto posNext = pointAt(i + 1);
         length += pos.geographicDistanceTo(posNext);
     }
     return length;
 }
 
-std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const
+std::vector<Point>
+Geometry::pointsFromPositionBound(const Point& start, const std::optional<Point>& end) const
 {
-    // Find the line segments which are closest to start/end.
+    // Among segments admitting an interior x/y projection, choose the nearest
+    // segment start for each bound. This is not a nearest-segment distance test.
     uint32_t startClosestIndex = 0;
     uint32_t endClosestIndex = 0;
     double startClosestDistance = std::numeric_limits<double>::max();
@@ -1087,11 +1093,13 @@ std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const s
     glm::dvec3 endOffsetFromClosest;
 
     // Function which works generically for start or end in the loop below.
-    // Updates index, offset and distance if the line segment [newIndex->newIndex+1]
-    // is closer to the point than [index->index+1].
-    auto updateClosestIndex = [&](auto& index, auto& offset, auto& distance, auto newIndex, auto const& point) {
+    // Update only when the segment admits a projection and its start vertex is
+    // closer in x/y than the previously selected segment's start vertex.
+    auto updateClosestIndex =
+        [&](auto& index, auto& offset, auto& distance, auto newIndex, auto const& point)
+    {
         auto linePointA = pointAt(newIndex);
-        auto linePointB = pointAt(newIndex+1);
+        auto linePointB = pointAt(newIndex + 1);
         auto newDistance = glm::distance(glm::vec2(linePointA), glm::vec2(point));
         auto newOffset = projectPointOnLine(point, linePointA, linePointB);
         if (newDistance < distance && newOffset) {
@@ -1102,8 +1110,13 @@ std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const s
     };
 
     // Loop which actually finds the closest indices of the line shape points.
-    for (auto i = 0; i <  numPoints()-1; ++i) {
-        updateClosestIndex(startClosestIndex, startOffsetFromClosest, startClosestDistance, i, start);
+    for (auto i = 0; i < numPoints() - 1; ++i) {
+        updateClosestIndex(
+            startClosestIndex,
+            startOffsetFromClosest,
+            startClosestDistance,
+            i,
+            start);
         if (end)
             updateClosestIndex(endClosestIndex, endOffsetFromClosest, endClosestDistance, i, *end);
     }
@@ -1121,9 +1134,9 @@ std::vector<Point> Geometry::pointsFromPositionBound(const Point& start, const s
     // Add the start point.
     auto startClosestPoint = pointAt(startClosestIndex);
     result.emplace_back(
-         startClosestPoint.x + startOffsetFromClosest.x,
-         startClosestPoint.y + startOffsetFromClosest.y,
-         startClosestPoint.z + startOffsetFromClosest.z);
+        startClosestPoint.x + startOffsetFromClosest.x,
+        startClosestPoint.y + startOffsetFromClosest.y,
+        startClosestPoint.z + startOffsetFromClosest.z);
 
     // Add additional line points.
     if (end) {
@@ -1171,20 +1184,19 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
     auto startPos = pointAt(innerIndexStart), endPos = pointAt(innerIndexEnd);
     double coveredLength = 0;
     bool startReached = false;
-    for (auto i = 0; i < numPoints()-1; ++i)
-    {
+    for (auto i = 0; i < numPoints() - 1; ++i) {
         auto pos = pointAt(i);
-        auto posNext = pointAt(i+1);
+        auto posNext = pointAt(i + 1);
         auto dist = pos.geographicDistanceTo(posNext);
         coveredLength += dist;
 
-        if (!startReached && start <= coveredLength)
-        {
+        if (!startReached && start <= coveredLength) {
             innerIndexStart = i;
-            // Note: We use a fast linear calculation here instead of proper geodesic trigonometry.
-            // I calculated, that the approximate error for this is roughly 0.001% at the equator, so
-            // the error on a 1km long line would be about 1 centimeter.
-            auto lerp = static_cast<double>(dist - (coveredLength - start)) / static_cast<double>(dist);
+            // Distances select the segment on the sphere; interpolate its stored
+            // lon/lat/elevation coordinates linearly. Accuracy depends on segment
+            // length and latitude, so this is not an exact geodesic interpolation.
+            auto lerp = static_cast<double>(dist - (coveredLength - start)) /
+                static_cast<double>(dist);
             startPos = pos + (posNext - pos) * lerp;
             startReached = true;
             if (!end)
@@ -1192,7 +1204,8 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
         }
         if (startReached && end && *end <= coveredLength) {
             innerIndexEnd = i;
-            auto lerp = static_cast<double>(dist - (coveredLength - *end)) / static_cast<double>(dist);
+            auto lerp = static_cast<double>(dist - (coveredLength - *end)) /
+                static_cast<double>(dist);
             endPos = pos + (posNext - pos) * lerp;
             break;
         }
@@ -1215,8 +1228,11 @@ std::vector<Point> Geometry::pointsFromLengthBound(double start, std::optional<d
     return result;
 }
 
-Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>> const& geoms,
-    std::vector<double> const& lengths, uint32_t numBits, double position)
+Point Geometry::percentagePositionFromGeometries(
+    std::vector<model_ptr<Geometry>> const& geoms,
+    std::vector<double> const& lengths,
+    uint32_t numBits,
+    double position)
 {
     double totalLength = std::accumulate(lengths.begin(), lengths.end(), 0.0);
     auto maxPos = static_cast<double>((1 << numBits) - 1);
@@ -1245,7 +1261,8 @@ Point Geometry::percentagePositionFromGeometries(std::vector<model_ptr<Geometry>
 BoundsInfoNode::BoundsInfoNode(ModelNode const& baseNode, simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
-{}
+{
+}
 
 ValueType BoundsInfoNode::type() const
 {
@@ -1254,8 +1271,10 @@ ValueType BoundsInfoNode::type() const
 
 ModelNode::Ptr BoundsInfoNode::at(int64_t i) const
 {
-    if (i == 0) return get(StringPool::OriginStr);
-    if (i == 1) return get(StringPool::SizeStr);
+    if (i == 0)
+        return get(StringPool::OriginStr);
+    if (i == 1)
+        return get(StringPool::SizeStr);
     throw std::out_of_range("bounds-info: Out of range.");
 }
 
@@ -1283,15 +1302,19 @@ ModelNode::Ptr BoundsInfoNode::get(const StringId& field) const
 
 StringId BoundsInfoNode::keyAt(int64_t i) const
 {
-    if (i == 0) return StringPool::OriginStr;
-    if (i == 1) return StringPool::SizeStr;
+    if (i == 0)
+        return StringPool::OriginStr;
+    if (i == 1)
+        return StringPool::SizeStr;
     throw std::out_of_range("bounds-info: Out of range.");
 }
 
 bool BoundsInfoNode::iterate(const IterCallback& cb) const
 {
-    if (!cb(*at(0))) return false;
-    if (!cb(*at(1))) return false;
+    if (!cb(*at(0)))
+        return false;
+    if (!cb(*at(1)))
+        return false;
     return true;
 }
 
@@ -1300,7 +1323,8 @@ BoundsPolygonCoordinatesNode::BoundsPolygonCoordinatesNode(
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
-{}
+{
+}
 
 ValueType BoundsPolygonCoordinatesNode::type() const
 {
@@ -1338,7 +1362,8 @@ bool BoundsPolygonCoordinatesNode::iterate(const IterCallback& cb) const
 BoundsRingNode::BoundsRingNode(ModelNode const& baseNode, simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
       baseGeometryAddress_(decodeGeometryHelperBaseAddress(addr_, std::get<int64_t>(data_)))
-{}
+{
+}
 
 ValueType BoundsRingNode::type() const
 {
@@ -1349,17 +1374,31 @@ ModelNode::Ptr BoundsRingNode::at(int64_t i) const
 {
     switch (i) {
     case 0:
-        return makeGeometryPointView(model(), baseGeometryAddress_, GeometryPointViewKind::BoundsCorner0);
+        return makeGeometryPointView(
+            model(),
+            baseGeometryAddress_,
+            GeometryPointViewKind::BoundsCorner0);
     case 1:
-        return makeGeometryPointView(model(), baseGeometryAddress_, GeometryPointViewKind::BoundsCorner1);
+        return makeGeometryPointView(
+            model(),
+            baseGeometryAddress_,
+            GeometryPointViewKind::BoundsCorner1);
     case 2:
-        return makeGeometryPointView(model(), baseGeometryAddress_, GeometryPointViewKind::BoundsCorner2);
+        return makeGeometryPointView(
+            model(),
+            baseGeometryAddress_,
+            GeometryPointViewKind::BoundsCorner2);
     case 3:
-        return makeGeometryPointView(model(), baseGeometryAddress_, GeometryPointViewKind::BoundsCorner3);
+        return makeGeometryPointView(
+            model(),
+            baseGeometryAddress_,
+            GeometryPointViewKind::BoundsCorner3);
     case 4:
-        return makeGeometryPointView(model(), baseGeometryAddress_, GeometryPointViewKind::BoundsCorner4);
-    default:
-        throw std::out_of_range("bounds-ring: Out of range.");
+        return makeGeometryPointView(
+            model(),
+            baseGeometryAddress_,
+            GeometryPointViewKind::BoundsCorner4);
+    default: throw std::out_of_range("bounds-ring: Out of range.");
     }
 }
 
@@ -1392,7 +1431,8 @@ bool BoundsRingNode::iterate(const IterCallback& cb) const
 
 PolygonNode::PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a, simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(std::move(pool), a, key)
-{}
+{
+}
 
 ValueType PolygonNode::type() const
 {
@@ -1485,7 +1525,8 @@ MeshTriangleCollectionNode::MeshTriangleCollectionNode(
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(base, key),
       index_(std::get<int64_t>(data_) * 3)
-{}
+{
+}
 
 ValueType MeshTriangleCollectionNode::type() const
 {
@@ -1516,11 +1557,14 @@ bool MeshTriangleCollectionNode::iterate(IterCallback const& cb) const
     return true;
 }
 
-/** ModelNode impls. for LinearRingNode (a closed, simple polygon in CCW order) */
+/** Closed ring projection: outer rings use CCW, holes use CW when planar.
+ * This view normalizes order and closure; it does not validate polygon topology.
+ */
 
 LinearRingNode::LinearRingNode(const ModelNode& base, simfil::detail::mp_key key)
     : LinearRingNode(base, std::optional<size_t>{}, key)
-{}
+{
+}
 
 LinearRingNode::LinearRingNode(
     const ModelNode& base,
@@ -1664,12 +1708,11 @@ model_ptr<PointBufferNode> LinearRingNode::vertexBuffer() const
         return model_ptr<PointBufferNode>::make(
             model_,
             ModelNodeAddress{Col::MeshGeometries, addr_.index()});
-    default:
-        return model_ptr<PointBufferNode>::make(model_, addr_);
+    default: return model_ptr<PointBufferNode>::make(model_, addr_);
     }
 }
 
-/** ModelNode impls. for VertexBufferNode */
+/** PointBufferNode resolves anchor-relative vertices and bounded geometry views. */
 
 PointBufferNode::PointBufferNode(
     ModelConstPtr pool_,
@@ -1728,21 +1771,20 @@ PointBufferNode::PointBufferNode(
     }
 }
 
-ValueType PointBufferNode::type() const {
+ValueType PointBufferNode::type() const
+{
     return ValueType::Array;
 }
 
-ModelNode::Ptr PointBufferNode::at(int64_t i) const {
+ModelNode::Ptr PointBufferNode::at(int64_t i) const
+{
     if (i < 0 || i >= size())
         throw std::out_of_range("vertex-buffer: Out of range.");
     auto const absoluteIndex = i + offset_;
     if (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::AabbGeometries &&
         absoluteIndex == 1)
     {
-        return makeGeometryPointView(
-            model(),
-            baseGeomAddress_,
-            GeometryPointViewKind::RawSize);
+        return makeGeometryPointView(model(), baseGeomAddress_, GeometryPointViewKind::RawSize);
     }
     auto const pointNodeAddress = ModelNodeAddress{
         PartitionFeatureModelLayerBase::ColumnId::Points,
@@ -1750,15 +1792,18 @@ ModelNode::Ptr PointBufferNode::at(int64_t i) const {
     return model().resolve(pointNodeAddress, absoluteIndex);
 }
 
-uint32_t PointBufferNode::size() const {
+uint32_t PointBufferNode::size() const
+{
     return size_;
 }
 
-ModelNode::Ptr PointBufferNode::get(const StringId &) const {
+ModelNode::Ptr PointBufferNode::get(const StringId&) const
+{
     return {};
 }
 
-StringId PointBufferNode::keyAt(int64_t) const {
+StringId PointBufferNode::keyAt(int64_t) const
+{
     return {};
 }
 
@@ -1777,23 +1822,18 @@ Point PointBufferNode::pointAt(int64_t index) const
     if (index < 0 || index >= static_cast<int64_t>(size_)) {
         throw std::out_of_range("vertex-buffer: Out of range.");
     }
-    auto vertexResult = storage_->at(
-        baseVertexArray_,
-        static_cast<size_t>(index + offset_));
+    auto vertexResult = storage_->at(baseVertexArray_, static_cast<size_t>(index + offset_));
     if (!vertexResult) {
         throw std::out_of_range("vertex-buffer: Out of range.");
     }
     if (baseGeomAddress_.column() == PartitionFeatureModelLayerBase::ColumnId::AabbGeometries &&
         index + static_cast<int64_t>(offset_) == 1)
     {
-        return Point{
-            vertexResult->get().x,
-            vertexResult->get().y,
-            vertexResult->get().z};
+        return Point{vertexResult->get().x, vertexResult->get().y, vertexResult->get().z};
     }
     auto point = model().geometryAnchor();
     point += vertexResult->get();
     return point;
 }
 
-}
+}  // namespace mapget

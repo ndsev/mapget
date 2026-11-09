@@ -32,12 +32,14 @@ struct ObjectDiscoveryResult
         uint64_t objectId_ = 0;
         std::optional<std::array<double, 4>> bounds_;
     };
+
     /** Missing association data remains distinguishable from a transport/backend error. */
     enum class Status { Success, Unavailable, Failed };
     Status status_ = Status::Success;
     std::vector<Reference> objects_;
     std::string message_;
     std::chrono::system_clock::time_point timestamp_ = std::chrono::system_clock::now();
+
     /** Independent association freshness; zero means no expiry. */
     std::chrono::milliseconds ttl_{0};
 
@@ -49,6 +51,7 @@ struct ObjectDiscoveryResult
      * Duplicate object IDs are collapsed, retaining the first reference (including its bounds).
      */
     nlohmann::json toJson() const;
+
     /** Parse a datasource response, preserving unavailable/empty distinction. */
     static ObjectDiscoveryResult fromJson(nlohmann::json const& json);
 };

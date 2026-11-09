@@ -35,6 +35,7 @@ public:
         bool configRead = false;
         bool configWrite = false;
         bool diagnostics = false;
+
         /** Verified claims and explicit deployment grants, never arbitrary caller headers. */
         ClientAuthorization datasourceAuthorization;
 
@@ -47,6 +48,7 @@ public:
 
     /** Sending means handing a control frame to the connection, never to the tile outbox. */
     using Send = std::function<bool(nlohmann::json const&)>;
+
     /** Completion contains exactly one result object or application error object. */
     using Complete = std::function<void(nlohmann::json)>;
 

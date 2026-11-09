@@ -33,10 +33,18 @@ struct PointCloudGeometrySample
         return result;
     }
 
-    /** Stream selected original records across all clusters without an intermediate point vector. */
+    /**
+     * Visit selected records in collection/vertex order without a temporary point array.
+     * selection must use count(source, geometryName) for the same unchanged collection.
+     * Every matching coordinate is scanned and validated, including skipped samples;
+     * invalid WGS84 coordinates throw. geometryAddress refers to the source layer.
+     */
     template <typename Callback>
-    static void forEach(model_ptr<GeometryCollection> const& source, PointCloudIndexSelection const& selection,
-                        Callback&& callback, std::optional<std::string> const& geometryName = {})
+    static void forEach(
+        model_ptr<GeometryCollection> const& source,
+        PointCloudIndexSelection const& selection,
+        Callback&& callback,
+        std::optional<std::string> const& geometryName = {})
     {
         uint64_t sourceIndex = 0, ordinal = 0;
         if (!source) return;
@@ -60,9 +68,12 @@ struct PointCloudGeometrySample
         });
     }
 
-    /** Retain an exact-sized sample for backend subset materialization. */
-    static PointCloudGeometrySample build(model_ptr<GeometryCollection> const& source, uint32_t maxPoints,
-                                          std::optional<std::string> const& geometryName = {})
+    /** Copy at most maxPoints records; zero selects none, and sourceCount reports all candidates.
+     */
+    static PointCloudGeometrySample build(
+        model_ptr<GeometryCollection> const& source,
+        uint32_t maxPoints,
+        std::optional<std::string> const& geometryName = {})
     {
         PointCloudGeometrySample result;
         result.sourceCount = count(source, geometryName);

@@ -22,24 +22,29 @@ class MapSchema::Impl::CompositionBuilder
             throw std::invalid_argument("Dangling constituent schema reference.");
         return offsets_[source] + id - 1;
     }
+
     /** Borrow the canonical declaration; source owners outlive this construction. */
     simfil::SchemaType node(size_t index) const
     {
         auto [source, id] = origins_[index];
         return inputs_[source]->schemaType(id);
     }
+
     /** Mapget metadata stays in its owner's column, never in a copied generic graph. */
     Impl const& source(size_t index) const { return *inputs_[origins_[index].first]->schema_; }
+
     /** Generated contexts are reconstructed after producer declarations have been merged. */
     bool queryRoot(size_t index) const
     {
         return source(index).data(origins_[index].second).flags & QueryRootFlag;
     }
+
     /** Name IDs belong to their input dictionary, including application-specific kinds. */
     std::string_view kindName(size_t index) const
     {
         return source(index).name(simfil::SchemaType::kindNameId(node(index).kind()));
     }
+
     /** Translate an open kind vocabulary without copying source dictionary IDs. */
     Kind targetKind(size_t index)
     {
@@ -47,6 +52,7 @@ class MapSchema::Impl::CompositionBuilder
             target_.intern(kindName(index)),
             simfil::SchemaType::affinities(node(index).kind()));
     }
+
     /** Compress equivalence paths; frozen artifacts never retain this union-find. */
     size_t representative(size_t index)
     {
@@ -56,12 +62,14 @@ class MapSchema::Impl::CompositionBuilder
         }
         return index;
     }
+
     /** Attribute diagnostics to the actual shared declaration or field. */
     [[noreturn]] static void conflict(std::string const& path, std::string_view reason)
     {
         throw std::invalid_argument(
             "Incompatible schema contribution at " + path + ": " + std::string(reason));
     }
+
     /** Queue correspondence without recursively following a possibly cyclic graph. */
     void pair(size_t left, size_t right, std::string path)
     {
@@ -74,6 +82,7 @@ class MapSchema::Impl::CompositionBuilder
             throw std::length_error("Schema composition work budget exceeded.");
         pending_.emplace_back(left, right, std::move(path));
     }
+
     /** Pair declared alternatives in order; changing their meaning is not an additive field. */
     template <class A, class B>
     void edges(size_t left, size_t right, A const& a, B const& b, std::string const& path)
@@ -83,6 +92,7 @@ class MapSchema::Impl::CompositionBuilder
         for (size_t i = 0; i < a.size(); ++i)
             pair(slot(origins_[left].first, a[i]), slot(origins_[right].first, b[i]), path);
     }
+
     /** Decode references already validated by the native/imported artifact. */
     static TypeId reference(nlohmann::json const& value)
     {
@@ -98,6 +108,7 @@ class MapSchema::Impl::CompositionBuilder
             throw std::invalid_argument("Invalid validation type reference.");
         return TypeId(id);
     }
+
     /** Merge descriptive maps, rejecting contradictory values instead of first-wins. */
     static void mergeJson(nlohmann::json& out, nlohmann::json const& input, std::string const& path)
     {
@@ -113,6 +124,7 @@ class MapSchema::Impl::CompositionBuilder
         else if (out != input)
             conflict(path, "annotation meaning differs");
     }
+
     /** Union forward contracts while retaining unknown versus explicitly empty coverage. */
     static nlohmann::json
     mergeAnnotations(nlohmann::json a, nlohmann::json b, std::string const& path)
@@ -165,6 +177,7 @@ class MapSchema::Impl::CompositionBuilder
         }
         return a;
     }
+
     /** Compare scalar declarations directly, preserving full-width encodings and source order. */
     void scalarMetadata(simfil::SchemaType a, simfil::SchemaType b, std::string const& path)
     {
@@ -207,6 +220,7 @@ class MapSchema::Impl::CompositionBuilder
                 conflict(path, "named value contract differs");
         }
     }
+
     /** Check shared meaning and discover child correspondences. New object fields are additive. */
     void compare(size_t left, size_t right, std::string const& path)
     {
@@ -295,6 +309,7 @@ class MapSchema::Impl::CompositionBuilder
             conflict(path, "scalar or array metadata differs");
         (void)mergeAnnotations(std::move(aa), std::move(ba), path);
     }
+
     /** Unify whole equivalence classes, checking every new cross-contributor pair once. */
     void unify()
     {
@@ -319,6 +334,7 @@ class MapSchema::Impl::CompositionBuilder
             members_[right].clear();
         }
     }
+
     /** Translate a type edge after final construction identities are assigned. */
     TypeId mapped(size_t source, TypeId id) const
     {
@@ -327,6 +343,7 @@ class MapSchema::Impl::CompositionBuilder
             throw std::invalid_argument("Producer data refers to a generated query context.");
         return result;
     }
+
     /** Write merged declarations directly into canonical columns and arenas. */
     void materialize(size_t index, bool first)
     {
@@ -439,6 +456,7 @@ public:
                 .emplace_back(std::string(inputs[s]->schemaId()), inputs[s]->format());
         }
     }
+
     /** Merge contracts, rebuild query overlays, and retain ingestion-only translation tables. */
     void build()
     {
@@ -487,7 +505,9 @@ public:
                     });
             }
         }
+
         unify();
+
         // Assign only effective IDs, not the sum of contributor namespaces. Shared
         // recursive graphs can therefore compose without exhausting uint16_t early.
         for (size_t i = 1; i < origins_.size(); ++i) {
@@ -498,10 +518,12 @@ public:
                 mapped_[root] = target_.pool.newType(targetKind(i)).id();
             mapped_[i] = mapped_[root];
         }
+
         std::set<TypeId> initialized;
         for (size_t i = 1; i < origins_.size(); ++i)
             if (!queryRoot(i))
                 materialize(i, initialized.insert(mapped_[i]).second);
+
         for (auto const& [name, sources] : layers_) {
             auto const& first =
                 inputs_[sources.front().first]->schema_->layers[sources.front().second];
@@ -550,6 +572,7 @@ public:
         }
         for (auto const& [key, index] : globalKeys)
             target_.pool.registerSchemaKey(std::string(key), mapped_[index]);
+
         target_.prepareQueryRoots();
         for (size_t s = 0; s < inputs_.size(); ++s) {
             for (auto const& query : inputs_[s]->schema_->queryRoots) {
@@ -578,6 +601,7 @@ public:
             for (size_t id = 1; id < remap.size(); ++id)
                 remap[id] = mapped(s, TypeId(id));
         }
+
         // Merge annotations one equivalence class at a time, then allocate CBOR
         // once. Repeated writes would leave superseded payloads in the ModelPool.
         for (size_t i = 1; i < origins_.size(); ++i) {

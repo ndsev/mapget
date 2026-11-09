@@ -10,7 +10,7 @@ namespace mapget
 namespace
 {
 
-/** Do not leak token existence or backend exception details through schema failures. */
+/** Return a caller-facing schema error as non-cacheable plain text. */
 drogon::HttpResponsePtr schemaError(drogon::HttpStatusCode status, std::string message)
 {
     auto response = drogon::HttpResponse::newHttpResponse();
@@ -23,6 +23,7 @@ drogon::HttpResponsePtr schemaError(drogon::HttpStatusCode status, std::string m
 
 } // namespace
 
+/** Serve an authorized source's exact binary schema, encoding it on a service worker. */
 void HttpService::Impl::handleSchemaRequest(
     drogon::HttpRequestPtr const& req,
     std::function<void(drogon::HttpResponsePtr const&)>&& callback) const
@@ -43,6 +44,7 @@ void HttpService::Impl::handleSchemaRequest(
             callback(schemaError(drogon::k503ServiceUnavailable, "Schema service is stopping."));
             return;
         }
+
         drogon::HttpResponsePtr response;
         try {
             auto schema = service->getSchema(sourceId, schemaId, headers);
@@ -50,7 +52,7 @@ void HttpService::Impl::handleSchemaRequest(
                 response = schemaError(drogon::k404NotFound, "Schema binding is unavailable.");
             else {
                 response = cache->response(schema, validator);
-                // Removal/rebinding during encoding must not publish the old artifact or a 304.
+                // Reject a removal/rebinding observed after encoding, including cached 304s.
                 if (service->getSchema(sourceId, schemaId, headers) != schema)
                     response = schemaError(drogon::k404NotFound, "Schema binding is unavailable.");
             }
@@ -60,10 +62,18 @@ void HttpService::Impl::handleSchemaRequest(
         }
         callback(response);
     };
+
     if (!service->scheduleTask(std::move(task)))
         callback(schemaError(drogon::k503ServiceUnavailable, "Schema request queue is full or stopping."));
 }
 
+/**
+ * Serve the status explorer's schema inventory, type details or layer-scoped search.
+ * Inspection expands one type's immediate edges and returns references for further
+ * navigation. Response construction runs on a worker with work, time and byte limits.
+ * Search may return ranked partial results with complete=false; exceeding the outer
+ * inspection/response budget returns 413 so the caller can narrow the request.
+ */
 void HttpService::Impl::handleSchemaInspectionRequest(
     drogon::HttpRequestPtr const& req,
     std::function<void(drogon::HttpResponsePtr const&)>&& callback) const
@@ -84,6 +94,9 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             "/schema/inspect."));
         return;
     }
+
+    // Inventory needs no selected type. Detail and search requests identify the
+    // exact artifact and a type within it, avoiding stale IDs after a source reload.
     uint32_t id = 0;
     if (!inventory) {
         auto parsed = std::from_chars(
@@ -100,6 +113,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             return;
         }
     }
+
     auto* service = static_cast<Service*>(&self_);
     auto task =
         [service,
@@ -116,10 +130,14 @@ void HttpService::Impl::handleSchemaInspectionRequest(
             callback(schemaError(drogon::k503ServiceUnavailable, "Schema service is stopping."));
             return;
         }
+
         drogon::HttpResponsePtr response;
         try {
             auto const revision = service->sourceCatalogRevision();
             MapSchema::ConstPtr owner;
+
+            // Charge traversal and prospective JSON output as it is materialized.
+            // The final encoded-size check below also covers the response envelope.
             size_t remaining = 16384;
             size_t remainingBytes = 1024 * 1024;
             auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -129,6 +147,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     throw std::length_error("Schema inspection exceeded its work budget.");
                 --remaining;
             };
+
             auto reserve = [&](size_t bytes)
             {
                 checkpoint();
@@ -136,6 +155,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     throw std::length_error("Schema inspection exceeded its byte budget.");
                 remainingBytes -= bytes;
             };
+
             auto chargeString = [&](std::string_view value)
             {
                 if (value.size() > remainingBytes / 6)
@@ -143,11 +163,13 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                 reserve(
                     2 + value.size() * 6);  // Quotes and worst-case JSON escaping, before copying.
             };
+
             auto copyName = [&](std::string_view value)
             {
                 chargeString(value);
                 return std::string(value);
             };
+
             auto body = nlohmann::json::object();
             if (inventory) {
                 body["schemas"] = service->schemaInventory(headers, {}, checkpoint);
@@ -160,6 +182,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                         schemaError(drogon::k404NotFound, "Schema search root is unavailable."));
                     return;
                 }
+
                 chargeString(artifact);
                 chargeString(layerName);
                 std::array roots{static_cast<simfil::TypeId>(id)};
@@ -184,14 +207,16 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     callback(schemaError(drogon::k404NotFound, "Schema type is unavailable."));
                     return;
                 }
-                // Traverse metadata, not data edges. The very same canonical schema descriptors
-                // used by MCP supply explicit references for every child/shared/cyclic type.
+
+                // Schema descriptors expose type metadata and references to child
+                // types, allowing the browser to navigate shared or cyclic graphs.
                 body = {
                     {"mapSchemaId", artifact},
                     {"typeId", id},
                     {"descriptor", nlohmann::json::object()}};
-                // Identity/relation contracts belong to mapget's layer, not generic simfil
-                // types. Discovery and contract allocation share the descriptor budget.
+
+                // Add mapget's layer-specific feature identity/relation contracts.
+                // Their discovery and allocation share the descriptor's limits.
                 for (auto const& name : owner->layerNames()) {
                     checkpoint();
                     auto layer = owner->layer(name);
@@ -204,6 +229,9 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                         body["featureTypes"].push_back(std::move(contract));
                     }
                 }
+
+                // Copy bounded metadata and encode integers outside JavaScript's
+                // exact range as tagged decimal strings for the browser.
                 std::function<nlohmann::json(simfil::ModelNode const&, size_t)> copyMetadata;
                 copyMetadata = [&](simfil::ModelNode const& node, size_t depth) -> nlohmann::json
                 {
@@ -229,6 +257,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                         }
                         return value;
                     }
+
                     auto result = node.type() == simfil::ValueType::Array ?
                         nlohmann::json::array() :
                         nlohmann::json::object();
@@ -243,6 +272,9 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     }
                     return result;
                 };
+
+                // Expand immediate edges with small previews. Their $ref values
+                // let the UI fetch full definitions when the user opens an edge.
                 for (uint32_t i = 0; i < root->size(); ++i) {
                     checkpoint();
                     auto key = root->keyAt(i);
@@ -255,6 +287,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                         body["descriptor"][name] = copyMetadata(*child, 0);
                         continue;
                     }
+
                     auto& edges = body[name] = nlohmann::json::array();
                     for (uint32_t j = 0; j < child->size(); ++j) {
                         reserve(64);
@@ -265,6 +298,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                                 child->owningModel()->lookupStringId(child->keyAt(j)).value());
                         if (auto reference = entry->get(simfil::StringPool::SchemaRef))
                             link["$ref"] = copyMetadata(*reference, 0);
+
                         // Immediate native metadata gives real alternatives useful
                         // labels without another request or a client-side schema crawl.
                         // Keep every edge: equal labels are not proof of equal types.
@@ -278,6 +312,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                                     [copyName(entry->owningModel()->lookupStringId(key).value())] =
                                         copyMetadata(*value, 0);
                         }
+
                         // Summaries distinguish enum strings from numeric fallbacks
                         // without copying a potentially large enum onto every edge.
                         // The complete values and raw ordinals remain on expansion.
@@ -298,6 +333,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                                     names.push_back(copyMetadata(*name, 0));
                             }
                         }
+
                         // A shared typename does not imply equal numeric meaning.
                         // Keep scalar constraints and at most two ordinary ranges;
                         // the preview is bounded independently of the full definition.
@@ -330,6 +366,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                                     examples.push_back(copyMetadata(*ranges->at(index), 0));
                             }
                         }
+
                         // Requiredness and context-only lookup are properties of this edge,
                         // not of the destination type shared by other fields.
                         if (auto required = entry->get(simfil::StringPool::SchemaRequired))
@@ -340,16 +377,19 @@ void HttpService::Impl::handleSchemaInspectionRequest(
                     }
                 }
             }
+
             auto encoded = body.dump();
             if (encoded.size() > 1024 * 1024)
                 throw std::length_error(
                     "Schema inspection response exceeds one MiB; use a focused MCP query.");
+
             response = drogon::HttpResponse::newHttpResponse();
             response->setContentTypeCode(drogon::CT_APPLICATION_JSON);
             response->addHeader("Cache-Control", "no-store");
             response->setBody(std::move(encoded));
-            // Encoding can outlive a reload. Revalidate only after all materialization,
-            // once per response, so no stale consumer rows or type view are published.
+
+            // Encoding can outlive a reload. Recheck after materialization and reject
+            // changes observed here; sending the response is not atomic with a reload.
             if (inventory && service->sourceCatalogRevision() != revision)
                 response =
                     schemaError(drogon::k409Conflict, "Schema catalog changed; retry inspection.");
@@ -374,6 +414,7 @@ void HttpService::Impl::handleSchemaInspectionRequest(
         }
         callback(response);
     };
+
     if (!service->scheduleTask(std::move(task)))
         callback(schemaError(
             drogon::k503ServiceUnavailable,

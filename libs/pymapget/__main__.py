@@ -1,3 +1,5 @@
+"""Forward python -m mapget arguments to the native CLI and return its exit status."""
+
 import mapget
 import sys
 import time

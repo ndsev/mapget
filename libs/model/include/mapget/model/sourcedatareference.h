@@ -36,8 +36,9 @@ public:
     bool iterate(IterCallback const& cb) const override;
 
     /**
-     * Calls the callback `fn` for each SourceDataReferenceItem this
-     * collection contains.
+     * Call fn synchronously for each reference in stored order. The callback
+     * borrows each item only for that invocation; copy values needed afterward.
+     * Exceptions propagate and stop iteration.
      */
     void forEachReference(std::function<void(const SourceDataReferenceItem&)> fn) const;
 
@@ -46,11 +47,13 @@ public:
         : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
     {
     }
-    SourceDataReferenceCollection(uint32_t offset,
-                                  uint32_t size,
-                                  ModelConstPtr pool,
-                                  ModelNodeAddress a,
-                                  simfil::detail::mp_key key);
+    SourceDataReferenceCollection(
+        uint32_t offset,
+        uint32_t size,
+        ModelConstPtr pool,
+        ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     SourceDataReferenceCollection() = delete;
 
 private:
@@ -77,7 +80,8 @@ public:
     bool iterate(IterCallback const& cb) const override;
 
     /**
-     * SourceData properties.
+     * Source properties. String views borrow the owning layer's string pool;
+     * an unresolved string ID yields an empty view.
      */
     std::string_view qualifier() const;
     std::string_view layerId() const;
@@ -88,10 +92,12 @@ public:
         : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(key)
     {
     }
-    SourceDataReferenceItem(const QualifiedSourceDataReference* data,
-                            ModelConstPtr pool,
-                            ModelNodeAddress a,
-                            simfil::detail::mp_key key);
+    SourceDataReferenceItem(
+        const QualifiedSourceDataReference* data,
+        ModelConstPtr pool,
+        ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     SourceDataReferenceItem() = delete;
 
 private:

@@ -336,6 +336,7 @@ inline void bindSubsetNodes(py::module_& m)
 struct BoundSourceDataCompound : public BoundModelNode
 {
     model_ptr<SourceDataCompoundNode>& ptr() { return *modelNodePtr_; }
+
     model_ptr<SourceDataCompoundNode> const& ptr() const { return *modelNodePtr_; }
 
     static void bind(py::module_& m)
@@ -855,13 +856,13 @@ void bindTileLayer(py::module_& m)
             "new_object",
             [](PartitionFeatureLayer& self) { return BoundObject(self.newObject()); },
             R"pbdoc(
-            Adopt members from the given vector and obtain a new object model index which has these members.
+            Create an empty mutable object in this layer; it is not attached to a feature.
         )pbdoc")
         .def(
             "new_array",
             [](PartitionFeatureLayer& self) { return BoundArray(self.newArray()); },
             R"pbdoc(
-            Adopt members from the given vector and obtain a new array model index which has these members.
+            Create an empty mutable array in this layer; it is not attached to a feature.
         )pbdoc")
         .def(
             "new_geometry_collection",

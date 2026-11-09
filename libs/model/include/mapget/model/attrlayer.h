@@ -18,7 +18,6 @@ class Feature;
  * Represents a collection of Attributes which are semantically related.
  * For example, all feature attributes which refer to road rules, such
  * as speed limits, might belong to the same attribute layer.
- * TODO: Convert to use BaseObject
  */
 class AttributeLayer : public simfil::BaseObject<PartitionFeatureLayer, Attribute>
 {
@@ -33,6 +32,8 @@ public:
 
     /**
      * Attach a numeric source-layer instance id to this attribute layer.
+     * IDs must fit in int64_t: the model stores a signed value, and id()
+     * treats negative stored values as absent.
      *
      * AttributeLayerList may contain multiple entries with the same public
      * layer name. The instance id lets GeoJSON/inspection users distinguish
@@ -54,30 +55,33 @@ public:
     /**
      * Add an attribute to the layer which was created before - note:
      * the same attribute can be added to multiple layers for different
-     * features, it will not be copied.
+     * features in the same owning PartitionFeatureLayer; it is not copied.
      */
     void addAttribute(model_ptr<Attribute> a);
 
     /**
      * Iterate over the stored attributes. The passed lambda must return
      * true to continue iterating, or false to abort iteration.
+     * Non-attribute fields are skipped. An empty callback returns false.
      * @return True if all attributes were visited, false if the callback ever returned false.
      */
     bool forEachAttribute(std::function<bool(model_ptr<Attribute> const& attr)> const& cb) const;
 
 public:
     explicit AttributeLayer(simfil::detail::mp_key key) : BaseObject(key) {}
-    AttributeLayer(simfil::ArrayIndex i,
-                   simfil::ModelConstPtr l,
-                   simfil::ModelNodeAddress a,
-                   simfil::detail::mp_key key);
+    AttributeLayer(
+        simfil::ArrayIndex i,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     AttributeLayer() = delete;
 };
 
 /**
- * Collection of attribute layers - this is merely a typed dict which
- * stores (layer-name, layer) pairs.
- * TODO: Convert to use BaseObject
+ * Named attribute-layer instances belonging to a feature. Repeated names
+ * remain separate instances; query paths such as properties.layer.RoadRules
+ * can therefore yield more than one layer. Nodes share this feature layer's pool.
  */
 class AttributeLayerList : public MergedArrayView<AttributeLayerList, AttributeLayer>
 {
@@ -96,12 +100,15 @@ public:
 
     /**
      * Add an attribute layer to the collection which was previously created.
-     * You can share a single layer between multiple collections, it will not be copied.
+     * Collections in the same owning PartitionFeatureLayer can share a layer;
+     * the operation stores its address rather than copying its fields.
      */
     void addLayer(std::string_view const& name, model_ptr<AttributeLayer> l);
 
     /**
-     * Backward-compatible alias for addLayer.
+     * Insert a layer through the underlying object API and return its error.
+     * Unlike addLayer(), this does not assign the child schema. Feature-scoped
+     * views reject insertion; populate the owning concrete collection instead.
      */
     tl::expected<std::reference_wrapper<AttributeLayerList>, simfil::Error>
     addField(std::string_view const& name, model_ptr<AttributeLayer> l);
@@ -109,6 +116,7 @@ public:
     /**
      * Iterate over the stored layers. The passed lambda must return
      * true to continue iterating, or false to abort iteration.
+     * Non-layer fields are skipped. An empty callback returns false.
      * @return True if all layers were visited, false if the callback ever returned false.
      */
     bool forEachLayer(
@@ -121,10 +129,12 @@ public:
     {
     }
 
-    AttributeLayerList(simfil::ArrayIndex i,
-                       simfil::ModelConstPtr l,
-                       simfil::ModelNodeAddress a,
-                       simfil::detail::mp_key key);
+    AttributeLayerList(
+        simfil::ArrayIndex i,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     AttributeLayerList() = delete;
 
     /** Return the object schema assigned to the layer-name map. */

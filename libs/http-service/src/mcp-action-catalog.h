@@ -66,6 +66,7 @@ public:
 
 private:
     class ArgumentErrors;
+
     /** One immutable action owns its metadata and validators; no per-tab schema copies. */
     struct Action
     {

@@ -126,7 +126,7 @@ void resolveVisiblePartLayout(
 }
 
 template <typename Fn>
-/** Forward a typed id-part value while rejecting node types that cannot appear in ids. */
+/** Forward integer/string ID parts; skip missing/null/double values and reject bytes or bitmasks. */
 void appendTypedKeyValue(
     PartitionFeatureModelLayerBase const& model,
     simfil::StringId key,
@@ -458,6 +458,7 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
                 [&](std::string_view name, auto&& scalar) { result.emplace_back(name, scalar); });
         return result;
     }
+
     ensureVisiblePartLayout();
 
     if (data_.useCommonTilePrefix_) {

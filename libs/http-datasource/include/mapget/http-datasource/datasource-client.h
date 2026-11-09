@@ -60,6 +60,7 @@ public:
         TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+
     /** Forward spatial discovery without fetching object payloads. */
     ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(
@@ -72,11 +73,13 @@ private:
     // DataSourceInfo is fetched in the constructor
     DataSourceInfo info_;
 
-    // Error string, written in get() and set in fill().
+    // Failed request description set by get() and copied into the fallback tile by fill().
     std::string error_;
 
-    // Multiple http clients allow parallel GET requests
-    // Shared schema fetches pin the event loop independently of a cancelled source initializer.
+    // Clients share one event loop and allow parallel GET requests. A schema
+    // download can be shared by several RemoteDataSource initializers. If one
+    // initializer is cancelled, the download retains this loop until the other
+    // waiters have received the result, even if that initializer is destroyed.
     std::shared_ptr<trantor::EventLoopThread> httpClientLoop_;
     std::vector<std::shared_ptr<drogon::HttpClient>> httpClients_;
     std::atomic_uint64_t nextClient_{0};
@@ -93,7 +96,8 @@ class RemoteDataSourceProcess : public DataSource
 public:
     /**
      * Construct a remote data source with a command-line command.
-     * Throws if the connection fails for any reason or times out after 10 seconds.
+     * Release builds throw if initialization is not ready within 10 seconds.
+     * Debug builds wait indefinitely to allow the child process to be debugged.
      */
     RemoteDataSourceProcess(std::string const& commandLine);
 
@@ -114,6 +118,7 @@ public:
         TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+
     /** Forward spatial discovery without fetching object payloads. */
     ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(

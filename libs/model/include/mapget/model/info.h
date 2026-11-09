@@ -51,8 +51,10 @@ struct MapFormat
 {
     /** Source-format family, e.g. nds.live; empty means unspecified legacy metadata. */
     std::string name_;
+
     /** Exact opaque base-format version; may be unspecified for modular formats. */
     std::string version_;
+
     /** Direct module/FTX pairs; one name may occur at several versions in a composed format. */
     std::set<std::pair<std::string, std::string>> subsystems_;
 
@@ -80,7 +82,7 @@ struct MapFormat
  */
 std::string mapNameFromUri(const std::string& uri);
 
-/** Generate a UUID which may be used as the node id. */
+/** Generate a random 16-digit hexadecimal string for an ad-hoc dictionary namespace. */
 std::string generateNodeHexUuid();
 
 /**
@@ -117,10 +119,10 @@ void validateIdentifierName(
     std::string_view extraReserved = {},
     std::string_view allowedReserved = {});
 
-/** Convert KeyValuePairs to KeyValuePairsView. */
+/** Borrow keys and string values; the source container and strings must remain alive. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
 
-/** Convert KeyValuePairs to KeyValuePairsView. */
+/** Borrow keys and string values; the source container and strings must remain alive. */
 KeyValueViewPairs castToKeyValueView(KeyValuePairVec const& kvp);
 
 /** Convert KeyValueViewPairs to KeyValuePairs. */
@@ -139,6 +141,7 @@ struct Version {
     uint16_t minor_ = 0;
     uint16_t patch_ = 0;
 
+    /** Require equal major/minor values; patch differences remain compatible. */
     [[nodiscard]] bool isCompatible(Version const& other) const;
     [[nodiscard]] std::string toString() const;
 
@@ -189,10 +192,11 @@ struct Coverage
      * {
      *   "min": <int32_t>,                 // Mandatory: The signed packed minimum tile ID.
      *   "max": <int32_t>,                 // Mandatory: The signed packed maximum tile ID.
-     *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
+     *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled
+     * tiles. Defaults to an empty list.
      * }
      *
-     * Alternatively, an single integer is interpreted as a Coverage
+     * Alternatively, a single integer is interpreted as a Coverage
      * where min=max, and `filled` is empty.
      *
      * @param j The JSON to deserialize.
@@ -242,6 +246,7 @@ struct LayerInfo
 
     /** Addressing of payloads; discovery tiles are independent of object identity. */
     PartitionKind partitionKind_ = PartitionKind::Tile;
+
     /** Required level in 0..15 for object discovery, not object resolution; absent on tile layers. */
     std::optional<int> tileAssociationLevel_;
 
@@ -285,6 +290,8 @@ struct LayerInfo
         bool validateForNewFeature) const;
 
     /** Import one legacy layer into a shared builder, or finalize a standalone open/typed graph.
+     * With schemaBuilder, the returned runtime metadata remains unbound until its
+     * DataSourceInfo installs the finalized owner with setMapSchema().
      * Canonical catalogs should be parsed through DataSourceInfo with their exact schema resolver.
      */
     static std::shared_ptr<LayerInfo> fromJson(
@@ -300,9 +307,11 @@ struct LayerInfo
 
 private:
     friend struct DataSourceInfo;
+
     /** Parse runtime fields without constructing a separate schema for each layer. */
     static std::shared_ptr<LayerInfo>
     fromJsonMetadata(nlohmann::json const& json, std::string const& layerId);
+
     /** Shared owner, never a second per-layer feature/schema registry. */
     std::shared_ptr<MapSchema const> schemaOwner_;
 };
@@ -312,7 +321,7 @@ private:
  */
 struct DataSourceInfo
 {
-    /** Unique identifier of the node */
+    /** Dictionary namespace: offsets from one string pool are meaningful only under this ID. */
     std::string stringPoolId_;
 
     /** Unique identifier of the map */
@@ -335,60 +344,47 @@ struct DataSourceInfo
 
     /** Descriptive source-format tuple; not a schema-cache key. */
     MapFormat mapFormat_;
+
     /** Exact immutable projected contract advertised on the wire. */
     std::string schemaId_;
+
     /** Required before native use; omitted from catalog JSON and shared by metadata snapshots. */
     std::shared_ptr<MapSchema const> mapSchema_;
 
-    /** Bind a finalized artifact atomically to copies of this source's small layer metadata. */
+    /**
+     * Bind a finalized artifact after validating copies of all layer metadata.
+     * Failure leaves existing bindings intact; this does not synchronize concurrent callers.
+     */
     void setMapSchema(std::shared_ptr<MapSchema const> schema);
+
     /** Reject incomplete or mismatched bindings before publishing a usable datasource. */
     void validateSchema() const;
 
-    /** Get the layer, or a runtime error, if no such layer exists. */
-    [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
+    /** Get a layer; missing entries throw unless throwIfMissing is false, which returns null. */
+    [[nodiscard]] std::shared_ptr<LayerInfo>
+    getLayer(std::string const& layerId, bool throwIfMissing = true) const;
 
     /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
     void validateIdentifiers() const;
 
     /**
-     * Deserializes a DataSourceInfo object from JSON.
+     * Parse a catalog record or legacy inline schema input. A minimal canonical
+     * record identifies its map, layers and exact schema artifact:
      *
-     * The JSON is expected to have the following structure:
-     *
+     * @code{.json}
      * {
-     *   "mapId": <string>,                   // Mandatory: A unique identifier for the map.
-     *   "layers": {                          // Mandatory: A dictionary mapping layer names to
-     * LayerInfo objects. <layerId>: { "type": <LayerType>,             // Optional: The type of the
-     * layer. Defaults to "Features". "zoomLevels": [<int>...],        // Optional: A list of zoom
-     * levels. Defaults to empty list. "coverage": [<Coverage>...],     // Optional: A list of
-     * coverage objects. Defaults to empty list. "canRead": <bool>,               // Optional:
-     * Whether the layer can be read. Defaults to true. "canWrite": <bool>,              //
-     * Optional: Whether the layer can be written. Defaults to false. "version": { // Optional: The
-     * version of the layer. "major": <int>,                // Mandatory: The major version number.
-     *         "minor": <int>,                // Mandatory: The minor version number.
-     *         "patch": <int>                 // Mandatory: The patch version number.
-     *       },
-     *     },
-     *     ...
-     *   },
-     *   "mapFormat": {                      // Source format, independent of projected schema
-     * identity. "name": <string>, "version": <string>, "subsystems": {<name>: <version>}
-     *   },
-     *   "schemaId": <string>,               // Exact finalized MapSchema artifact identity.
-     *   "maxParallelJobs": <int>,            // Optional: The maximum number of parallel jobs
-     * allowed. Defaults to 8. "extraJsonAttachment": <JSON object>,// Optional: Any extra JSON data
-     * attached. Defaults to an empty object. "protocolVersion": {                 // Optional: The
-     * version of the protocol. Defaults to the current protocol version. "major": <int>, //
-     * Mandatory: The major version number. "minor": <int>,                    // Mandatory: The
-     * minor version number. "patch": <int>                     // Mandatory: The patch version
-     * number.
-     *   },
-     *   "stringPoolId": <string>,                  // Optional: A UUID for the node. If not
-     * provided, a random UUID will be generated.
-     *                                        // Note: Only provide this if you have a good reason.
-     *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
+     *   "mapId": "roads",
+     *   "layers": {"geometry": {"type": "Features"}},
+     *   "schemaId": "<identity advertised by MapSchema::schemaId()>"
      * }
+     * @endcode
+     *
+     * Optional runtime fields include maxParallelJobs (default 8), addOn (false),
+     * extraJsonAttachment (empty object), protocolVersion (current protocol), and
+     * stringPoolId (a generated dictionary namespace when omitted). Layer metadata
+     * accepts zoomLevels, coverage, read/write flags, version and partition addressing.
+     * mapFormat describes the source format; its subsystems array contains objects
+     * with name and version fields so one subsystem may appear at several versions.
      *
      * Canonical catalog metadata references one MapSchema; it never embeds per-layer
      * featureTypes or featureModelSchema. With a resolver, that exact artifact is installed

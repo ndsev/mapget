@@ -84,7 +84,7 @@ struct MapPartitionKey
     /** Operator ==, compares all components. */
     bool operator==(MapPartitionKey const& other) const;
 
-    /** Operator ==, compares all components. */
+    /** True when any identity component differs. */
     bool operator!=(MapPartitionKey const& other) const;
 };
 
@@ -103,8 +103,9 @@ public:
     using LoadStateCallback = std::function<void(LoadState)>;
 
     /**
-     * Constructor that takes partitionId_, stringPoolId_, mapId_, layerInfo_,
-     * and sets the timestamp_ to the current system time.
+     * Construct a payload header with the current timestamp. LayerInfo must
+     * retain a finalized schema and its partition kind must match id; otherwise
+     * construction throws before any model data is created.
      */
     PartitionLayer(
         const PartitionId& id,
@@ -113,9 +114,9 @@ public:
         const std::shared_ptr<LayerInfo>& info);
 
     /**
-     * Parse a tile layer from a binary byte buffer. Will throw if
-     * the resolved major-minor version of the PartitionLayer is not the same
-     * as the one read from the input.
+     * Parse the common header and report consumed bytes for a derived payload.
+     * Resolve installed metadata by map/layer; reject incompatible major/minor
+     * versions, partition kinds or exact schema identities. No schema is fetched.
      */
     PartitionLayer(
         const std::vector<uint8_t>& input,
@@ -129,6 +130,7 @@ public:
 
     /** Generic identity for both tile and object payloads. */
     [[nodiscard]] MapPartitionKey partitionKey() const { return MapPartitionKey(*this); }
+
     /** The partition owning all nodes in this payload. */
     [[nodiscard]] PartitionId const& partitionId() const { return partitionId_; }
 
@@ -140,15 +142,15 @@ public:
     installSchemaResolver(simfil::ModelPool& model, SchemaResolveFun const& schemas = {}) const;
 
     /**
-     * Getter and setter for layer's tileId. This controls the rough
-     * geographic extent of the contained tile data.
+     * Spatial tile identity; access/set on an object partition throws. This
+     * selects the tile container, not a bound on every contained geometry.
      */
     [[nodiscard]] TileId tileId() const;
     void setTileId(const TileId& id);
 
     /**
-     * Getter and setter for layer's stringPoolId. This is the identifier of
-     * the data source process which created this layer.
+     * Producer dictionary namespace shared by this layer's string IDs. It is
+     * distinct from the catalog sourceId and the map's schema artifact ID.
      */
     [[nodiscard]] std::string stringPoolId() const;
     void setStringPoolId(const std::string& id);
@@ -195,8 +197,9 @@ public:
     void setTimestamp(const std::chrono::time_point<std::chrono::system_clock>& ts);
 
     /**
-     * Getter and setter for 'ttl_' member variable.
-     * It represents how long this layer should live.
+     * Lifetime in milliseconds from timestamp(). Unset permits service defaults;
+     * zero means no expiry. The service separately caps errors and empty source
+     * payloads before caching, even when ordinary successful tiles live forever.
      */
     [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
     void setTtl(const std::optional<std::chrono::milliseconds>& timeToLive);
@@ -227,8 +230,10 @@ public:
     /** Serialization */
     virtual tl::expected<void, simfil::Error> write(std::ostream& outputStream);
     virtual nlohmann::json toJson() const;
+
     /** Service projection, including an envelope for raw SourceData roots. */
     nlohmann::json toServiceJson() const;
+
     /** Append the common warning and error contract to a JSON object. */
     void addDiagnosticsToJson(nlohmann::json& result) const;
 

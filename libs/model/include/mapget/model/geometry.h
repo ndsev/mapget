@@ -34,8 +34,9 @@ class BoundsPolygonCoordinatesNode;
 class BoundsRingNode;
 
 /**
- * Small interface container type which may be used
- * to pass around geometry data.
+ * Owning copy of the geometry type, exposed points and polygon ring offsets.
+ * It can outlive the source layer. Names, source references and GLTF node/bounds
+ * metadata are not copied; AABB points contain origin and size, not two positions.
  */
 struct SelfContainedGeometry
 {
@@ -45,8 +46,9 @@ struct SelfContainedGeometry
 };
 
 /**
- * Geometry object, which stores a point collection, a line-string,
- * or a triangle mesh.
+ * Layer-owned geometry or a view into another geometry's point range. Supports
+ * points, lines, polygons, triangle meshes, bounds and GLTF node references.
+ * Ordinary vertices are stored as float offsets from the layer's geometry anchor.
  */
 class Geometry final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -106,7 +108,10 @@ public:
     /** Store explicit polygon ring starts; ring zero must start at vertex zero. */
     void setPolygonRingStarts(std::span<uint32_t const> ringStarts);
 
-    /** Get a hash of the geometry. **/
+    /** Hash exposed coordinates and polygon ring layout, or GLTF index/bounds.
+     * Names, source references and ordinary geometry type are not mixed in;
+     * equal hashes do not establish geometry identity or equality.
+     */
     [[nodiscard]] uint64_t getHash() const;
 
     /** Get or set the persisted layer-local logical geometry name. */
@@ -118,8 +123,8 @@ public:
      *  Must return true to continue iteration, false to abort iteration.
      * @return True if all points were visited, false if the callback ever returned false.
      * @example
-     *   collection->forEachPoint([](Point&& point){
-     *      std::cout << point.x() << "," << point.y() << "," << point.z() << std::endl;
+     *   geometry->forEachPoint([](Point const& point){
+     *      std::cout << point.x << "," << point.y << "," << point.z << std::endl;
      *      return true;
      *   })
      * @note The ModelType must also be templated here, because in this header
@@ -129,13 +134,17 @@ public:
     bool forEachPoint(LambdaType const& callback) const;
 
     /**
-     * Get total length of the geometry in metres assuming it's a Polyline.
+     * Sum surface distances between consecutive lon/lat points in metres,
+     * ignoring elevation. Bounds and GLTF references return zero; callers
+     * should use this as a path length only for line geometries.
      */
     [[nodiscard]] double length() const;
 
     /**
-     * Return geometric points on the Polyline (if the geometry is a Polyline)
-     * within the defined position range boundaries.
+     * Project position bounds onto a line, then copy the intervening vertices.
+     * Requires at least two points and an in-segment x/y projection for each
+     * bound. Among eligible segments, selection compares distance to each start
+     * vertex, not distance to the segment; coordinates are interpolated linearly.
      * @param start is the beginning of the bounded range.
      * @param end is the optional end of the bounded range
      *            (otherwise, returns only a single position at start if the end is not passed).
@@ -145,18 +154,19 @@ public:
     /**
      * Return geometric points on the Polyline (if the geometry is a Polyline)
      * within the defined length range boundaries.
-     * @param start is the beginning of the bounded range.
-     * @param end is the optional end of the bounded range
-     *            (otherwise, returns only a single position at start if the end is not passed).
+     * Distances are metres along the stored point order; reversed bounds are
+     * swapped and clamped to [0, length()]. An omitted end returns one point.
+     * Empty geometry returns no points; a single/zero-length path returns its
+     * first point. Segment endpoints use linear coordinate interpolation.
      */
     [[nodiscard]] std::vector<Point> pointsFromLengthBound(double start, std::optional<double> end) const;
 
     /**
      * Return percentage position point on the entire combined line geometries.
      * @param geoms vector of line geometries to determine the position on their entire length.
-     * @param lengths vector of each geomtery length.
+     * @param lengths Lengths in metres, in the same order and count as geoms.
      * @param numBits number of bits to store the percentage value.
-     * @param position percentage position on the geometries.
+     * @param position Encoded fraction in [0, 2^numBits - 1], not a value in [0, 100].
      */
     [[nodiscard]] static Point percentagePositionFromGeometries(
         std::vector<model_ptr<Geometry>> const& geoms,
@@ -194,14 +204,15 @@ public:
     Geometry(ModelConstPtr pool,
              ModelNodeAddress a,
              simfil::detail::mp_key key);
-    Geometry(ViewData* data,
-             ModelConstPtr pool,
-             ModelNodeAddress a,
-             simfil::detail::mp_key key);
+    Geometry(ViewData* data, ModelConstPtr pool, ModelNodeAddress a, simfil::detail::mp_key key);
+
     Geometry() = delete;
 };
 
-/** GeometryCollection node has `type` and `geometries` fields. */
+/** Collection projection with `type` and `geometries` fields for zero/multiple
+ * members. A singleton exposes that geometry's fields directly. A view over a
+ * single geometry is read-only; materialize a concrete collection before append.
+ */
 
 class GeometryCollection
     : public MergedArrayView<GeometryCollection, Geometry, PartitionFeatureModelLayerBase>
@@ -233,7 +244,7 @@ public:
      * @return True if all geometries were visited, false if the callback ever returned false.
      * @example
      *   collection->forEachGeometry([](simfil::model_ptr<Geometry> const& geom){
-     *      std::cout << geom->type() << std::endl;
+     *      std::cout << geom->numPoints() << std::endl;
      *      return true;
      *   })
      * @note The ModelType must also be templated here, because in this header
@@ -264,6 +275,7 @@ public:
     {
     }
     GeometryCollection(ModelConstPtr pool, ModelNodeAddress, simfil::detail::mp_key key);
+
     GeometryCollection() = delete;
 
 private:
@@ -286,6 +298,7 @@ private:
     ModelNode::Ptr singleGeom() const;
 };
 
+/** Array projection of a feature's single geometry or collection, without copying vertices. */
 class GeometryArrayView
     : public MergedArrayView<GeometryArrayView, Geometry, PartitionFeatureModelLayerBase>
 {
@@ -330,7 +343,7 @@ private:
     ModelNodeAddress singleGeometryAddress_;
 };
 
-/** VertexBuffer Node */
+/** Array view decoding anchor-relative storage into absolute Point nodes. */
 
 class PointBufferNode final
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
@@ -354,6 +367,7 @@ public:
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
     Point pointAt(int64_t) const;
+
     [[nodiscard]] ModelNodeAddress baseGeometryAddress() const { return baseGeomAddress_; }
 
     PointBufferNode() = delete;
@@ -372,6 +386,7 @@ private:
     uint32_t size_ = 0;
 };
 
+/** Procedural {origin, size} object for an AABB or GLTF node's bounds. */
 class BoundsInfoNode final
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -395,6 +410,7 @@ private:
     ModelNodeAddress baseGeometryAddress_;
 };
 
+/** GeoJSON polygon-coordinate wrapper for a bounds geometry's ground footprint. */
 class BoundsPolygonCoordinatesNode final
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -418,6 +434,7 @@ private:
     ModelNodeAddress baseGeometryAddress_;
 };
 
+/** Closed five-point ground-footprint ring, derived without a second vertex buffer. */
 class BoundsRingNode final
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -441,7 +458,7 @@ private:
     ModelNodeAddress baseGeometryAddress_;
 };
 
-/** Polygon Node */
+/** GeoJSON coordinate array exposing the outer polygon ring followed by its holes. */
 
 class PolygonNode final
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
@@ -469,7 +486,7 @@ public:
     PolygonNode(ModelConstPtr pool, ModelNodeAddress const& a, simfil::detail::mp_key key);
 };
 
-/** Mesh Node */
+/** GeoJSON MultiPolygon projection of a triangle mesh; triangles share stored vertices. */
 
 class MeshNode final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -486,7 +503,9 @@ public:
     [[nodiscard]] ValueType type() const override;
     [[nodiscard]] ModelNode::Ptr at(int64_t) const override;
     [[nodiscard]] uint32_t size() const override;
-    [[nodiscard]] ModelNode::Ptr get(const StringId &) const override { return {}; }
+
+    [[nodiscard]] ModelNode::Ptr get(const StringId&) const override { return {}; }
+
     [[nodiscard]] StringId keyAt(int64_t) const override { return {}; }
     bool iterate(IterCallback const& cb) const override;  // NOLINT (allow discard)
 
@@ -501,6 +520,7 @@ private:
     uint32_t size_ = 0;
 };
 
+/** One triangle's polygon coordinate wrapper in the mesh's MultiPolygon projection. */
 class MeshTriangleCollectionNode
     : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {
@@ -529,9 +549,9 @@ private:
 };
 
 /**
- * LinearRing Node
- *
- * A linear ring represents a simple polygon that is closed and in CCW order.
+ * Coordinate view that closes a stored polygon ring and normalizes its winding.
+ * Outer rings are counter-clockwise; hole rings are clockwise. Closing/reversing
+ * the view leaves the source vertex buffer unchanged.
  */
 class LinearRingNode : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>
 {

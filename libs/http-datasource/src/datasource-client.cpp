@@ -111,7 +111,7 @@ RemoteDataSource::RemoteDataSource(
     info_.validateSchema();
 
     if (info_.stringPoolId_.empty()) {
-        // Unique node IDs are required for the string pool offsets.
+        // Dictionary offsets are meaningful only within a declared string-pool namespace.
         raise("Remote data source is missing its string-pool ID.");
     }
 
@@ -219,8 +219,10 @@ std::vector<LocateCandidate> RemoteDataSource::locate(
     auto [resultCode, locateResponse] = client->sendRequest(locateReq);
 
     // Check that the response is OK.
-    if (resultCode != drogon::ReqResult::Ok || !locateResponse || (int)locateResponse->statusCode() >= 300) {
-        // TODO: Read HTTPLIB_ERROR header, more log output.
+    if (resultCode != drogon::ReqResult::Ok || !locateResponse ||
+        (int)locateResponse->statusCode() >= 300)
+    {
+        // Transport failures are represented as no candidates, as in the local locate API.
         return {};
     }
 

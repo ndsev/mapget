@@ -195,6 +195,11 @@ struct ParsedHttpUrl
     return output;
 }
 
+/**
+ * Accept bodies already decompressed by Drogon even if the gzip header remains.
+ * A gzip magic prefix triggers decoding with or without that header; decoding
+ * failure is reported to the caller, while ordinary text passes through.
+ */
 [[nodiscard]] std::optional<std::string> decodeResponseBody(
     const drogon::HttpResponsePtr& response)
 {

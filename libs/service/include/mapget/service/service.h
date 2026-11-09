@@ -35,6 +35,7 @@ class ServiceScheduler;
 class TileLoadJob;
 }  // namespace detail
 
+/** Admission/terminal state; Success means delivery completed, even if a tile carries an error. */
 enum class RequestStatus {
     Open = 0x0,
     Success = 0x1,      /** The request has been fully satisfied. */
@@ -139,6 +140,7 @@ struct DataSourceCatalogChange
     std::optional<DataSourceCatalogSourceUpdate> sourceUpdate;
 };
 
+/** Authorized layer selection used before a request enters the scheduler. */
 struct LayerRequestContext
 {
     RequestStatus status_ = RequestStatus::NoDataSource;
@@ -160,9 +162,10 @@ struct AttachmentResult
 };
 
 /**
- * Client request for map data, which consists of a map id,
- * a map layer id, an array of tile ids, and a callback function
- * which signals results.
+ * One request for tile or object partitions in a single map layer. Configure
+ * IDs, restrictions and callbacks before submission. Result callbacks run on
+ * delivering workers and may overlap for different partitions; arrival order
+ * can differ from the requested scheduling order.
  */
 class LayerTilesRequest
 {
@@ -201,7 +204,7 @@ public:
     /** Get the current status of the request. */
     RequestStatus getStatus() const;
 
-    /** Wait for the request to be done. */
+    /** Block until a terminal status; do not call from a service worker awaiting its own pool. */
     void wait();
 
     /** Check whether the request is done or still running. */
@@ -224,7 +227,7 @@ public:
     /** Optional catalog source selector/assertion; never part of MapPartitionKey. */
     std::optional<std::string> sourceId_;
 
-    /** Map tile IDs for this request, in caller-specified processing order. */
+    /** Tile or object partition IDs in scheduling order; callbacks may arrive out of order. */
     std::vector<PartitionId> tileIds_;
 
     /**
@@ -246,9 +249,7 @@ public:
      */
     std::function<void(RequestStatus)> onDone_;
 
-    /**
-     * The callback function which is called when all tiles have been processed.
-     */
+    /** Register delivery of each feature partition; onDone_ reports request completion. */
     template <class Fun>
     LayerTilesRequest& onFeatureLayer(Fun&& callback)
     {
@@ -256,6 +257,7 @@ public:
         return *this;
     }
 
+    /** Register delivery of each source-data partition on its delivering worker. */
     template <class Fun>
     LayerTilesRequest& onSourceDataLayer(Fun&& callback)
     {
@@ -445,8 +447,10 @@ public:
 
 protected:
     virtual void notifyResult(PartitionSubsetLayer::Ptr);
+
     /** Deliver incoming payloads while the request is active. */
     void notifyFeatureSnapshot(PartitionFeatureLayer::Ptr const&);
+
     /** Deliver a typed incoming manifest while the request is active. */
     void notifyIncomingRelations(IncomingRelationCollection const&);
     void notifyProgress(nlohmann::json const& status);
@@ -491,11 +495,14 @@ class Service
 public:
     using DataSourceCatalogCallback = std::function<void(DataSourceCatalogChange const&)>;
 
+    /** RAII callback registration; the Service must outlive this subscription. */
     class DataSourceCatalogSubscription
     {
     public:
         ~DataSourceCatalogSubscription();
+
         DataSourceCatalogSubscription(DataSourceCatalogSubscription const&) = delete;
+
         DataSourceCatalogSubscription& operator=(DataSourceCatalogSubscription const&) = delete;
         DataSourceCatalogSubscription(DataSourceCatalogSubscription&&) noexcept;
         DataSourceCatalogSubscription& operator=(DataSourceCatalogSubscription&&) noexcept;
@@ -529,8 +536,8 @@ public:
      * be null. For a simple default cache implementation, you can use the
      * MemCache.
      * @param cache Cache instance to use.
-     * @param useDataSourceConfig Instruct this service instance to makeDataSource its datasource
-     *  backends based on a subscription to the YAML datasource config file.
+     * @param useDataSourceConfig Subscribe to YAML configuration changes and construct
+     *  the configured datasources asynchronously.
      * @param defaultTtl Default time-to-live for tiles returned by the service. May be
      *  overridden by datasource or tile-specific TTL.
      * @param workerCount Maximum number of source-tile jobs that may load and
@@ -562,21 +569,22 @@ public:
     void add(DataSource::Ptr const& dataSource);
 
     /**
-     * Remove a data source from the service. Requests for data which
-     * can only be satisfied by the given source will not be processed anymore.
-     * TODO: Any such ongoing requests should be forcefully marked as done.
+     * Withdraw a datasource and invalidate affected map caches and outstanding
+     * work. Waiting requests become Aborted; a delivery already committed by a
+     * worker can finish. Running datasource I/O stops only if it cooperates
+     * with cancellation.
      *
      * Thread safety: This method should not be called in parallel with itself or add().
      */
     void remove(DataSource::Ptr const& dataSource);
 
     /**
-     * Request some map data tiles. If the requested map+layer
-     * combination is available, will schedule a job to retrieve
-     * the tiles. A request object should only ever be passed
-     * to one service. Otherwise, there is undefined behavior.
-     * @return false if the requested map+layer is not available
-     * from any connected DataSource, true otherwise.
+     * Admit a bundle of partition requests against the current source registrations.
+     * A missing or unauthorized member rejects the bundle and aborts its otherwise
+     * open siblings. False reports rejected admission, including shutdown/reload.
+     * Configure each request once and submit it to only one service.
+     * Omitted authorization means trusted in-process access; network adapters must
+     * supply an explicit ClientAuthorization, even for anonymous callers.
      */
     bool request(
         std::vector<LayerTilesRequest::Ptr> const& requests,
@@ -585,21 +593,22 @@ public:
     /**
      * Request server-side filtering over source feature tiles.
      *
-     * The returned binary chunks are PartitionSubsetLayer instances produced
-     * via FeatureLayerFilterTilesRequest::onFilterResult.
+     * Delivers PartitionSubsetLayer models through onFilterResult; transport
+     * adapters serialize them. A false return reports failed admission.
      */
     bool request(
         FeatureLayerFilterTilesRequest::Ptr const& request,
         std::optional<ClientAuthorization> const& clientAuthorization = {});
 
-    /** Request multiple server-side filter bundles. */
+    /** Submit each filter bundle independently; false means at least one was rejected. */
     bool request(
         std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests,
         std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
      * Load the source feature tile through the ordinary scheduler/cache path,
-     * then obtain its separately transferred named attachment.
+     * then obtain its separately transferred named attachment. This form blocks;
+     * use requestAttachment from callbacks or event loops that must keep running.
      */
     AttachmentResult attachment(
         AttachmentRequest const& request,
@@ -615,9 +624,10 @@ public:
         std::optional<ClientAuthorization> const& clientAuthorization = {});
 
     /**
-     * Trigger queries to all connected data sources to check
-     * for a feature matching the given typeId and idParts.
-     * Returns the list of MapTileKeys received from data sources.
+     * Ask authorized providers for cheap candidates, load those partitions through
+     * the normal scheduler, then evaluate their selectors to return canonical IDs
+     * and owning partition keys. Results are deduplicated and sorted. This call
+     * blocks for tile work and must not run inside the service worker pool.
      */
     std::vector<LocateResponse> locate(
         LocateRequest const& req,
@@ -759,7 +769,7 @@ public:
 
     /**
      * Abort stale work and clear every cached tile layer for one ready primary map.
-     * If headers are supplied, the map's ordinary datasource authorization also applies.
+     * If authorization is supplied, both header and verified-claim gates apply.
      * Returns false when no matching authorized primary map is currently ready.
      */
     [[nodiscard]] bool resetMapCache(

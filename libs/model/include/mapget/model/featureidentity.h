@@ -16,11 +16,9 @@ namespace mapget
 class MapSchema;
 
 /**
- * The KeyValue(View)Pairs type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view. It is used as the interface-
- * type for feature id parts. By using sfl::small_vector instead of
- * std::vector, it is kept on the stack.
+ * Ordered feature-ID parts. KeyValuePairs owns its strings; KeyValueViewPairs
+ * borrows them from the caller. Both keep up to 16 pairs inline, matching the
+ * maximum declared ID composition; larger temporary inputs may allocate.
  */
 using KeyValueViewPairs =
     sfl::small_vector<std::pair<std::string_view, std::variant<int64_t, std::string_view>>, 16>;
@@ -92,38 +90,18 @@ struct FeatureTypeInfo
 
     /** Validate native or imported identity definitions without a JSON roundtrip. */
     void validate() const;
+
     /** Identity equality excludes prose descriptions, but preserves composition order. */
     [[nodiscard]] bool sameIdentity(FeatureTypeInfo const& other) const;
 
     /**
-     * Deserializes a FeatureTypeInfo object from JSON.
-     *
-     * The JSON is expected to have the following structure:
-     *
-     * {
-     *   "name": <string>,                  // Mandatory: The name of the feature type.
-     *   "uniqueIdCompositions": [          // Mandatory: A list of unique ID compositions.
-     *     [                                // A list of UniqueIdPart objects, each having the
-     * following structure:
-     *       {
-     *         "partId": <string>,          // Mandatory: The ID of the unique ID part.
-     *         "description": <string>,     // Optional: The description of the unique ID part.
-     *         "datatype": <IdPartDataType>,// Optional: The data type of the unique ID part, must
-     * be one of the enum values from IdPartDataType. Defaults to I64.
-     *         TODO why "datatype"  and not "dataType" to match other fields?
-     *         "isSynthetic": <bool>,       // Optional: A flag indicating if the unique ID part is
-     * synthetic. Defaults to false. "isOptional": <bool>         // Optional: A flag indicating if
-     * the unique ID part is optional. Defaults to false.
-     *       },
-     *       ...
-     *     ],
-     *     ...
-     *   ]
-     * }
-     *
-     * @param j The JSON to deserialize.
-     * @return The deserialized FeatureTypeInfo object.
-     * @throws std::runtime_error if any mandatory field is missing.
+     * Parse and validate a legacy identity declaration, for example:
+     * {"name":"Road","uniqueIdCompositions":[[{"partId":"id","datatype":"I64"}]]}
+     * The first composition identifies concrete features; later compositions
+     * are alternatives for references. Missing datatype defaults to I64;
+     * description defaults to empty, isSynthetic and isOptional to false.
+     * Requires 1..256 compositions, at most 16 distinct named parts each.
+     * Missing fields, invalid names/types or exceeded limits throw.
      */
     static FeatureTypeInfo fromJson(const nlohmann::json& j);
 
@@ -138,41 +116,54 @@ class FeatureIdentity
 {
 public:
     class Composition;
+
     /** One canonical part, never a copied DTO or a pointer into a temporary view. */
     class Part
     {
     public:
         /** An invalid default part is distinct from an optional part. */
         Part() = default;
+
         /** Test whether this view identifies a declared part. */
         explicit operator bool() const noexcept { return owner_ != nullptr; }
+
         /** Return the exact declared label in the schema dictionary. */
         std::string_view name() const;
+
         /** Read the physical ID value encoding. */
         IdPartDataType datatype() const;
+
         /** Whether references may omit this part. */
         bool optional() const;
+
         /** Whether the producer synthesizes this part. */
         bool synthetic() const;
+
         /** Borrow descriptive text without adding it to a datasource dictionary. */
         std::string_view description() const;
+
         /** Export this canonical part without constructing a declaration DTO. */
         nlohmann::json toJson() const;
+
         /** Validate and normalize one borrowed value without materializing a declaration. */
         bool
         validateValue(std::variant<int64_t, std::string_view>& value, std::string* error = nullptr)
             const;
+
         /** Normalize an owning transport string only after successful validation. */
         bool validateValue(std::variant<int64_t, std::string>& value, std::string* error = nullptr)
             const;
+
         /** Pin the same schema when this part escapes its caller's owner lifetime. */
         Part retain() const;
+
         /** Compare canonical owner, array and element identity, not textual resemblance. */
         bool operator==(Part const& other) const noexcept;
 
     private:
         friend class FeatureIdentity;
         friend class Composition;
+
         Part(MapSchema const* owner, uint32_t parts, size_t index)
             : owner_(owner), parts_(parts), index_(index)
         {
@@ -189,20 +180,29 @@ public:
     public:
         /** Default construction has no owner, unlike a declared empty composition. */
         Composition() = default;
+
         /** Test identity, not part count. */
         explicit operator bool() const noexcept { return owner_ != nullptr; }
+
         /** Return borrowed part values; keep this composition or the schema alive. */
         auto parts() const
         {
             return std::views::iota(size_t{0}, partCount()) |
                 std::views::transform([self = *this](size_t index) { return self.partAt(index); });
         }
-        /** Match a prefix/suffix and report its ending composition slot. */
+
+        /**
+         * Match the first length values against composition slots starting at start.
+         * Optional unmatched slots are skipped; success returns the next slot index.
+         * Input values are validated on copies and remain unchanged. A mismatch or
+         * missing required part returns nullopt; error may explain a value failure.
+         */
         std::optional<uint32_t> matchEndIndex(
             uint32_t start,
             KeyValueViewPairs const& values,
             size_t length,
             std::string* error = nullptr) const;
+
         /** Match values, optionally requiring all remaining non-optional parts. */
         bool matches(
             uint32_t start,
@@ -210,13 +210,16 @@ public:
             size_t length,
             bool requireEnd,
             std::string* error = nullptr) const;
+
         /** Pin the same schema when this composition escapes. */
         Composition retain() const;
+
         /** Compare canonical identity within the exact owner. */
         bool operator==(Composition const& other) const noexcept;
 
     private:
         friend class FeatureIdentity;
+
         Composition(MapSchema const* owner, uint32_t parts) : owner_(owner), parts_(parts) {}
         size_t partCount() const;
         Part partAt(size_t index) const;
@@ -230,10 +233,13 @@ public:
 
     /** An invalid default identity is the nonthrowing lookup result for an unknown name. */
     FeatureIdentity() = default;
+
     /** Test presence without conflating identity with a layer's production. */
     explicit operator bool() const noexcept { return owner_ != nullptr; }
+
     /** Return the authoritative feature type spelling. */
     std::string_view name() const;
+
     /** Return borrowed composition values in declaration order, primary first. */
     auto compositions() const
     {
@@ -241,25 +247,38 @@ public:
             std::views::transform([self = *this](size_t index)
                                   { return self.compositionAt(index); });
     }
-    /** Find an exact matching composition; production checks belong to LayerInfo. */
+
+    /**
+     * Return the first matching composition index, primary first, or nullopt.
+     * This checks identity shape only; LayerSchema::producesFeatureType tells
+     * callers whether a layer actually emits that type.
+     */
     std::optional<uint8_t> matchingCompositionIndex(
         KeyValueViewPairs const& values,
         MatchMode mode = MatchMode::AnyComposition,
         std::string* error = nullptr) const;
+
     /** Compare semantic declarations across owners, excluding prose descriptions. */
     bool sameIdentity(FeatureIdentity const& other) const;
+
     /** Compare a new input declaration without allocating a reconstructed DTO. */
     bool sameIdentity(FeatureTypeInfo const& declaration) const;
+
     /** Materialize only at an explicit legacy declaration boundary. */
     FeatureTypeInfo toDeclaration() const;
+
     /** Export the canonical declaration directly for documentation/legacy transport. */
     nlohmann::json toJson() const;
+
     /** Pin the existing schema owner at an escape boundary. */
     FeatureIdentity retain() const;
+
     /** Drop ownership while preserving exact identity; the caller keeps the owner alive. */
     FeatureIdentity borrow() const noexcept { return {owner_, index_}; }
+
     /** Borrow the owner without touching its reference count. */
     MapSchema const* pool() const noexcept { return owner_; }
+
     /** Equality means the same canonical row in the same schema, not semantic equivalence. */
     bool operator==(FeatureIdentity const& other) const noexcept
     {
@@ -268,6 +287,7 @@ public:
 
 private:
     friend class MapSchema;
+
     FeatureIdentity(MapSchema const* owner, size_t index) : owner_(owner), index_(index) {}
     size_t compositionCount() const;
     Composition compositionAt(size_t index) const;

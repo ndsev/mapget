@@ -159,6 +159,8 @@ FeatureInspectionView::FeatureInspectionView(IncomingRelationCollection collecti
     if (targetLayer == layers.end() ||
         !(target_ = targetLayer->second->find(collection_.featureId_)))
         throw std::invalid_argument("Incoming target snapshot is missing the selected feature");
+    // A manifest names source-owned relation ordinals. Validate each against its
+    // retained source model before publishing handles to an inspection consumer.
     std::set<std::tuple<MapPartitionKey, std::string, uint32_t>> seen;
     for (auto const& ref : collection_.relations_) {
         if (ref.source_.mapId_ != collection_.target_.mapId_ ||

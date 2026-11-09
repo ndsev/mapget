@@ -14,6 +14,9 @@ bool nearlyEqual(double a, double b, double epsilon);
 /**
  * Compare arbitrary JSON values while tolerating small floating-point drift.
  *
+ * Integer-only comparisons remain exact. Comparisons involving a floating-point
+ * value use double precision and the supplied tolerance. Arrays are positional;
+ * object keys and collection sizes must agree.
  * When `errors` is provided, mismatches are appended as human-readable paths.
  */
 bool compareJsonWithTolerance(
@@ -26,7 +29,8 @@ bool compareJsonWithTolerance(
  * Compare only the top-level `features` arrays of two feature collections.
  *
  * This is useful for snapshot tests where envelope metadata is intentionally
- * ignored but per-feature structure must stay stable.
+ * ignored but per-feature structure must stay stable. Features are compared in
+ * array order, not matched by ID; the ID only labels diagnostic messages.
  */
 bool compareFeatureCollectionJsonWithTolerance(
     nlohmann::json const& expected,

@@ -5,9 +5,11 @@
 
 using namespace mapget;
 
+// Supply a synthetic feature layer directly to an in-process mapget Service.
 class MyLocalDataSource : public mapget::DataSource
 {
 public:
+    // Declare the composite area/way identity used by fill().
     DataSourceInfo info() override {
         return DataSourceInfo::fromJson(R"(
         {
@@ -28,7 +30,7 @@ public:
                                     },
                                     {
                                         "partId": "wayId",
-                                        "description": "Globally Unique 32b integer.",
+                                        "description": "Way identifier within the named map area.",
                                         "datatype": "U32"
                                     }
                                 ]
@@ -41,6 +43,7 @@ public:
         )"_json);
     }
 
+    // Populate each requested tile with the same demonstration Way and several geometry forms.
     void fill(TileFeatureLayer::Ptr const& tile) override {
         // Add some ID parts that are shared by all features in the tile.
         tile->setIdPrefix({{"areaId", "BestArea"}});
@@ -68,6 +71,7 @@ public:
         attr->addField("smell", "neutral");
     }
 
+    // This feature-only example does not provide raw source-data layers.
     void fill(TileSourceDataLayer::Ptr const& tile) override {
         throw std::runtime_error("Not implemented");
     }
@@ -81,12 +85,13 @@ int main(int argc, char** argv)
     // Add a local datasource
     service.add(std::make_shared<MyLocalDataSource>());
 
-    // Create a request. The request will immediately start to be worked on.
+    // Describe the tiles and register a result callback before submitting work to the service.
     auto r = std::make_shared<LayerTilesRequest>(
             "Tropico",
             "WayLayer",
             std::vector<TileId>{TileId::fromTileXY(0, 0, 0), TileId::fromTileXY(1, 0, 0)});
     r->onFeatureLayer([](auto&& result) { log().info("Got {}", MapTileKey(*result).toString()); });
+
     service.request({r});
     r->wait();
     return 0;

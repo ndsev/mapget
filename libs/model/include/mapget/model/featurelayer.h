@@ -47,8 +47,9 @@ struct FeatureLayerSelector;
 class SimfilExpressionCache;
 
 /**
- * The PartitionFeatureLayer class represents a specific map layer
- * within a map tile. It is a container for map features.
+ * Owns the complete features and model storage of one tile or object partition.
+ * Every returned node address belongs to this layer; retain the layer or its
+ * model_ptr views while using feature, geometry or attribute nodes.
  * You can iterate over all contained features using `for (auto&& feature : tileFeatureLayer)`.
  */
 class PartitionFeatureLayer : public PartitionFeatureModelLayerBase
@@ -103,15 +104,17 @@ public:
         }
     };
 
-    /** Cache cloned nodes while preserving feature-local remapping context. */
+    /** Reuse clones within one destination layer and a live source set.
+     * Keys borrow source addresses and omit destination-layer identity; do not
+     * reuse across destination layers or after source address lifetimes end.
+     */
     using CloneCache = std::unordered_map<CloneCacheKey, simfil::ModelNode::Ptr, CloneCacheKeyHash>;
 
     /**
      * This constructor initializes a new PartitionFeatureLayer instance.
-     * Each instance is associated with a specific TileId, stringPoolId, and mapId.
-     * @param tileId The tile id of the new feature layer. Features in this layer
-     *  should be roughly within the area indicated by the tile.
-     * @param stringPoolId Unique id of the data source node which produced this feature.
+     * The partition kind must match layerInfo, whose finalized schema is retained.
+     * @param tileId Tagged tile or object partition owning the features.
+     * @param stringPoolId Producer dictionary namespace, distinct from catalog sourceId.
      * @param mapId ID of the map which the layer belongs to.
      * @param layerInfo Information about the map layer this feature is associated with.
      *  Each feature in this layer must have a feature type which is also present in
@@ -159,7 +162,8 @@ public:
      * Creates a new feature and insert it into this tile layer.
      * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
-     * within the associated layer, or a runtime error will be raised.
+     * within the associated layer, or a runtime error will be raised. Concrete
+     * features must use the primary composition; secondary IDs are references.
      * An existing feature with the same type and required primary ID parts
      * causes an error before storage is changed. Optional parts do not distinguish IDs.
      * @param typeId Specifies the type of the feature.
@@ -173,7 +177,8 @@ public:
     /**
      * Create a new relation. Use this function to create a named reference to another
      * feature, which may also have optional source/target validity geometry.
-     * Relations must be stored in the feature's special relations-list.
+     * target must be nonnull and belong to this layer; its address is retained.
+     * Attach the result with Feature::addRelation to assign its feature-local ordinal.
      */
     model_ptr<Relation>
     newRelation(std::string_view const& name, model_ptr<FeatureId> const& target);
@@ -186,8 +191,9 @@ public:
     model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
 
     /**
-     * Create a shared sequence over one canonical feature geometry.
-     * The geometry must already be attached to the supplied feature.
+     * Create a shared sequence over a line with at least two shape points.
+     * Both nodes must belong to this layer, and the geometry must already be
+     * attached to the supplied feature. Invalid ownership or shape throws.
      */
     model_ptr<AttrPointSequence> newAttrPointSequence(
         model_ptr<Feature> const& feature,
@@ -223,7 +229,9 @@ public:
     newGeometry(GeomType geomType, size_t initialCapacity = 2, bool fixedSize = false) override;
 
     /**
-     * Create a new geometry view.
+     * Create a point-range view over a nonnull geometry in this same layer.
+     * Bounds and GLTF geometries are unsupported. Offsets accumulate through
+     * nested views; range validation occurs when the point buffer is resolved.
      */
     model_ptr<Geometry> newGeometryView(
         GeomType geomType,
@@ -232,7 +240,9 @@ public:
         const model_ptr<Geometry>& base) override;
 
     /**
-     * Create a new list of qualified source-data references.
+     * Copy references whose string IDs already belong to this layer's dictionary.
+     * The compact address supports at most 15 entries and a 20-bit start index;
+     * callers must keep both limits when appending to the shared reference arena.
      */
     model_ptr<SourceDataReferenceCollection>
     newSourceDataReferenceCollection(std::span<QualifiedSourceDataReference> list) override;
@@ -264,16 +274,20 @@ public:
     struct Iterator
     {
         Iterator(PartitionFeatureLayer const& layer, size_t i) : layer_(layer), i_(i) {}
+
         model_ptr<Feature> operator*() { return layer_.at(i_); }
+
         Iterator& operator++()
         {
             ++i_;
             return *this;
         }
+
         bool operator==(const Iterator& other) const
         {
             return &layer_ == &other.layer_ && i_ == other.i_;
         }
+
         bool operator!=(const Iterator& other) const { return !(*this == other); }
         using iterator_category = std::input_iterator_tag;
         using value_type = model_ptr<Feature>;
@@ -328,7 +342,10 @@ public:
     [[nodiscard]] std::optional<std::string> const& glbAttachmentName() const;
     void setGlbAttachmentName(std::optional<std::string> name);
 
-    /** Report serialized size stats for feature-layer data and model-pool columns. */
+    /** Report payload-size estimates, arena savings and geometry/validity usage.
+     * Counts inspect stored/reachable records; totals are not an exact serialized
+     * stream length or a census of all detached geometry allocations.
+     */
     [[nodiscard]] nlohmann::json serializationSizeStats() const;
 
     /** Report retained feature-model capacity without counting shared metadata. */
@@ -340,14 +357,19 @@ public:
     /** Access total number of geometry vertices across this tile. */
     [[nodiscard]] uint64_t numVertices() const;
 
-    /** Access layer-wide geometry anchor used for anchor-relative vertex encoding. */
+    /** Access the absolute origin used to decode anchor-relative vertices. */
     [[nodiscard]] Point geometryAnchor() const override;
+
+    /** Set the origin before writing vertices; existing offsets are not re-encoded. */
     void setGeometryAnchor(Point const& anchor);
 
     /** Access feature at index i */
     model_ptr<Feature> at(size_t i) const;
 
-    /** Access feature through its id. */
+    /** Find by primary identity, ignoring optional ID parts. Parts must follow
+     * composition order and include the layer prefix. The string overload returns
+     * null on parse failure; an unknown explicit type may throw during lookup.
+     */
     model_ptr<Feature> find(std::string_view const& featureId) const;
     model_ptr<Feature>
     find(std::string_view const& type, KeyValueViewPairs const& queryIdParts) const;
@@ -374,14 +396,8 @@ public:
         SimfilExpressionCache* expressionCache = nullptr) const;
 
     /**
-     * Evaluate a (potentially cached) simfil query on this pool
-     *
-     * @param query         Simfil query
-     * @param node          Model root node to query
-     * @param anyMode       Auto-wrap expression in `any(...)`
-     * @param autoWildcard  Deprecated compatibility flag. When a node schema is
-     *                      available, this enables schema-backed shorthand
-     *                      rewrites. Without schema metadata it has no effect.
+     * Evaluation output with result values, named trace counters and diagnostics.
+     * Values can retain model nodes; keep their owners alive while consuming them.
      */
     struct QueryResult
     {
@@ -396,17 +412,25 @@ public:
         // generated during query evaluation.
         simfil::Diagnostics diagnostics;
     };
+
+    /**
+     * Evaluate on the supplied node using cached compilation. anyMode wraps the
+     * query in any(...); autoWildcard enables schema shorthand only when the
+     * node has a schema. This layer serializes access to its shared evaluator.
+     */
     tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> evaluate(
         std::string_view query,
         ModelNode const& node,
         bool anyMode = true,
         bool autoWildcard = true);
 
+    /** Evaluate against the first root only; an empty layer returns the root lookup error. */
     tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error>
     evaluate(std::string_view query, bool anyMode = true, bool autoWildcard = true);
 
     /**
-     * Get auto-completion candidates at `point` of a query.
+     * Complete the query at byte offset point using this node's schema/data.
+     * A private dictionary copy prevents query text from changing streamed IDs.
      */
     tl::expected<std::vector<simfil::CompletionCandidate>, simfil::Error> complete(
         std::string_view query,
@@ -415,8 +439,8 @@ public:
         simfil::CompletionOptions const& opts);
 
     /**
-     * Collect query diagnostics for an evaluated query.
-     * If the query has not yet been evaluated it gets compiled.
+     * Format the supplied evaluation diagnostics after ensuring the query
+     * compiles against the first root's schema. This does not evaluate the query.
      */
     tl::expected<std::vector<simfil::Diagnostics::Message>, simfil::Error> collectQueryDiagnostics(
         std::string_view query,
@@ -425,17 +449,20 @@ public:
 
     /**
      * Change the string pool of this model to a different one.
-     * Note: This will potentially create new string entries in the newDict,
-     * for field names which were not there before.
+     * The new pool may acquire missing names. Requires exclusive access: query
+     * state is invalidated, and custom columns are remapped after generic storage.
+     * Failure does not roll back earlier dictionary/storage changes.
      */
     tl::expected<void, simfil::Error>
     setStrings(std::shared_ptr<simfil::StringPool> const& newPool) override;
 
     /**
      * Create a copy of otherFeature in this layer with the given type
-     * and id-parts. If a feature with that ID already exists in this layer,
-     * the attributes/relations/geometries from otherFeature will simply
-     * be appended to the existing feature.
+     * and full primary id-parts. Existing identities receive attributes/layers
+     * and relations; already attached cloned geometry addresses are not duplicated.
+     * The destination schema must admit source types (same artifact or a composed
+     * contributor). A populated properties container cannot change concrete type.
+     * Node-copy limitations and partial-failure behavior below also apply.
      */
     void clone(
         CloneCache& clonedModelNodes,
@@ -446,8 +473,11 @@ public:
 
     /**
      * Create a copy of otherNode (which lives in otherLayer) in this layer.
-     * The clonedModelNodes dict may be provided to avoid repeated copies
-     * of nodes which are referenced multiple times.
+     * The required cache preserves shared nodes within this destination. Geometry
+     * views are materialized; whole Feature/FeatureProperties and standalone helper
+     * views are unsupported. Validity copies currently omit featureId/geometryName
+     * selectors. Failures can leave partial destination/cache state; discard both
+     * before retrying an operation that requires an all-or-nothing result.
      */
     simfil::ModelNode::Ptr clone(
         CloneCache& clonedModelNodes,
@@ -492,6 +522,7 @@ protected:
         std::optional<simfil::SchemaType::Kind> preferredKind = std::nullopt) const;
     void applyObjectSchema(simfil::Object& object, simfil::TypeId schemaId) const;
     void applyArraySchema(simfil::Array& array, simfil::TypeId schemaId) const;
+
     /** Preserve a concrete binding when the containing declaration explicitly admits it. */
     [[nodiscard]] simfil::TypeId
     checkedContainerSchema(simfil::TypeId concrete, simfil::TypeId declared, simfil::ValueType type)

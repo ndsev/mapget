@@ -45,6 +45,7 @@ struct MapSchema::Impl
             annotations;
         simfil::ArrayIndex owners = 0;
     };
+
     /** One map-wide identity; composition order is canonical, independent of production. */
     struct IdentityData
     {
@@ -53,6 +54,7 @@ struct MapSchema::Impl
         uint16_t reserved = 0;
         simfil::ArrayIndex compositions = 0;
     };
+
     /** One immutable ID part; prose stays in the owner's value buffer, not the name dictionary. */
     struct IdentityPartData
     {
@@ -66,6 +68,7 @@ struct MapSchema::Impl
         MODEL_COLUMN_TYPE(8);
         StringId feature = 0, layer = 0, name = 0;
         StringId featureLayer = 0;
+
         template <class S>
         void serialize(S& s)
         {
@@ -89,6 +92,7 @@ struct MapSchema::Impl
             s.value2b(layer);
         }
     };
+
     /** One generated query context, indexed by its physical feature/attribute pair. */
     struct QueryData
     {
@@ -96,6 +100,7 @@ struct MapSchema::Impl
         TypeId feature = 0, attribute = 0, root = 0;
         uint16_t reserved = 0;
     };
+
     /** Authoritative layer identity and memberships, never an owning DTO tree. */
     struct LayerData
     {
@@ -106,6 +111,7 @@ struct MapSchema::Impl
         uint16_t reserved = 0;
         simfil::ArrayIndex produced = 0, relations = 0;
     };
+
     /** A layer's produced name is distinct from the map-wide identity inventory. */
     struct ProducedRootData
     {
@@ -113,6 +119,7 @@ struct MapSchema::Impl
         StringId name = 0;
         TypeId root = 0;
     };
+
     /** Stable row identity for one layer's forward relation declaration. */
     struct RelationData
     {
@@ -122,6 +129,7 @@ struct MapSchema::Impl
         uint16_t layer = 0;
         uint8_t flags = 0, locality = 0;
     };
+
     /** Derived incoming lookup; the canonical declaration remains in relationRows. */
     struct RelationTargetData
     {
@@ -130,6 +138,7 @@ struct MapSchema::Impl
         uint16_t layer = 0;
         uint32_t relation = 0;
     };
+
     /** Construction-only aliases and legacy import idempotency, discarded before publication. */
     struct LayerBuildData
     {
@@ -137,6 +146,7 @@ struct MapSchema::Impl
         std::string fingerprint;
     };
     static constexpr uint8_t RelationsKnownFlag = 1, RelationsDeclaredFlag = 2;
+
     /** Bound concurrent construction and retain only weak published owners. */
     struct BuildCache
     {
@@ -145,17 +155,20 @@ struct MapSchema::Impl
         std::map<std::string, std::weak_ptr<MapSchema const>, std::less<>> ready;
         std::map<std::string, std::shared_future<ConstPtr>, std::less<>> running;
     };
+
     /** Initialize worker-local reentrancy state before any capture accesses it. */
     static std::vector<std::string>& activeBuildKeys()
     {
         static thread_local std::vector<std::string> keys;
         return keys;
     }
+
     /** Only definite-length, bounded CBOR is emitted by our annotation codec. */
     class AnnotationReader : public nlohmann::detail::json_sax_dom_parser<nlohmann::json>
     {
         using Base = nlohmann::detail::json_sax_dom_parser<nlohmann::json>;
         size_t depth_ = 0, nodes_ = 0;
+
         bool enter(size_t count)
         {
             if (count >= MaxEdges - nodes_ || depth_ == 256)
@@ -167,13 +180,17 @@ struct MapSchema::Impl
 
     public:
         explicit AnnotationReader(nlohmann::json& result) : Base(result, false) {}
+
         bool start_object(size_t size) { return enter(size) && Base::start_object(size); }
+
         bool start_array(size_t size) { return enter(size) && Base::start_array(size); }
+
         bool end_object()
         {
             --depth_;
             return Base::end_object();
         }
+
         bool end_array()
         {
             --depth_;
@@ -231,6 +248,7 @@ struct MapSchema::Impl
             throw std::length_error(id.error().message);
         return *id;
     }
+
     ModelNodeAddress text(std::string_view value)
     {
         if (value.empty())
@@ -254,6 +272,7 @@ struct MapSchema::Impl
         }
         return it->second;
     }
+
     std::string_view text(ModelNodeAddress address) const
     {
         if (!address)
@@ -264,6 +283,7 @@ struct MapSchema::Impl
         // ModelPool strings must always be buffer views, never a temporary owning value.
         throw std::invalid_argument("MapSchema text reference is not a string-buffer value.");
     }
+
     std::string_view name(StringId id) const
     {
         auto value = dictionary.resolve(id);
@@ -271,7 +291,9 @@ struct MapSchema::Impl
             throw std::invalid_argument("MapSchema contains an unknown dictionary ID.");
         return *value;
     }
+
     bool valid(TypeId id) const { return id && id <= pool.simfil::SchemaPool::typeCount(); }
+
     /** Read the canonical sorted context column without allocating a lookup mirror. */
     TypeId findQueryRoot(TypeId feature, TypeId attribute) const
     {
@@ -288,11 +310,13 @@ struct MapSchema::Impl
             found->root :
             0;
     }
+
     void requireType(TypeId id) const
     {
         if (!valid(id))
             throw std::invalid_argument("MapSchema references an unknown type.");
     }
+
     /** Translate an optional layer scope to its canonical alias-column discriminator. */
     uint16_t aliasScope(size_t layerIndex) const
     {
@@ -302,6 +326,7 @@ struct MapSchema::Impl
             throw std::invalid_argument("Invalid schema alias scope.");
         return uint16_t(layerIndex + 1);
     }
+
     /** Borrow alias meanings directly; no retained tree duplicates the column. */
     template <class F>
     void forEachAlias(size_t layerIndex, F&& visit) const
@@ -321,8 +346,10 @@ struct MapSchema::Impl
                 break;
         }
     }
+
     /** Resolve a scope-local alias without falling back to another namespace. */
     TypeId findAlias(size_t layerIndex, std::string_view key) const;
+
     /** Borrow map-specific metadata in the canonical generic type namespace. */
     TypeData const& data(TypeId id) const
     {
@@ -334,6 +361,7 @@ struct MapSchema::Impl
         }
         return types[id];
     }
+
     /** Extend only the metadata column after the generic owner reserves new type IDs. */
     TypeData& data(TypeId id)
     {
@@ -344,25 +372,30 @@ struct MapSchema::Impl
             types.resize(count + 1);
         return types[id];
     }
+
     LayerData& layerAt(size_t index)
     {
         if (index >= layers.size())
             throw std::invalid_argument("Invalid LayerSchema address.");
         return layers[index];
     }
+
     LayerData const& layerAt(size_t index) const
     {
         if (index >= layers.size())
             throw std::invalid_argument("Invalid LayerSchema address.");
         return layers[index];
     }
+
     /** Borrow the canonical produced-name/root pairs, preserving stored order. */
     auto featureRoots(LayerData const& layer) const
     {
         return producedFeatures.range(layer.produced);
     }
+
     /** Borrow relation row IDs; direct descriptor addresses use these same stable IDs. */
     auto relationIds(LayerData const& layer) const { return relationLists.range(layer.relations); }
+
     /** Borrow forward declarations without constructing public transport DTOs. */
     auto relationsOf(LayerData const& layer) const
     {
@@ -372,6 +405,7 @@ struct MapSchema::Impl
                    [this, ids](size_t index) -> RelationData const&
                    { return relationRows[ids[index]]; });
     }
+
     /** Borrow owner sites while keeping their stable rows separate from memberships. */
     auto ownerSites(simfil::ArrayIndex handle) const
     {
@@ -380,12 +414,16 @@ struct MapSchema::Impl
             std::views::transform(
                    [this, ids](size_t index) -> OwnerData const& { return ownerRows[ids[index]]; });
     }
+
     bool relationComplete(RelationData const& relation) const { return relation.flags & 1; }
+
     bool relationsKnown(LayerData const& layer) const { return layer.flags & RelationsKnownFlag; }
+
     bool relationsDeclared(LayerData const& layer) const
     {
         return layer.flags & RelationsDeclaredFlag;
     }
+
     /** Check the arena builder's capacity precondition before appending untrusted metadata. */
     template <class Arena>
     static simfil::ArrayIndex allocateMetadataArray(Arena& arena, size_t count, bool fixed = false)
@@ -396,6 +434,7 @@ struct MapSchema::Impl
             throw std::length_error("Schema metadata arena capacity exceeded.");
         return arena.new_array(count, fixed);
     }
+
     /** Permit retired empty arrays, but never hidden live payload or a malformed empty head. */
     template <class Arena>
     static void requireOwnedArrays(Arena const& arena, std::set<simfil::ArrayIndex> const& used)
@@ -411,19 +450,25 @@ struct MapSchema::Impl
                 throw std::invalid_argument("Unreferenced metadata singleton payload.");
         }
     }
+
     /** Append a private owner-membership list with independently addressable rows. */
     simfil::ArrayIndex newOwners(std::span<OwnerData const> sites);
+
     /** Publish one produced root without copying the feature identity declaration. */
     void bindProduced(size_t layer, std::string_view name, TypeId root);
+
     /** Replace a forward inventory atomically; retired rows are zeroed and arrays emptied. */
     void setRelations(
         size_t layer,
         std::vector<LayerSchema::RelationDeclaration> declarations,
         bool known = true);
+
     /** Materialize an explicit public input/output DTO at the API boundary only. */
     LayerSchema::RelationDeclaration relationDeclaration(RelationData const& relation) const;
+
     /** Normalize legacy relation metadata before the generic schema is prepared. */
     void normalizeRelations();
+
     ModelNodeAddress annotation(nlohmann::json const& value)
     {
         if (value.is_null() || value.empty())
@@ -434,6 +479,7 @@ struct MapSchema::Impl
             throw std::length_error(node.error().message);
         return (*node)->addr();
     }
+
     nlohmann::json annotation(ModelNodeAddress address) const
     {
         if (!address)
@@ -448,6 +494,7 @@ struct MapSchema::Impl
             throw std::invalid_argument("Malformed or oversized MapSchema annotation.");
         return result;
     }
+
     /** Append an immutable identity from DTO parts or borrowed canonical parts. */
     template <class Compositions, class Parts>
     void appendIdentity(std::string_view name, Compositions const& compositions, Parts&& readParts)
@@ -482,26 +529,34 @@ struct MapSchema::Impl
     void compile();
     void
     compileScalarMetadata(TypeId, nlohmann::json&, std::function<void()> const& extension = {});
+
     /** Roll back extension appends before the enclosing generic guard restores its values. */
     void appendMetadata(std::function<void()> const& extension);
+
     /** Register a use site without mutating the shared physical payload type. */
     void bindAttributeOwner(TypeId id, LayerSchema::AttributePathOwner const& owner);
+
     /** Stage a named use site without publishing or retiring the previous membership. */
     TypeData prepareAttributeOwner(TypeId id, LayerSchema::AttributePathOwner const& owner);
+
     /** Restore native mutation policy after importing full shapes; thin legacy roots stay generic.
      */
     void protectNativeType(TypeId id);
+
     /** Recognize physical Attributes and logical combinations without rewriting generic kinds. */
     bool isAttributeType(TypeId id, bool nativeOnly = false) const;
+
     /** Adopt complete Attribute trees without changing their logical alternatives or named owners.
      */
     void protectAttributeType(TypeId id);
+
     /** Journal the first reservation so failed appends do not leave policy for retired IDs. */
     void reserveFields(TypeId id, std::set<std::string, std::less<>> fields);
     void index();
     void validate() const;
     void validatePool() const;
     void prepareQueryRoots();
+
     /** Cache immutable status diagnostics after all indexes and owners have been installed. */
     void summarize();
     template <class S>

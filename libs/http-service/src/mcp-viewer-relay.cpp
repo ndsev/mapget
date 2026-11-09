@@ -370,6 +370,8 @@ std::string McpViewerRelay::invoke(
     if (!catalog_->acceptsArguments(action, arguments)) {
         return reject("invalid_arguments", "Arguments do not match the action schema.");
     }
+    // Count both live RPC callbacks and mutations whose browser outcome remains
+    // unknown, then reserve state before sending a frame that can reply immediately.
     size_t sessionCalls = 0;
     size_t principalCalls = 0;
     size_t totalCalls = calls_.size();
@@ -480,6 +482,8 @@ void McpViewerRelay::finish(
     std::string const& cancelReason,
     bool uncertain)
 {
+    // Extract first: cancellation delivery and completion may re-enter the relay.
+    // The detached node keeps the callback alive without leaving the call discoverable.
     auto node = calls_.extract(callId);
     if (node.empty()) {
         return;

@@ -84,7 +84,7 @@ public:
         std::function<bool(std::string_view sourceId, std::string_view mapId)> const&
             includeSource = {}) const;
 
-    /** Account unique current and retired-but-pinned owners without extending their lifetime. */
+    /** Account unique current and retired pinned graphs; retain them only for this measurement. */
     [[nodiscard]] MemoryUsageBreakdown schemaMemoryUsage() const;
 
     /** Return the number of ready sources. */
@@ -96,6 +96,7 @@ public:
 private:
     /** Rebuild changed primary snapshots transactionally before replacing the ready registry. */
     void compose(std::vector<RegisteredDataSource::Ptr>& sources) const;
+
     /** Called under mutex_ after publication; retain weak observations, never the graphs. */
     void rememberSchemas();
     mutable std::shared_mutex mutex_;
