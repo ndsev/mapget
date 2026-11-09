@@ -784,7 +784,7 @@ Integers within JavaScript's exact range remain JSON numbers. Null remains null;
 simfil's missing-field behavior is not rewritten (a missing field can yield null and a
 diagnostic). Repeated object fields retain mapget's array/`_multimap` projection.
 
-Schema-qualified scalar projections (including booleans and bytes) have an explicit metadata
+Schema-typed scalar projections (including booleans and bytes) have an explicit metadata
 envelope:
 
 ```json
@@ -1085,8 +1085,11 @@ with `conflict`. Acknowledgement does not wait for datasource initialization to 
 
 ### Execution Ownership
 
-`McpServer` owns transport and authenticated response routing. `McpNativeTools` owns immutable
-contracts, admission and one `Call` per native operation. Metadata/query preparation runs as
+`McpServer` owns transport and authenticated response routing. `McpMapgetTools` owns admission,
+an immutable `Catalog` of contracts, and one `Call` per mapget operation. Each call owns its
+private `Query` runtime; extraction calls also own an `Extraction` for partition traversal
+and resumable scan state. These are nested implementation owners with matching header/source
+pairs, not one class per tool. Metadata/query preparation runs as
 bounded tasks on the existing homogeneous `ServiceScheduler` pool; it must never wait for
 another task on that pool. Extraction submits one partition request at a time, evaluates it
 on the delivering worker, then releases the model before loading the next partition. It does
@@ -1104,7 +1107,11 @@ keywords: [help, documentation, keywords, tool workflows, hot reload]
 -->
 ## Documentation Search
 
-Call `mapget_docs` with plain keywords rather than FTS syntax:
+Call `mapget_docs` with concise English keywords rather than FTS syntax or a
+conversational question. Omit filler words unless they are the subject of the
+search (for example, the simfil `and` operator). All supplied terms remain
+searchable; FTS5/BM25 ranks matches by term frequency and document length, with
+additional weight for titles and annotated keywords.
 
 ```json
 {"query":"array cardinality attribute search"}
@@ -1238,7 +1245,7 @@ relative to the native module, including a Python extension, not the process cwd
 or Python interpreter. A registered source directory replaces its component's
 entire bundled directory; deleting a source snippet cannot resurrect an old copy.
 
-`McpNativeTools` owns one `McpHelp` SQLite index. A help-local mutex serializes reads
+`McpMapgetTools` owns one `McpHelp` SQLite index. A help-local mutex serializes reads
 and transactional reindexing; no alternate database, watcher thread or service-wide
 lock is needed. The MCP timer schedules at most one refresh on the existing service
 workers. Shutdown drains it with the other native operations. Help queries check

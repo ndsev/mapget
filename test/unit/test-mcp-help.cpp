@@ -133,16 +133,20 @@ TEST_CASE("MCP help component filters separate similar domain terms", "[mcp-help
 }
 
 TEST_CASE(
-    "MCP help ignores conversational filler without discarding all-filler queries",
+    "MCP help retains literal terms and ranks distinctive keywords above common words",
     "[mcp-help]")
 {
     HelpFixture f;
-    f.write("extra/labels.md", "<!-- mcp: -->\n# Labels\nFeature labels.\n");
-    f.write("extra/filler.md", "<!-- mcp: -->\n# Put on\nPut this on that.\n");
-    auto result = f.query("can you please put labels on these features for me");
-    REQUIRE(result["items"].size() == 1);
+    f.write("extra/labels.md", "<!-- mcp: -->\n# Labels\nThe feature labels.\n");
+    f.write("extra/other.md", "<!-- mcp: -->\n# Geometry\nThe feature geometry.\n");
+    auto result = f.query("the labels");
+    REQUIRE(result["items"].size() == 2);
     CHECK(result["items"][0]["source"] == "extra-1/labels.md");
-    CHECK_FALSE(f.query("put on")["items"].empty());
+    // "and" is also a language operator: never discard it in a mixed query.
+    f.write("extra/operator.md", "<!-- mcp: -->\n# And\nBoolean conjunction.\n");
+    auto literal = f.query("and nonexistentterm");
+    REQUIRE(literal["items"].size() == 1);
+    CHECK(literal["items"][0]["source"] == "extra-1/operator.md");
 }
 
 TEST_CASE(
