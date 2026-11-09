@@ -835,6 +835,45 @@ TEST_CASE("The schema reader rejects duplicate canonical identities", "[mapschem
     CHECK_THROWS_WITH(MapSchema::read(malformed), "Invalid map-wide feature identity.");
 }
 
+TEST_CASE(
+    "Schema reader rejects aliases inconsistent with produced feature roots",
+    "[mapschema][feature-schema-lookup]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Road", LayerType::Features);
+    layer->addFeatureType(identity("Road"));
+    layer->addFeatureType(identity("Lane"));
+    auto road = layer->featureSchema("Road");
+    auto lane = layer->featureSchema("Lane");
+    graph->finalize();
+    auto malformed = mutateDomains(
+        *graph,
+        [&](auto& payload, size_t start)
+        {
+            // Keep valid type IDs and a correct checksum, but point the Road
+            // alias at Lane. Both lookup routes must agree after decoding.
+            constexpr size_t ALIAS_COLUMN = 5;
+            auto [offset, length] = binaryColumn(
+                payload,
+                start + (graph->typeCount() + 1) * MAP_SCHEMA_TYPE_BYTES,
+                ALIAS_COLUMN);
+            bool changed = false;
+            for (size_t row = 0; row < length; row += 8) {
+                uint16_t type = 0, scope = 0;
+                std::memcpy(&type, payload.data() + offset + row + 4, sizeof(type));
+                std::memcpy(&scope, payload.data() + offset + row + 6, sizeof(scope));
+                if (type == road && scope == 1) {
+                    std::memcpy(payload.data() + offset + row + 4, &lane, sizeof(lane));
+                    changed = true;
+                }
+            }
+            REQUIRE(changed);
+        });
+    CHECK_THROWS_WITH(
+        MapSchema::read(malformed),
+        "Produced feature root disagrees with its schema alias.");
+}
+
 TEST_CASE("Layer JSON roundtrip retains local aliases and only reachable types", "[mapschema]")
 {
     auto graph = std::make_shared<MapSchema>();

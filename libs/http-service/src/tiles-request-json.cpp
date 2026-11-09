@@ -27,11 +27,13 @@ constexpr std::array<std::string_view, 6> FilterFieldNames = {
     "bindings",
 };
 
+/** Recognize the layer-name convention that permits the metadata tile-zero sentinel. */
 bool isMetadataSourceDataLayer(std::string_view layerId)
 {
     return layerId.starts_with("Metadata-");
 }
 
+/** Parse a tagged partition or legacy signed 32-bit tile ID, preserving metadata tile zero. */
 PartitionId parseRequestPartitionId(nlohmann::json const& tileIdJson, std::string_view layerId)
 {
     if (tileIdJson.is_object()) {
@@ -79,6 +81,7 @@ PartitionId parseRequestPartitionId(nlohmann::json const& tileIdJson, std::strin
     return PartitionId::fromValue(rawPartitionId);
 }
 
+/** Require a string field; empty values are rejected unless the caller opts in. */
 std::string requireString(
     nlohmann::json const& object,
     std::string_view key,
@@ -96,6 +99,7 @@ std::string requireString(
     return result;
 }
 
+/** Treat only an absent field as omitted; present null and disallowed empty strings fail. */
 std::optional<std::string> optionalString(
     nlohmann::json const& object,
     std::string_view key,
@@ -115,6 +119,7 @@ std::optional<std::string> optionalString(
     return result;
 }
 
+/** Read non-empty strings in caller order, preserving duplicates; omission means an empty array. */
 std::vector<std::string> stringArray(
     nlohmann::json const& object,
     std::string_view key)
@@ -143,6 +148,7 @@ std::vector<std::string> stringArray(
     return result;
 }
 
+/** Decode the public scope spelling, defaulting an omitted scope to feature scope. */
 FeatureLayerFilterScope parseScope(nlohmann::json const& channel)
 {
     auto found = channel.find("scope");
@@ -162,6 +168,7 @@ FeatureLayerFilterScope parseScope(nlohmann::json const& channel)
         "channel.scope must be 'feature', 'attribute', 'relation', or 'auto'");
 }
 
+/** Read exactly three finite numbers, or use the supplied default when omission is allowed. */
 glm::dvec3 parseVector3(
     nlohmann::json const& object,
     std::string_view key,
@@ -195,6 +202,7 @@ glm::dvec3 parseVector3(
     return result;
 }
 
+/** Parse point-grid shape with a zero origin; model validation checks positive cell sizes. */
 FeatureLayerPointGridGroup parseGroup(nlohmann::json const& group)
 {
     if (!group.is_object()) {
@@ -219,6 +227,7 @@ FeatureLayerPointGridGroup parseGroup(nlohmann::json const& group)
     };
 }
 
+/** Decode traversal options; the receiving endpoint decides whether incoming traversal is allowed. */
 FeatureLayerStoredRelationOptions parseRelation(
     nlohmann::json const& relation)
 {
@@ -254,6 +263,7 @@ FeatureLayerStoredRelationOptions parseRelation(
     return result;
 }
 
+/** Parse channel fields and geometry-name wildcards; cross-field invariants are checked later. */
 FeatureLayerFilterChannel parseChannel(
     nlohmann::json const& channelJson)
 {
@@ -267,6 +277,7 @@ FeatureLayerFilterChannel parseChannel(
         optionalString(channelJson, "featureFilter", true);
     channel.entryFilter_ =
         optionalString(channelJson, "entryFilter", true);
+    channel.schemaId_ = optionalString(channelJson, "schemaId", false);
     channel.scope_ = parseScope(channelJson);
     channel.featureTypes_ =
         stringArray(channelJson, "featureTypes");
@@ -330,6 +341,7 @@ FeatureLayerFilterChannel parseChannel(
     return channel;
 }
 
+/** Convert scalar JSON bindings into the SIMFIL binding variant; structured values are rejected. */
 FeatureLayerFilterBinding parseBinding(
     nlohmann::json const& value,
     std::string_view name)
@@ -364,6 +376,7 @@ FeatureLayerFilterBinding parseBinding(
         "' must be null, boolean, integer, float, or string");
 }
 
+/** Parse a shared channel bundle; interactive requests require identity fields to be present. */
 FeatureLayerFilterRequest parseFilterDefinition(
     nlohmann::json const& object,
     bool requireIdentity)
@@ -434,6 +447,7 @@ FeatureLayerFilterRequest parseFilterDefinition(
     return result;
 }
 
+/** Accept exactly one partition-list spelling and retain caller order, including duplicates. */
 void parsePlainPartitionIdsInto(
     ParsedLayerTilesRequest& result,
     nlohmann::json const& requestJson,
@@ -455,6 +469,7 @@ void parsePlainPartitionIdsInto(
     }
 }
 
+/** Parse layer identity and output membership, checking priority, restriction and root references. */
 void parseRequestBase(
     ParsedLayerTilesRequest& result,
     nlohmann::json const& requestJson)
@@ -806,6 +821,8 @@ expandLayerTilesRequestKeys(ParsedLayerTilesRequest const& request, LayerType la
             }
         }
     };
+    // Priority changes scheduling order; each pass retains caller order and the
+    // shared seen set emits each concrete partition key only once.
     if (priorityPartitionIds.empty()) {
         append(std::nullopt);
     }
@@ -841,6 +858,8 @@ nlohmann::json filterRequestToJson(
                  : nlohmann::json("*")},
         });
         if (channel.pointCloudMaxPoints_) json["pointCloudMaxPoints"] = *channel.pointCloudMaxPoints_;
+        if (channel.schemaId_)
+            json["schemaId"] = *channel.schemaId_;
         if (channel.featureFilter_) {
             json["featureFilter"] = *channel.featureFilter_;
         }

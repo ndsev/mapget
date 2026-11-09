@@ -38,26 +38,32 @@ MapSchema::MapSchema(MapFormat format)
       schema_(std::make_unique<Impl>(*this, MapFormat::fromJson(format.toJson())))
 {
 }
+
 MapSchema::~MapSchema() = default;
+
 void MapSchema::requireMutable() const
 {
     if (schema_->frozen || simfil::SchemaPool::finalized())
         throw std::logic_error("MapSchema is immutable after finalization.");
 }
+
 bool MapSchema::finalized() const
 {
     return schema_->frozen;
 }
+
 MapFormat const& MapSchema::format() const
 {
     return schema_->format;
 }
+
 std::string_view MapSchema::schemaId() const
 {
     if (!finalized())
         throw std::logic_error("MapSchema identity is unavailable before finalization.");
     return simfil::SchemaPool::identity();
 }
+
 size_t MapSchema::typeCount() const
 {
     return simfil::SchemaPool::typeCount();
@@ -96,6 +102,7 @@ LayerSchema::Ptr MapSchema::newLayer(std::string_view name, LayerType type)
         });
     return result;
 }
+
 LayerSchema::Ptr MapSchema::layer(std::string_view name) const
 {
     auto sid = schema_->dictionary.get(name);
@@ -106,6 +113,7 @@ LayerSchema::Ptr MapSchema::layer(std::string_view name) const
             return LayerSchema::Ptr::make(shared_from_this(), ModelNodeAddress{Impl::Layers, i});
     return {};
 }
+
 std::vector<std::string> MapSchema::layerNames() const
 {
     std::vector<std::string> names;
@@ -138,6 +146,7 @@ TypeId MapSchema::addSchema(Kind kind, std::string key, std::string metaType, st
         registerSchemaKey(std::move(key), id);
     return id;
 }
+
 void MapSchema::registerSchemaKey(std::string key, TypeId id)
 {
     requireMutable();
@@ -157,6 +166,7 @@ void MapSchema::registerSchemaKey(std::string key, TypeId id)
         throw;
     }
 }
+
 TypeId MapSchema::Impl::findAlias(size_t layerIndex, std::string_view key) const
 {
     auto scope = aliasScope(layerIndex);
@@ -190,10 +200,12 @@ TypeId MapSchema::Impl::findAlias(size_t layerIndex, std::string_view key) const
         found->id :
         0;
 }
+
 TypeId MapSchema::findSchema(std::string_view key) const
 {
     return schema_->findAlias(Impl::GlobalLayer, key);
 }
+
 void MapSchema::setZserioType(TypeId id, std::string name)
 {
     requireMutable();
@@ -202,6 +214,7 @@ void MapSchema::setZserioType(TypeId id, std::string name)
     if (!schemaType(id).sealed() && schemaType(id).typeName().empty())
         schemaType(id).setTypeName(name);
 }
+
 void MapSchema::setAttributeMetadata(
     TypeId id,
     LayerSchema::AttributePathOwner owner,
@@ -495,6 +508,7 @@ void MapSchema::Impl::appendMetadata(std::function<void()> const& extension)
 }
 
 LayerSchema::LayerSchema(simfil::detail::mp_key key) : ModelNodeBase(key) {}
+
 LayerSchema::LayerSchema(
     simfil::ModelConstPtr owner,
     ModelNodeAddress address,
@@ -502,25 +516,30 @@ LayerSchema::LayerSchema(
     : ModelNodeBase(std::move(owner), address, key)
 {
 }
+
 std::shared_ptr<MapSchema const> LayerSchema::mapSchema() const
 {
     return std::static_pointer_cast<MapSchema const>(model_);
 }
+
 MapSchema& LayerSchema::mutableOwner()
 {
     auto& owner = *const_cast<MapSchema*>(mapSchema().get());
     owner.requireMutable();
     return owner;
 }
+
 std::string_view LayerSchema::name() const
 {
     auto const& graph = *mapSchema()->schema_;
     return graph.name(graph.layerAt(addr_.index()).name);
 }
+
 LayerType LayerSchema::layerType() const
 {
     return LayerType(mapSchema()->schema_->layerAt(addr_.index()).type);
 }
+
 void LayerSchema::setRootSchema(TypeId root)
 {
     auto& owner = mutableOwner();
@@ -528,14 +547,17 @@ void LayerSchema::setRootSchema(TypeId root)
         owner.schema_->requireType(root);
     owner.schema_->layerAt(addr_.index()).root = root;
 }
+
 TypeId LayerSchema::rootSchema() const
 {
     return mapSchema()->schema_->layerAt(addr_.index()).root;
 }
+
 size_t MapSchema::identityCount() const
 {
     return schema_->identities.size();
 }
+
 FeatureIdentity MapSchema::getTypeInfo(std::string_view name, bool throwIfMissing) const
 {
     auto sid = schema_->dictionary.get(name);
@@ -558,6 +580,7 @@ FeatureIdentity MapSchema::getTypeInfo(std::string_view name, bool throwIfMissin
             "Unknown feature identity '" + std::string(name) + "' in MapSchema.");
     return {};
 }
+
 void MapSchema::addFeatureType(FeatureTypeInfo info)
 {
     requireMutable();
@@ -582,6 +605,7 @@ void MapSchema::addFeatureType(FeatureTypeInfo info)
                 });
         });
 }
+
 void MapSchema::addFeatureType(FeatureIdentity identity)
 {
     requireMutable();
@@ -608,10 +632,12 @@ void MapSchema::addFeatureType(FeatureIdentity identity)
                 });
         });
 }
+
 FeatureIdentity LayerSchema::getTypeInfo(std::string_view name, bool throwIfMissing) const
 {
     return mapSchema()->getTypeInfo(name, throwIfMissing);
 }
+
 bool LayerSchema::producesFeatureType(std::string_view name) const
 {
     auto const& graph = *mapSchema()->schema_;
@@ -625,6 +651,7 @@ bool LayerSchema::producesFeatureType(std::string_view name) const
     auto types = featureTypes();
     return std::ranges::find(types, name) != types.end();
 }
+
 std::vector<std::string> LayerSchema::featureTypes() const
 {
     auto const& graph = *mapSchema()->schema_;
@@ -648,6 +675,7 @@ std::vector<std::string> LayerSchema::featureTypes() const
     std::ranges::sort(result);
     return result;
 }
+
 void LayerSchema::addFeatureType(FeatureTypeInfo info, TypeId root)
 {
     auto name = info.name_;
@@ -657,6 +685,7 @@ void LayerSchema::addFeatureType(FeatureTypeInfo info, TypeId root)
     owner.addFeatureType(std::move(info));
     addFeatureType(std::string_view(name), root);
 }
+
 void LayerSchema::addFeatureType(std::string_view name, TypeId root)
 {
     auto& owner = mutableOwner();
@@ -681,6 +710,7 @@ void LayerSchema::addFeatureType(std::string_view name, TypeId root)
     registerSchemaKey(featureKey(name), root);
     owner.schema_->bindProduced(addr_.index(), name, root);
 }
+
 TypeId LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, std::string pointer)
 {
     auto& owner = mutableOwner();
@@ -690,6 +720,7 @@ TypeId LayerSchema::addSchema(Kind kind, std::string key, std::string metaType, 
         registerSchemaKey(std::move(key), id);
     return id;
 }
+
 void LayerSchema::registerSchemaKey(std::string key, TypeId id)
 {
     auto& owner = mutableOwner();
@@ -710,6 +741,7 @@ void LayerSchema::registerSchemaKey(std::string key, TypeId id)
         throw;
     }
 }
+
 TypeId LayerSchema::schemaId(std::string_view key) const
 {
     auto owner = mapSchema();
@@ -717,11 +749,13 @@ TypeId LayerSchema::schemaId(std::string_view key) const
         return id;
     return owner->findSchema(key);
 }
+
 void LayerSchema::finalize()
 {
     if (!mapSchema()->finalized())
         mutableOwner().finalize();
 }
+
 std::vector<TypeId> MapSchema::Impl::producedRoots(LayerData const& layer) const
 {
     std::vector<TypeId> result;
@@ -949,6 +983,12 @@ void MapSchema::Impl::compile()
     std::vector<std::string>().swap(appendedTextKeys);
 }
 
+/**
+ * Prepare alias, identity and relation lookups before publishing a constructed
+ * or decoded schema. Canonical alias rows are sorted in place; conflicting
+ * aliases, inconsistent produced roots and missing descriptor vocabulary fail
+ * publication instead of leaving callers with different lookup results.
+ */
 void MapSchema::Impl::index()
 {
     for (size_t i = 0; i < descriptorKeys.size(); ++i) {
@@ -1009,6 +1049,14 @@ void MapSchema::Impl::index()
     indexed = true;
     relationTargetIndex.clear();
     for (size_t index = 0; index < layers.size(); ++index) {
+        // Runtime feature lookup uses the produced name/root pairs. Check the
+        // corresponding local aliases once before publishing, now that both
+        // native and decoded graphs have the sorted alias lookup available.
+        for (auto const& produced : featureRoots(layers[index])) {
+            if (findAlias(index, LayerSchema::featureKey(name(produced.name))) != produced.root)
+                throw std::invalid_argument(
+                    "Produced feature root disagrees with its schema alias.");
+        }
         auto ids = relationIds(layers[index]);
         for (auto id : ids)
             for (auto target : relationTargets.range(relationRows[id].targets))
@@ -1237,7 +1285,7 @@ void MapSchema::Impl::validatePool() const
         model.arrayMemberStorage().size() != size_t(simfil::FirstRegularArrayIndex) ||
         model.objectMemberStorage().singleton_handle_count() ||
         model.arrayMemberStorage().singleton_handle_count() || stats.objectSchemas.logicalBytes ||
-        stats.arraySchemas.logicalBytes || stats.qualifiedScalars.logicalBytes ||
+        stats.arraySchemas.logicalBytes || stats.typedScalars.logicalBytes ||
         stats.bitmasks.logicalBytes || stats.schemaOwners.logicalBytes)
         throw std::invalid_argument(
             "MapSchema payload may not contain generic compound/qualified values.");
@@ -1270,6 +1318,7 @@ void MapSchema::Impl::container(S& s, std::vector<T>& data, size_t limit, size_t
     }
     s.container(data, limit, std::forward<F>(item));
 }
+
 template <class S>
 void MapSchema::Impl::string(S& s, std::string& value, size_t limit, size_t& memory)
 {
@@ -1430,6 +1479,7 @@ void MapSchema::Impl::writeBody(std::ostream& output) const
     if (!output)
         throw std::runtime_error("Failed to write MapSchema payload.");
 }
+
 void MapSchema::Impl::readBody(std::vector<uint8_t> const& input, size_t budget)
 {
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
@@ -1461,6 +1511,9 @@ void MapSchema::finalize()
     for (auto const& name : layerNames())
         addRoot(layer(name));
     schema_->validatePool();
+
+    // Hash the canonical body before freezing. The envelope carries this identity
+    // but is excluded from its own hash, so readers can verify it independently.
     std::ostringstream body(std::ios::binary);
     schema_->writeBody(body);
     setIdentity("mapget-schema:sha256:" + picosha2::hash256_hex_string(body.str()));
@@ -1468,10 +1521,12 @@ void MapSchema::finalize()
     schema_->frozen = true;
     schema_->summarize();
 }
+
 tl::expected<void, simfil::Error> MapSchema::write(std::ostream& output)
 {
     return std::as_const(*this).write(output);
 }
+
 tl::expected<void, simfil::Error> MapSchema::write(std::ostream& output) const
 {
     try {
@@ -1497,6 +1552,7 @@ tl::expected<void, simfil::Error> MapSchema::write(std::ostream& output) const
         return tl::unexpected(simfil::Error{simfil::Error::EncodeDecodeError, e.what()});
     }
 }
+
 MapSchema::ConstPtr
 MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, size_t maxBytes)
 {
@@ -1551,7 +1607,8 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
     std::function<ConstPtr()> builder,
     std::function<bool()> cancel)
 {
-    // Four distinct builds may run concurrently; no second unbounded work queue.
+    // Admit at most four top-level builds; nested keys run on their current
+    // worker and may increase the in-progress key count without another thread.
     // Workers retain the cache owner so process-static teardown cannot free a
     // mutex beneath detached construction. Completed entries hold only weak owners.
     static auto cache = std::make_shared<Impl::BuildCache>();
@@ -1562,6 +1619,9 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
         throw std::logic_error("Reentrant construction of the same schema artifact.");
     bool nested = !activeKeys.empty();
     std::shared_future<ConstPtr> future;
+
+    // Coalesce by construction key before allocating a graph. Waiters can leave
+    // independently; only the owning builder publishes success or failure.
     for (;;) {
         if (cancel && cancel())
             throw std::runtime_error("Schema wait cancelled.");
@@ -1588,6 +1648,10 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
             continue;
         }
 #endif
+
+        // Install the shared future while locked so a competing caller cannot
+        // start a second build for this key. Moving the callable retains its owned
+        // captures; any borrowed inputs must outlive the shared construction.
         auto promise = std::make_shared<std::promise<ConstPtr>>();
         future = promise->get_future().share();
         cache->running.emplace(key, future);
@@ -1642,6 +1706,8 @@ MapSchema::ConstPtr MapSchema::getOrBuild(
         }
         break;
     }
+
+    // Poll caller cancellation without cancelling the shared construction.
     while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
         if (cancel && cancel())
             throw std::runtime_error("Schema wait cancelled.");
@@ -1656,6 +1722,7 @@ simfil::ModelNode::Ptr MapSchema::typeNode(TypeId id) const
         return {};
     return simfil::SchemaPool::typeNode(id);
 }
+
 std::vector<std::string> MapSchema::checkForErrors() const
 {
     std::vector<std::string> errors;
@@ -1668,6 +1735,7 @@ std::vector<std::string> MapSchema::checkForErrors() const
     }
     return errors;
 }
+
 tl::expected<void, simfil::Error>
 MapSchema::resolve(simfil::ModelNode const& node, ResolveFn const& callback) const
 {
@@ -1685,6 +1753,7 @@ MapSchema::resolve(simfil::ModelNode const& node, ResolveFn const& callback) con
     }
     return SchemaPool::resolve(node, callback);
 }
+
 LayerSchema::Ptr
 resolveInternal(simfil::res::tag<LayerSchema>, MapSchema const& pool, simfil::ModelNode const& node)
 {
@@ -1701,18 +1770,37 @@ std::string_view LayerSchema::attributeTypeCode(TypeId id) const
         return {};
     return g.text(g.data(id).attributeCode);
 }
+
 TypeId LayerSchema::attributeQuerySchema(std::string_view feature, TypeId attribute) const
 {
     return mapSchema()->schema_->findQueryRoot(featureSchema(feature), attribute);
 }
+
 TypeId LayerSchema::featureSchema(std::string_view feature) const
 {
+    // Runtime Feature values request their schema for each field comparison.
+    // Produced features already carry the same physical root as their Feature:
+    // alias, so use those integer pairs without resolving alias text nodes.
+    auto owner = mapSchema();
+    auto const& graph = *owner->schema_;
+    if (auto name = graph.dictionary.get(feature)) {
+        for (auto const& row : graph.featureRoots(graph.layerAt(addr_.index()))) {
+            if (row.name == name)
+                return row.root;
+        }
+    }
+
+    // Schema-only imports and reference declarations can expose a Feature:
+    // alias without produced membership. Preserve local-then-global lookup;
+    // an unknown name still returns zero without extending the dictionary.
     return schemaId(featureKey(feature));
 }
+
 TypeId LayerSchema::featurePropertiesSchema(std::string_view feature) const
 {
     return schemaId(featurePropertiesKey(feature));
 }
+
 TypeId LayerSchema::attributeLayerMapSchema(std::string_view feature) const
 {
     return schemaId(attributeLayerMapKey(feature));
@@ -1724,6 +1812,7 @@ std::string_view MapSchema::Impl::metaType(TypeId id) const
         return {};
     return text(data(id).metaType);
 }
+
 std::vector<LayerSchema::AttributePathOwner> MapSchema::Impl::attributeOwners(TypeId id) const
 {
     if (!valid(id))
@@ -1738,6 +1827,7 @@ std::vector<LayerSchema::AttributePathOwner> MapSchema::Impl::attributeOwners(Ty
              owner.featureLayer ? std::string(name(owner.featureLayer)) : std::string{}});
     return result;
 }
+
 TypeId
 MapSchema::Impl::childSchema(TypeId root, std::string_view field, std::optional<Kind> preferred)
     const
@@ -1773,6 +1863,7 @@ MapSchema::Impl::childSchema(TypeId root, std::string_view field, std::optional<
     }
     return 0;
 }
+
 TypeId
 LayerSchema::childSchema(TypeId root, std::string_view field, std::optional<Kind> preferred) const
 {
@@ -2098,10 +2189,12 @@ MapSchema::Impl::scalarPaths(TypeId root, std::string_view attribute) const
         return found;
     };
     visit(root, false, false, {});
+
     std::ranges::sort(result);
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
+
 std::vector<LayerSchema::NamedSchemaPath>
 LayerSchema::scalarFieldPathsForAttribute(TypeId root, std::string_view attribute) const
 {
@@ -2109,6 +2202,7 @@ LayerSchema::scalarFieldPathsForAttribute(TypeId root, std::string_view attribut
         return {};
     return mapSchema()->schema_->scalarPaths(root, attribute);
 }
+
 std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() const
 {
     auto const& g = *mapSchema()->schema_;
@@ -2159,6 +2253,7 @@ std::vector<LayerSchema::AttributePathOwner> LayerSchema::attributeScopes() cons
         result.end());
     return result;
 }
+
 std::vector<std::string> LayerSchema::constantTypeNames(TypeId root, std::string_view symbol) const
 {
     auto const& g = *mapSchema()->schema_;
@@ -2208,6 +2303,7 @@ std::vector<std::string> LayerSchema::constantTypeNames(TypeId root, std::string
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
+
 bool LayerSchema::RelationDeclaration::permitsIncoming(
     std::string_view owner,
     std::string_view name,
@@ -2216,6 +2312,7 @@ bool LayerSchema::RelationDeclaration::permitsIncoming(
     return ownerType_ == owner && name_ == name &&
         std::ranges::find(targetTypes_, target) != targetTypes_.end();
 }
+
 nlohmann::json
 LayerSchema::featureTypeContract(std::string_view name, std::function<void(size_t)> const& reserve)
     const
@@ -2254,6 +2351,7 @@ LayerSchema::featureTypeContract(std::string_view name, std::function<void(size_
         }
         result["uniqueIdCompositions"].push_back(std::move(parts));
     }
+
     // Read the frozen relation index directly. A layer-wide vector copy would allocate
     // unrelated declarations before the caller can stop a focused inspection.
     for (auto const& declaration : graph.relationsOf(layer)) {
@@ -2293,6 +2391,7 @@ std::vector<LayerSchema::RelationDeclaration> LayerSchema::relationDeclarations(
         result.push_back(graph.relationDeclaration(row));
     return result;
 }
+
 std::vector<LayerSchema::RelationDeclaration>
 LayerSchema::relationsTo(std::string_view target) const
 {
@@ -2315,6 +2414,7 @@ LayerSchema::relationsTo(std::string_view target) const
         result.push_back(graph.relationDeclaration(graph.relationRows[found->relation]));
     return result;
 }
+
 bool LayerSchema::hasRelationDeclarations() const
 {
     auto const& graph = *mapSchema()->schema_;
@@ -2328,16 +2428,19 @@ simfil::ValueType LayerSchema::type() const
 {
     return simfil::ValueType::Object;
 }
+
 uint32_t LayerSchema::size() const
 {
     return 3;
 }
+
 StringId LayerSchema::keyAt(int64_t i) const
 {
     if (i < 0 || i >= size())
         return 0;
     return mapSchema()->schema_->descriptorKeys[size_t(i)];
 }
+
 simfil::ModelNode::Ptr LayerSchema::at(int64_t i) const
 {
     if (i == 0)
@@ -2350,6 +2453,7 @@ simfil::ModelNode::Ptr LayerSchema::at(int64_t i) const
         return rootSchema() ? mapSchema()->typeNode(rootSchema()) : simfil::ModelNode::Ptr{};
     return {};
 }
+
 simfil::ModelNode::Ptr LayerSchema::get(StringId const& field) const
 {
     for (size_t i = 0; i < size(); ++i)
@@ -2357,6 +2461,7 @@ simfil::ModelNode::Ptr LayerSchema::get(StringId const& field) const
             return at(i);
     return {};
 }
+
 bool LayerSchema::iterate(IterCallback const& callback) const
 {
     for (size_t i = 0; i < size(); ++i)
@@ -2538,6 +2643,7 @@ TypeId MapSchema::remapSchema(std::string_view sourceIdentity, TypeId id) const
         throw std::invalid_argument("Source type is absent from the contributor translation.");
     return remap[id];
 }
+
 MemoryUsageBreakdown LayerSchema::memoryUsage() const
 {
     // This is a borrowing view. Unique-owner accounting belongs to MapSchema.

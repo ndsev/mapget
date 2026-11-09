@@ -653,8 +653,7 @@ TEST_CASE("LayerSchema infers attribute scope for a nested recursive wildcard pa
         REQUIRE(normalized->concreteScope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
         REQUIRE(normalized->attributeScopes_.size() == 1);
         REQUIRE(normalized->attributeScopes_.front().attributeName_ == "NUM_LANES");
-        REQUIRE(normalized->normalizedQuery_.find("numLanes.normalLanes") != std::string::npos);
-        REQUIRE(normalized->normalizedQuery_.find("Guidance") != std::string::npos);
+        REQUIRE(normalized->normalizedQuery_ == query);
     }
 
     // Explicit feature scope must not turn one feature result into several attributes.

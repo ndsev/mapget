@@ -2949,3 +2949,23 @@ TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointclo
         REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
     }
 }
+
+TEST_CASE(
+    "Prepared search rejects a stale schema before requesting tiles",
+    "[feature-layer-filter][Service][search-preparation]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<FilterDataSource>();
+    service.add(source);
+    auto definition = filterDefinition();
+    for (auto& channel : definition.channels_)
+        channel.schemaId_ = "mapget-schema:stale";
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile()},
+        definition);
+    CHECK_FALSE(service.request(request));
+    CHECK(request->isDone());
+    CHECK(source->requestedTiles().empty());
+}

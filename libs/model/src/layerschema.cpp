@@ -19,7 +19,6 @@ simfil::SchemaType LayerSchema::rootType() const
 
 namespace
 {
-constexpr size_t kMaxNormalizedAttributeScopes = 8;
 /** Quote one string as a SIMFIL string literal. */
 std::string simfilStringLiteral(std::string_view value)
 {
@@ -60,16 +59,6 @@ bool isIdentifier(std::string_view value)
         });
 }
 
-/** Attribute guard that is valid from an attribute-root overlay context. */
-std::string attributeScopeGuard(LayerSchema::AttributePathOwner const& scope)
-{
-    return fmt::format(
-        "$feature.typeId == {} and $layer == {} and $name == {}",
-        simfilStringLiteral(scope.featureType_),
-        simfilStringLiteral(scope.attributeLayerName_),
-        simfilStringLiteral(scope.attributeName_));
-}
-
 /** Wrap a branch in parentheses to avoid precedence surprises in generated ORs. */
 std::string parenthesized(std::string expression)
 {
@@ -85,6 +74,76 @@ std::string joinOr(std::vector<std::string> branches)
     auto result = std::move(branches.front());
     for (size_t i = 1; i < branches.size(); ++i) {
         result = parenthesized(std::move(result)) + " or " + parenthesized(std::move(branches[i]));
+    }
+    return result;
+}
+
+/** Select a named field at any depth, including names requiring bracket syntax. */
+std::string recursiveField(std::string_view name)
+{
+    return isIdentifier(name) ? "**." + std::string(name) : "**[" + simfilStringLiteral(name) + "]";
+}
+
+/**
+ * Find ordinary field predicates for a declared enum or named value. Visit
+ * graph edges rather than expanding every root-to-leaf path: a recursive
+ * payload still needs just `**.warningSign == "SPEED_LIMIT"`. Named unions
+ * shadow their physical alternatives, as they do in completion.
+ *
+ * The current declaring type groups fields belonging to one candidate. It
+ * never appears in the resulting expression or its cross-map identity.
+ */
+std::map<simfil::TypeId, std::set<std::string>> symbolFieldPredicates(
+    simfil::SchemaType root,
+    std::string_view symbol,
+    std::span<simfil::TypeId const> excluded = {})
+{
+    // No field denotes a scalar root. An empty field name is still a real
+    // dictionary entry and must produce a bracket selector, not `_`.
+    using Position = std::tuple<simfil::TypeId, std::optional<simfil::StringId>, bool>;
+    std::vector<Position> pending{{root.id(), std::nullopt, false}};
+    std::set<Position> visited;
+    std::map<simfil::TypeId, std::set<std::string>> result;
+    while (!pending.empty()) {
+        auto position = pending.back();
+        pending.pop_back();
+        auto [id, field, array] = position;
+        if (!id || std::ranges::find(excluded, id) != excluded.end() ||
+            !visited.insert(position).second)
+            continue;
+        auto type = root.pool()->schemaType(id);
+        auto named = type.namedValue(symbol);
+        auto declares = named || type.hasDirectEnumSymbol(symbol);
+        if (declares) {
+            auto selector = field ?
+                recursiveField(*root.pool()->dictionary().resolve(*field)) :
+                "_";
+            // A scalar enum array may be nested or recursive. Enumerating its
+            // descendants keeps the saved query independent of array depth.
+            if (array)
+                selector += ".**";
+            if (type.isBitmask())
+                result[id].insert("hasFlag(" + selector + ", " + simfilStringLiteral(symbol) + ")");
+            else if (!named || std::holds_alternative<std::string_view>(named->value))
+                result[id].insert(
+                    selector + " == " +
+                    simfilStringLiteral(named ? std::get<std::string_view>(named->value) : symbol));
+            else if (isIdentifier(symbol))
+                result[id].insert(selector + " == " + std::string(symbol));
+        }
+        else {
+            for (auto child : type.alternatives())
+                pending.emplace_back(child, field, array);
+        }
+        type.forEachField(
+            [&](simfil::SchemaField const& child)
+            {
+                if (child.role() != simfil::SchemaType::FieldRole::Context)
+                    for (auto target : child.types())
+                        pending.emplace_back(target, child.nameId(), false);
+            });
+        for (auto child : type.elements())
+            pending.emplace_back(child, field, true);
     }
     return result;
 }
@@ -216,22 +275,6 @@ std::optional<std::string> generatedAttributeRootPredicate(
     return *replacement + " == " + simfilStringLiteral(*reference.equalsStringLiteral);
 }
 
-/** Build a compact generic attribute-root body when specific scope guards would be too broad. */
-std::string genericAttributeRootQuery(
-    std::string_view query,
-    std::vector<AttributeQueryReference> const& references)
-{
-    std::vector<std::string> predicates;
-    std::set<std::string> seen;
-    for (auto const& reference : references) {
-        auto predicate = generatedAttributeRootPredicate(reference, reference.owner, query);
-        if (predicate && seen.insert(*predicate).second) {
-            predicates.push_back(std::move(*predicate));
-        }
-    }
-    return joinOr(std::move(predicates));
-}
-
 /** One source-location rewrite derived from a schema-aware AST reference. */
 struct SourceRewrite
 {
@@ -272,7 +315,7 @@ bool sourceRangeCoversWholeQuery(std::string_view query, simfil::SourceLocation 
     return location.offset == 0 && location.size == query.size();
 }
 
-/** Return whether a source range sits inside a function that changes feature-level cardinality. */
+/** Recognize a source range nested in one of the known aggregate calls. */
 bool sourceRangeIsInsideAggregateCall(std::string_view query, simfil::SourceLocation location)
 {
     if (location.size == 0 || location.offset + location.size > query.size()) {
@@ -346,7 +389,7 @@ bool referenceIsInferenceEligible(std::string_view query, simfil::SourceLocation
     return !sourceRangeIsInsideAggregateCall(query, location);
 }
 
-/** Return all attribute contexts whose mapget type-code matches one exact AST symbol. */
+/** Return attribute contexts whose declared name or type code matches one exact AST symbol. */
 std::vector<LayerSchema::AttributePathOwner>
 attributeScopesForStandaloneSymbol(LayerSchema const& registry, std::string_view symbol)
 {
@@ -482,6 +525,7 @@ LayerSchema::searchInterpretations(std::string_view query, SearchQueryRequestedS
                         {.id_ = "absent:" + symbol.name,
                          .label_ = symbol.name + " is not declared here",
                          .kind_ = "expression",
+                         .expression_ = "false",
                          .query_ = "false"});
                 featureContext |= std::ranges::any_of(
                     *choices,
@@ -508,6 +552,7 @@ LayerSchema::searchInterpretations(std::string_view query, SearchQueryRequestedS
                     SearchQueryConcreteScope::Attribute;
                 interpretation.featureTypes_ = featureTypes();
                 std::vector<SourceRewrite> rewrites;
+                std::vector<SourceRewrite> expressions;
                 for (size_t i = 0; i < meanings.size(); ++i) {
                     auto const& meaning = meanings[i][selected[i]];
                     interpretation.id_ += (i ? ";" : "") + meaning.id_;
@@ -520,9 +565,15 @@ LayerSchema::searchInterpretations(std::string_view query, SearchQueryRequestedS
                         {(*symbols)[i].location.offset,
                          (*symbols)[i].location.size,
                          parenthesized(meaning.query_)});
+                    expressions.push_back(
+                        {(*symbols)[i].location.offset,
+                         (*symbols)[i].location.size,
+                         parenthesized(meaning.expression_)});
                 }
                 interpretation.query_ =
                     applySourceRewrites(std::string(query), std::move(rewrites));
+                interpretation.expression_ =
+                    applySourceRewrites(std::string(query), std::move(expressions));
                 result.push_back(std::move(interpretation));
                 size_t index = 0;
                 for (; index < selected.size(); ++index) {
@@ -546,159 +597,211 @@ LayerSchema::searchInterpretations(std::string_view query, SearchQueryRequestedS
             {.id_ = "expression",
              .label_ = "Explicit expression",
              .kind_ = "expression",
+             .expression_ = trimQuery(query),
              .query_ = normalized->normalizedQuery_,
              .scope_ = normalized->concreteScope_,
              .attributeScopes_ = normalized->attributeScopes_,
              .featureTypes_ = normalized->matchedFeatureTypes_}};
     }
 
-    auto const& symbol = **standalone;
+    return symbolInterpretations(**standalone, requested, true);
+}
+
+std::vector<LayerSchema::SearchInterpretation>
+LayerSchema::enumSearchInterpretations(std::string const& symbol, SearchQueryRequestedScope scope)
+    const
+{
+    return symbolInterpretations(symbol, scope, false);
+}
+
+std::vector<LayerSchema::SearchInterpretation> LayerSchema::symbolInterpretations(
+    std::string const& symbol,
+    SearchQueryRequestedScope requested,
+    bool includeFields) const
+{
     auto graph = mapSchema();
     auto const& schemaStrings = graph->dictionary();
     std::map<std::string, SearchInterpretation> meanings;
+    std::map<std::string, std::set<std::string>> expressions;
+    std::map<simfil::TypeId, std::map<simfil::TypeId, std::set<std::string>>> enumPredicates;
+
+    // Group declarations while inspecting this graph. Only the final ordinary
+    // expression identifies a choice across maps; versioned type names and
+    // graph-local IDs are evidence for discovery, not saved query conditions.
     auto contribute =
-        [&](std::string id,
-            std::string label,
+        [&](std::string key,
             std::string kind,
-            std::string predicate,
-            AttributePathOwner const& owner)
+            std::string expression,
+            SearchQueryConcreteScope scope,
+            std::string const& feature,
+            AttributePathOwner const* owner = nullptr)
     {
-        auto [it, inserted] = meanings.try_emplace(id);
-        auto& interpretation = it->second;
-        if (inserted) {
-            interpretation.id_ = std::move(id);
-            interpretation.label_ = std::move(label);
-            interpretation.kind_ = std::move(kind);
-            interpretation.symbol_ = symbol;
-            interpretation.scope_ = requested == SearchQueryRequestedScope::Feature ?
-                SearchQueryConcreteScope::Feature :
-                SearchQueryConcreteScope::Attribute;
-        }
-        // Feature mode retains containing-feature semantics explicitly. Each
-        // attribute branch is evaluated within its owning layer/assignment.
-        auto branch = parenthesized(attributeScopeGuard(owner) + " and (" + predicate + ")");
-        if (interpretation.scope_ == SearchQueryConcreteScope::Feature) {
-            auto path = "properties.layer[" + simfilStringLiteral(owner.attributeLayerName_) +
-                "][" + simfilStringLiteral(owner.attributeName_) + "]";
-            branch = "(typeId == " + simfilStringLiteral(owner.featureType_) + " and any(" + path +
-                ".(" + predicate + ")))";
-        }
-        interpretation.query_ = interpretation.query_.empty() ?
-            branch :
-            interpretation.query_ + " or " + branch;
-        interpretation.attributeScopes_.push_back(owner);
-        if (std::ranges::find(interpretation.featureTypes_, owner.featureType_) ==
-            interpretation.featureTypes_.end())
-            interpretation.featureTypes_.push_back(owner.featureType_);
+        auto& meaning = meanings[key];
+        meaning.kind_ = std::move(kind);
+        meaning.symbol_ = symbol;
+        meaning.scope_ = scope;
+        expressions[key].insert(std::move(expression));
+        if (owner &&
+            std::ranges::none_of(
+                meaning.attributeScopes_,
+                [&](auto const& existing) { return sameAttributeOwner(existing, *owner); }))
+            meaning.attributeScopes_.push_back(*owner);
+        if (std::ranges::find(meaning.featureTypes_, feature) == meaning.featureTypes_.end())
+            meaning.featureTypes_.push_back(feature);
     };
 
-    std::map<simfil::TypeId, std::vector<simfil::TypeId>> symbolTypes;
-    auto declaringTypes = [&](simfil::TypeId root) -> std::vector<simfil::TypeId> const&
-    {
-        auto [it, inserted] = symbolTypes.try_emplace(root);
-        if (inserted)
-            it->second = graph->schemaType(root).symbolTypes(symbol);
-        return it->second;
-    };
-    auto owners = attributeScopes();
-    for (auto const& owner : owners) {
-        if (owner.attributeName_ == symbol || attributeTypeCode(owner.attributeSchema_) == symbol)
+    auto attributeScope = requested == SearchQueryRequestedScope::Feature ?
+        SearchQueryConcreteScope::Feature :
+        SearchQueryConcreteScope::Attribute;
+    for (auto const& owner : attributeScopes()) {
+        if (includeFields &&
+            (owner.attributeName_ == symbol || attributeTypeCode(owner.attributeSchema_) == symbol))
             contribute(
                 "attribute:" + owner.attributeName_,
-                owner.attributeName_ + " attribute",
                 "attribute",
-                "true",
-                owner);
-        auto root = owner.attributeSchema_;
-        // Enumerating paths is only evidence of a declared symbol. Runtime
-        // hasSymbol follows actual finite data, preserving recursive schemas
-        // and named-value provenance instead of serializing truncated paths.
+                recursiveField(owner.attributeName_),
+                attributeScope,
+                owner.featureType_,
+                &owner);
+
+        auto root = graph->schemaType(owner.attributeSchema_);
         auto stringId = schemaStrings.get(symbol);
-        auto fields = stringId ?
-            graph->schemaType(root).fieldPaths(stringId) :
-            std::vector<simfil::SchemaPath>{};
-        if (!fields.empty())
+        if (includeFields && stringId && !root.fieldPaths(stringId).empty())
             contribute(
-                "field:" + owner.attributeName_ + ":" + symbol,
-                owner.attributeName_ + "." + symbol + " field",
+                "field:attribute:" + symbol,
                 "field",
-                isIdentifier(symbol) ? "**." + symbol : "**[" + simfilStringLiteral(symbol) + "]",
-                owner);
-        for (auto type : declaringTypes(root)) {
-            auto declaredName = graph->schemaType(type).typeName();
-            auto name = declaredName.empty() ?
-                "type-" + std::to_string(type) :
-                std::string(declaredName);
-            // Anonymous type numbers are graph-local; equal numbers in two
-            // unrelated artifacts must never silently become one meaning.
-            auto identity = declaredName.empty() ?
-                std::string(mapSchema()->schemaId()) + ":" + name :
-                name;
-            auto id = "enum:attribute:" + identity + ":" + symbol;
-            contribute(
-                id,
-                name + " = " + symbol,
-                "enum",
-                fmt::format(
-                    "hasSymbol(_, {}, {}, {})",
-                    simfilStringLiteral(symbol),
-                    simfilStringLiteral(mapSchema()->schemaId()),
-                    type),
-                owner);
+                recursiveField(symbol),
+                attributeScope,
+                owner.featureType_,
+                &owner);
+
+        auto [found, inserted] = enumPredicates.try_emplace(root.id());
+        if (inserted)
+            found->second = symbolFieldPredicates(root, symbol);
+        for (auto const& [type, predicates] : found->second) {
+            for (auto const& predicate : predicates)
+                contribute(
+                    "enum:attribute:" + std::to_string(type),
+                    "enum",
+                    predicate,
+                    attributeScope,
+                    owner.featureType_,
+                    &owner);
         }
     }
 
     auto symbolId = schemaStrings.get(symbol);
     for (auto const& feature : featureTypes()) {
+        // A forced attribute search cannot evaluate feature-owned payloads.
+        // Their names must not appear as choices in that scope either.
+        if (requested == SearchQueryRequestedScope::Attribute)
+            break;
         auto root = featureSchema(feature);
         auto typeView = graph->schemaType(root);
         auto excluded = std::array{attributeLayerMapSchema(feature)};
-        for (auto type : typeView.symbolTypes(symbol, excluded)) {
-            auto declaredName = graph->schemaType(type).typeName();
-            auto typeLabel = declaredName.empty() ?
-                "type-" + std::to_string(type) :
-                std::string(declaredName);
-            auto identity = declaredName.empty() ?
-                std::string(graph->schemaId()) + ":" + typeLabel :
-                typeLabel;
-            auto id = "enum:feature:" + identity + ":" + symbol;
-            auto& candidate = meanings[id];
-            candidate.id_ = id;
-            candidate.kind_ = "enum";
-            candidate.symbol_ = symbol;
-            candidate.label_ = typeLabel + " = " + symbol;
-            auto predicate = fmt::format(
-                "(typeId == {} and hasSymbol(_, {}, {}, {}))",
-                simfilStringLiteral(feature),
-                simfilStringLiteral(symbol),
-                simfilStringLiteral(mapSchema()->schemaId()),
-                type);
-            candidate.query_ = candidate.query_.empty() ?
-                predicate :
-                candidate.query_ + " or " + predicate;
-            candidate.featureTypes_.push_back(feature);
+        for (auto const& [type, predicates] : symbolFieldPredicates(typeView, symbol, excluded)) {
+            for (auto const& predicate : predicates)
+                contribute(
+                    "enum:feature:" + std::to_string(type),
+                    "enum",
+                    predicate,
+                    SearchQueryConcreteScope::Feature,
+                    feature);
         }
-        for (auto const& path :
-             symbolId ? typeView.fieldPaths(symbolId) : std::vector<simfil::SchemaPath>{})
+        for (auto const& path : includeFields&& symbolId ?
+                 typeView.fieldPaths(symbolId) :
+                 std::vector<simfil::SchemaPath>{})
         {
             auto names = schemaPathFieldNames(schemaStrings, path);
-            if (!names || ownerForPath(feature, root, *names).kind_ != PathOwnerKind::Feature)
-                continue;
-            auto& candidate = meanings["field:" + symbol];
-            candidate.id_ = "field:" + symbol;
-            candidate.label_ = symbol + " feature field";
-            candidate.kind_ = "field";
-            candidate.symbol_ = symbol;
-            candidate.query_ = isIdentifier(symbol) ?
-                "**." + symbol :
-                "**[" + simfilStringLiteral(symbol) + "]";
-            candidate.featureTypes_.push_back(feature);
-            break;
+            if (names && ownerForPath(feature, root, *names).kind_ == PathOwnerKind::Feature) {
+                contribute(
+                    "field:feature:" + symbol,
+                    "field",
+                    recursiveField(symbol),
+                    SearchQueryConcreteScope::Feature,
+                    feature);
+                break;
+            }
         }
     }
+
+    for (auto& [key, meaning] : meanings) {
+        auto const& predicates = expressions.at(key);
+        meaning.expression_ = joinOr({predicates.begin(), predicates.end()});
+        if (meaning.kind_ == "enum" && meaning.scope_ == SearchQueryConcreteScope::Attribute) {
+            // A homonymous field in a different attribute can represent a
+            // genuinely different choice. Qualify only those collisions, using
+            // ordinary owner names. Unambiguous warningSign fields need none
+            // of the layer/type restrictions used during their discovery.
+            std::vector<AttributePathOwner> conflicts;
+            for (auto const& [otherKey, other] : meanings) {
+                if (otherKey == key || other.kind_ != "enum" || other.scope_ != meaning.scope_)
+                    continue;
+                auto const& alternatives = expressions.at(otherKey);
+                if (std::ranges::any_of(
+                        predicates,
+                        [&](auto const& predicate) { return alternatives.contains(predicate); }))
+                    conflicts.insert(
+                        conflicts.end(),
+                        other.attributeScopes_.begin(),
+                        other.attributeScopes_.end());
+            }
+            if (!conflicts.empty()) {
+                std::set<std::string> guards;
+                for (auto const& owner : meaning.attributeScopes_) {
+                    auto guard = "$name == " + simfilStringLiteral(owner.attributeName_);
+                    if (std::ranges::any_of(
+                            conflicts,
+                            [&](auto const& other)
+                            { return other.attributeName_ == owner.attributeName_; }))
+                    {
+                        guard += " and $layer == " + simfilStringLiteral(owner.attributeLayerName_);
+                        if (std::ranges::any_of(
+                                conflicts,
+                                [&](auto const& other)
+                                {
+                                    return other.attributeName_ == owner.attributeName_ &&
+                                        other.attributeLayerName_ == owner.attributeLayerName_;
+                                }))
+                            guard += " and $feature.typeId == " +
+                                simfilStringLiteral(owner.featureType_);
+                    }
+                    guards.insert(std::move(guard));
+                }
+                meaning.expression_ = parenthesized(joinOr({guards.begin(), guards.end()})) +
+                    " and " + parenthesized(meaning.expression_);
+            }
+        }
+        meaning.query_ = meaning.expression_;
+        meaning.label_ = symbol + (meaning.kind_ == "enum" ? " enum value" : " field");
+        if (meaning.kind_ == "attribute") {
+            meaning.label_ = meaning.attributeScopes_.front().attributeName_ + " attribute";
+            if (meaning.scope_ == SearchQueryConcreteScope::Attribute)
+                meaning.query_ = "$name == " +
+                    simfilStringLiteral(meaning.attributeScopes_.front().attributeName_);
+        }
+        meaning.id_ = meaning.kind_ + ":" +
+            (meaning.scope_ == SearchQueryConcreteScope::Attribute ? "attribute:" : "feature:") +
+            meaning.expression_;
+    }
     std::vector<SearchInterpretation> result;
-    for (auto& [_, interpretation] : meanings)
-        result.push_back(std::move(interpretation));
+    for (auto& [_, meaning] : meanings) {
+        auto existing = std::ranges::find(result, meaning.id_, &SearchInterpretation::id_);
+        if (existing == result.end()) {
+            result.push_back(std::move(meaning));
+        }
+        else {
+            for (auto const& owner : meaning.attributeScopes_)
+                if (std::ranges::none_of(
+                        existing->attributeScopes_,
+                        [&](auto const& other) { return sameAttributeOwner(owner, other); }))
+                    existing->attributeScopes_.push_back(owner);
+            for (auto const& feature : meaning.featureTypes_)
+                if (std::ranges::find(existing->featureTypes_, feature) ==
+                    existing->featureTypes_.end())
+                    existing->featureTypes_.push_back(feature);
+        }
+    }
     return result;
 }
 
@@ -735,8 +838,8 @@ LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedSc
     // - `**.field` becomes WildcardFieldExpr with schema-pruned paths.
     // - Attribute type-code operands can become scalar attribute value paths.
     // - Enum constants can become `exact.path == "ENUM"` AST comparisons.
-    // The normalizer consumes referencedSchemaPaths from that rewritten AST;
-    // it does not tokenize or term-scan the query to infer post-processing.
+    // Owner inference consumes referencedSchemaPaths from that rewritten AST;
+    // source scanning only excludes known aggregate call contexts.
     std::vector<AttributeQueryReference> attributeReferences;
     std::set<std::string> seenReferenceScopes;
     bool hasFeatureOwnedTerm = false;
@@ -790,27 +893,6 @@ LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedSc
     auto const shouldUseAttributeScope = requestedScope == SearchQueryRequestedScope::Attribute ||
         (requestedScope == SearchQueryRequestedScope::Auto && !result.attributeScopes_.empty());
 
-    if (result.attributeScopeCandidateCount_ > kMaxNormalizedAttributeScopes) {
-        result.rewriteSuppressed_ = true;
-        result.rewriteSuppressionReason_ = fmt::format(
-            "Attribute query rewrite suppressed: {} candidate scopes exceed the limit of {}.",
-            result.attributeScopeCandidateCount_,
-            kMaxNormalizedAttributeScopes);
-        result.attributeScopes_.clear();
-        result.concreteScope_ = shouldUseAttributeScope ?
-            SearchQueryConcreteScope::Attribute :
-            SearchQueryConcreteScope::Feature;
-        if (result.concreteScope_ == SearchQueryConcreteScope::Attribute) {
-            if (auto genericQuery =
-                    genericAttributeRootQuery(result.normalizedQuery_, attributeReferences);
-                !genericQuery.empty())
-            {
-                result.normalizedQuery_ = std::move(genericQuery);
-            }
-        }
-        return result;
-    }
-
     if (shouldUseAttributeScope) {
         result.concreteScope_ = SearchQueryConcreteScope::Attribute;
     }
@@ -830,20 +912,35 @@ LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedSc
         return result;
     }
 
-    // Step 3: generate one guarded attribute-root branch per matched
-    // attribute context. The branch guard selects the concrete mapget
-    // attribute overlay (`$feature.typeId`, `$layer`, `$name`). The branch
-    // body is then produced from schema-AST references:
-    // - explicit feature-root paths are replaced by their attribute-root
-    //   suffix using AST source locations;
-    // - generated enum comparisons are emitted as `suffix == "ENUM"` because
-    //   their AST path is not present as source text in the original query;
-    // - recursive wildcard-field references stay untouched, so SIMFIL can
-    //   still compile them against the concrete attribute root schema.
+    // A recursive field predicate already works on every matching attribute.
+    // Owner discovery helps choose its initial style; it must not expand that
+    // predicate into a frozen list of feature/layer/name combinations.
+    auto portableWildcard = !attributeReferences.empty() &&
+        std::ranges::all_of(
+            attributeReferences,
+            [](auto const& reference)
+            {
+                auto suffix =
+                    attributeRootPathForFeaturePath(reference.expressionPath, reference.owner);
+                return reference.viaWildcard && suffix && *suffix != "true";
+            });
+    if (portableWildcard || attributeReferences.empty())
+        return result;
+
+    // Explicit feature-root paths must be rebased when returning attribute
+    // matches. Retain only selectors actually present in the input path. For
+    // example, `**.WARNING_SIGN` requires its name, while a path through
+    // properties.layer.Guidance also requires Guidance. Feature types are
+    // inferred execution context, not an additional authored condition.
     std::vector<std::string> branches;
     branches.reserve(result.attributeScopes_.size());
     for (auto const& scope : result.attributeScopes_) {
-        auto guard = attributeScopeGuard(scope);
+        auto guard = "$name == " + simfilStringLiteral(scope.attributeName_);
+        if (std::ranges::any_of(
+                attributeReferences,
+                [&](auto const& reference)
+                { return sameAttributeOwner(reference.owner, scope) && !reference.viaWildcard; }))
+            guard = "$layer == " + simfilStringLiteral(scope.attributeLayerName_) + " and " + guard;
         auto const guardOnlyForExactTypeCode = std::ranges::any_of(
             standaloneAttributeScopes,
             [&](auto const& standaloneScope)
@@ -900,6 +997,8 @@ LayerSchema::normalizeSearchQuery(std::string_view query, SearchQueryRequestedSc
             guardOnly ? std::move(guard) :
                         std::move(guard) + " and " + parenthesized(std::move(body)));
     }
+    std::ranges::sort(branches);
+    branches.erase(std::unique(branches.begin(), branches.end()), branches.end());
     result.normalizedQuery_ = joinOr(std::move(branches));
     return result;
 }

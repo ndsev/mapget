@@ -24,12 +24,12 @@
 
 namespace mapget
 {
+class MapSchema;
 
 /** Owner-retaining view of one named layer in an immutable MapSchema.
  * Builder methods write to the common owner before finalization. Type IDs
  * are graph-global; same-named feature aliases remain local to this layer.
  */
-class MapSchema;
 class LayerSchema : public simfil::ModelNodeBase
 {
 public:
@@ -41,8 +41,10 @@ public:
         std::string ownerType_;
         std::string name_;
         std::vector<std::string> targetTypes_;
+
         /** Producer confirms complete conversion coverage for this declared family. */
         bool complete_ = false;
+
         /** Producer routing fact, never inferred from the target type alone. */
         Locality locality_ = Locality::Unknown;
 
@@ -55,8 +57,10 @@ public:
     /** Read producer relation contracts without treating referenced types as feature owners. */
     [[nodiscard]] std::vector<RelationDeclaration> relationDeclarations() const;
     [[nodiscard]] std::vector<RelationDeclaration> relationsTo(std::string_view targetType) const;
+
     /** Distinguish an explicitly empty relation index from absent producer metadata. */
     [[nodiscard]] bool hasRelationDeclarations() const;
+
     /** Publish native forward contracts, including an explicitly empty inventory. */
     void setRelationDeclarations(std::vector<RelationDeclaration> declarations);
 
@@ -67,6 +71,7 @@ public:
     static constexpr auto AttributeKind = simfil::SchemaType::makeKind(
         StringPool::SchemaAttributeStr,
         simfil::valueTypeAffinity(simfil::ValueType::Object));
+
     /** Typed raw bits; declarations retain exact masks, aliases and unknown bits. */
     static constexpr auto BitmaskKind = simfil::SchemaType::makeKind(
         StringPool::SchemaBitmaskStr,
@@ -86,6 +91,7 @@ public:
         std::string attributeLayerName_;
         std::string attributeName_;
         simfil::TypeId attributeSchema_ = simfil::NoTypeId;
+
         /** Owning feature layer; feature type names can repeat across layers. */
         std::string featureLayer_;
     };
@@ -107,6 +113,7 @@ public:
     };
 
     using NamedSchemaPath = std::vector<NamedPathSegment>;
+
     /** User-facing scope request before schema normalization chooses concrete execution. */
     enum class SearchQueryRequestedScope {
         Feature,
@@ -136,8 +143,10 @@ public:
     };
 
     /** One explicit meaning of confirmed search input, before any tile request.
-     * The predicate is portable Simfil with owner guards, never an unresolved
-     * standalone token whose meaning could change inside a style wrapper.
+     * expression_ is the ordinary, editable Simfil query offered to the user.
+     * query_ evaluates that expression in scope_'s concrete root. Attribute
+     * owners describe this preparation's styling/compilation context; they
+     * are not restrictions to persist when the user adds another map.
      */
     struct SearchInterpretation
     {
@@ -145,6 +154,7 @@ public:
         std::string label_;
         std::string kind_;
         std::string symbol_;
+        std::string expression_;
         std::string query_;
         SearchQueryConcreteScope scope_ = SearchQueryConcreteScope::Feature;
         std::vector<AttributePathOwner> attributeScopes_;
@@ -154,6 +164,14 @@ public:
     /** Enumerate distinct schema meanings; the caller must choose when more than one exists. */
     [[nodiscard]] tl::expected<std::vector<SearchInterpretation>, simfil::Error>
     searchInterpretations(std::string_view query, SearchQueryRequestedScope scope) const;
+
+    /**
+     * Portable predicates for an enum token already identified by completion.
+     * This skips field-path discovery and expression normalization: those belong
+     * to confirmed search preparation, not to each suggested field while typing.
+     */
+    [[nodiscard]] std::vector<SearchInterpretation>
+    enumSearchInterpretations(std::string const& symbol, SearchQueryRequestedScope scope) const;
 
     using Ptr = simfil::model_ptr<LayerSchema>;
     using ModelType = MapSchema;
@@ -168,10 +186,13 @@ public:
     [[nodiscard]] std::string_view name() const;
     [[nodiscard]] LayerType layerType() const;
     [[nodiscard]] std::shared_ptr<MapSchema const> mapSchema() const;
+
     /** Register a produced feature root and its map-wide identity. */
     void addFeatureType(FeatureTypeInfo info, simfil::TypeId rootSchema = 0);
+
     /** Declare production using an identity already registered on the owning map. */
     void addFeatureType(std::string_view name, simfil::TypeId rootSchema = 0);
+
     /** Build the native Feature envelope and identity fields once. Supplied properties
      * and layer-map objects remain extensible; reserved members cannot be redefined.
      * Zero arguments create empty containers with canonical lookup keys. */
@@ -179,11 +200,13 @@ public:
         FeatureTypeInfo info,
         simfil::SchemaType properties = {},
         simfil::SchemaType attributeLayers = {});
+
     /** Create a produced root using an identity already declared on MapSchema. */
     [[nodiscard]] FeatureSchemaType newFeature(
         std::string_view name,
         simfil::SchemaType properties = {},
         simfil::SchemaType attributeLayers = {});
+
     /** Atomically declare an Attribute's container edge and named owner without cloning it.
      * Existing exact edges are reused; incompatible targets and thin legacy roots fail. */
     void bindAttribute(
@@ -191,9 +214,14 @@ public:
         std::string_view featureType,
         std::string_view layer,
         std::string_view name);
+
+    /** Test this layer's production membership, independently of map-wide identity lookup. */
     [[nodiscard]] bool producesFeatureType(std::string_view name) const;
+
+    /** Borrow any map-wide identity; this does not assert that this layer produces it. */
     [[nodiscard]] FeatureIdentity
     getTypeInfo(std::string_view name, bool throwIfMissing = true) const;
+
     /** Project native identity and forward relations without expanding types.
      * Optional reserve runs per visited entry, before copying text/containers, with a conservative
      * JSON byte allowance. It may throw to enforce caller work/time/size limits; zero bytes still
@@ -204,6 +232,7 @@ public:
         const;
     void setRootSchema(simfil::TypeId root);
     [[nodiscard]] simfil::TypeId rootSchema() const;
+
     /** Borrow the layer's canonical root; retain the layer or map owner during traversal. */
     [[nodiscard]] simfil::SchemaType rootType() const;
 
@@ -220,7 +249,7 @@ public:
     /** Serialize this typed schema to its JSON Schema transport representation. */
     [[nodiscard]] nlohmann::json toJsonSchema() const;
 
-    /** Report this borrowing view; shared storage is accounted by MapSchema::memoryUsage(). */
+    /** Report this view only; shared storage is accounted by MapSchema::memoryUsage(). */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 
     /** Add one object/array/value schema node and return its stable TypeId. */
@@ -284,7 +313,7 @@ public:
         std::string_view attributeTypeCode,
         std::string_view sourceDefinitionKey);
 
-    /** Resolve a schema key to the serialized TypeId namespace. */
+    /** Resolve a local key, then a map-wide key; zero means neither namespace contains it. */
     [[nodiscard]] simfil::TypeId schemaId(std::string_view key) const;
 
     /** Return the mapget attribute type-code for an Attribute schema, if any. */
@@ -311,7 +340,10 @@ public:
     /** Resolve the Feature.properties.layer object schema for a concrete feature type. */
     [[nodiscard]] simfil::TypeId attributeLayerMapSchema(std::string_view featureType) const;
 
-    /** Resolve a child schema from a parent object/array schema and field name. */
+    /** Resolve a field through object, array-element and alternative schemas.
+     * The first matching field occurrence wins. preferredKind selects among that
+     * occurrence's types, falling back to its first nonzero type; zero means absent.
+     */
     [[nodiscard]] simfil::TypeId childSchema(
         simfil::TypeId parent,
         std::string_view fieldName,
@@ -341,12 +373,15 @@ public:
         size_t maxBytes,
         simfil::EvaluationSummary* summary = nullptr) const;
 
-    /** Return scalar value paths addressed by an attribute type-code shorthand. */
+    /** Return sorted, unique paths for an attribute name or type-code shorthand.
+     * Each matching payload chooses its first scalar, skipping infrastructure
+     * metadata. Cycles are ignored; traversal/depth budget exhaustion throws.
+     */
     [[nodiscard]] std::vector<NamedSchemaPath>
     scalarFieldPathsForAttribute(simfil::TypeId rootSchema, std::string_view attributeTypeCode)
         const;
 
-    /** Return all feature types represented by Feature schema roots in this layer schema. */
+    /** Copy names explicitly declared as produced by this layer, in lexical order. */
     [[nodiscard]] std::vector<std::string> featureTypes() const;
 
     /** Return all searchable attribute contexts represented by this layer schema. */
@@ -370,6 +405,11 @@ public:
 private:
     friend class MapSchema;
     class Search;
+    /** Shared symbol discovery; enum completion omits attribute/field alternatives. */
+    [[nodiscard]] std::vector<SearchInterpretation> symbolInterpretations(
+        std::string const& symbol,
+        SearchQueryRequestedScope scope,
+        bool includeFields) const;
     MapSchema& mutableOwner();
 };
 

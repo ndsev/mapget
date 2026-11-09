@@ -269,7 +269,7 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
     }
 }
 
-/** Recompute a conservative lower bound for request orchestration containers. */
+/** Estimate request orchestration storage while holding the coordination mutex. */
 [[nodiscard]] uint64_t FilterRequestExecution::orchestrationBytesLocked() const
 {
     MemoryUsageBreakdown usage;
@@ -319,6 +319,8 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
         if (channel.featureFilter_) {
             usage.add("filter-channel-strings", stringMemoryUsage(*channel.featureFilter_));
         }
+        if (channel.schemaId_)
+            usage.add("filter-channel-strings", stringMemoryUsage(*channel.schemaId_));
         if (channel.entryFilter_) {
             usage.add("filter-channel-strings", stringMemoryUsage(*channel.entryFilter_));
         }
@@ -960,8 +962,8 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             continue;
         }
 
-        // Object filtering is deliberately local; unresolved external references stay
-        // on the source feature, without initiating another partition load.
+        // Object filtering stays within this partition. Omit unresolved relation
+        // descriptors without loading another partition; the source model is unchanged.
         if (source.partitionId().kind() == PartitionKind::Object) {
             continue;
         }
@@ -1345,7 +1347,8 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
         }
 
         if (targetLayer->error()) {
-            // A failed dependency expires only its consumers, not the entire viewport.
+            // Keep this dependency's error and lifetime on its consuming outputs;
+            // unrelated outputs can still complete.
             for (auto* output : outputs) {
                 auto added = addRelationTargetContribution(*output, targetKey, *targetLayer);
                 if (!added)
@@ -1916,8 +1919,8 @@ std::vector<MapPartitionKey> FilterRequestExecution::liveOutputKeys()
     std::lock_guard lock(mutex);
     result.reserve(outputs.size() - prunedOutputTiles);
     for (auto const& output : outputs) {
-        // A pruned south-west owner must not suppress a relation in an output
-        // that still belongs to the current request.
+        // Only retained outputs count as ownership coverage. Relation completion
+        // omits a reciprocal pair whose permanent owner has been pruned.
         if (output.state_ != OutputTileState::State::Pruned) {
             result.emplace_back(
                 LayerType::Features,
@@ -2658,6 +2661,13 @@ bool detail::FilterRequestExecution::start(
         return false;
     }
 
+    for (auto const& channel : request->filter_.channels_) {
+        if (channel.schemaId_ && *channel.schemaId_ != registration->info->schemaId_)
+            return rejectStart(
+                request,
+                "Search schema changed; prepare the confirmed query again.");
+    }
+
     if (std::ranges::any_of(
             request->tileIds_,
             [&](auto const& id) { return id.kind() != context.partitionKind_; }))
@@ -2738,7 +2748,7 @@ bool detail::FilterRequestExecution::start(
             return uint64_t{0};
         }
         // Operational status must not queue behind filter coordination. A
-        // contended sample reuses the last exact gauge value and retries on
+        // contended sample reuses the last storage estimate and retries on
         // the next poll instead of blocking an HTTP event-loop thread.
         std::unique_lock lock(active->mutex, std::try_to_lock);
         if (!lock.owns_lock()) {

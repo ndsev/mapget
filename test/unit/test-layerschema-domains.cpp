@@ -105,6 +105,89 @@ bool suggests(
 }  // namespace
 
 TEST_CASE(
+    "Feature schema lookup preserves layer-local physical roots across transports",
+    "[schema-domain][schema-native][feature-schema-lookup]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    for (auto name : {"A", "B"}) {
+        auto layer = graph->newLayer(name, LayerType::Features);
+        auto properties = graph->schemaType(layer->addSchema(Kind::Object));
+        properties.asObject().addField(name, graph->schemaType(graph->primitive(Kind::Int)));
+        (void)layer->newFeature(testFeatureType("Shared", "identifier"), properties);
+        CHECK(layer->featureSchema("Shared") == layer->schemaId(LayerSchema::featureKey("Shared")));
+    }
+    graph->finalize();
+
+    auto imported = std::make_shared<MapSchema>();
+    for (auto name : {"A", "B"}) {
+        auto source = graph->layer(name);
+        (void)imported->importLayer(
+            name,
+            LayerType::Features,
+            source->toJsonSchema(),
+            identityDeclarations(source));
+    }
+    imported->finalize();
+
+    // Compose an independent layer to exercise remapped type IDs, then read the
+    // binary form as another consumer would. Names stay shared across layers,
+    // while the physical Feature roots retain their distinct property domains.
+    auto extra = std::make_shared<MapSchema>();
+    (void)extra->newLayer("C", LayerType::Features)
+        ->newFeature(testFeatureType("Shared", "identifier"));
+    extra->finalize();
+    auto composed = MapSchema::compose({}, std::vector<MapSchema::ConstPtr>{graph, extra});
+    for (MapSchema::ConstPtr owner :
+         {MapSchema::ConstPtr(graph), MapSchema::ConstPtr(imported), composed})
+    {
+        std::ostringstream output;
+        REQUIRE(owner->write(output));
+        auto bytes = output.str();
+        auto decoded =
+            MapSchema::read({reinterpret_cast<uint8_t const*>(bytes.data()), bytes.size()});
+        for (auto variant : {owner, MapSchema::ConstPtr(decoded)}) {
+            for (auto name : {"A", "B"}) {
+                auto layer = variant->layer(name);
+                auto physical = layer->schemaId(LayerSchema::featureKey("Shared"));
+                REQUIRE(physical != simfil::NoTypeId);
+                CHECK(layer->featureSchema("Shared") == physical);
+                CHECK(variant->schemaType(physical).kind() == LayerSchema::FeatureKind);
+                CHECK(
+                    layer->childSchema(layer->featurePropertiesSchema("Shared"), name) !=
+                    simfil::NoTypeId);
+                CHECK(layer->featureSchema("MissingFeature") == simfil::NoTypeId);
+                CHECK(variant->dictionary().get("MissingFeature") == simfil::StringPool::Empty);
+            }
+            CHECK(
+                variant->layer("A")->featureSchema("Shared") !=
+                variant->layer("B")->featureSchema("Shared"));
+        }
+    }
+}
+
+TEST_CASE(
+    "Feature schema lookup retains schema-only aliases and map-wide fallback",
+    "[schema-domain][schema-native][feature-schema-lookup]")
+{
+    auto [graph, layer] = newTestSchema();
+    auto global = graph->addSchema(Kind::Object, LayerSchema::featureKey("Reference"));
+    auto local = layer->addSchema(Kind::Object, LayerSchema::featureKey("Legacy"));
+    auto shadowed = graph->addSchema(Kind::String, LayerSchema::featureKey("Legacy"));
+    REQUIRE(local != shadowed);
+    for (bool frozen : {false, true}) {
+        if (frozen)
+            graph->finalize();
+        CAPTURE(frozen);
+        CHECK_FALSE(layer->producesFeatureType("Reference"));
+        CHECK_FALSE(layer->producesFeatureType("Legacy"));
+        CHECK(layer->featureSchema("Reference") == global);
+        CHECK(layer->featureSchema("Legacy") == local);
+        CHECK(layer->featureSchema("MissingFeature") == simfil::NoTypeId);
+        CHECK(graph->dictionary().get("MissingFeature") == simfil::StringPool::Empty);
+    }
+}
+
+TEST_CASE(
     "Closed geometry types preserve coordinate lookup through native and JSON transport",
     "[schema-domain][schema-native][geometry-schema]")
 {
@@ -1323,15 +1406,38 @@ TEST_CASE(
         REQUIRE(prepared->size() == 2);
         CHECK((*prepared)[0].id_.find("attribute:") == 0);
         CHECK((*prepared)[1].id_.find("enum:") == 0);
-        CHECK((*prepared)[1].query_.find("hasSymbol") != std::string::npos);
-        CHECK((*prepared)[1].query_.find("WARNING_SIGN") != std::string::npos);
+        CHECK((*prepared)[1].query_.find("hasSymbol") == std::string::npos);
+        CHECK((*prepared)[1].query_.find("schema:") == std::string::npos);
+        CHECK((*prepared)[1].query_.find("**.warningSign == \"SPEED_LIMIT\"") != std::string::npos);
+        CHECK(
+            (*prepared)[1].query_.find("**.movableWarningSign == \"SPEED_LIMIT\"") !=
+            std::string::npos);
+        CHECK((*prepared)[1].expression_ == (*prepared)[1].query_);
+        // Completion already knows that this candidate is an enum symbol.
+        // It must obtain exactly the same portable predicate without walking
+        // every root's field paths to rediscover the attribute alternative.
+        auto enumChoices = schema->enumSearchInterpretations(
+            "SPEED_LIMIT",
+            LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(enumChoices.size() == 1);
+        CHECK(enumChoices.front().id_ == (*prepared)[1].id_);
+        if (!std::string_view(query).starts_with("any("))
+            CHECK(enumChoices.front().expression_ == (*prepared)[1].expression_);
+
+        auto explicitQuery = schema->searchInterpretations(
+            (*prepared)[1].expression_,
+            LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(explicitQuery);
+        REQUIRE(explicitQuery->size() == 1);
+        CHECK(explicitQuery->front().scope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+        CHECK(explicitQuery->front().query_ == (*prepared)[1].query_);
     }
     auto animals =
         schema->searchInterpretations("ANIMALS", LayerSchema::SearchQueryRequestedScope::Auto);
     REQUIRE(animals);
     REQUIRE(animals->size() == 1);
     CHECK(animals->front().attributeScopes_.size() == 2);
-    CHECK(animals->front().id_ == "enum:attribute:WarningSign:ANIMALS");
+    CHECK(animals->front().id_ == "enum:attribute:" + animals->front().expression_);
     CHECK(animals->front().scope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
     auto unknown =
         schema->searchInterpretations("UNDECLARED", LayerSchema::SearchQueryRequestedScope::Auto);
@@ -1339,7 +1445,7 @@ TEST_CASE(
     CHECK(unknown->empty());
 }
 
-TEST_CASE("Anonymous enum interpretations retain their artifact identity", "[search-preparation]")
+TEST_CASE("Equal field predicates share an interpretation across artifacts", "[search-preparation]")
 {
     auto identity = [](std::string version)
     {
@@ -1357,7 +1463,291 @@ TEST_CASE("Anonymous enum interpretations retain their artifact identity", "[sea
         REQUIRE(meanings->size() == 1);
         return meanings->front().id_;
     };
-    // Equal graph-local type numbers are not evidence that two unnamed enums
-    // describe the same concept. Named semantic types can group across sources.
-    CHECK(identity("1") != identity("2"));
+    // The visible condition defines the choice. Artifact identities and type
+    // numbers only participate in the per-map compilation that follows it.
+    CHECK(identity("1") == identity("2"));
+}
+
+TEST_CASE(
+    "Portable feature enum choices respect field spelling and requested scope",
+    "[search-preparation]")
+{
+    for (std::string field : {"category", "", "sign.kind"}) {
+        CAPTURE(field);
+        auto graph = std::make_shared<MapSchema>();
+        auto layer = graph->newLayer("Road", LayerType::Features);
+        auto root = layer->newFeature(testFeatureType("Road", "roadId"));
+        auto category = graph->newScalarType(Kind::String);
+        category.asEnum().addSymbol("ANIMALS");
+        root.properties().addField(field, category);
+        graph->finalize();
+
+        auto meanings =
+            layer->searchInterpretations("ANIMALS", LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(meanings);
+        REQUIRE(meanings->size() == 1);
+        auto selector = field == "category" ? "**.category" : "**[\"" + field + "\"]";
+        CHECK(meanings->front().expression_ == selector + " == \"ANIMALS\"");
+        CHECK(meanings->front().scope_ == LayerSchema::SearchQueryConcreteScope::Feature);
+
+        // This is a feature property, not an attribute payload. Selecting the
+        // attribute scope must not offer a choice that runs against features.
+        auto attributes = layer->searchInterpretations(
+            "ANIMALS",
+            LayerSchema::SearchQueryRequestedScope::Attribute);
+        REQUIRE(attributes);
+        CHECK(attributes->empty());
+    }
+}
+
+TEST_CASE(
+    "Portable enum predicates follow fields instead of discovery owners",
+    "[search-preparation]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Road", LayerType::Features);
+    auto category = graph->newScalarType(Kind::String);
+    category.setTypeName("WarningSign");
+    category.asEnum().addSymbol("SPEED_LIMIT");
+    category.asEnum().addSymbol("ANIMALS");
+    auto attribute = graph->newAttribute("shared-warning");
+    attribute.asObject().addField("warningSign", category);
+    for (auto [feature, rules] : {std::pair{"Road", "rules"}, {"Lane", "laneRules"}}) {
+        REQUIRE(layer->newFeature(testFeatureType(feature, "identifier")).id() != simfil::NoTypeId);
+        auto container = graph->newObjectType();
+        graph->schemaType(layer->attributeLayerMapSchema(feature))
+            .asObject()
+            .addField(rules, container)
+            .setMultimap(true);
+        for (auto name : {"WARNING_SIGN", "MOVABLE_WARNING_SIGN"})
+            layer->bindAttribute(attribute, feature, rules, name);
+    }
+    graph->finalize();
+    auto prepared =
+        layer->searchInterpretations("SPEED_LIMIT", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(prepared);
+    REQUIRE(prepared->size() == 1);
+    auto const& choice = prepared->front();
+    REQUIRE(choice.attributeScopes_.size() == 4);
+    CHECK(choice.query_ == "**.warningSign == \"SPEED_LIMIT\"");
+    CHECK(choice.expression_ == choice.query_);
+
+    // Changing owner labels does not change the authored field condition.
+    // A warning on the host feature still must not turn another current
+    // attribute's ANIMALS value into a match through its lookup-only context.
+    auto strings = std::make_shared<StringPool>("FactoredSearch");
+    auto env = makeEnvironment(strings);
+    env->setSchema(layer->rootType());
+    auto expression = simfil::compile(
+        *env,
+        choice.query_,
+        {.any = true, .rewriteMode = simfil::RewriteMode::None});
+    REQUIRE(expression);
+    for (std::string featureType : {"Road", "Lane"}) {
+        for (std::string rules : {"rules", "laneRules"}) {
+            for (std::string name : {"WARNING_SIGN", "MOVABLE_WARNING_SIGN", "OTHER"}) {
+                for (std::string sign : {"SPEED_LIMIT", "ANIMALS"}) {
+                    CAPTURE(featureType, rules, name, sign, choice.query_);
+                    auto model = std::make_shared<simfil::ModelPool>(strings);
+                    model->setSchemaPool(graph);
+                    auto data = model->newObject();
+                    REQUIRE(data->setSchema(attribute.id()));
+                    REQUIRE(data->addField("warningSign", std::string_view(sign)));
+                    auto feature = model->newObject();
+                    REQUIRE(feature->addField("typeId", std::string_view(featureType)));
+                    auto sibling = model->newObject();
+                    REQUIRE(sibling->setSchema(attribute.id()));
+                    REQUIRE(sibling->addField("warningSign", std::string_view("SPEED_LIMIT")));
+                    REQUIRE(feature->addField("sibling", sibling));
+                    auto context =
+                        simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(data));
+                    context->set(StringPool::OverlayNameStr, simfil::Value::make(name));
+                    context->set(StringPool::OverlayLayerStr, simfil::Value::make(rules));
+                    context->set(StringPool::OverlayFeatureStr, simfil::Value::field(feature));
+                    auto values = simfil::eval(*env, **expression, *context, nullptr);
+                    REQUIRE(values);
+                    REQUIRE(values->size() == 1);
+                    auto expected = sign == "SPEED_LIMIT";
+                    CHECK(values->front().as<simfil::ValueType::Bool>() == expected);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE(
+    "Accepted enum expressions survive new schemas and recursive wrappers",
+    "[search-preparation]")
+{
+    std::string accepted, firstArtifact, firstChoice;
+    for (int version : {1, 2}) {
+        auto graph = std::make_shared<MapSchema>(MapFormat{"Signs", std::to_string(version), {}});
+        auto layer = graph->newLayer(version == 1 ? "Road" : "Lane", LayerType::Features);
+        std::string feature = version == 1 ? "Road" : "Lane";
+        REQUIRE(layer->newFeature(testFeatureType(feature, "identifier")).id() != simfil::NoTypeId);
+        auto rules = graph->newObjectType();
+        graph->schemaType(layer->attributeLayerMapSchema(feature))
+            .asObject()
+            .addField("rules", rules)
+            .setMultimap(true);
+        auto sign = graph->newScalarType(Kind::String);
+        sign.setTypeName("signs.v" + std::to_string(version) + ".WarningSign");
+        sign.asEnum().addSymbol("SPEED_LIMIT");
+        sign.asEnum().addSymbol("ANIMALS");
+        auto attribute = graph->newAttribute("warning");
+        auto payload = version == 1 ? graph->schemaType(attribute.id()) : graph->newObjectType();
+        payload.asObject().addField("warningSign", sign);
+        payload.asObject().addField("next", payload);
+        if (version == 2)
+            attribute.asObject().addField("attributeValue", payload);
+        // Many owners used to exceed the normalization cap even though the
+        // same short field predicate applies to all of them.
+        for (int owner = 0; owner < 12; ++owner)
+            layer->bindAttribute(attribute, feature, "rules", "WARNING_" + std::to_string(owner));
+        graph->finalize();
+        auto choices = layer->searchInterpretations(
+            "SPEED_LIMIT",
+            LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(choices);
+        REQUIRE(choices->size() == 1);
+        auto const& choice = choices->front();
+        if (version == 1) {
+            accepted = choice.expression_;
+            firstArtifact = graph->schemaId();
+            firstChoice = choice.id_;
+        }
+        else {
+            CHECK(graph->schemaId() != firstArtifact);
+            CHECK(choice.id_ == firstChoice);
+        }
+        CHECK(choice.expression_ == "**.warningSign == \"SPEED_LIMIT\"");
+        auto prepared =
+            layer->searchInterpretations(accepted, LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(prepared);
+        REQUIRE(prepared->size() == 1);
+        CHECK(prepared->front().scope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+        CHECK(prepared->front().query_ == accepted);
+        CHECK(prepared->front().attributeScopes_.size() == 12);
+
+        auto strings = std::make_shared<StringPool>("PortableSigns");
+        auto env = makeEnvironment(strings);
+        env->setSchema(layer->rootType());
+        auto expression = simfil::compile(
+            *env,
+            accepted,
+            {.any = true,
+             .rewriteMode = simfil::RewriteMode::Schema,
+             .rootSchema =
+                 graph->schemaType(layer->attributeQuerySchema(feature, attribute.id()))});
+        REQUIRE(expression);
+        for (std::string actual : {"SPEED_LIMIT", "ANIMALS"}) {
+            auto model = std::make_shared<simfil::ModelPool>(strings);
+            model->setSchemaPool(graph);
+            auto data = model->newObject();
+            REQUIRE(data->setSchema(attribute.id()));
+            auto parent = data;
+            if (version == 2) {
+                parent = model->newObject();
+                REQUIRE(parent->setSchema(payload.id()));
+                REQUIRE(data->addField("attributeValue", parent));
+            }
+            for (int depth = 0; depth < 4; ++depth) {
+                auto child = model->newObject();
+                REQUIRE(child->setSchema(payload.id()));
+                REQUIRE(parent->addField("next", child));
+                parent = child;
+            }
+            REQUIRE(parent->addField("warningSign", std::string_view(actual)));
+            REQUIRE(parent->addField("unrelatedText", std::string_view("SPEED_LIMIT")));
+            auto values = simfil::eval(*env, **expression, *data, nullptr);
+            REQUIRE(values);
+            REQUIRE(values->size() == 1);
+            CHECK(values->front().as<simfil::ValueType::Bool>() == (actual == "SPEED_LIMIT"));
+        }
+    }
+}
+
+TEST_CASE(
+    "Portable named numeric comparisons resolve the current value type",
+    "[search-preparation]")
+{
+    std::string accepted;
+    for (int64_t encoding : {7, 42}) {
+        auto graph = std::make_shared<MapSchema>();
+        auto layer = graph->newLayer("Road", LayerType::Features);
+        auto feature = layer->newFeature(testFeatureType("Road", "identifier"));
+        auto speed = graph->newScalarType(Kind::Int);
+        speed.addNamedValue({.name = "UNLIMITED", .value = encoding});
+        feature.properties().addField("speed", speed);
+        graph->finalize();
+        auto choices =
+            layer->searchInterpretations("UNLIMITED", LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(choices);
+        REQUIRE(choices->size() == 1);
+        if (accepted.empty())
+            accepted = choices->front().expression_;
+        CHECK(choices->front().expression_ == accepted);
+        CHECK(accepted == "**.speed == UNLIMITED");
+        auto strings = std::make_shared<StringPool>("PortableNumericNames");
+        auto env = makeEnvironment(strings);
+        env->setSchema(layer->rootType());
+        auto expression = simfil::compile(
+            *env,
+            accepted,
+            {.any = true, .rewriteMode = simfil::RewriteMode::Schema, .rootSchema = feature});
+        REQUIRE(expression);
+        for (auto actual : {encoding, encoding + 1}) {
+            auto model = std::make_shared<simfil::ModelPool>(strings);
+            model->setSchemaPool(graph);
+            auto data = model->newObject();
+            REQUIRE(data->setSchema(feature.id()));
+            auto properties = model->newObject();
+            REQUIRE(properties->setSchema(feature.properties().id()));
+            REQUIRE(properties->addField("speed", actual));
+            REQUIRE(data->addField("properties", properties));
+            auto values = simfil::eval(*env, **expression, *data, nullptr);
+            REQUIRE(values);
+            REQUIRE(values->size() == 1);
+            CHECK(values->front().as<simfil::ValueType::Bool>() == (actual == encoding));
+        }
+    }
+}
+
+TEST_CASE(
+    "Homonymous enum fields keep the minimum distinguishing attribute selector",
+    "[search-preparation]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Road", LayerType::Features);
+    REQUIRE(layer->newFeature(testFeatureType("Road", "identifier")).id() != simfil::NoTypeId);
+    auto rules = graph->newObjectType();
+    graph->schemaType(layer->attributeLayerMapSchema("Road"))
+        .asObject()
+        .addField("rules", rules)
+        .setMultimap(true);
+    for (std::string name : {"TRAFFIC", "WEATHER"}) {
+        auto category = graph->newScalarType(Kind::String);
+        category.setTypeName(name);
+        category.asEnum().addSymbol("WARNING");
+        auto attribute = graph->newAttribute(name);
+        attribute.asObject().addField("category", category);
+        layer->bindAttribute(attribute, "Road", "rules", name);
+    }
+    graph->finalize();
+    auto choices =
+        layer->searchInterpretations("WARNING", LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(choices);
+    REQUIRE(choices->size() == 2);
+    CHECK(choices->front().expression_ != choices->back().expression_);
+    for (auto const& choice : *choices) {
+        REQUIRE(choice.attributeScopes_.size() == 1);
+        auto name = choice.attributeScopes_.front().attributeName_;
+        CHECK(choice.expression_ == "($name == \"" + name + "\") and (**.category == \"WARNING\")");
+        auto prepared = layer->searchInterpretations(
+            choice.expression_,
+            LayerSchema::SearchQueryRequestedScope::Auto);
+        REQUIRE(prepared);
+        REQUIRE(prepared->size() == 1);
+        CHECK(prepared->front().query_ == choice.expression_);
+    }
 }
