@@ -107,19 +107,24 @@ class ViewerConnection:
         result, self.buffer = self.buffer[:size], self.buffer[size:]
         return result
 
-    def send_frame(self, payload, opcode=1):
-        """Client frames are always masked, including pong replies."""
+    @staticmethod
+    def frame(payload, opcode=1, final=True):
+        """Encode a masked frame separately so tests can coalesce or split transport writes."""
         mask = os.urandom(4)
         size = len(payload)
-        header = bytes([0x80 | opcode])
+        header = bytes([(0x80 if final else 0) | opcode])
         if size < 126:
             header += bytes([0x80 | size])
         elif size <= 65535:
             header += bytes([0x80 | 126]) + struct.pack("!H", size)
         else:
             header += bytes([0x80 | 127]) + struct.pack("!Q", size)
-        self.socket.sendall(header + mask + bytes(
-            value ^ mask[index % 4] for index, value in enumerate(payload)))
+        return header + mask + bytes(
+            value ^ mask[index % 4] for index, value in enumerate(payload))
+
+    def send_frame(self, payload, opcode=1):
+        """Client frames are always masked, including pong replies."""
+        self.socket.sendall(self.frame(payload, opcode))
 
     def send(self, message):
         """Send one browser-owned action control as a JSON text frame."""
@@ -140,6 +145,8 @@ class ViewerConnection:
             opcode = flags & 15
             if opcode == 9:
                 self.send_frame(payload, 10)
+                continue
+            if opcode == 10:
                 continue
             if opcode == 8:
                 raise EOFError("Viewer received a close frame")
@@ -830,6 +837,67 @@ class NativeMcpTest(unittest.TestCase):
             text = next(c["text"] for c in result["content"] if c["type"] == "text")
             self.assertEqual(json.loads(text), payload["metadata"])
             self.assertNotIn("image", result["structuredContent"])
+
+    def test_fragmented_screenshot_transport(self):
+        """Complete fragmented results without another socket write; controls preserve data."""
+        original = next(r["value"] for r in self.fixtures["results"]
+                        if r["action"] == "viewer_screenshot" and r["valid"])
+        for mode in ("coalesced", "large", "split_reads", "controls", "controls_split_reads"):
+            with self.subTest(mode=mode):
+                viewer = self.viewer()
+                _, response = self.begin_rpc("tools/call", {
+                    "name": "viewer_screenshot", "arguments": self.arguments(viewer, "viewer_screenshot")})
+                invocation = viewer.receive()
+                result = json.loads(json.dumps(original))
+                if mode != "coalesced":
+                    result["image"]["data"] = base64.b64encode(b"x" * 120000).decode()
+                payload = json.dumps({"type": "mapget.actions.result", "version": 1,
+                                      "callId": invocation["callId"], "result": result}).encode()
+                midpoint = len(payload) // 2
+                first = viewer.frame(payload[:midpoint], final=False)
+                last = viewer.frame(payload[midpoint:], opcode=0)
+                if mode == "split_reads":
+                    # Pause at an incomplete extended-length header, then an incomplete
+                    # payload, then between fragments. None may spin the I/O loop.
+                    for chunk in (first[:3], first[3:-1], first[-1:], last[:5]):
+                        viewer.socket.sendall(chunk)
+                        time.sleep(0.02)
+                        self.assertEqual(self.http("GET", "/mcp/info")[0], 200)
+                    viewer.socket.sendall(last[5:])
+                elif mode == "controls":
+                    viewer.socket.sendall(first + viewer.frame(b"ping", opcode=9) +
+                                          viewer.frame(b"pong", opcode=10) + last)
+                elif mode == "controls_split_reads":
+                    viewer.socket.sendall(first + viewer.frame(b"ping", opcode=9))
+                    # The ping must be answered without consuming the partial screenshot.
+                    self.assertEqual(viewer.exact(6), b"\x8a\x04ping")
+                    viewer.send_frame(b"pong", opcode=10)
+                    time.sleep(0.02)
+                    viewer.socket.sendall(last)
+                else:
+                    viewer.socket.sendall(first + last)
+                # Do not send any subsequent client bytes to wake a stranded continuation.
+                # The service's 2 s action deadline and 6 s socket timeout bound failures.
+                actual = self.rpc_result(response)["result"]
+                self.assertFalse(actual.get("isError", False), actual)
+                self.assertEqual(actual["structuredContent"], result["metadata"])
+                self.assertEqual(next(c for c in actual["content"] if c["type"] == "image"),
+                                 {"type": "image", **result["image"]})
+                viewer.close()
+
+    def test_invalid_websocket_continuation_sequence(self):
+        """Reject an orphan continuation or a new data frame before the old message ends."""
+        for mode in ("orphan", "new_message"):
+            with self.subTest(mode=mode):
+                viewer = self.viewer()
+                if mode == "orphan":
+                    payload = viewer.frame(b"{}", opcode=0)
+                else:
+                    payload = viewer.frame(b"{", final=False) + viewer.frame(b"{}")
+                viewer.socket.sendall(payload)
+                with self.assertRaises(EOFError):
+                    viewer.receive()
+                viewer.close()
 
     def test_screenshot_rejects_noncanonical_encoding(self):
         """Invalid padding/alphabet fails one call, without returning the supplied byte string."""
