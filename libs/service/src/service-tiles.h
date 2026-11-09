@@ -27,6 +27,7 @@ public:
 private:
     ServiceScheduler& scheduler_;
     std::shared_ptr<SourceConcurrency> source_;
+    RegisteredDataSource::Ptr registration_;
     std::shared_ptr<TileLoadState> state_;
     PartitionLayer::Ptr cachedLayer_;
 };
@@ -35,12 +36,14 @@ private:
  * Merge all matching add-on datasource tiles into one freshly loaded base tile.
  *
  * Add-ons reuse the worker executing the base tile and therefore do not consume
- * independent datasource permits.
+ * independent datasource permits. Missing, errored or incompatible contributions
+ * return false after adding warnings, allowing the caller to bound the partial
+ * result's lifetime. Exceptions from loading/cloning, including cancellation,
+ * propagate instead and fail the enclosing tile job.
  */
-void loadAddOnTiles(
+bool loadAddOnTiles(
     PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
-    DataSourceRegistry const& dataSources,
     Cache::Ptr& cache,
     std::optional<std::chrono::milliseconds> const& defaultTtl,
     std::chrono::milliseconds emptyTileTtl,

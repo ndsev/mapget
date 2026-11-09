@@ -1,4 +1,5 @@
 #include "mcp-auth.h"
+#include "bounded-json.h"
 
 #include <jwt-cpp/jwt.h>
 #include <jwt-cpp/traits/nlohmann-json/traits.h>
@@ -27,12 +28,6 @@ bool containsWord(std::string const& list, std::string const& expected)
     return false;
 }
 
-/** Only literal loopback addresses qualify; DNS and forwarded addresses are not evidence. */
-bool loopback(std::string const& address)
-{
-    return address == "127.0.0.1" || address == "::1" || address == "::ffff:127.0.0.1";
-}
-
 /** Bound decoded JSON before jwt-cpp's recursive JSON parser or NumericDate conversions run. */
 jwt::decoded_jwt<jwt::traits::nlohmann_json> decodeToken(std::string const& token)
 {
@@ -51,8 +46,8 @@ jwt::decoded_jwt<jwt::traits::nlohmann_json> decodeToken(std::string const& toke
         return jwt::base::decode<jwt::alphabet::base64url>(
             jwt::base::pad<jwt::alphabet::base64url>(value));
     };
-    (void)McpAuthentication::parseJson(decode(token.substr(0, first)), 4096, 8);
-    auto claims = McpAuthentication::parseJson(
+    (void)parseBoundedJson(decode(token.substr(0, first)), 4096, 8);
+    auto claims = parseBoundedJson(
         decode(token.substr(first + 1, second - first - 1)),
         16 * 1024,
         16);
@@ -68,33 +63,6 @@ jwt::decoded_jwt<jwt::traits::nlohmann_json> decodeToken(std::string const& toke
 }
 }  // namespace
 
-nlohmann::json
-McpAuthentication::parseJson(std::string_view input, size_t maxBytes, size_t maxDepth)
-{
-    if (input.size() > maxBytes) {
-        throw std::invalid_argument("MCP JSON exceeds its byte limit.");
-    }
-    std::vector<std::set<std::string>> objectKeys;
-    return nlohmann::json::parse(
-        input,
-        [maxDepth, &objectKeys](int depth, auto event, auto& value)
-        {
-            if (depth < 0 || static_cast<size_t>(depth) > maxDepth) {
-                throw std::invalid_argument("MCP JSON exceeds its nesting limit.");
-            }
-            if (event == nlohmann::json::parse_event_t::object_start)
-                objectKeys.emplace_back();
-            if (event == nlohmann::json::parse_event_t::object_end)
-                objectKeys.pop_back();
-            if (event == nlohmann::json::parse_event_t::key &&
-                !objectKeys.back().insert(value.template get<std::string>()).second)
-            {
-                throw std::invalid_argument("MCP JSON contains a duplicate object member.");
-            }
-            return true;
-        });
-}
-
 nlohmann::json McpAuthentication::readJson(std::filesystem::path const& path, size_t maxBytes)
 {
     std::ifstream input(path, std::ios::binary);
@@ -104,12 +72,14 @@ nlohmann::json McpAuthentication::readJson(std::filesystem::path const& path, si
     std::string bytes(maxBytes + 1, '\0');
     input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     bytes.resize(static_cast<size_t>(input.gcount()));
-    return parseJson(bytes, maxBytes);
+    return parseBoundedJson(bytes, maxBytes);
 }
 
-McpAuthentication::McpAuthentication(McpConfig config) : config_(std::move(config))
+McpAuthentication::McpAuthentication(McpConfig config, ProxyAuthentication proxyAuth)
+    : config_(std::move(config)), proxyAuth_(std::move(proxyAuth))
 {
     config_.validate();
+    proxyAuth_.validate();
     if (!config_.jwksFile.empty()) {
         installKeys(readJson(config_.jwksFile, 256 * 1024));
         // A local key artifact is administrator-managed, immutable until service restart.
@@ -168,14 +138,8 @@ bool McpAuthentication::acceptsRequest(drogon::HttpRequestPtr const& request, bo
     {
         return false;
     }
-    if (config_.mode == McpConfig::Mode::Local) {
-        if (!loopback(request->peerAddr().toIp()))
-            return false;
-        for (auto const& [name, value] : request->headers()) {
-            if (name == "forwarded" || name.starts_with("x-forwarded-"))
-                return false;
-        }
-    }
+    // Local mode has no network-peer authentication. Forwarded headers do not select
+    // authority, origin or identity; OAuth's trusted browser-proxy check is separate.
     return true;
 }
 
@@ -240,23 +204,8 @@ McpViewerRelay::Principal McpAuthentication::browser(drogon::HttpRequestPtr cons
          containsWord(request->getHeader(config_.permissionsHeader), "viewer-control"),
          containsWord(request->getHeader(config_.permissionsHeader), "config-read"),
          containsWord(request->getHeader(config_.permissionsHeader), "config-write"),
-         containsWord(request->getHeader(config_.permissionsHeader), "diagnostics")});
-}
-
-bool McpAuthentication::permission(
-    nlohmann::json const& claims,
-    std::string const& claim,
-    std::string const& expected)
-{
-    if (claim.empty())
-        return false;
-    auto const pointer = nlohmann::json::json_pointer(claim);
-    if (!claims.contains(pointer))
-        return false;
-    auto const& value = claims.at(pointer);
-    return value.is_string() ?
-        value == expected :
-        value.is_array() && std::find(value.begin(), value.end(), expected) != value.end();
+         containsWord(request->getHeader(config_.permissionsHeader), "diagnostics"),
+         ClientAuthorization{{}, proxyAuth_.claims(request)}});
 }
 
 McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& claims) const
@@ -266,16 +215,21 @@ McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& cla
         claims.at("sub").get<std::string>().empty() ||
         claims.at("sub").get<std::string>().size() > 1024)
         return {};
+    ClientAuthorization authorization{{}, std::make_shared<nlohmann::json const>(claims)};
+    auto permission = [&](std::string const& claim, std::string const& expected) {
+        return !claim.empty() && authorization.hasClaim(nlohmann::json::json_pointer(claim), expected);
+    };
     McpViewerRelay::Principal result{
         claims.at("iss"),
         claims.at("sub"),
         std::chrono::system_clock::time_point(
             std::chrono::seconds(claims.at("exp").get<int64_t>())),
-        permission(claims, config_.readClaim, config_.readValue),
-        permission(claims, config_.controlClaim, config_.controlValue),
-        permission(claims, config_.configReadClaim, config_.configReadValue),
-        permission(claims, config_.configWriteClaim, config_.configWriteValue),
-        permission(claims, config_.diagnosticsClaim, config_.diagnosticsValue)};
+        permission(config_.readClaim, config_.readValue),
+        permission(config_.controlClaim, config_.controlValue),
+        permission(config_.configReadClaim, config_.configReadValue),
+        permission(config_.configWriteClaim, config_.configWriteValue),
+        permission(config_.diagnosticsClaim, config_.diagnosticsValue),
+        std::move(authorization)};
     for (auto const& mapping : config_.datasourceHeaderClaims) {
         auto separator = mapping.find('=');
         auto pointer = nlohmann::json::json_pointer(mapping.substr(separator + 1));
@@ -287,7 +241,7 @@ McpViewerRelay::Principal McpAuthentication::principal(nlohmann::json const& cla
         auto value = claim.get<std::string>();
         if (value.size() > 4096 || value.find_first_of("\r\n") != std::string::npos)
             return {};
-        result.datasourceHeaders.emplace(mapping.substr(0, separator), std::move(value));
+        result.datasourceAuthorization.headers.emplace(mapping.substr(0, separator), std::move(value));
     }
     return result;
 }
@@ -299,7 +253,7 @@ McpAuthentication::withDatasourceHeaders(McpViewerRelay::Principal principal) co
         return {};
     for (auto const& mapping : config_.datasourceHeaders) {
         auto separator = mapping.find('=');
-        principal.datasourceHeaders
+        principal.datasourceAuthorization.headers
             .emplace(mapping.substr(0, separator), mapping.substr(separator + 1));
     }
     return principal;
@@ -312,7 +266,7 @@ bool McpAuthentication::needsKeys(std::string const& token) const
         return false;
     try {
         auto const decoded = decodeToken(token);
-        auto const header = parseJson(decoded.get_header(), 4096, 8);
+        auto const header = parseBoundedJson(decoded.get_header(), 4096, 8);
         if (header.value("alg", "") != "RS256" || !header.contains("kid") ||
             header["kid"].get<std::string>().size() > 256)
             return false;
@@ -333,7 +287,7 @@ McpAuthentication::bearer(std::string const& token, bool& insufficient) const
         return {};
     try {
         auto const decoded = decodeToken(token);
-        auto const header = parseJson(decoded.get_header(), 4096, 8);
+        auto const header = parseBoundedJson(decoded.get_header(), 4096, 8);
         if (header.value("alg", "") != "RS256" || header.contains("crit") ||
             header.contains("jku") || header.contains("x5u") || header.contains("b64"))
             return {};
@@ -346,7 +300,7 @@ McpAuthentication::bearer(std::string const& token, bool& insufficient) const
             .with_audience(config_.endpoint)
             .leeway(config_.clockSkewSeconds)
             .verify(decoded);
-        auto const claims = parseJson(decoded.get_payload(), 16 * 1024, 16);
+        auto const claims = parseBoundedJson(decoded.get_payload(), 16 * 1024, 16);
         auto result = principal(claims);
         if (result.issuer.empty() || result.expiresAt <= std::chrono::system_clock::now())
             return {};

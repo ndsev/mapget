@@ -101,10 +101,8 @@ AttributeLayer::newAttribute(
 void AttributeLayer::addAttribute(model_ptr<Attribute> a)
 {
     if (a) {
-        auto schemaId = model().childSchemaId(
-            schema(),
-            a->name(),
-            simfil::Schema::Kind::Object);
+        auto schemaId =
+            model().childSchemaId(schema(), a->name(), simfil::SchemaType::Kind::Object);
         model().applyObjectSchema(*a, schemaId);
     }
     addField(a->name(), a);
@@ -160,18 +158,12 @@ void AttributeLayerList::addLayer(const std::string_view& name, model_ptr<Attrib
         raise("Cannot mutate a feature-scoped AttributeLayerList view.");
     }
     if (l) {
-        auto schemaId = model().childSchemaId(
-            schema(),
-            name,
-            simfil::Schema::Kind::Object);
-        if (schemaId != simfil::NoSchemaId) {
-            // A shared attribute layer may be reached through multiple feature schemas.
-            auto const current = l->schema();
-            auto const target = current == simfil::NoSchemaId || current == schemaId
-                ? schemaId
-                : simfil::NoSchemaId;
+        auto schemaId = model().childSchemaId(schema(), name, simfil::SchemaType::Kind::Object);
+        if (schemaId != simfil::NoTypeId) {
+            auto const target =
+                model().checkedContainerSchema(l->schema(), schemaId, simfil::ValueType::Object);
             if (auto result = l->setSchema(target); !result) {
-                log().warn("Failed to set attribute layer schema: {}", result.error().message);
+                raise(result.error().message);
             }
         }
     }
@@ -287,7 +279,7 @@ AttributeLayerList::ExtensionPtr AttributeLayerList::mergedExtension() const
     return {};
 }
 
-simfil::SchemaId AttributeLayerList::schema() const
+simfil::TypeId AttributeLayerList::schema() const
 {
     if (auto local = localObject()) {
         return local->schema();
@@ -295,10 +287,10 @@ simfil::SchemaId AttributeLayerList::schema() const
     if (auto feature = featureScopedFeature()) {
         return model().attributeLayerMapSchemaId(feature->typeId());
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
-tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::SchemaId schemaId)
+tl::expected<void, simfil::Error> AttributeLayerList::setObjectSchema(simfil::TypeId schemaId)
 {
     auto local = localObject();
     if (!local) {

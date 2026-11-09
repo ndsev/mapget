@@ -1,9 +1,11 @@
 #include "mapget/http-service/mcp-config.h"
 
+#include <trantor/net/InetAddress.h>
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <regex>
 #include <set>
@@ -24,14 +26,15 @@ void McpConfig::addOptions(CLI::App& serve)
             [this](auto const& value) {
                 mode = value == "local" ? Mode::Local : value == "oauth" ? Mode::OAuth : Mode::Off;
             },
-            "MCP access: off, local (loopback only), or oauth.")
+            "MCP access: off, local (unauthenticated; shares server network exposure), or oauth.")
         ->check(CLI::IsMember({"off", "local", "oauth"}))
         ->group("MCP")
         ->default_str("off");
     option(
         "--mcp-endpoint",
         endpoint,
-        "Public resource URL ending in /mcp; derived from the listener in local mode.");
+        "Client-facing URL ending in /mcp; local mode derives it from --host/--port, using "
+        "localhost for wildcard listeners. Override for port publishing or a reverse proxy.");
     serve
         .add_option_function<std::string>(
             "--mcp-catalog",
@@ -46,11 +49,11 @@ void McpConfig::addOptions(CLI::App& serve)
     option(
         "--mcp-allowed-hosts",
         allowedHosts,
-        "Allowed HTTP Host values; local mode defaults to loopback names at the listener port.");
+        "Allowed HTTP Host values; local mode defaults to the public endpoint authority.");
     option(
         "--mcp-allowed-origins",
         allowedOrigins,
-        "Allowed browser origins; local mode defaults to loopback HTTP origins.");
+        "Allowed browser origins; local mode defaults to the public endpoint origin.");
     option(
         "--mcp-issuer",
         issuer,
@@ -191,19 +194,70 @@ void McpConfig::resolveDefaults(
     if (mode != Mode::Local)
         return;
 
-    // Reject broad listeners at startup, not merely when the first MCP request arrives.
-    if (host != "127.0.0.1" && host != "::1")
-        throw std::invalid_argument("Local MCP requires --host 127.0.0.1 or --host ::1.");
-    if (port < 1 || port > 65535)
-        throw std::invalid_argument("Local MCP requires an explicit --port in 1..65535.");
-    auto const suffix = port == 80 ? std::string{} : ":" + std::to_string(port);
-    if (endpoint.empty())
-        endpoint = "http://" + (host == "::1" ? std::string("[::1]") : host) + suffix + "/mcp";
-    if (allowedHosts.empty())
-        allowedHosts = {"localhost" + suffix, "127.0.0.1" + suffix, "[::1]" + suffix};
+    if (endpoint.empty()) {
+        if (port < 1 || port > 65535)
+            throw std::invalid_argument(
+                "Deriving a local MCP endpoint requires --port in 1..65535.");
+        // A wildcard is a bind address, not a usable client-facing URL. Never infer an
+        // advertised endpoint from request headers (including forwarded headers).
+        auto name = host == "0.0.0.0" || host == "::" ? std::string("localhost") : host;
+        if (name.find(':') != std::string::npos && !name.starts_with('['))
+            name = "[" + name + "]";
+        endpoint = "http://" + name + (port == 80 ? std::string{} : ":" + std::to_string(port)) +
+            "/mcp";
+    }
+    // Derive browser allowlists from the public endpoint, not an internal container port.
+    static std::regex const
+        localEndpoint(R"(^(https?)://(\[[a-fA-F0-9:]+\]|[a-zA-Z0-9.-]+)(:([0-9]{1,5}))?/mcp$)");
+    std::smatch match;
+    if (!std::regex_match(endpoint, match, localEndpoint) ||
+        (match[4].matched && (std::stoi(match[4]) < 1 || std::stoi(match[4]) > 65535)))
+        throw std::invalid_argument(
+            "Local MCP endpoint must be an HTTP(S) origin with a valid port followed by /mcp.");
+    auto const scheme = match[1].str();
+    auto name = match[2].str();
+    // Browser URL parsing lowercases DNS names and compresses IPv6 literals. The
+    // derived exact Host/Origin allowlists must use the same spelling.
+    if (name.starts_with('[')) {
+        trantor::InetAddress address(name.substr(1, name.size() - 2), 0, true);
+        if (address.isUnspecified())
+            throw std::invalid_argument("Local MCP endpoint contains an invalid IPv6 address.");
+        name = "[" + address.toIp() + "]";
+    }
+    else {
+        std::transform(
+            name.begin(),
+            name.end(),
+            name.begin(),
+            [](unsigned char c) { return std::tolower(c); });
+        if (std::all_of(
+                name.begin(),
+                name.end(),
+                [](unsigned char c) { return std::isdigit(c) || c == '.'; }))
+        {
+            trantor::InetAddress address(name, 0);
+            if (address.isUnspecified() || address.toIp() != name)
+                throw std::invalid_argument(
+                    "Local MCP endpoint requires canonical dotted IPv4 notation.");
+        }
+    }
+    auto const defaultPort = scheme == "https" ? 443 : 80;
+    auto const publicPort = match[4].matched ? std::stoi(match[4]) : defaultPort;
+    auto const suffix = publicPort == defaultPort ?
+        std::string{} :
+        ":" + std::to_string(publicPort);
+    // Browsers canonicalize default ports and leading zeroes before sending Host/Origin.
+    endpoint = scheme + "://" + name + suffix + "/mcp";
+    auto const names = name == "localhost" || name == "127.0.0.1" || name == "[::1]" ?
+        std::vector<std::string>{"localhost", "127.0.0.1", "[::1]"} :
+        std::vector<std::string>{name};
+    if (allowedHosts.empty()) {
+        for (auto const& name : names)
+            allowedHosts.push_back(name + suffix);
+    }
     if (allowedOrigins.empty()) {
-        for (auto const& name : {"localhost", "127.0.0.1", "[::1]"})
-            allowedOrigins.push_back(std::string("http://") + name + suffix);
+        for (auto const& name : names)
+            allowedOrigins.push_back(scheme + "://" + name + suffix);
     }
 }
 
@@ -260,18 +314,6 @@ void McpConfig::validate() const
             !issuerHeader.empty() || !subjectHeader.empty() || !expiryHeader.empty() ||
             !permissionsHeader.empty())
             throw std::invalid_argument("Local MCP must not contain OAuth settings.");
-        // Local mode is not a fallback for failed OAuth or a reverse-proxy deployment.
-        for (auto const* values : {&allowedHosts, &allowedOrigins}) {
-            for (auto text : *values) {
-                if (values == &allowedOrigins)
-                    text = text.substr(text.find("://") + 3);
-                if (!(text == "localhost" || text.starts_with("localhost:") ||
-                      text == "127.0.0.1" || text.starts_with("127.0.0.1:") || text == "[::1]" ||
-                      text.starts_with("[::1]:")))
-                    throw std::invalid_argument(
-                        "Local MCP allowlists must contain loopback hosts only.");
-            }
-        }
         if (std::find(
                 allowedOrigins.begin(),
                 allowedOrigins.end(),

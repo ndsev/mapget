@@ -1,11 +1,11 @@
-#include "mcp-action-catalog.h"
-#include "mcp-native-call.h"
+#include "mcp-mapget-call.h"
+#include "mcp-mapget-extraction.h"
+#include "mcp-mapget-query.h"
 
-#include "cli.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "ndsmath/wgs84.h"
 
-#include <openssl/rand.h>
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -15,281 +15,8 @@ namespace mapget::detail
 {
 using Json = nlohmann::json;
 
-McpNativeTools::McpNativeTools(
-    Service& service,
-    McpConfig config,
-    std::function<Json()> diagnostics,
-    LocationLookup const* location,
-    std::function<Json()> readConfig,
-    std::function<Json(Json const&, std::string const&)> writeConfig)
-    : service_(service),
-      config_(std::move(config)),
-      help_(
-          McpHelp::defaultDirectory(),
-          [this]
-          {
-              auto paths = config_.helpDocs;
-              if (!config_.webHelpDirectory.empty())
-                  paths.push_back(config_.webHelpDirectory);
-              return paths;
-          }()),
-      diagnostics_(std::move(diagnostics)),
-      location_(location),
-      readConfig_(std::move(readConfig)),
-      writeConfig_(std::move(writeConfig))
-{
-    buildCatalog();
-}
-
-McpNativeTools::~McpNativeTools()
-{
-    stop();
-}
-
-std::string McpNativeTools::retain(std::shared_ptr<Continuation> checkpoint)
-{
-    // Count pinned tile/query storage conservatively for every checkpoint. Bounds apply to
-    // retained allocations, not total process RSS; active calls have separate admission limits.
-    constexpr size_t maxBytes = 64 * 1024 * 1024;
-    if (checkpoint->retainedBytes > maxBytes)
-        return {};
-    unsigned char random[24];
-    if (RAND_bytes(random, sizeof(random)) != 1)
-        return {};
-    std::string token;
-    for (auto byte : random) {
-        token += "0123456789abcdef"[byte >> 4];
-        token += "0123456789abcdef"[byte & 15];
-    }
-    auto revision = service_.sourceCatalogRevision();
-    std::vector<std::shared_ptr<Continuation>> retired;
-    std::lock_guard lock(mutex_);
-    if (stopped_)
-        return {};
-    auto now = std::chrono::steady_clock::now();
-    for (auto it = continuations_.begin(); it != continuations_.end();) {
-        if (it->second->expires <= now || it->second->catalogRevision != revision) {
-            retired.push_back(std::move(it->second));
-            it = continuations_.erase(it);
-        }
-        else
-            ++it;
-    }
-    for (;;) {
-        size_t bytes = checkpoint->retainedBytes, owned = 0;
-        for (auto const& [_, entry] : continuations_) {
-            bytes += entry->retainedBytes;
-            owned += entry->principal.sameUser(checkpoint->principal);
-        }
-        if (bytes <= maxBytes && owned < 4 && continuations_.size() < 16)
-            break;
-        auto oldest = continuations_.end();
-        for (auto it = continuations_.begin(); it != continuations_.end(); ++it) {
-            if (owned >= 4 && !it->second->principal.sameUser(checkpoint->principal))
-                continue;
-            if (oldest == continuations_.end() || it->second->expires < oldest->second->expires)
-                oldest = it;
-        }
-        if (oldest == continuations_.end())
-            return {};
-        retired.push_back(std::move(oldest->second));
-        continuations_.erase(oldest);
-    }
-    continuations_.emplace(token, std::move(checkpoint));
-    return token;
-}
-
-bool McpNativeTools::permitted(std::string_view name, Principal const& principal) const
-{
-    if (!principal.valid(std::chrono::system_clock::now()))
-        return false;
-    if (name == "mapget_get_config")
-        return config_.configReadEnabled && principal.configRead && isGetConfigEndpointEnabled();
-    if (name == "mapget_set_config")
-        return config_.configWriteEnabled && config_.directConfigPersistence &&
-            principal.configWrite && isPostConfigEndpointEnabled();
-    if (name == "mapget_get_diagnostics")
-        return principal.diagnostics;
-    return principal.read;
-}
-
-Json McpNativeTools::tools(Principal const& principal) const
-{
-    auto result = Json::array();
-    for (auto const& [name, action] : actions_) {
-        if (permitted(name, principal)) {
-            auto tool = action.tool;
-            tool["inputSchema"] =
-                McpActionCatalog::clientInputSchema(std::move(tool["inputSchema"]));
-            result.push_back(std::move(tool));
-        }
-    }
-    return result;
-}
-
-bool McpNativeTools::contains(std::string_view name) const
-{
-    return actions_.contains(name);
-}
-
-bool McpNativeTools::acceptsArguments(std::string_view name, Json const& value, Json* issues) const
-{
-    try {
-        auto const& action = actions_.at(std::string(name));
-        return McpActionCatalog::validateArguments(
-            action.input,
-            action.tool.at("inputSchema"),
-            value,
-            issues);
-    }
-    catch (...) {
-        return false;
-    }
-}
-
-bool McpNativeTools::acceptsResult(std::string_view name, Json const& value) const
-{
-    try {
-        actions_.at(std::string(name)).output.validate(value);
-        return true;
-    }
-    catch (...) {
-        return false;
-    }
-}
-
-std::shared_ptr<std::atomic_bool>
-McpNativeTools::invoke(Principal principal, std::string name, Json arguments, Complete complete)
-{
-    auto reject = [&](std::string code, std::string message)
-    {
-        complete({{"error", {{"code", code}, {"message", message}}}});
-        return std::shared_ptr<std::atomic_bool>{};
-    };
-    if (!contains(name) || !permitted(name, principal))
-        return reject(
-            "not_available",
-            "Native tool permission or deployment capability unavailable.");
-    if (name == "mapget_extract_features" && arguments.is_object() &&
-        !arguments.contains("cursor") && !arguments.contains("partition") &&
-        !arguments.contains("partitions") && !arguments.contains("featureIds"))
-        return reject(
-            "invalid_arguments",
-            "Supply partition, nonempty partitions, or full primary/secondary featureIds. "
-            "Extraction does not "
-            "scan a map; use viewer_start_search for a viewport search.");
-    if (!acceptsArguments(name, arguments))
-        return reject("invalid_arguments", "Arguments do not match the tool schema.");
-    std::unique_lock lock(mutex_);
-    auto owned = std::count_if(
-        calls_.begin(),
-        calls_.end(),
-        [&](auto const& c) { return c->principal.sameUser(principal); });
-    if (stopped_ || calls_.size() >= config_.limits.pendingCalls ||
-        static_cast<size_t>(owned) >= config_.limits.callsPerPrincipal)
-    {
-        lock.unlock();
-        return reject("busy", "Native tool admission limit reached.");
-    }
-    auto call = std::make_shared<Call>(
-        *this,
-        std::move(principal),
-        std::move(name),
-        std::move(arguments),
-        std::move(complete));
-    calls_.push_back(call);
-    lock.unlock();
-    if (!service_.scheduleTask([call](bool admitted) { call->run(admitted); }))
-        call->run(false);
-    return call->cancelled;
-}
-
-void McpNativeTools::retire(Call* call)
-{
-    std::lock_guard lock(mutex_);
-    std::erase_if(calls_, [call](auto const& c) { return c.get() == call; });
-    idle_.notify_all();
-}
-
-void McpNativeTools::cancel(std::shared_ptr<std::atomic_bool> const& token)
-{
-    std::shared_ptr<Call> call;
-    {
-        std::lock_guard lock(mutex_);
-        auto found = std::find_if(
-            calls_.begin(),
-            calls_.end(),
-            [&](auto const& c) { return c->cancelled == token; });
-        if (found != calls_.end())
-            call = *found;
-    }
-    if (call)
-        call->cancel();
-}
-
-void McpNativeTools::stop()
-{
-    std::unique_lock lock(mutex_);
-    stopped_ = true;
-    auto continuations = std::move(continuations_);
-    auto calls = calls_;
-    lock.unlock();
-    continuations.clear();
-    for (auto const& call : calls)
-        call->cancel();
-    lock.lock();
-    idle_.wait(lock, [this] { return calls_.empty() && !helpRefreshPending_; });
-}
-
-void McpNativeTools::refreshHelp()
-{
-    std::unique_lock lock(mutex_);
-    auto now = std::chrono::steady_clock::now();
-    if (stopped_ || helpRefreshPending_ || now < nextHelpRefresh_)
-        return;
-    nextHelpRefresh_ = now + std::chrono::seconds(2);
-    helpRefreshPending_ = true;
-    // stop() drains this owner before the borrowed service or index can disappear.
-    lock.unlock();
-    if (service_.scheduleTask(
-            [this](bool admitted)
-            {
-                try {
-                    if (admitted) {
-                        // Tile destruction runs on a worker and outside the admission mutex.
-                        auto revision = service_.sourceCatalogRevision();
-                        std::vector<std::shared_ptr<Continuation>> retired;
-                        {
-                            std::lock_guard cleanup(mutex_);
-                            auto now = std::chrono::steady_clock::now();
-                            for (auto it = continuations_.begin(); it != continuations_.end();) {
-                                if (it->second->expires <= now ||
-                                    it->second->catalogRevision != revision) {
-                                    retired.push_back(std::move(it->second));
-                                    it = continuations_.erase(it);
-                                }
-                                else
-                                    ++it;
-                            }
-                        }
-                        retired.clear();
-                        help_.refresh();
-                    }
-                }
-                catch (...) { /* Failed maintenance must still release the shutdown barrier. */
-                }
-                std::lock_guard done(mutex_);
-                helpRefreshPending_ = false;
-                idle_.notify_all();
-            }))
-        return;
-    lock.lock();
-    helpRefreshPending_ = false;
-    idle_.notify_all();
-}
-
-McpNativeTools::Call::
-    Call(McpNativeTools& owner, Principal caller, std::string action, Json args, Complete callback)
+McpMapgetTools::Call::
+    Call(McpMapgetTools& owner, Principal caller, std::string action, Json args, Complete callback)
     : principal(std::move(caller)),
       name(std::move(action)),
       arguments(std::move(args)),
@@ -311,27 +38,28 @@ McpNativeTools::Call::
         (name == "mapget_docs" || name == "mapget_query_schema") ? size_t{8} : size_t{100});
     if (name == "mapget_query_schema" && !arguments.contains("query"))
         limit_ = std::min<size_t>(limit_, 32);
+    query_ = std::make_unique<Query>(*this);
+    if (name == "mapget_extract_features" || name == "mapget_extract_source_data")
+        extraction_ = std::make_unique<Extraction>(*this);
 }
 
-void McpNativeTools::Call::cancel()
+McpMapgetTools::Call::~Call() = default;
+
+void McpMapgetTools::Call::cancel() noexcept
 {
     cancelled->store(true);
-    // Only atomics cross the control/worker boundary. Child callbacks also run during abort;
-    // they observe cancellation and never race a partially materialized result.
-    LayerTilesRequest::Ptr request;
-    {
-        std::lock_guard lock(requestMutex_);
-        request = request_;
+    try {
+        if (extraction_)
+            extraction_->cancel();
     }
-    if (request) {
-        auto* service = &owner_.service_;
-        // abort may synchronously complete a request; never enter its callback mutex on an I/O
-        // thread.
-        (void)service->scheduleTask([service, request](bool) { service->abort(request); });
+    catch (...) {
+        // Scheduling abort can allocate. If it fails, the published cancellation
+        // still stops evaluation when the existing load returns; stop() must wait
+        // for that retirement rather than destroy an owner used by its callback.
     }
 }
 
-bool McpNativeTools::Call::step(size_t count)
+bool McpMapgetTools::Call::step(size_t count)
 {
     if (cancelled->load() || !principal.valid(std::chrono::system_clock::now()))
         truncate("cancelled_or_authority_expired");
@@ -345,13 +73,13 @@ bool McpNativeTools::Call::step(size_t count)
     return true;
 }
 
-void McpNativeTools::Call::truncate(std::string reason)
+void McpMapgetTools::Call::truncate(std::string reason)
 {
     if (incomplete_.empty())
         incomplete_ = std::move(reason);
 }
 
-void McpNativeTools::Call::fail(std::string code, std::string message)
+void McpMapgetTools::Call::fail(std::string code, std::string message)
 {
     if (finished_.exchange(true))
         return;
@@ -363,7 +91,7 @@ void McpNativeTools::Call::fail(std::string code, std::string message)
     owner_.retire(this);
 }
 
-void McpNativeTools::Call::finish(Json result)
+void McpMapgetTools::Call::finish(Json result)
 {
     if (finished_)
         return;
@@ -390,6 +118,24 @@ void McpNativeTools::Call::finish(Json result)
         fail("internal_error", "Native result failed its advertised schema.");
         return;
     }
+    if (schemaCatalogRevision_ &&
+        *schemaCatalogRevision_ != owner_.service_.sourceCatalogRevision()) {
+        fail("schema_unavailable", "The schema catalog changed; retry discovery.");
+        return;
+    }
+    if (layer_ && (name == "mapget_query_schema" || name == "mapget_validate_expression")) {
+        // A pinned graph preserves memory safety, not permission after removal/rebinding.
+        // Match the binary/inspector endpoint's final current-provider check.
+        auto const& schema = layer_->schemaOwner();
+        auto current = owner_.service_.getSchema(
+            arguments.contains("mapId") ? source_.descriptor.sourceId : std::string{},
+            schema->schemaId(),
+            principal.datasourceAuthorization);
+        if (current != schema) {
+            fail("schema_unavailable", "The selected schema binding changed; retry discovery.");
+            return;
+        }
+    }
     if (finished_.exchange(true))
         return;
     try {
@@ -400,37 +146,20 @@ void McpNativeTools::Call::finish(Json result)
     owner_.retire(this);
 }
 
-void McpNativeTools::Call::finishItems()
+void McpMapgetTools::Call::finishItems()
 {
-    // A fully evaluated lookup with no matching identity is distinct from an empty query result.
-    if (name == "mapget_extract_features" && incomplete_.empty()) {
-        for (auto const& id : scan_->featureIds) {
-            if (scan_->resolvedFeatureIds.contains(id))
-                continue;
-            if (issues_.size() >= 100) {
-                truncate("diagnostic_limit");
-                break;
-            }
-            try {
-                issues_.push_back(boundedJson(
-                    {{"phase", "locate"},
-                     {"featureId", id},
-                     {"message",
-                      "Requested identity did not resolve in the selected partitions. "
-                      "Verify the target's owning layer and partition; identifier metadata "
-                      "may include reference-only types."}}));
-            }
-            catch (std::length_error const&) {
-                break;
-            }
-        }
-    }
+    if (extraction_)
+        extraction_->reportMissingFeatures();
     Json result{
         {"items", std::move(items_)},
         {"complete", incomplete_.empty()},
         {"reason", incomplete_.empty() ? Json(nullptr) : Json(incomplete_)},
         {"issues", std::move(issues_)},
         {"traces", std::move(traces_)}};
+    if (layer_ && (name == "mapget_query_schema" || name == "mapget_validate_expression")) {
+        if (auto schema = layer_->schemaOwner())
+            result["mapSchemaId"] = schema->schemaId();
+    }
     if (name == "mapget_list_sources" && !incomplete_.empty() && result["issues"].size() < 100) {
         result["issues"].push_back(
             {{"phase", "budget"},
@@ -443,7 +172,7 @@ void McpNativeTools::Call::finishItems()
         result["schemaView"] = "shallow_overview";
         result["guidance"] =
             "complete covers this overview only. Open childrenOmitted compounds through "
-            "$ref/schemaId, or use find to search descendant declarations.";
+            "$ref/typeId, or use find to search descendant declarations.";
     }
     if (name == "mapget_query_schema" && arguments.contains("find") && result["items"].empty() &&
         incomplete_.empty() && arguments.value("offset", 0) == 0)
@@ -455,7 +184,7 @@ void McpNativeTools::Call::finishItems()
         result["issues"].push_back(
             {{"phase", "budget"},
              {"message",
-              "Schema discovery exceeded maxWork. Restrict featureType/schemaId or increase "
+              "Schema discovery exceeded maxWork. Restrict featureType/typeId or increase "
               "maxWork; an incomplete result cannot prove absence."}});
     if (name == "mapget_extract_features" &&
         (incomplete_ == "byte_limit" || incomplete_ == "work_limit") &&
@@ -485,7 +214,7 @@ void McpNativeTools::Call::finishItems()
     if (nextOffset_)
         result["nextOffset"] = *nextOffset_;
     if (name == "mapget_extract_features")
-        continueExtraction(result);
+        extraction_->continueExtraction(result);
     if (name == "mapget_query_schema" && arguments.contains("find")) {
         result["schemaView"] = "matches";
         result["discovery"] = std::move(discovery_);
@@ -496,7 +225,7 @@ void McpNativeTools::Call::finishItems()
     finish(std::move(result));
 }
 
-void McpNativeTools::Call::documentation()
+void McpMapgetTools::Call::documentation()
 {
     auto result = owner_.help_.query(
         arguments.value("query", std::string{}),
@@ -540,7 +269,7 @@ void McpNativeTools::Call::documentation()
         truncate(result["reason"]);
 }
 
-bool McpNativeTools::Call::append(Json item)
+bool McpMapgetTools::Call::append(Json item)
 {
     if (items_.size() >= limit_) {
         truncate("item_limit");
@@ -550,7 +279,7 @@ bool McpNativeTools::Call::append(Json item)
     return true;
 }
 
-void McpNativeTools::Call::charge(size_t bytes)
+void McpMapgetTools::Call::charge(size_t bytes)
 {
     if (bytes > remainingBytes_) {
         truncate("byte_limit");
@@ -559,7 +288,7 @@ void McpNativeTools::Call::charge(size_t bytes)
     remainingBytes_ -= bytes;
 }
 
-void McpNativeTools::Call::run(bool admitted)
+void McpMapgetTools::Call::run(bool admitted)
 {
     std::lock_guard lock(executionMutex_);
     try {
@@ -575,30 +304,22 @@ void McpNativeTools::Call::run(bool admitted)
             documentation();
         else if (name == "mapget_list_sources")
             listSources();
+        else if (name == "mapget_list_schemas")
+            listSchemas();
         else if (name == "mapget_get_coverage")
             getCoverage();
         else if (name == "mapget_query_schema")
-            querySchema();
+            query_->querySchema();
         else if (name == "mapget_validate_expression")
-            validateExpression();
+            query_->validateExpression();
         else if (name == "mapget_extract_features" || name == "mapget_extract_source_data") {
-            if (arguments.contains("cursor")) {
-                if (!resumeExtraction())
-                    return;
-            }
-            else {
-                scan_->catalogRevision = owner_.service_.sourceCatalogRevision();
-                scan_->offsetRemaining = arguments.value("offset", size_t{0});
-                prepareExtraction();
-            }
-            if (!finished_)
-                loadNext();
+            extraction_->run();
             return;
         }
         else if (name == "mapget_convert_tile_id")
-            append(boundedJson(convertTile()));
+            append(query_->boundedJson(convertTile()));
         else if (name == "mapget_convert_coordinates")
-            append(boundedJson(convertCoordinates()));
+            append(query_->boundedJson(convertCoordinates()));
         else if (name == "mapget_lookup_place" || name == "mapget_get_place_geometry") {
             if (!owner_.location_) {
                 fail("unavailable", "Location database unavailable.");
@@ -621,13 +342,13 @@ void McpNativeTools::Call::run(bool admitted)
                     boundary = std::move(*geometry);
                     item.erase(geometry);
                 }
-                if (!append(boundedJson(item)))
+                if (!append(query_->boundedJson(item)))
                     break;
                 // Keep the resolved identity/extent useful when the optional polygon exceeds
                 // budgets. Assignment occurs only after complete conversion: never emit half a
                 // ring.
                 if (!boundary.is_null())
-                    items_.back()["geometry"] = boundedJson(boundary);
+                    items_.back()["geometry"] = query_->boundedJson(boundary);
             }
             if (!arguments.contains("id") && matches.size() == max)
                 truncate("item_limit");
@@ -635,7 +356,7 @@ void McpNativeTools::Call::run(bool admitted)
         else if (name == "mapget_get_config") {
             auto config = owner_.readConfig_();
             config["writeAvailable"] = owner_.permitted("mapget_set_config", principal);
-            append(boundedJson(config));
+            append(query_->boundedJson(config));
         }
         else if (name == "mapget_set_config") {
             // Recheck authority immediately before the irreversible file replacement.
@@ -643,7 +364,7 @@ void McpNativeTools::Call::run(bool admitted)
                 finishItems();
                 return;
             }
-            append(boundedJson(
+            append(query_->boundedJson(
                 owner_.writeConfig_(arguments.at("model"), arguments.at("expectedRevision"))));
         }
         else if (name == "mapget_get_diagnostics") {
@@ -664,9 +385,9 @@ void McpNativeTools::Call::run(bool admitted)
                     auto value = Json{
                         {"section", section},
                         {"timestampMs", snapshot.at("timestampMs")},
-                        {"value", boundedJson(snapshot.at(key))}};
+                        {"value", query_->boundedJson(snapshot.at(key))}};
                     if (section == "transport")
-                        value["rest"] = boundedJson(snapshot.at("tilesHttp"));
+                        value["rest"] = query_->boundedJson(snapshot.at("tilesHttp"));
                     if (!append(std::move(value)))
                         break;
                 }
@@ -682,6 +403,8 @@ void McpNativeTools::Call::run(bool admitted)
     catch (std::system_error const& error) {
         if (error.code() == std::errc::state_not_recoverable)
             fail("conflict", "Configuration changed; read its current revision before retrying.");
+        else if (error.code() == std::errc::resource_unavailable_try_again)
+            fail("schema_unavailable", "The schema catalog changed; retry discovery.");
         else
             fail("execution_failed", "Native operation failed.");
     }
@@ -697,9 +420,9 @@ void McpNativeTools::Call::run(bool admitted)
     }
 }
 
-void McpNativeTools::Call::listSources()
+void McpMapgetTools::Call::listSources()
 {
-    auto snapshot = owner_.service_.sourceCatalog(principal.datasourceHeaders, false);
+    auto snapshot = owner_.service_.sourceCatalog(principal.datasourceAuthorization, false);
     // Focused discovery includes ID compositions; an explicit compact request still wins.
     auto const details =
         arguments.value("details", arguments.contains("sourceId") || arguments.contains("mapId"));
@@ -743,6 +466,8 @@ void McpNativeTools::Call::listSources()
         if (source.info) {
             value["mapId"] = source.info->mapId_;
             value["addOn"] = source.info->isAddOn_;
+            value["mapFormat"] = source.info->mapFormat_.toJson();
+            value["schemaId"] = source.info->schemaId_;
             if (details) {
                 value["stringPoolId"] = source.info->stringPoolId_;
                 value["maxParallelJobs"] = source.info->maxParallelJobs_;
@@ -751,7 +476,7 @@ void McpNativeTools::Call::listSources()
         }
         // Charge each piece once as it is attached, instead of first constructing an
         // unbounded source tree or charging nested copies again at every ancestor.
-        value = boundedJson(value);
+        value = query_->boundedJson(value);
         if (source.info) {
             std::map<std::string, std::shared_ptr<LayerInfo>>
                 layers(source.info->layers_.begin(), source.info->layers_.end());
@@ -763,7 +488,7 @@ void McpNativeTools::Call::listSources()
                 // Raw-layer metadata is repetitive and can bury the renderable layers in
                 // discovery. Retain every raw ID; a focused layerId call opens its metadata.
                 if (compactSourceData && layer->type_ == LayerType::SourceData) {
-                    value["sourceDataLayers"].push_back(boundedJson(id));
+                    value["sourceDataLayers"].push_back(query_->boundedJson(id));
                     continue;
                 }
                 Json metadata{
@@ -774,32 +499,37 @@ void McpNativeTools::Call::listSources()
                     {"zoomLevels", layer->zoomLevels_},
                     {"canRead", layer->canRead_},
                     {"canWrite", layer->canWrite_},
-                    {"hasFeatureModelSchema", bool(layer->featureModelSchema_)},
+                    {"hasSchema", bool(layer->layerSchema())},
                     {"featureTypes", Json::array()},
                     {"coverageRangeCount", layer->coverage_.size()}};
-                if (layer->featureModelSchema_)
-                    metadata["schemaFeatureTypes"] = layer->featureModelSchema_->featureTypes();
+                auto schema = layer->layerSchema();
                 if (details)
                     metadata["version"] = layer->version_.toJson();
                 if (layer->tileAssociationLevel_)
                     metadata["tileAssociationLevel"] = *layer->tileAssociationLevel_;
-                metadata = boundedJson(metadata);
-                for (auto const& type : layer->featureTypes_) {
+                metadata = query_->boundedJson(metadata);
+                for (auto const& name : schema->featureTypes()) {
                     if (!step())
                         break;
-                    auto info = boundedJson({{"name", type.name_}});
+                    auto type = schema->getTypeInfo(name);
+                    auto info = query_->boundedJson({{"name", type.name()}, {"produced", true}});
                     if (details)
                         info["uniqueIdCompositions"] = Json::array();
                     if (details)
-                        for (auto const& composition : type.uniqueIdCompositions_) {
+                        for (auto composition : type.compositions()) {
                             if (!step())
                                 break;
                             charge(24);
                             auto parts = Json::array();
-                            for (auto const& part : composition) {
+                            for (auto part : composition.parts()) {
                                 if (!step())
                                     break;
-                                parts.push_back(boundedJson(part.toJson()));
+                                parts.push_back(query_->boundedJson(
+                                    {{"partId", part.name()},
+                                     {"description", part.description()},
+                                     {"datatype", part.datatype()},
+                                     {"isSynthetic", part.synthetic()},
+                                     {"isOptional", part.optional()}}));
                             }
                             info["uniqueIdCompositions"].push_back(std::move(parts));
                         }
@@ -814,7 +544,7 @@ void McpNativeTools::Call::listSources()
     }
 }
 
-void McpNativeTools::Call::getCoverage()
+void McpMapgetTools::Call::getCoverage()
 {
     selectLayer();
     Json result{
@@ -827,7 +557,7 @@ void McpNativeTools::Call::getCoverage()
     if (layer_->tileAssociationLevel_)
         result["tileAssociationLevel"] = *layer_->tileAssociationLevel_;
     // Preserve completed ranges when a later bitmap exceeds the response budget.
-    result = boundedJson(result);
+    result = query_->boundedJson(result);
     try {
         for (auto const& coverage : layer_->coverage_) {
             if (!step())
@@ -844,10 +574,10 @@ void McpNativeTools::Call::getCoverage()
                 {"level", coverage.min_.level()}};
             if (arguments.value("format", std::string{"summary"}) == "raw") {
                 range["filled"] = Json::array();
-                range = boundedJson(range);
+                range = query_->boundedJson(range);
                 // A raw mask is all-or-nothing: omitting it would imply a full rectangle.
                 for (bool filled : coverage.filled_)
-                    range["filled"].push_back(boundedJson(filled));
+                    range["filled"].push_back(query_->boundedJson(filled));
             }
             else {
                 auto const width = uint64_t(coverage.max_.x()) - coverage.min_.x() + 1;
@@ -899,7 +629,7 @@ void McpNativeTools::Call::getCoverage()
                 range["bounds"] = {west, south, east, north};
                 range["coveredTileCount"] = count;
                 range["sampleTileIds"] = std::move(samples);
-                range = boundedJson(range);
+                range = query_->boundedJson(range);
             }
             result["ranges"].push_back(std::move(range));
         }
@@ -909,13 +639,13 @@ void McpNativeTools::Call::getCoverage()
     append(std::move(result));
 }
 
-void McpNativeTools::Call::selectLayer()
+void McpMapgetTools::Call::selectLayer()
 {
     auto const map = arguments.at("mapId").get<std::string>();
     auto const layer = arguments.at("layerId").get<std::string>();
     size_t matches = 0;
     for (auto const& candidate :
-         owner_.service_.sourceCatalog(principal.datasourceHeaders, false).sources)
+         owner_.service_.sourceCatalog(principal.datasourceAuthorization, false).sources)
     {
         if (!step())
             throw std::length_error("work");
@@ -934,7 +664,119 @@ void McpNativeTools::Call::selectLayer()
         throw std::invalid_argument("Layer unavailable or ambiguous");
 }
 
-Json McpNativeTools::Call::convertCoordinates()
+void McpMapgetTools::Call::listSchemas()
+{
+    auto format = arguments.contains("mapFormat") ?
+        std::optional{MapFormat::fromJson(arguments["mapFormat"])} :
+        std::nullopt;
+    schemaCatalogRevision_ = owner_.service_.sourceCatalogRevision();
+    auto inventory = owner_.service_.schemaInventory(
+        principal.datasourceAuthorization,
+        [&](MapSchema const& owner)
+        {
+            return (!format || owner.format() == *format) &&
+                (!arguments.contains("mapSchemaId") ||
+                 arguments["mapSchemaId"].get_ref<std::string const&>() == owner.schemaId());
+        },
+        [&]
+        {
+            if (!step())
+                throw std::length_error("work");
+        },
+        [&](std::string_view sourceId, std::string_view mapId)
+        {
+            return (!arguments.contains("mapId") ||
+                    arguments["mapId"].get_ref<std::string const&>() == mapId) &&
+                (!arguments.contains("sourceId") ||
+                 arguments["sourceId"].get_ref<std::string const&>() == sourceId);
+        });
+    for (auto item : inventory) {
+        if (!step())
+            break;
+        if (!append(query_->boundedJson(item)))
+            break;
+    }
+}
+
+bool McpMapgetTools::Call::selectSchemaLayer()
+{
+    if (arguments.contains("mapId")) {
+        selectLayer();
+        if (arguments.contains("mapSchemaId") &&
+            (!layer_->schemaOwner() ||
+             arguments["mapSchemaId"].get_ref<std::string const&>() !=
+                 layer_->schemaOwner()->schemaId()))
+        {
+            fail("schema_unavailable", "The map's current schema does not match mapSchemaId.");
+            return false;
+        }
+        return true;
+    }
+    auto format = arguments.contains("mapFormat") ?
+        std::optional{MapFormat::fromJson(arguments["mapFormat"])} :
+        std::nullopt;
+    auto const layerName = arguments.at("layerId").get<std::string>();
+    MapSchema::ConstPtr owner;
+    if (arguments.contains("mapSchemaId")) {
+        // An exact reference needs no inventory expansion, even on a very large catalog.
+        owner = owner_.service_.getSchema(
+            {},
+            arguments["mapSchemaId"].get<std::string>(),
+            principal.datasourceAuthorization);
+        if (owner && format && owner->format() != *format)
+            owner.reset();
+    }
+    else {
+        schemaCatalogRevision_ = owner_.service_.sourceCatalogRevision();
+        auto choices = owner_.service_.schemaInventory(
+            principal.datasourceAuthorization,
+            [&](MapSchema const& candidate)
+            { return candidate.format() == *format && candidate.layer(layerName); },
+            [&]
+            {
+                if (!step())
+                    throw std::length_error("work");
+            });
+        if (choices.size() > 1) {
+            for (auto const& item : choices) {
+                if (!append(query_->boundedJson(
+                        {{"mapSchemaId", item["mapSchemaId"]},
+                         {"mapFormat", item["mapFormat"]},
+                         {"consumers", item["consumers"]},
+                         {"selectArguments",
+                          {{"mapSchemaId", item["mapSchemaId"]}, {"layerId", layerName}}}})))
+                    break;
+            }
+            // Serialize useful narrowing choices while work is still admitted.
+            // Marking the result incomplete earlier stops boundedJson's step checks.
+            truncate("ambiguous_schema");
+            finishItems();
+            return false;
+        }
+        if (!choices.empty())
+            owner = owner_.service_.getSchema(
+                {},
+                choices[0]["mapSchemaId"].get<std::string>(),
+                principal.datasourceAuthorization);
+    }
+    auto schema = owner ? owner->layer(layerName) : simfil::model_ptr<LayerSchema>{};
+    if (!schema) {
+        fail("schema_unavailable", "The selected artifact/layer is unavailable.");
+        return false;
+    }
+    // This is metadata-only query context, not a synthetic datasource registration.
+    // Reuse the same binding validation as normal metadata and retain the immutable owner.
+    DataSourceInfo metadata;
+    auto layer = std::make_shared<LayerInfo>();
+    layer->layerId_ = layerName;
+    layer->type_ = schema->layerType();
+    metadata.layers_.emplace(layerName, std::move(layer));
+    metadata.setMapSchema(std::move(owner));
+    layer_ = metadata.getLayer(layerName);
+    return true;
+}
+
+Json McpMapgetTools::Call::convertCoordinates()
 {
     double x = arguments.at("x"), y = arguments.at("y");
     if (!std::isfinite(x) || !std::isfinite(y))
@@ -959,7 +801,7 @@ Json McpNativeTools::Call::convertCoordinates()
         {"unit", "degrees"}};
 }
 
-Json McpNativeTools::Call::convertTile()
+Json McpMapgetTools::Call::convertTile()
 {
     auto const modes = arguments.contains("tileId") + arguments.contains("legacyTileId") +
         arguments.contains("x") + arguments.contains("longitude");

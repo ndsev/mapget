@@ -54,6 +54,7 @@ nlohmann::json ObjectDiscoveryResult::toJson() const
              .count()},
         {"ttlMs", ttl_.count()}};
 }
+
 ObjectDiscoveryResult ObjectDiscoveryResult::fromJson(nlohmann::json const& json)
 {
     ObjectDiscoveryResult result;

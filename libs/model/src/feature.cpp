@@ -19,13 +19,16 @@ namespace
 {
 model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model, uint32_t index)
 {
+    // The root column must contain only feature references, in feature-column order.
+    // Procedural views use the same index for both; newFeature() maintains this invariant.
+    // Protected ModelPool inheritance could help prevent callers from adding other roots.
     auto rootResult = model.root(index);
     if (!rootResult || !*rootResult) {
         return {};
     }
     return model.resolve<Feature>(**rootResult);
 }
-}
+}  // namespace
 
 RelationArrayView::ExtensionPtr RelationArrayView::mergedExtension() const
 {
@@ -128,10 +131,14 @@ model_ptr<AttributeLayerList> Feature::attributeLayers()
 {
     if (!attributeLayerNodeAddress()) {
         auto result = model().newAttributeLayers();
-        if (auto schemaId = model().attributeLayerMapSchemaId(typeId());
-            schemaId != simfil::NoSchemaId) {
+        if (auto schemaId =
+                model().childSchemaId(model().childSchemaId(schema(), "properties"), "layer");
+            schemaId != simfil::NoTypeId)
+        {
             if (auto schemaResult = result->setObjectSchema(schemaId); !schemaResult) {
-                log().warn("Failed to set attribute-layer-list schema: {}", schemaResult.error().message);
+                log().warn(
+                    "Failed to set attribute-layer-list schema: {}",
+                    schemaResult.error().message);
             }
         }
         attributeLayerNodeAddress() = result->addr();
@@ -153,7 +160,7 @@ model_ptr<Object> Feature::attributes()
 {
     if (!attributeNodeAddress()) {
         auto result = model().newObject(8);
-        model().applyObjectSchema(*result, model().featurePropertiesSchemaId(typeId()));
+        model().applyObjectSchema(*result, model().childSchemaId(schema(), "properties"));
         attributeNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -186,7 +193,7 @@ model_ptr<Array> Feature::relations()
             model().childSchemaId(
                 schema(),
                 StringPool::RelationsStr,
-                simfil::Schema::Kind::Array));
+                simfil::SchemaType::Kind::Array));
         relationNodeAddress() = result->addr();
         fieldsDirty_ = true;
         return result;
@@ -218,10 +225,6 @@ model_ptr<RelationArrayView> Feature::mergedRelationsOrNull() const
 tl::expected<std::vector<simfil::Value>, simfil::Error>
 Feature::evaluateAll(const std::string_view& expression)
 {
-    // Note: Here we rely on the assertion that the root_ column
-    // contains only references to feature nodes, in the order
-    // of the feature node column. We could think about protected inheritance
-    // of the ModelPool to safeguard this.
     auto result = model().evaluate(expression, *this, false);
     if (!result)
         tl::unexpected<simfil::Error>(std::move(result.error()));
@@ -246,9 +249,29 @@ simfil::ValueType Feature::type() const
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::schema() const
+simfil::TypeId Feature::schema() const
 {
-    return model().featureSchemaId(typeId());
+    return basicData_->typeId_.schemaId_ ?
+        basicData_->typeId_.schemaId_ :
+        model().featureSchemaId(typeId());
+}
+
+void Feature::setSchema(simfil::TypeId schemaId)
+{
+    auto checked = model().checkedContainerSchema(
+        schemaId,
+        model().featureSchemaId(typeId()),
+        simfil::ValueType::Object);
+    if (checked == schema())
+        return;
+
+    // Rebinding an already populated root would silently change its children's types.
+    auto const& existing = *static_cast<Feature const*>(this);
+    if (existing.attributeNodeAddress() || existing.attributeLayerNodeAddress() ||
+        existing.relationNodeAddress())
+        throw std::logic_error(
+            "Bind the concrete feature schema before populating its containers.");
+    basicData_->typeId_.schemaId_ = checked;
 }
 
 simfil::ModelNode::Ptr Feature::at(int64_t i) const
@@ -418,7 +441,8 @@ simfil::ModelNodeAddress& Feature::relationNodeAddress()
     return complexData_->relations_;
 }
 
-void Feature::updateFields() const {
+void Feature::updateFields() const
+{
     fields_.clear();
 
     // Add type field
@@ -457,13 +481,14 @@ void Feature::updateFields() const {
         idNode->ensureVisiblePartLayout();
         auto const limit = std::min(idNode->partNames_.size(), idNode->visibleValueIndices_.size());
         for (size_t i = 0; i < limit; ++i) {
-            if (auto value = idNode->values_->at(static_cast<int64_t>(idNode->visibleValueIndices_[i]))) {
+            if (auto value =
+                    idNode->values_->at(static_cast<int64_t>(idNode->visibleValueIndices_[i]))) {
                 fields_.emplace_back(idNode->partNames_[i], value);
             }
         }
     }
 
-    // Add other fields
+    // Expose the stored geometry and lazily assembled properties/relation views.
     if (auto geomNode = geomOrNull()) {
         fields_.emplace_back(StringPool::GeometryStr, geomNode);
     }
@@ -492,7 +517,8 @@ nlohmann::json Feature::toJson() const
     return json;
 }
 
-void Feature::addPoint(const Point& p) {
+void Feature::addPoint(const Point& p)
+{
     auto newGeom = appendGeometry(GeomType::Points, 1, true);
     newGeom->append(p);
 }
@@ -520,25 +546,29 @@ void Feature::addGeometry(const model_ptr<Geometry>& geom)
     collection->addGeometry(geom);
 }
 
-void Feature::addPoints(const std::vector<Point>& points) {
+void Feature::addPoints(const std::vector<Point>& points)
+{
     auto newGeom = appendGeometry(GeomType::Points, points.size());
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addLine(const std::vector<Point>& points) {
+void Feature::addLine(const std::vector<Point>& points)
+{
     auto newGeom = appendGeometry(GeomType::Line, points.size());
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addMesh(const std::vector<Point>& points) {
+void Feature::addMesh(const std::vector<Point>& points)
+{
     auto newGeom = appendGeometry(GeomType::Mesh, points.size());
     for (auto const& p : points)
         newGeom->append(p);
 }
 
-void Feature::addPoly(const std::vector<Point>& points) {
+void Feature::addPoly(const std::vector<Point>& points)
+{
     auto newGeom = appendGeometry(GeomType::Polygon, points.size());
     for (auto const& p : points)
         newGeom->append(p);
@@ -549,12 +579,9 @@ void Feature::materializeGeometryCollection()
     auto const isBaseGeometryColumn = [](uint8_t column)
     {
         using Col = PartitionFeatureLayer::ColumnId;
-        return column == Col::PointGeometries ||
-               column == Col::LineGeometries ||
-               column == Col::PolygonGeometries ||
-               column == Col::MeshGeometries ||
-               column == Col::AabbGeometries ||
-               column == Col::GltfNodeIndexGeometries;
+        return column == Col::PointGeometries || column == Col::LineGeometries ||
+            column == Col::PolygonGeometries || column == Col::MeshGeometries ||
+            column == Col::AabbGeometries || column == Col::GltfNodeIndexGeometries;
     };
     auto currentGeomAddress = geometryNodeAddress();
     if (!currentGeomAddress ||
@@ -570,10 +597,7 @@ void Feature::materializeGeometryCollection()
     fieldsDirty_ = true;
 }
 
-model_ptr<Geometry> Feature::appendGeometry(
-    GeomType type,
-    size_t initialCapacity,
-    bool fixedSize)
+model_ptr<Geometry> Feature::appendGeometry(GeomType type, size_t initialCapacity, bool fixedSize)
 {
     auto& geomAddress = geometryNodeAddress();
     if (!geomAddress) {
@@ -603,7 +627,8 @@ model_ptr<Relation> Feature::addRelation(
     return addRelation(name, model().newFeatureId(targetType, targetIdParts));
 }
 
-model_ptr<Relation> Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
+model_ptr<Relation>
+Feature::addRelation(const std::string_view& name, const model_ptr<FeatureId>& target)
 {
     return addRelation(model().newRelation(name, target));
 }
@@ -698,11 +723,13 @@ Feature::filterRelations(const std::string_view& name) const
     std::vector<model_ptr<Relation>> result;
     result.reserve(numRelations());
 
-    forEachRelation([&name, &result](auto&& rel){
-        if (rel->name() == name)
-            result.push_back(rel);
-        return true;
-    });
+    forEachRelation(
+        [&name, &result](auto&& rel)
+        {
+            if (rel->name() == name)
+                result.push_back(rel);
+            return true;
+        });
 
     if (result.empty())
         return {};
@@ -720,7 +747,8 @@ model_ptr<SourceDataReferenceCollection> Feature::sourceDataReferences() const
 void Feature::setSourceDataReferences(simfil::ModelNode::Ptr const& addresses)
 {
     if (!basicData_) {
-        throw std::runtime_error("Cannot attach source-data references to a feature without basic storage.");
+        throw std::runtime_error(
+            "Cannot attach source-data references to a feature without basic storage.");
     }
     if (!complexData_) {
         complexData_ = &model().ensureFeatureComplexData(addr().index());
@@ -778,7 +806,6 @@ void Feature::MergedBasicAttributesView::rebuildMergedFields() const
                     attrs->at(static_cast<int64_t>(i)));
             }
         }
-
     }
 
     mergedFieldsDirty_ = false;
@@ -789,12 +816,14 @@ simfil::ValueType Feature::MergedBasicAttributesView::type() const
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::MergedBasicAttributesView::schema() const
+simfil::TypeId Feature::MergedBasicAttributesView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
-        return model().featurePropertiesSchemaId(feature->typeId());
+        if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
+            return attrs->schema();
+        return model().childSchemaId(feature->schema(), "properties");
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
 simfil::ModelNode::Ptr Feature::MergedBasicAttributesView::at(int64_t i) const
@@ -852,19 +881,22 @@ Feature::FeaturePropertyView::FeaturePropertyView(
     simfil::detail::mp_key key)
     : simfil::MandatoryDerivedModelNodeBase<
           PartitionFeatureLayer>(feature->model().shared_from_this(), feature->addr(), key)
-{}
+{
+}
 
 simfil::ValueType Feature::FeaturePropertyView::type() const
 {
     return simfil::ValueType::Object;
 }
 
-simfil::SchemaId Feature::FeaturePropertyView::schema() const
+simfil::TypeId Feature::FeaturePropertyView::schema() const
 {
     if (auto feature = resolveFeatureByRootIndex(model(), addr().index())) {
-        return model().featurePropertiesSchemaId(feature->typeId());
+        if (auto attrs = feature->attributesOrNull(); attrs && attrs->schema())
+            return attrs->schema();
+        return model().childSchemaId(feature->schema(), "properties");
     }
-    return simfil::NoSchemaId;
+    return simfil::NoTypeId;
 }
 
 simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
@@ -948,4 +980,4 @@ bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback
     return true;
 }
 
-}
+}  // namespace mapget

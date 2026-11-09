@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/http-service/mcp-config.h"
+#include "mapget/service/authorization.h"
 #include "mcp-action-catalog.h"
 
 #include <chrono>
@@ -34,8 +35,9 @@ public:
         bool configRead = false;
         bool configWrite = false;
         bool diagnostics = false;
-        /** Explicit deployment mappings from verified claims, never forwarded caller headers. */
-        std::unordered_map<std::string, std::string> datasourceHeaders;
+
+        /** Verified claims and explicit deployment grants, never arbitrary caller headers. */
+        ClientAuthorization datasourceAuthorization;
 
         /** Require a named, unexpired identity with an applicable permission. */
         [[nodiscard]] bool valid(std::chrono::system_clock::time_point now) const;
@@ -46,6 +48,7 @@ public:
 
     /** Sending means handing a control frame to the connection, never to the tile outbox. */
     using Send = std::function<bool(nlohmann::json const&)>;
+
     /** Completion contains exactly one result object or application error object. */
     using Complete = std::function<void(nlohmann::json)>;
 

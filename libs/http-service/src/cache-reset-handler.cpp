@@ -34,12 +34,12 @@ void HttpService::Impl::handleCacheResetRequest(
     const drogon::HttpRequestPtr& req,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
-    auto const clientHeaders =
-        detail::authHeadersFromRequest(req);
+    auto const clientAuthorization =
+        config_.proxyAuth.authorization(req);
     if (!config_.cacheResetEnabled ||
         !authHeadersMatch(
             config_.cacheResetAuthHeaderAlternatives,
-            clientHeaders))
+            clientAuthorization.headers))
     {
         callback(plainResponse(
             drogon::k403Forbidden,
@@ -80,7 +80,7 @@ void HttpService::Impl::handleCacheResetRequest(
             return;
         }
 
-        if (!self_.resetMapCache(mapId, clientHeaders)) {
+        if (!self_.resetMapCache(mapId, clientAuthorization)) {
             callback(plainResponse(
                 drogon::k404NotFound,
                 "No resettable map was found."));

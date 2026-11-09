@@ -1,4 +1,5 @@
 #include "sourcedatalayer.h"
+#include "mapschema.h"
 
 #include <limits>
 #include <memory>
@@ -59,16 +60,24 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
     : PartitionLayer(tileId, stringPoolId, mapId, layerInfo),
       ModelPool(stringPool),
       impl_(std::make_unique<Impl>(stringPool))
-{}
+{
+    installSchemaResolver(*this);
+    setSchemaPool(layerInfo_->schemaOwner());
+    impl_->expressionEnvironment_->setSchema(layerInfo_->layerSchema()->rootType());
+}
 
 PartitionSourceDataLayer::PartitionSourceDataLayer(
     const std::vector<uint8_t>& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter)
+    StringPoolResolveFun const& stringPoolGetter,
+    SchemaResolveFun const& schemas)
     : PartitionLayer(input, layerInfoResolveFun, &deserializationOffsetBytes_),
       ModelPool(stringPoolGetter(stringPoolId_)),
       impl_(std::make_unique<Impl>(stringPoolGetter(stringPoolId_)))
 {
+    installSchemaResolver(*this, schemas);
+    setSchemaPool(layerInfo_->schemaOwner());
+    impl_->expressionEnvironment_->setSchema(layerInfo_->layerSchema()->rootType());
     using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
     if (deserializationOffsetBytes_ > input.size()) {
         raise("Failed to read PartitionSourceDataLayer: invalid deserialization offset.");
@@ -86,6 +95,11 @@ PartitionSourceDataLayer::PartitionSourceDataLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
+    // Native source data has one graph; subset-layer imported namespaces are not valid here.
+    if (!hasDirectSchemaPool(schemaId()))
+        raise("Source-data model schema does not match its partition header.");
+    // Hydrated bindings own their graphs independently of the client or its metadata snapshot.
+    setSchemaResolver({});
 }
 
 PartitionSourceDataLayer::~PartitionSourceDataLayer() = default;
@@ -145,6 +159,38 @@ PartitionSourceDataLayer::findSourceData(
 simfil::Environment& PartitionSourceDataLayer::evaluationEnvironment()
 {
     return *impl_->expressionEnvironment_;
+}
+
+void PartitionSourceDataLayer::rebindSchema(std::shared_ptr<LayerInfo> const& info)
+{
+    if (!info || !info->schemaOwner() || info->layerId_ != layerInfo_->layerId_ ||
+        info->type_ != layerInfo_->type_ || info->partitionKind_ != layerInfo_->partitionKind_)
+        throw std::invalid_argument(
+            "Schema composition cannot change a partition's layer identity.");
+    if (info->schemaOwner()->schemaId() == schemaId()) {
+        setLayerInfo(info);
+        return;
+    }
+    if (!hasDirectSchemaPool(schemaId()))
+        throw std::invalid_argument("Native source-data model does not match its schema header.");
+    auto owner = info->schemaOwner();
+    (void)owner->schemaRemap(schemaId());
+    auto environment = makeEnvironment(strings());
+    environment->setSchema(info->layerSchema()->rootType());
+    // Compound schemas are stored on their backing ModelPool objects, not in
+    // source-address records, so the common translation covers them completely.
+    remapSchemas(
+        owner,
+        [owner](simfil::SchemaType const& reference)
+        {
+            return reference ?
+                owner
+                    ->schemaType(owner->remapSchema(reference.pool()->identity(), reference.id())) :
+                simfil::SchemaType{};
+        });
+    layerInfo_ = info;
+    setSchemaResolver({});
+    impl_->expressionEnvironment_ = std::move(environment);
 }
 
 model_ptr<SourceDataCompoundNode> PartitionSourceDataLayer::newCompound(size_t initialSize)
@@ -232,6 +278,9 @@ MemoryUsageBreakdown PartitionSourceDataLayer::memoryUsage() const
     result.add("model-pool.object-schemas", model.objectSchemas);
     result.add("model-pool.array-members", model.arrayMembers);
     result.add("model-pool.array-schemas", model.arraySchemas);
+    result.add("model-pool.typed-scalars", model.typedScalars);
+    result.add("model-pool.bitmasks", model.bitmasks);
+    result.add("model-pool.schema-owners", model.schemaOwners);
     result.add("source-data.compounds", impl_->compounds_.memory_usage());
     result.add("source-data.address-scope-flags", impl_->addressScopeFlags_.memory_usage());
     return result;
@@ -251,6 +300,7 @@ PartitionSourceDataLayer::setStrings(std::shared_ptr<simfil::StringPool> const& 
     }
 
     impl_->expressionEnvironment_ = makeEnvironment(newDict);
+    impl_->expressionEnvironment_->setSchema(layerInfo_->layerSchema()->rootType());
 
     return ModelPool::setStrings(newDict);
 }

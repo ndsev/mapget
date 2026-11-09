@@ -1,4 +1,5 @@
 #!python
+"""Serve synthetic feature, source-data and locate responses from a standalone datasource."""
 
 import mapget
 from ndslive.math import PackedTileId
@@ -7,6 +8,7 @@ import sys
 
 
 def handle_tile_request(tile: mapget.TileFeatureLayer):
+    """Append one Way demonstrating geometry, attributes, relations and source-data references."""
     # Read out requested tile-id / map-id / layer-id
     print(f"Got request for tile={tile.tile_id().value:02X}, map={tile.map_id()}, layer={tile.layer_id()}.")
 
@@ -69,6 +71,7 @@ def handle_tile_request(tile: mapget.TileFeatureLayer):
 
 
 def handle_source_data_request(tile: mapget.TileSourceDataLayer):
+    """Expose a sample raw record at the address referenced by the generated Way."""
     compound = tile.new_compound(2)
     compound.set_schema_name("example.RawWay")
     compound.set_source_data_address(mapget.SourceDataAddress(0, 128))
@@ -78,6 +81,7 @@ def handle_source_data_request(tile: mapget.TileSourceDataLayer):
 
 
 def handle_locate_request(request: mapget.LocateRequest):
+    """Return a sample candidate in one fixed tile without checking that the requested Way exists."""
     tile_key = mapget.MapTileKey(
         mapget.LayerType.FEATURES,
         request.map_id,
@@ -92,6 +96,7 @@ def handle_locate_request(request: mapget.LocateRequest):
 
 
 def handle_cache_expired(tile_key: mapget.MapTileKey, expired_at_us: int):
+    """Log the expired tile and the callback's supplied microsecond timestamp."""
     print(f"Cached tile expired: {tile_key} at {expired_at_us}us.")
 
 
@@ -123,7 +128,7 @@ ds.on_locate_request(handle_locate_request)
 ds.on_cache_expired(handle_cache_expired)
 
 # Parse port as optional first argument
-port = 0  # Pick random free port
+port = 0  # Ask the OS to choose an available port.
 if len(sys.argv) > 1:
     port = int(sys.argv[1])
 
@@ -131,7 +136,7 @@ if len(sys.argv) > 1:
 # port automatically.
 ds.go(port=port)
 
-# Wait until Ctrl-C is hit. Navigate e.g. to
-#  http://localhost:54544/tile?layer=WayLayer&tileId=2&responseType=json
-# to test the running data source.
+# Wait until Ctrl-C is hit. Use the actual listening port reported by the server;
+# for port 54544, a sample request is:
+# http://localhost:54544/tile?layer=WayLayer&tileId=2&responseType=json
 ds.wait_for_signal()

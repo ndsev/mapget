@@ -1,4 +1,5 @@
 #include "tiles-ws-controller.h"
+#include "bounded-json.h"
 
 #include "mcp-server.h"
 #include "tiles-ws-session.h"
@@ -30,8 +31,8 @@ class TilesWebSocketController final : public drogon::WebSocketController<TilesW
 {
 public:
     /** Build the websocket controller bound to one shared HttpService instance. */
-    explicit TilesWebSocketController(HttpService& service, std::weak_ptr<McpServer> mcp)
-        : service_(service), mcp_(std::move(mcp))
+    explicit TilesWebSocketController(HttpService& service, std::weak_ptr<McpServer> mcp, ProxyAuthentication proxyAuth)
+        : service_(service), mcp_(std::move(mcp)), proxyAuth_(std::move(proxyAuth))
     {
     }
 
@@ -40,7 +41,7 @@ public:
     {
         tilesWsRecordConnectionOpened();
         try {
-            auto session = tilesWsCreateSession(service_, conn, tilesWsAuthHeadersFromRequest(req));
+            auto session = tilesWsCreateSession(service_, conn, proxyAuth_.authorization(req));
             tilesWsRegisterForMetrics(session);
             conn->setContext(session);
             tilesWsRegisterSession(session);
@@ -101,7 +102,7 @@ public:
 
             nlohmann::json j;
             try {
-                j = McpAuthentication::parseJson(message, 10 * 1024 * 1024);
+                j = parseBoundedJson(message, 10 * 1024 * 1024);
             }
             catch (const std::exception& e) {
                 const auto payload = nlohmann::json::object({
@@ -184,6 +185,7 @@ public:
 private:
     HttpService& service_;
     std::weak_ptr<McpServer> mcp_;
+    ProxyAuthentication proxyAuth_;
 };
 
 }  // namespace
@@ -192,9 +194,10 @@ private:
 void registerTilesWebSocketController(
     drogon::HttpAppFramework& app,
     HttpService& service,
-    std::weak_ptr<McpServer> mcp)
+    std::weak_ptr<McpServer> mcp,
+    ProxyAuthentication proxyAuth)
 {
-    app.registerController(std::make_shared<TilesWebSocketController>(service, std::move(mcp)));
+    app.registerController(std::make_shared<TilesWebSocketController>(service, std::move(mcp), std::move(proxyAuth)));
     auto registerPayloadEndpoint = [&app](std::string const& path) {
         app.registerHandler(
             path,

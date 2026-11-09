@@ -11,7 +11,10 @@ namespace mapget
 /** Default visualization detail; callers may request any representable quota. */
 inline constexpr uint32_t DefaultPointCloudMaxPoints = 14'000'000;
 
-/** Evenly spaced original indices, retaining the quota exactly and both endpoints. */
+/**
+ * Select min(sourceCount, quota) evenly spaced original indices. Two or more
+ * samples include both endpoints; one sample is index zero. No averaging occurs.
+ */
 class PointCloudIndexSelection
 {
 public:
@@ -21,11 +24,13 @@ public:
 
     [[nodiscard]] uint64_t size() const { return count_; }
 
-    /** Split the quotient to avoid overflowing the source-count/index product. */
+    /** Return an original index for 0 <= ordinal < size(); other ordinals throw. */
     [[nodiscard]] uint64_t index(uint64_t ordinal) const
     {
         if (ordinal >= count_) throw std::out_of_range("Point-cloud sample index out of range");
-        if (count_ == 1) return 0;
+        if (count_ == 1)
+            return 0;
+        // Splitting quotient and remainder avoids an overflowing ordinal * span.
         auto const span = sourceCount_ - 1;
         auto const steps = count_ - 1;
         return ordinal * (span / steps) + ordinal * (span % steps) / steps;

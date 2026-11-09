@@ -269,7 +269,7 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
     }
 }
 
-/** Recompute a conservative lower bound for request orchestration containers. */
+/** Estimate request orchestration storage while holding the coordination mutex. */
 [[nodiscard]] uint64_t FilterRequestExecution::orchestrationBytesLocked() const
 {
     MemoryUsageBreakdown usage;
@@ -319,6 +319,8 @@ void FilterRequestExecution::RelationTargetTileState::addMemoryUsage(MemoryUsage
         if (channel.featureFilter_) {
             usage.add("filter-channel-strings", stringMemoryUsage(*channel.featureFilter_));
         }
+        if (channel.schemaId_)
+            usage.add("filter-channel-strings", stringMemoryUsage(*channel.schemaId_));
         if (channel.entryFilter_) {
             usage.add("filter-channel-strings", stringMemoryUsage(*channel.entryFilter_));
         }
@@ -947,16 +949,21 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             addIssue("Stored relation has no target feature identity.");
             continue;
         }
+        // Foreign identities have named parts, not a locally canonical string.
+        auto targetIdentity = [&]
+        {
+            return targetId->externalMapId() ? targetId->toJson().dump() : targetId->toString();
+        };
         if (auto externalMap = targetId->externalMapId();
             externalMap && *externalMap != request->mapId_) {
             addIssue(fmt::format(
                 "Cross-map relation target '{}' is unsupported.",
-                targetId->toString()));
+                targetIdentity()));
             continue;
         }
 
-        // Object filtering is deliberately local; unresolved external references stay
-        // on the source feature, without initiating another partition load.
+        // Object filtering stays within this partition. Omit unresolved relation
+        // descriptors without loading another partition; the source model is unchanged.
         if (source.partitionId().kind() == PartitionKind::Object) {
             continue;
         }
@@ -978,7 +985,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             // while holding the shared location-cache mutex. Racing
             // misses may perform duplicate idempotent locate work;
             // the first normalized value installed wins.
-            auto located = sourceDataSource->locate(locateRequest);
+            auto located = registration->dataSource->locate(locateRequest);
             std::map<std::string, LocateCandidate> unique;
             for (auto&& location : located) {
                 if (location.tileKey_.layer_ != LayerType::Features ||
@@ -998,7 +1005,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
         }
 
         if (locations.empty()) {
-            addIssue(fmt::format("Could not locate relation target '{}'.", targetId->toString()));
+            addIssue(fmt::format("Could not locate relation target '{}'.", targetIdentity()));
             continue;
         }
         bool selectorFailed = false;
@@ -1018,7 +1025,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
             if (!selected) {
                 addIssue(fmt::format(
                     "Could not evaluate relation-target selector for '{}': {}",
-                    targetId->toString(),
+                    targetIdentity(),
                     selected.error().message));
                 selectorFailed = true;
                 break;
@@ -1045,10 +1052,10 @@ tl::expected<void, simfil::Error> FilterRequestExecution::locateRelationTargets(
                     uniqueMatches.empty() ?
                         fmt::format(
                             "Located relation target '{}' was not found in its candidate tiles.",
-                            targetId->toString()) :
+                            targetIdentity()) :
                         fmt::format(
                             "Relation target '{}' resolved ambiguously to {} features.",
-                            targetId->toString(),
+                            targetIdentity(),
                             uniqueMatches.size()));
                 continue;
             }
@@ -1340,7 +1347,8 @@ FilterRequestExecution::resolveRelationReadyOutputs(std::vector<RelationReadyOut
         }
 
         if (targetLayer->error()) {
-            // A failed dependency expires only its consumers, not the entire viewport.
+            // Keep this dependency's error and lifetime on its consuming outputs;
+            // unrelated outputs can still complete.
             for (auto* output : outputs) {
                 auto added = addRelationTargetContribution(*output, targetKey, *targetLayer);
                 if (!added)
@@ -1685,7 +1693,7 @@ void FilterRequestExecution::scheduleRelationTarget(MapPartitionKey const& targe
         request->childRequests_.push_back(child);
     }
     auto const accepted =
-        impl->requestTiles(std::vector<LayerTilesRequest::Ptr>{child}, clientHeaders);
+        impl->requestTiles(std::vector<LayerTilesRequest::Ptr>{child}, clientAuthorization, registration);
     // If cancellation cleared child ownership immediately after insertion,
     // close the narrow enqueue race explicitly. Otherwise a now-unowned child
     // could continue loading after its filter generation was cancelled.
@@ -1879,8 +1887,11 @@ tl::expected<void, simfil::Error> FilterRequestExecution::resolveStoredRelationD
         auto const channelId = descriptor.channelIndex_ < request->filter_.channels_.size() ?
             request->filter_.channels_[descriptor.channelIndex_].channelId_ :
             std::string{};
-        auto const targetIdentity = descriptor.relation_ && descriptor.relation_->target() ?
-            descriptor.relation_->target()->toString() :
+        auto const target = descriptor.relation_ ? descriptor.relation_->target() :
+                                                 model_ptr<FeatureId>{};
+        // Do not turn a recoverable target diagnostic into a foreign-ID conversion error.
+        auto const targetIdentity = target ?
+            (target->externalMapId() ? target->toJson().dump() : target->toString()) :
             formatFeatureIdString(descriptor.targetTypeId_, descriptor.targetFeatureId_);
         auto message = uniqueMatches.empty() ?
             fmt::format(
@@ -1908,8 +1919,8 @@ std::vector<MapPartitionKey> FilterRequestExecution::liveOutputKeys()
     std::lock_guard lock(mutex);
     result.reserve(outputs.size() - prunedOutputTiles);
     for (auto const& output : outputs) {
-        // A pruned south-west owner must not suppress a relation in an output
-        // that still belongs to the current request.
+        // Only retained outputs count as ownership coverage. Relation completion
+        // omits a reciprocal pair whose permanent owner has been pruned.
         if (output.state_ != OutputTileState::State::Pruned) {
             result.emplace_back(
                 LayerType::Features,
@@ -2624,7 +2635,7 @@ detail::FilterRequestExecution::processingPartitionIds(
 bool detail::FilterRequestExecution::start(
     Service::Impl& service,
     FeatureLayerFilterTilesRequest::Ptr const& request,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     if (!request) {
         raise("Attempt to request a null FeatureLayerFilterTilesRequest.");
@@ -2634,11 +2645,13 @@ bool detail::FilterRequestExecution::start(
         return true;
     }
 
+    RegisteredDataSource::Ptr registration;
     auto context = service.resolveLayerRequest(
         request->mapId_,
         request->layerId_,
-        clientHeaders,
-        request->sourceId_);
+        clientAuthorization,
+        request->sourceId_,
+        &registration);
     if (context.status_ != RequestStatus::Success) {
         request->setStatus(context.status_);
         return false;
@@ -2648,22 +2661,11 @@ bool detail::FilterRequestExecution::start(
         return false;
     }
 
-    std::shared_ptr<DataSourceInfo const> sourceInfo;
-    DataSource::Ptr sourceDataSource;
-    for (auto const& source :
-         service.dataSources_
-             .matchingPrimarySources(request->mapId_, request->layerId_, request->sourceId_))
-    {
-        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
-            continue;
-        }
-        sourceInfo = source->info;
-        sourceDataSource = source->dataSource;
-        break;
-    }
-    if (!sourceInfo) {
-        request->setStatus(RequestStatus::NoDataSource);
-        return false;
+    for (auto const& channel : request->filter_.channels_) {
+        if (channel.schemaId_ && *channel.schemaId_ != registration->info->schemaId_)
+            return rejectStart(
+                request,
+                "Search schema changed; prepare the confirmed query again.");
     }
 
     if (std::ranges::any_of(
@@ -2686,7 +2688,7 @@ bool detail::FilterRequestExecution::start(
     if (std::ranges::any_of(request->filter_.channels_, [](auto const& channel) {
             return channel.relation_ && channel.relation_->incoming_;
         })) {
-        return IncomingRequestExecution::start(service, request, clientHeaders);
+        return IncomingRequestExecution::start(service, request, clientAuthorization);
     }
 
     auto prioritySourceMembership = request->priorityPartitionIds_;
@@ -2719,9 +2721,8 @@ bool detail::FilterRequestExecution::start(
         std::shared_ptr<detail::FilterRequestExecution>(new detail::FilterRequestExecution());
     state->impl = &service;
     state->request = request;
-    state->sourceInfo = std::move(sourceInfo);
-    state->sourceDataSource = std::move(sourceDataSource);
-    state->clientHeaders = clientHeaders;
+    state->registration = std::move(registration);
+    state->clientAuthorization = clientAuthorization;
     state->hasPointGroups = hasPointGroups;
     state->hasStoredRelations = hasStoredRelations;
     state->outputLevel = request->tileIds_.front().kind() == PartitionKind::Tile ?
@@ -2747,7 +2748,7 @@ bool detail::FilterRequestExecution::start(
             return uint64_t{0};
         }
         // Operational status must not queue behind filter coordination. A
-        // contended sample reuses the last exact gauge value and retries on
+        // contended sample reuses the last storage estimate and retries on
         // the next poll instead of blocking an HTTP event-loop thread.
         std::unique_lock lock(active->mutex, std::try_to_lock);
         if (!lock.owns_lock()) {
@@ -2766,14 +2767,17 @@ bool detail::FilterRequestExecution::start(
 
     request->notifyProgress(state->progress("Open"));
 
-    return service.requestTiles(std::vector<LayerTilesRequest::Ptr>{childRequest}, clientHeaders);
+    return service.requestTiles(
+        std::vector<LayerTilesRequest::Ptr>{childRequest},
+        clientAuthorization,
+        state->registration);
 }
 
 bool Service::Impl::requestFilter(
     FeatureLayerFilterTilesRequest::Ptr const& request,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    return detail::FilterRequestExecution::start(*this, request, clientHeaders);
+    return detail::FilterRequestExecution::start(*this, request, clientAuthorization);
 }
 
 }  // namespace mapget

@@ -17,10 +17,13 @@ class PartitionId
 public:
     /** Default is the existing tile-zero metadata sentinel, not object zero. */
     PartitionId() = default;
+
     /** Keep tile-datasource construction convenient without accepting untagged integers. */
     PartitionId(TileId id) : value_(static_cast<uint32_t>(id.value())) {}
+
     /** Construct a tile address, including the metadata sentinel. */
     static PartitionId tile(TileId id) { return id; }
+
     /** Construct an object address; all 64 bits, including zero, are identity. */
     static PartitionId object(uint64_t id)
     {
@@ -29,8 +32,10 @@ public:
         result.value_ = id;
         return result;
     }
+
     /** Inspect the tag without interpreting the numeric identifier. */
     PartitionKind kind() const { return kind_; }
+
     /** Checked access to spatial identity. Objects never masquerade as tiles. */
     TileId tileId() const
     {
@@ -39,6 +44,7 @@ public:
         auto raw = static_cast<int32_t>(static_cast<uint32_t>(value_));
         return raw == 0 ? TileId{} : TileId::fromValue(raw);
     }
+
     /** Checked access to unsigned object identity. */
     uint64_t objectId() const
     {
@@ -46,19 +52,25 @@ public:
             throw std::logic_error("Tile partition has no object ID.");
         return value_;
     }
+
     /** Preserve the familiar tile-only numeric accessor with a checked boundary. */
     int32_t value() const { return tileId().value(); }
+
     /** Parse a packed tile value; object construction is always explicitly tagged. */
     static PartitionId fromValue(int32_t value) { return TileId::fromValue(value); }
+
     /** Unsigned decimal for objects, signed decimal for packed tiles. */
     std::string toString() const
     {
         return kind_ == PartitionKind::Object ? std::to_string(value_) : std::to_string(value());
     }
+
     /** JSON object IDs are strings, never floating-point browser numbers. */
     nlohmann::json toJson() const;
+
     /** Parse a strict, tagged transport identity. */
     static PartitionId fromJson(nlohmann::json const& json);
+
     /** Serialize the tag and the native-width identifier, rejecting unknown tags. */
     template <class S>
     void serialize(S& s)
@@ -77,6 +89,7 @@ public:
             throw std::invalid_argument("Unknown partition kind.");
         }
     }
+
     /** Kind is part of identity even when numeric values coincide. */
     auto operator<=>(PartitionId const&) const = default;
 

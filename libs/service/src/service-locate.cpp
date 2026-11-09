@@ -3,12 +3,14 @@
 #include "locate.h"
 #include "mapget/log.h"
 #include "mapget/model/featureid.h"
+#include "mapget/model/layerschema.h"
 
 namespace mapget::detail
 {
 
-LocateRequestExecution::LocateRequestExecution(Service::Impl& service, LocateRequest request)
-    : service_(service), request_(std::move(request))
+LocateRequestExecution::LocateRequestExecution(Service::Impl& service, LocateRequest request,
+    std::optional<ClientAuthorization> authorization)
+    : service_(service), request_(std::move(request)), authorization_(std::move(authorization))
 {
 }
 
@@ -17,13 +19,15 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
     std::vector<CandidateGroup> groups;
     std::map<std::pair<std::string, MapPartitionKey>, size_t> groupIndex;
     for (auto const& source : service_.dataSources_.snapshot()) {
-        if (source->info->mapId_ != request_.mapId_ || source->info->isAddOn_) {
+        if (source->info->mapId_ != request_.mapId_ || source->info->isAddOn_ ||
+            !source->authorized(authorization_)) {
             continue;
         }
         auto appendCandidates = [&](LocateRequest const& resolvedRequest)
         {
             for (auto&& candidate : source->dataSource->locate(resolvedRequest)) {
-                if ((request_.layerId_ && candidate.tileKey_.layerId_ != *request_.layerId_) ||
+                if ((resolvedRequest.layerId_ &&
+                     candidate.tileKey_.layerId_ != *resolvedRequest.layerId_) ||
                     (request_.partition_ &&
                      candidate.tileKey_.partitionId_ != *request_.partition_))
                     continue;
@@ -41,7 +45,7 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
                 auto [found, inserted] = groupIndex.emplace(key, groups.size());
                 if (inserted) {
                     groups.push_back(CandidateGroup{
-                        .sourceId = source->sourceId,
+                        .registration = source,
                         .tileKey = candidate.tileKey_,
                     });
                 }
@@ -49,25 +53,35 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
             }
         };
 
-        if (!request_.canonicalFeatureId_) {
-            appendCandidates(request_);
-            continue;
-        }
+        auto normalized = false;
         for (auto const& [_, layerInfo] : source->info->layers_) {
-            if (!layerInfo || layerInfo->type_ != LayerType::Features) {
+            if (!layerInfo || layerInfo->type_ != LayerType::Features ||
+                (request_.layerId_ && *request_.layerId_ != layerInfo->layerId_))
+            {
                 continue;
             }
             ParsedFeatureId parsed;
-            if (parseFeatureIdString(*request_.canonicalFeatureId_, *layerInfo, parsed)) {
+            // Named foreign parts become canonical only against the destination layer.
+            // Their JSON/object order is not an ID-composition order.
+            bool const matched = request_.canonicalFeatureId_ ?
+                parseFeatureIdString(*request_.canonicalFeatureId_, *layerInfo, parsed) :
+                normalizeFeatureIdParts(request_.typeId_, request_.featureId_, *layerInfo, parsed);
+            if (matched && layerInfo->layerSchema()->producesFeatureType(parsed.typeId_)) {
+                normalized = true;
                 auto resolved = LocateRequest{
                     request_.mapId_,
                     std::move(parsed.typeId_),
                     std::move(parsed.keyValuePairs_)};
-                resolved.layerId_ = request_.layerId_;
+                resolved.layerId_ = layerInfo->layerId_;
                 resolved.partition_ = request_.partition_;
                 appendCandidates(resolved);
             }
         }
+        // Named lookup keys need not be complete feature identities: providers may
+        // resolve partial IDs or their own secondary keys. Delegate once, unchanged,
+        // when no schema composition could order them. Canonical strings remain strict.
+        if (!normalized && !request_.canonicalFeatureId_)
+            appendCandidates(request_);
     }
     return groups;
 }
@@ -77,13 +91,12 @@ std::vector<LocateResponse> LocateRequestExecution::run()
     auto groups = planCandidates();
     pending_ = groups.size();
     for (auto& group : groups) {
+        auto registration = group.registration;
         auto child = std::make_shared<LayerTilesRequest>(
             group.tileKey.mapId_,
             group.tileKey.layerId_,
             std::vector<PartitionId>{group.tileKey.partitionId_});
-        if (!group.sourceId.empty()) {
-            child->sourceId_ = group.sourceId;
-        }
+        child->sourceId_ = registration->sourceId;
         child->onFeatureLayer(
             [this, group = std::move(group)](PartitionFeatureLayer::Ptr tile)
             {
@@ -114,15 +127,16 @@ std::vector<LocateResponse> LocateRequestExecution::run()
             });
         child->onDone_ = [this](RequestStatus)
         {
-            {
-                std::lock_guard lock(mutex_);
-                if (pending_ > 0) {
-                    --pending_;
-                }
+            std::lock_guard lock(mutex_);
+            if (pending_ > 0) {
+                --pending_;
             }
+            // The waiter owns this stack object. Notify before unlocking so it
+            // cannot destroy the condition variable while this callback uses it.
             cv_.notify_all();
         };
-        (void)service_.requestTiles({child}, {});
+        // Candidate selectors and loaded models must belong to the same registration.
+        (void)service_.requestTiles({child}, authorization_, registration);
     }
 
     std::unique_lock lock(mutex_);
@@ -144,9 +158,10 @@ std::vector<LocateResponse> LocateRequestExecution::run()
 namespace mapget
 {
 
-std::vector<LocateResponse> Service::Impl::locate(LocateRequest const& request)
+std::vector<LocateResponse> Service::Impl::locate(
+    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization)
 {
-    return detail::LocateRequestExecution(*this, request).run();
+    return detail::LocateRequestExecution(*this, request, authorization).run();
 }
 
 }  // namespace mapget

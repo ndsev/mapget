@@ -5,8 +5,9 @@
 #include "incoming-relations.h"
 
 #include <map>
-#include <span>
+#include <set>
 #include <shared_mutex>
+#include <span>
 #include <vector>
 
 namespace mapget
@@ -16,11 +17,11 @@ namespace mapget
  * Protocol for binary streaming of PartitionLayer and associated
  * StringPool dictionary objects. The general stream encoding is a simple
  * Version-Type-Length-Value one:
- * - The version (6b) indicates the protocol version which was used to
+ * - The version (6 bytes) indicates the protocol version which was used to
  *   serialise the blob. This must be compatible with the current version
  *   which is used by the mapget library.
- * - The type (1B) must be one fo the MessageType enum values.
- * - The length (4b)  indicates the byte-length of the serialized object,
+ * - The type (1 byte) identifies a MessageType enum value.
+ * - The length (4 bytes) indicates the byte-length of the serialized object,
  *   which is stored in the value.
  */
 class TileLayerStream
@@ -94,7 +95,7 @@ public:
      * - Version 1.5:
      *   + Replaced generic tile attachments with one optional tile-level GLB attachment.
      * - Version 1.6:
-     *   + Added SIMFIL object/array SchemaId columns to ModelPool payloads.
+     *   + Added SIMFIL object/array TypeId columns to ModelPool payloads.
      * - Version 1.7:
      *   + Added TileSearchResultLayer Message.
      * - Version 1.8:
@@ -137,34 +138,57 @@ public:
      *     format, which previously evolved without that header on the release branch.
      * - Version 5.5:
      *   + Added typed incoming-relation manifests with ordinary feature snapshots.
+     * - Version 6.0:
+     *   + Exact MapSchema identities in partition headers, separate binary schema artifacts.
+     *   + Schema-bound ModelPool values, persistent bitmasks and typed scalar projections.
+     * - Version 6.1:
+     *   + FeatureId parts use tagged array/object addresses; foreign references retain named parts.
+     *   + Shared SchemaPool graphs distinguish contextual edges and composed type remappings.
+     * - Version 6.2:
+     *   + Schema raw-value metadata extends simfil's static dictionary; mapget field IDs shift.
+     *   + MapSchema codec 3 / SchemaPool codec 2 carry native relation contracts and enum ordinals.
+     * - Version 6.3:
+     *   + Canonical schema field multiplicity extends simfil's static dictionary;
+     *     mapget field IDs shift and require matched native/WASM readers.
+     *   + MapSchema codec 7 / SchemaPool codec 4 use canonical columns and arenas.
      */
-    static constexpr Version CurrentProtocolVersion{5, 5, 0};
+    static constexpr Version CurrentProtocolVersion{6, 3, 0};
 
-    /** Map to keep track of the highest sent string id per datasource node. */
+    /** Highest sent dictionary ID per source string-pool namespace. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;
 
     /** The Reader turns bytes into PartitionLayer objects. */
     struct Reader
     {
         /**
-         * Construct a Reader with a callback for parsed result layers,
-         * a StringPoolCache which can supply and receive Fields
-         * dictionaries for a node id, and a layerInfoProvider which
-         * can provide LayerInfo objects for a (map-id, layer-id) combination.
+         * Construct a Reader with a callback for parsed result layers, a dictionary
+         * cache and a provider of installed LayerInfo by (mapId, layerId).
+         * Resolve dictionaries by stringPoolId and deliver decoded layers
+         * synchronously from read().
+         *
+         * schemas resolves exact installed artifacts for nested model bindings;
+         * it must not fetch missing schemas. An omitted dictionary cache creates
+         * a reader-local cache. Control-message string_views last only for the
+         * callback; copy them before retaining or dispatching them asynchronously.
          */
         Reader(
             LayerInfoResolveFun layerInfoProvider,
             std::function<void(PartitionLayer::Ptr)> onParsedLayer,
             std::shared_ptr<StringPoolCache> stringPoolProvider = nullptr,
-            std::function<void(MessageType, std::string_view)> onControlMessage = {});
+            std::function<void(MessageType, std::string_view)> onControlMessage = {},
+            SchemaResolveFun schemas = {});
 
         /**
          * Add some bytes to parse. The next object will be parsed once
-         * sufficient bytes are available.
+         * sufficient bytes are available. Calls and callbacks are synchronous;
+         * serialize access to one Reader. Decode errors propagate to the caller.
          */
         void read(std::string_view const& bytes);
 
-        /** end-of-stream: Returns true if the internal buffer is exhausted. */
+        /**
+         * True when no buffered bytes remain. This does not prove that an
+         * EndOfStream frame was received or that a pending payload is complete.
+         */
         [[nodiscard]] bool eos();
 
         /** Obtain the string pool cache used by this Reader. */
@@ -197,6 +221,7 @@ public:
         std::vector<uint8_t> buffer_;
         size_t readOffset_ = 0;
         LayerInfoResolveFun layerInfoProvider_;
+        SchemaResolveFun schemas_;
         std::shared_ptr<StringPoolCache> stringPoolProvider_;
         std::function<void(PartitionLayer::Ptr)> onParsedLayer_;
         std::function<void(MessageType, std::string_view)> onControlMessage_;
@@ -208,12 +233,12 @@ public:
     struct Writer
     {
         /**
-         * Construct a Writer with a callback for serialized messages,
-         * and a reference to a dict which stores the current highest
-         * sent StringId offset per data source node id. Note, that this
-         * dictionary will be updated as string poll updates are sent.
-         * Using the same StringId offset map for two Writer objects will
-         * lead to undefined behavior.
+         * Construct a Writer with a callback for serialized messages and a reference
+         * to the sent-string offset map. Complete framed messages are delivered
+         * synchronously through onMessage; dictionary updates advance the offsets.
+         * The map must outlive the writer and records the highest dictionary ID already
+         * sent for each stringPoolId. Writers sharing it must serialize access and
+         * target the same receiver state.
          *
          * Setting differentialStringUpdates=false is necessary when using
          * the Writer with a Cache database, because it is not desirable
@@ -237,6 +262,7 @@ public:
         void sendEndOfStream();
 
     private:
+        /** Prefix a payload with the fixed wire header and deliver one contiguous frame. */
         void sendMessage(std::string&& bytes, MessageType msgType);
 
         std::function<void(std::string, MessageType)> onMessage_;
@@ -245,10 +271,10 @@ public:
     };
 
     /**
-     * Cache for string pools. String pools are unique per data source node,
-     * since each data source node may have a uniquely-filled string-set.
-     * The default implementation just places an empty string pool into the cache
-     * if there is no registered one for the given node id.
+     * Dictionaries keyed by the producer's stringPoolId namespace. Multiple
+     * tiles from that producer share IDs, while unrelated namespaces must stay
+     * separate. First access creates a pool containing mapget's static keys;
+     * later in-band dictionary messages add producer-defined strings.
      * Derived StringPoolCaches may handle uncached StringPools differently,
      * e.g. by initializing the StringPool object from a cache database.
      */
@@ -259,16 +285,22 @@ public:
 
         /**
          * This operator is called by the Reader to obtain the string pool
-         * dictionary for a particular node id.
+         * dictionary for a particular stringPoolId.
          */
         virtual std::shared_ptr<StringPool> getStringPool(const std::string_view& stringPoolId);
 
         /**
-         * Obtain the highest known string id for each data source node id,
+         * Obtain the highest known string ID for each stringPoolId,
          * as currently present in the cache. The resulting dict may be
          * used by a mapget http client to set the `stringPoolOffsets` info.
          */
         [[nodiscard]] virtual StringPoolOffsetMap stringPoolOffsets() const;
+
+        /**
+         * Release cache ownership of obsolete dictionaries after a catalog edit.
+         * Decoded layers retain their shared dictionaries until their own release.
+         */
+        void retainStringPools(std::set<std::string> const& stringPoolIds);
 
     protected:
         mutable std::shared_mutex stringPoolCacheMutex_;

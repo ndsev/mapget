@@ -100,6 +100,8 @@ struct FeatureLayerFilterChannel
     static constexpr uint32_t AllGeometryTypes = 0xffffffffu;
 
     std::string channelId_;
+    /** Prepared searches bind to this exact artifact; stale plans fail before tile I/O. */
+    std::optional<std::string> schemaId_;
     std::optional<std::string> featureFilter_;
     std::optional<std::string> entryFilter_;
     FeatureLayerFilterScope scope_ = FeatureLayerFilterScope::Feature;
@@ -263,6 +265,8 @@ struct FeatureLayerFilterRequest
      * evaluate coordinated operators without allocating a subset layer.
      * A service-owned expression cache shares immutable compilation across
      * source tiles; standalone callers may omit it for one-operation caching.
+     * Cancellation is cooperative: a stopped scan can return partial candidates.
+     * The caller must discard cancelled work before publishing or committing it.
      */
     [[nodiscard]] tl::expected<FeatureLayerFilterSourceResult, simfil::Error> filterSource(
         PartitionFeatureLayer const& sourceLayer,
@@ -274,6 +278,8 @@ struct FeatureLayerFilterRequest
     /**
      * Materialize completed point-grid groups into an output created by filterSource().
      * Reusing the source-pass expression cache avoids recompiling projections.
+     * Entries are appended incrementally. Cancellation leaves prior appends intact;
+     * the caller must discard the cancelled output rather than publish it.
      */
     [[nodiscard]] tl::expected<FeatureLayerPointGroupCompletion, simfil::Error> completePointGroups(
         PartitionSubsetLayer& outputLayer,
@@ -288,6 +294,8 @@ struct FeatureLayerFilterRequest
      * Exact-root traversal retains origin-output ownership; the first explicit
      * root owns a pair when both endpoints are roots.
      * Reusing the request cache shares compilation across endpoint tiles.
+     * Cancellation stops at traversal checkpoints without rolling back prior appends;
+     * the caller must discard the cancelled output rather than publish it.
      */
     [[nodiscard]] tl::expected<FeatureLayerRelationCompletion, simfil::Error> completeRelations(
         PartitionSubsetLayer& outputLayer,

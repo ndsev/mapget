@@ -8,17 +8,18 @@ namespace mapget
 {
 
 /**
- * Obtain global logger, which is initialized from
+ * Obtain the process-wide logger, initialized once on first use from
  * the following environment variables:
  *  - MAPGET_LOG_LEVEL
  *  - MAPGET_LOG_FILE
- *  - MAPGET_LOG_FILE_MAXSIZE
+ *  - MAPGET_LOG_FILE_MAXSIZE (bytes; defaults to 1 GiB)
  */
 spdlog::logger& log();
 
 /**
  * Set the level of the log instance to corresponding string.
- * If the string is empty, set to info.
+ * Matching is case-insensitive; an empty string selects info. Unknown values
+ * leave the current level unchanged and write a diagnostic to stderr.
  * @param logLevel String representation of the log level.
  * @param logInstance spdlog logger instance.
  */

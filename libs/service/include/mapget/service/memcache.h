@@ -12,7 +12,9 @@ namespace mapget
 {
 
 /**
- * Simple in-memory mapget cache implementation.
+ * Stores serialized tiles in memory and evicts in insertion order. Reads do
+ * not refresh that order; replacing a tile moves it to the newest position.
+ * Source dictionaries remain in the base Cache for decoding retained tiles.
  */
 class MemCache : public Cache
 {
@@ -26,7 +28,11 @@ public:
      */
     explicit MemCache(uint32_t maxCachedTiles=1024);
 
-    /** Construct a cache with independent tile-count and serialized-byte limits. */
+    /**
+     * Bound tile count and serialized tile bytes independently; zero disables
+     * that limit. Dictionary and index allocations are outside the byte budget.
+     * A tile larger than the byte limit is skipped without evicting other keys.
+     */
     MemCache(uint32_t maxCachedTiles, uint64_t maxCachedBytes);
 
     /** Derive the default byte budget for a configured tile-count limit. */
@@ -45,7 +51,7 @@ public:
     /** Remove a PartitionLayer blob. */
     void eraseTileLayerBlob(MapPartitionKey const& k) override;
 
-    /** Iterate over cached tile layer blobs. */
+    /** Visit blobs under the shared cache lock; the callback must not re-enter the cache. */
     void forEachTileLayerBlob(const TileBlobVisitor& cb) const override;
 
     /** Retrieve a string-pool blob for a sourceStringPoolId -> No-Op */
@@ -68,6 +74,7 @@ private:
     uint32_t maxCachedTiles_ = 0;
     uint64_t maxCachedBytes_ = 0;
     uint64_t cachedTileBytes_ = 0;
+
     /** High-water mark across explicit statistics samples. */
     mutable std::atomic_size_t peakAllocatedBytes_{0};
 };

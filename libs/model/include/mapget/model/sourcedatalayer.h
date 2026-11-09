@@ -15,6 +15,11 @@ namespace mapget
 
 class SourceDataCompoundNode;
 
+/**
+ * Owns decoded source records for one tile/object partition. Compound records
+ * carry native addresses; scalar and array children use ordinary ModelPool nodes.
+ * Presentation roots can omit records without changing address lookup membership.
+ */
 class PartitionSourceDataLayer : public PartitionLayer, public simfil::ModelPool
 {
 public:
@@ -34,12 +39,13 @@ public:
         simfil::ModelNode const&);
 
     /**
-     * ModelPool colunm ids
+     * ModelPool column IDs
      */
     enum ColumnId : uint8_t {
         Compound = ModelPool::FirstCustomColumnId,
     };
 
+    /** Create an empty source model with finalized layer metadata and the producer dictionary. */
     PartitionSourceDataLayer(
         PartitionId tileId,
         std::string const& stringPoolId,
@@ -47,27 +53,39 @@ public:
         std::shared_ptr<LayerInfo> const& layerInfo,
         std::shared_ptr<simfil::StringPool> const& stringPool);
 
+    /** Decode with exact installed schema/dictionary owners; retained bindings outlive resolvers.
+     */
     PartitionSourceDataLayer(
         const std::vector<uint8_t>& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     ~PartitionSourceDataLayer() override;
 
     /**
-     * Node factory interface
+     * Allocate a compound and its backing object with initialSize capacity.
+     * Add it to the desired parent/root separately; allocation alone is not publication.
      */
     model_ptr<SourceDataCompoundNode> newCompound(size_t initialSize);
 
     /**
-     * Get this pool's simfil evaluation environment.
+     * Borrow the mutable evaluation environment owned by this layer. Callers
+     * must serialize its use; rebindSchema/setStrings replace the environment.
      */
     simfil::Environment& evaluationEnvironment();
+
+    /** Translate a fresh, exclusively owned native model into a composed schema.
+     * Source addresses, compound nodes and payload storage remain unchanged.
+     */
+    void rebindSchema(std::shared_ptr<LayerInfo> const& info);
 
     /**
      * Serialize the layer.
      */
     tl::expected<void, simfil::Error> write(std::ostream&) override;
+
+    /** Export the raw model roots; toServiceJson() adds the partition/diagnostics envelope. */
     nlohmann::json toJson() const override;
 
     /** Report retained source-data model capacity without shared metadata. */
@@ -96,7 +114,8 @@ public:
      * Exact matching supports opaque addresses; containing selects all smallest enclosing
      * bit ranges. Searches this layer's compound records, independent of presentation roots.
      * maxNodes bounds addressable compounds, not their scalar children. Budget/cancellation
-     * errors discard potentially incomplete ambiguity results.
+     * errors discard potentially incomplete ambiguity results. maxMatches limits
+     * retained ties; exceeding it is an error, not a truncated successful lookup.
      */
     [[nodiscard]] tl::expected<std::vector<model_ptr<SourceDataCompoundNode>>, simfil::Error>
     findSourceData(

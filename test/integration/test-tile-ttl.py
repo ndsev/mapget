@@ -44,7 +44,7 @@ def check_service(binary: Path, error_ttl: int, empty_ttl: int, configured_in_ya
         base_url = f"http://127.0.0.1:{port}"
         command = [str(binary), "--config", str(config), "serve", "--host", "127.0.0.1",
                    "--port", str(port), "--worker-count", "1", "--no-location"]
-        if not configured_in_yaml and (error_ttl, empty_ttl) != (5, 5):
+        if not configured_in_yaml and (error_ttl, empty_ttl) != (5, 3600):
             command += ["--error-tile-ttl", str(error_ttl), "--empty-tile-ttl", str(empty_ttl)]
         with tempfile.TemporaryFile(mode="w+") as log:
             process = subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT)
@@ -109,7 +109,7 @@ def check_service(binary: Path, error_ttl: int, empty_ttl: int, configured_in_ya
 def main() -> int:
     """Check the default, CLI override, and YAML override without a Python wheel."""
     binary = Path(sys.argv[1]).resolve()
-    for error_ttl, empty_ttl, configured_in_yaml in ((5, 5, False), (2, 3, False), (7, 1, True)):
+    for error_ttl, empty_ttl, configured_in_yaml in ((5, 3600, False), (2, 3, False), (7, 1, True)):
         check_service(binary, error_ttl, empty_ttl, configured_in_yaml)
     print("Tile TTLs: defaults, CLI, YAML, nonempty/empty/error tiles, cache hits and recovery passed.")
     return 0

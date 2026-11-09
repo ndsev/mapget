@@ -1,8 +1,10 @@
-#include "mcp-native-call.h"
+#include "mcp-mapget-extraction.h"
+#include "mcp-mapget-query.h"
 
 #include "mapget/model/attrlayer.h"
 #include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/relation.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/service/locate.h"
@@ -14,65 +16,127 @@ namespace mapget::detail
 {
 using Json = nlohmann::json;
 
-bool McpNativeTools::Call::resumeExtraction()
+void McpMapgetTools::Call::Extraction::run()
+{
+    if (call_.arguments.contains("cursor")) {
+        if (!resumeExtraction())
+            return;
+    }
+    else {
+        scan_->catalogRevision = call_.owner_.service_.sourceCatalogRevision();
+        scan_->offsetRemaining = call_.arguments.value("offset", size_t{0});
+        prepareExtraction();
+    }
+    if (!call_.finished_)
+        loadNext();
+}
+
+void McpMapgetTools::Call::Extraction::cancel()
+{
+    // Call has already published cancellation; copy the child under its own lock.
+    // Abort may invoke child callbacks; their execution mutex serializes result mutation.
+    LayerTilesRequest::Ptr request;
+    {
+        std::lock_guard lock(requestMutex_);
+        request = request_;
+    }
+    if (request) {
+        auto* service = &call_.owner_.service_;
+        // abort may synchronously complete a request; never enter its callback mutex on an I/O
+        // thread.
+        (void)service->scheduleTask([service, request](bool) { service->abort(request); });
+    }
+}
+
+void McpMapgetTools::Call::Extraction::reportMissingFeatures()
+{
+    // A fully evaluated lookup with no matching identity is distinct from an empty query result.
+    if (call_.name == "mapget_extract_features" && call_.incomplete_.empty()) {
+        for (auto const& id : scan_->featureIds) {
+            if (scan_->resolvedFeatureIds.contains(id))
+                continue;
+            if (call_.issues_.size() >= 100) {
+                call_.truncate("diagnostic_limit");
+                break;
+            }
+            try {
+                call_.issues_.push_back(call_.query_->boundedJson(
+                    {{"phase", "locate"},
+                     {"featureId", id},
+                     {"message",
+                      "Requested identity did not resolve in the selected partitions. "
+                      "Verify the target's owning layer and partition; identifier metadata "
+                      "may include reference-only types."}}));
+            }
+            catch (std::length_error const&) {
+                break;
+            }
+        }
+    }
+}
+
+bool McpMapgetTools::Call::Extraction::resumeExtraction()
 {
     std::shared_ptr<Continuation> checkpoint;
     {
-        std::lock_guard lock(owner_.mutex_);
-        auto it = owner_.continuations_.find(arguments.at("cursor").get<std::string>());
-        if (it != owner_.continuations_.end())
+        std::lock_guard lock(call_.owner_.mutex_);
+        auto it = call_.owner_.continuations_.find(call_.arguments.at("cursor").get<std::string>());
+        if (it != call_.owner_.continuations_.end())
             checkpoint = it->second;
     }
     if (!checkpoint || checkpoint->expires <= std::chrono::steady_clock::now() ||
-        !checkpoint->principal.sameUser(principal) ||
-        checkpoint->principal.datasourceHeaders != principal.datasourceHeaders)
+        !checkpoint->principal.sameUser(call_.principal) ||
+        checkpoint->principal.datasourceAuthorization != call_.principal.datasourceAuthorization)
     {
-        fail(
+        call_.fail(
             "cursor_unavailable",
             "Extraction cursor expired, was evicted, or is unavailable to this caller. Restart the "
             "original extraction.");
         return false;
     }
-    if (checkpoint->catalogRevision != owner_.service_.sourceCatalogRevision()) {
-        fail("cursor_stale", "The source catalog changed. Restart the original extraction.");
+    if (checkpoint->catalogRevision != call_.owner_.service_.sourceCatalogRevision()) {
+        call_.fail("cursor_stale", "The source catalog changed. Restart the original extraction.");
         return false;
     }
-    auto request = std::move(arguments);
-    arguments = checkpoint->arguments;
+    // A cursor fixes the query and source. Only page/work limits may change when
+    // resuming; copy its immutable position so concurrent readers do not advance it.
+    auto request = std::move(call_.arguments);
+    call_.arguments = checkpoint->arguments;
     for (auto key : {"limit", "maxWork"})
         if (request.contains(key))
-            arguments[key] = request[key];
-    limit_ = arguments.value("limit", size_t{100});
-    remainingWork_ = arguments.value("maxWork", size_t{100000});
+            call_.arguments[key] = request[key];
+    call_.limit_ = call_.arguments.value("limit", size_t{100});
+    call_.remainingWork_ = call_.arguments.value("maxWork", size_t{100000});
     // Reauthorize even retained data. The ordinary scheduler independently checks new tiles.
-    selectLayer();
-    if (finished_)
+    call_.selectLayer();
+    if (call_.finished_)
         return false;
     scan_ = std::make_shared<Continuation>(*checkpoint);
     initialProgress_ = scan_->progress;
     return true;
 }
 
-void McpNativeTools::Call::continueExtraction(Json& result)
+void McpMapgetTools::Call::Extraction::continueExtraction(Json& result)
 {
-    if ((incomplete_ != "item_limit" && incomplete_ != "byte_limit" &&
-         incomplete_ != "work_limit" && incomplete_ != "evaluation_limit" &&
-         incomplete_ != "expression_result_limit") ||
+    if ((call_.incomplete_ != "item_limit" && call_.incomplete_ != "byte_limit" &&
+         call_.incomplete_ != "work_limit" && call_.incomplete_ != "evaluation_limit" &&
+         call_.incomplete_ != "expression_result_limit") ||
         scan_->progress == initialProgress_)
         return;
-    if (scan_->catalogRevision != owner_.service_.sourceCatalogRevision())
+    if (scan_->catalogRevision != call_.owner_.service_.sourceCatalogRevision())
         return;
     auto checkpoint = std::make_shared<Continuation>(*scan_);
-    checkpoint->principal = principal;
-    checkpoint->arguments = arguments;
-    checkpoint->arguments["offset"] = arguments.value("offset", size_t{0}) + completeRows_;
-    checkpoint->arguments["sourceId"] = source_.descriptor.sourceId;
+    checkpoint->principal = call_.principal;
+    checkpoint->arguments = call_.arguments;
+    checkpoint->arguments["offset"] = call_.arguments.value("offset", size_t{0}) +
+        call_.completeRows_;
+    checkpoint->arguments["sourceId"] = call_.source_.descriptor.sourceId;
     auto now = std::chrono::steady_clock::now();
     checkpoint->expires = std::min(
         now + std::chrono::minutes(2),
         now +
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                principal.expiresAt - std::chrono::system_clock::now()));
+                call_.principal.expiresAt - std::chrono::system_clock::now()));
     // Include input/selector overhead and model capacities; no serialized tile cache is added.
     checkpoint->retainedBytes = 512 * 1024 +
         checkpoint->selected.capacity() * sizeof(model_ptr<Feature>);
@@ -107,7 +171,7 @@ void McpNativeTools::Call::continueExtraction(Json& result)
     }
     for (auto const& id : checkpoint->resolvedFeatureIds)
         checkpoint->retainedBytes += 128 + id.capacity();
-    auto cursor = owner_.retain(std::move(checkpoint));
+    auto cursor = call_.owner_.retain(std::move(checkpoint));
     if (!cursor.empty())
         result["nextCursor"] = std::move(cursor);
     else if (result["issues"].size() < 100)
@@ -118,36 +182,37 @@ void McpNativeTools::Call::continueExtraction(Json& result)
               "nextOffset if present."}});
 }
 
-void McpNativeTools::Call::prepareExtraction()
+void McpMapgetTools::Call::Extraction::prepareExtraction()
 {
-    auto const feature = name == "mapget_extract_features";
-    if (arguments.contains("query") && arguments.contains("expressions"))
+    auto const feature = call_.name == "mapget_extract_features";
+    if (call_.arguments.contains("query") && call_.arguments.contains("expressions"))
         throw std::invalid_argument("Choose query or expressions");
-    if (arguments.contains("reference")) {
-        if (arguments.contains("partitions") || !arguments.contains("partition"))
+    if (call_.arguments.contains("reference")) {
+        if (call_.arguments.contains("partitions") || !call_.arguments.contains("partition"))
             throw std::invalid_argument("A reference needs its owning partition");
-        auto const& reference = arguments.at("reference");
-        if (arguments.contains("layerId") && arguments["layerId"] != reference["layerId"])
+        auto const& reference = call_.arguments.at("reference");
+        if (call_.arguments.contains("layerId") &&
+            call_.arguments["layerId"] != reference["layerId"])
             throw std::invalid_argument("Reference layer differs from target layer");
-        arguments["layerId"] = reference.at("layerId");
-        arguments["partitions"] = Json::array({arguments.at("partition")});
+        call_.arguments["layerId"] = reference.at("layerId");
+        call_.arguments["partitions"] = Json::array({call_.arguments.at("partition")});
     }
-    else if (arguments.contains("partition")) {
-        if (!feature || arguments.contains("partitions"))
+    else if (call_.arguments.contains("partition")) {
+        if (!feature || call_.arguments.contains("partitions"))
             throw std::invalid_argument("Choose one feature partition representation");
-        arguments["partitions"] = Json::array({arguments.at("partition")});
-        arguments.erase("partition");
+        call_.arguments["partitions"] = Json::array({call_.arguments.at("partition")});
+        call_.arguments.erase("partition");
     }
-    selectLayer();
-    if (layer_->type_ != (feature ? LayerType::Features : LayerType::SourceData))
+    call_.selectLayer();
+    if (call_.layer_->type_ != (feature ? LayerType::Features : LayerType::SourceData))
         throw std::invalid_argument("Layer payload type mismatch");
-    if (arguments.contains("featureIds"))
-        scan_->featureIds = arguments["featureIds"].get<std::vector<std::string>>();
+    if (call_.arguments.contains("featureIds"))
+        scan_->featureIds = call_.arguments["featureIds"].get<std::vector<std::string>>();
     std::set<PartitionId> seen;
-    if (arguments.contains("partitions")) {
-        for (auto const& raw : arguments.at("partitions")) {
+    if (call_.arguments.contains("partitions")) {
+        for (auto const& raw : call_.arguments.at("partitions")) {
             auto id = PartitionId::fromJson(raw);
-            if (id.kind() != layer_->partitionKind_)
+            if (id.kind() != call_.layer_->partitionKind_)
                 throw std::invalid_argument("Partition kind mismatch");
             if (seen.insert(id).second)
                 scan_->partitions.push_back(id);
@@ -155,24 +220,24 @@ void McpNativeTools::Call::prepareExtraction()
         if (scan_->partitions.empty())
             throw std::invalid_argument("Empty partitions");
     }
-    if (!arguments.contains("partitions") && (!feature || scan_->featureIds.empty()))
+    if (!call_.arguments.contains("partitions") && (!feature || scan_->featureIds.empty()))
         throw std::invalid_argument("Partitions or feature IDs required");
     if (feature && !scan_->featureIds.empty()) {
         for (auto const& id : scan_->featureIds) {
-            if (!step())
+            if (!call_.step())
                 break;
             ParsedFeatureId parsed;
             std::string error;
-            if (!parseFeatureIdString(id, *layer_, parsed, &error)) {
+            if (!parseFeatureIdString(id, *call_.layer_, parsed, &error)) {
                 std::string types;
-                for (auto const& type : layer_->featureTypes_) {
+                for (auto const& type : call_.layer_->layerSchema()->featureTypes()) {
                     if (types.size() >= 512)
                         break;
                     if (!types.empty())
                         types += ", ";
-                    types += type.name_;
+                    types += type;
                 }
-                fail(
+                call_.fail(
                     "invalid_feature_id",
                     error.substr(0, 1024) +
                         ". Expected a full type-prefixed feature ID, not a local/numeric ID. "
@@ -182,19 +247,20 @@ void McpNativeTools::Call::prepareExtraction()
                         "featureTypes[].uniqueIdCompositions.");
                 return;
             }
-            LocateRequest request(arguments.at("mapId"), parsed.typeId_, parsed.keyValuePairs_);
-            request.layerId_ = layer_->layerId_;
+            LocateRequest
+                request(call_.arguments.at("mapId"), parsed.typeId_, parsed.keyValuePairs_);
+            request.layerId_ = call_.layer_->layerId_;
             // Datasource locate produces cheap routing candidates. Never use Service::locate(),
             // whose synchronous wait would deadlock a single-worker service.
-            for (auto const& candidate : source_.dataSource->locate(request)) {
-                if (!step())
+            for (auto const& candidate : call_.source_.dataSource->locate(request)) {
+                if (!call_.step())
                     break;
                 auto const& key = candidate.tileKey_;
-                if (key.mapId_ != source_.info->mapId_ || key.layerId_ != layer_->layerId_ ||
-                    key.layer_ != LayerType::Features ||
-                    key.partitionId_.kind() != layer_->partitionKind_)
+                if (key.mapId_ != call_.source_.info->mapId_ ||
+                    key.layerId_ != call_.layer_->layerId_ || key.layer_ != LayerType::Features ||
+                    key.partitionId_.kind() != call_.layer_->partitionKind_)
                     continue;
-                if (arguments.contains("partitions") && !seen.contains(key.partitionId_))
+                if (call_.arguments.contains("partitions") && !seen.contains(key.partitionId_))
                     continue;
                 scan_->locateCandidates[key.partitionId_].emplace_back(id, candidate);
                 if (seen.insert(key.partitionId_).second)
@@ -205,47 +271,38 @@ void McpNativeTools::Call::prepareExtraction()
             }
         }
     }
-    if (arguments.value("rewrite", false) && arguments.contains("predicate") &&
-        layer_->layerSchema()) {
-        auto scope = arguments.value("scope", "feature") == "attribute" ?
-            LayerSchema::SearchQueryRequestedScope::Attribute :
-            LayerSchema::SearchQueryRequestedScope::Feature;
-        auto normal = layer_->layerSchema()
-                          ->normalizeSearchQuery(arguments["predicate"].get<std::string>(), scope);
-        if (!normal)
-            throw std::invalid_argument("Invalid predicate normalization");
-        arguments["predicate"] = normal->normalizedQuery_;
-    }
 }
 
-void McpNativeTools::Call::loadNext()
+void McpMapgetTools::Call::Extraction::loadNext()
 {
-    if (scan_->tile && incomplete_.empty()) {
+    if (scan_->tile && call_.incomplete_.empty()) {
         try {
             // Keep a local owner: successful exhaustion releases the checkpoint's reference.
             auto tile = scan_->tile;
             extractFeatures(tile);
         }
         catch (std::length_error const&) {
-            if (incomplete_.empty())
-                truncate("size_limit");
+            if (call_.incomplete_.empty())
+                call_.truncate("size_limit");
         }
     }
-    if (!step() || scan_->nextPartition >= scan_->partitions.size()) {
-        finishItems();
+    if (!call_.step() || scan_->nextPartition >= scan_->partitions.size()) {
+        call_.finishItems();
         return;
     }
-    if (name != "mapget_extract_features" && items_.size() >= limit_) {
-        truncate("item_limit");
-        finishItems();
+    if (call_.name != "mapget_extract_features" && call_.items_.size() >= call_.limit_) {
+        call_.truncate("item_limit");
+        call_.finishItems();
         return;
     }
+    // Retain just one outstanding partition. Its terminal callback schedules the
+    // next load after this partition's rows have consumed their shared budgets.
     auto child = std::make_shared<LayerTilesRequest>(
-        source_.info->mapId_,
-        layer_->layerId_,
+        call_.source_.info->mapId_,
+        call_.layer_->layerId_,
         std::vector<PartitionId>{scan_->partitions[scan_->nextPartition++]});
-    child->sourceId_ = source_.descriptor.sourceId;
-    auto weak = weak_from_this();
+    child->sourceId_ = call_.source_.descriptor.sourceId;
+    auto weak = call_.weak_from_this();
     child->onFeatureLayer(
         [weak](PartitionFeatureLayer::Ptr tile)
         {
@@ -254,7 +311,7 @@ void McpNativeTools::Call::loadNext()
                 if (self->finished_ || !self->step())
                     return;
                 try {
-                    self->extractFeatures(tile);
+                    self->extraction_->extractFeatures(tile);
                 }
                 catch (std::length_error const&) {
                     if (self->incomplete_.empty())
@@ -273,7 +330,7 @@ void McpNativeTools::Call::loadNext()
                 if (self->finished_ || !self->step())
                     return;
                 try {
-                    self->extractSourceData(tile);
+                    self->extraction_->extractSourceData(tile);
                 }
                 catch (std::length_error const&) {
                     if (self->incomplete_.empty())
@@ -291,8 +348,8 @@ void McpNativeTools::Call::loadNext()
             if (self->finished_)
                 return;
             {
-                std::lock_guard requestLock(self->requestMutex_);
-                self->request_.reset();
+                std::lock_guard requestLock(self->extraction_->requestMutex_);
+                self->extraction_->request_.reset();
             }
             if (status != RequestStatus::Success) {
                 self->truncate(
@@ -302,7 +359,7 @@ void McpNativeTools::Call::loadNext()
                 self->finishItems();
             }
             else
-                self->loadNext();
+                self->extraction_->loadNext();
         }
     };
     {
@@ -310,21 +367,21 @@ void McpNativeTools::Call::loadNext()
         request_ = child;
     }
     // Every partition is independently admitted, even if the catalog changed since selection.
-    (void)owner_.service_.request({child}, principal.datasourceHeaders);
+    (void)call_.owner_.service_.request({child}, call_.principal.datasourceAuthorization);
 }
 
-void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& tile)
+void McpMapgetTools::Call::Extraction::extractFeatures(PartitionFeatureLayer::Ptr const& tile)
 {
     if (!tile || tile->error()) {
-        truncate("datasource_error");
+        call_.truncate("datasource_error");
         return;
     }
     scan_->tile = tile;
-    layer_ = tile->layerInfo();
-    environment(tile->strings());
-    auto selectedTypes = arguments.contains("featureType") ?
-        std::vector<std::string>{arguments["featureType"].get<std::string>()} :
-        arguments.value("featureTypes", std::vector<std::string>{});
+    call_.layer_ = tile->layerInfo();
+    call_.query_->environment(tile->strings());
+    auto selectedTypes = call_.arguments.contains("featureType") ?
+        std::vector<std::string>{call_.arguments["featureType"].get<std::string>()} :
+        call_.arguments.value("featureTypes", std::vector<std::string>{});
     if (!scan_->selectionReady && !scan_->featureIds.empty()) {
         scan_->selected.clear();
         std::set<std::string> emitted;
@@ -337,7 +394,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                 scan_->selected.push_back(feature);
         };
         for (auto const& id : scan_->featureIds) {
-            if (!step())
+            if (!call_.step())
                 return;
             resolved(id, tile->find(id));
         }
@@ -345,16 +402,16 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
             candidates != scan_->locateCandidates.end())
         {
             for (auto const& [requested, candidate] : candidates->second) {
-                if (!step())
+                if (!call_.step())
                     return;
                 auto selected =
-                    resolveLocateCandidate(candidate, *tile, [this] { return !step(); });
+                    resolveLocateCandidate(candidate, *tile, [this] { return !call_.step(); });
                 if (!selected) {
-                    truncate("locate_resolution_failed");
+                    call_.truncate("locate_resolution_failed");
                     return;
                 }
                 for (auto const& feature : *selected) {
-                    if (!step())
+                    if (!call_.step())
                         return;
                     resolved(requested, feature);
                 }
@@ -366,7 +423,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
     // Position indices address the pinned model directly. In particular, never replay the
     // predicates for earlier features, assignments or validities to reach the next page.
     while (scan_->feature < count) {
-        if (!step())
+        if (!call_.step())
             return;
         auto feature = scan_->featureIds.empty() ?
             tile->at(scan_->feature) :
@@ -378,11 +435,11 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
         {
             Json identity{
                 {"mapId", tile->mapId()},
-                {"layerId", layer_->layerId_},
+                {"layerId", call_.layer_->layerId_},
                 {"partition", tile->partitionId().toJson()},
-                {"sourceId", source_.descriptor.sourceId},
+                {"sourceId", call_.source_.descriptor.sourceId},
                 {"featureId", feature->id()->toString()}};
-            if (arguments.value("scope", "feature") == "feature") {
+            if (call_.arguments.value("scope", "feature") == "feature") {
                 if (!extractRow(
                         feature,
                         *feature,
@@ -392,7 +449,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
             }
             else if (auto layers = feature->attributeLayersOrNull()) {
                 while (scan_->attributeLayer < layers->size()) {
-                    if (!step())
+                    if (!call_.step())
                         return;
                     auto layerNode = layers->at(scan_->attributeLayer);
                     if (layerNode &&
@@ -404,7 +461,7 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                         .value_or("");
                         auto attributes = tile->resolve<AttributeLayer>(*layerNode);
                         while (scan_->attributeMember < attributes->size()) {
-                            if (!step())
+                            if (!call_.step())
                                 return;
                             auto node = attributes->at(scan_->attributeMember);
                             if (node &&
@@ -412,20 +469,20 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                     PartitionFeatureLayer::ColumnId::Attributes) {
                                 auto attribute = tile->resolve<Attribute>(*node);
                                 auto index = scan_->attributeIndex;
-                                if ((!arguments.contains("attributeIndex") ||
-                                     arguments["attributeIndex"] == index) &&
-                                    (!arguments.contains("attributeName") ||
-                                     std::string_view(arguments["attributeName"]
+                                if ((!call_.arguments.contains("attributeIndex") ||
+                                     call_.arguments["attributeIndex"] == index) &&
+                                    (!call_.arguments.contains("attributeName") ||
+                                     std::string_view(call_.arguments["attributeName"]
                                                           .get_ref<std::string const&>()) ==
                                          attribute->name()) &&
-                                    (!arguments.contains("attributeLayer") ||
-                                     std::string_view(arguments["attributeLayer"]
+                                    (!call_.arguments.contains("attributeLayer") ||
+                                     std::string_view(call_.arguments["attributeLayer"]
                                                           .get_ref<std::string const&>()) == name))
                                 {
                                     auto validities = attribute->validityOrNull();
                                     auto validityCount = validities ? validities->size() : 0;
                                     while (scan_->validity < std::max<uint32_t>(validityCount, 1)) {
-                                        if (!step())
+                                        if (!call_.step())
                                             return;
                                         auto v = scan_->validity;
                                         auto context = attribute->queryContext(
@@ -434,11 +491,11 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
                                             index,
                                             v,
                                             validityCount);
-                                        auto schema = layer_->layerSchema() ?
-                                            layer_->layerSchema()->attributeQuerySchema(
+                                        auto schema = tile->layerSchema() ?
+                                            tile->layerSchema()->attributeQuerySchema(
                                                 feature->typeId(),
                                                 attribute->schema()) :
-                                            simfil::NoSchemaId;
+                                            simfil::NoTypeId;
                                         auto row = identity;
                                         row["attributeIndex"] = index;
                                         row["attributeLayer"] = name;
@@ -486,16 +543,16 @@ void McpNativeTools::Call::extractFeatures(PartitionFeatureLayer::Ptr const& til
     scan_->feature = 0;
 }
 
-bool McpNativeTools::Call::extractRow(
+bool McpMapgetTools::Call::Extraction::extractRow(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& context,
-    simfil::SchemaId schema,
+    simfil::TypeId schema,
     Json identity,
     model_ptr<Validity> const& validity)
 {
-    if (arguments.contains("predicate")) {
-        auto matches = evaluate(arguments["predicate"], context, schema, true);
-        if (!incomplete_.empty())
+    if (call_.arguments.contains("predicate")) {
+        auto matches = call_.query_->evaluate(call_.arguments["predicate"], context, schema, true);
+        if (!call_.incomplete_.empty())
             return false;
         if (matches.empty() || matches.front() != true)
             return true;
@@ -505,46 +562,49 @@ bool McpNativeTools::Call::extractRow(
         return true;
     }
     // Probe the next matching context before declaring a full page incomplete.
-    if (items_.size() >= limit_) {
-        truncate("item_limit");
+    if (call_.items_.size() >= call_.limit_) {
+        call_.truncate("item_limit");
         return false;
     }
-    auto row = boundedJson(identity);
-    if (!arguments.contains("query") && !arguments.contains("expressions") &&
-        arguments.value("scope", "feature") == "feature")
+    auto row = call_.query_->boundedJson(identity);
+    if (auto owner = call_.layer_->schemaOwner())
+        row["mapSchemaId"] = call_.query_->boundedJson(owner->schemaId());
+    if (!call_.arguments.contains("query") && !call_.arguments.contains("expressions") &&
+        call_.arguments.value("scope", "feature") == "feature")
     {
         row["summary"] = featureSummary(feature);
     }
     else {
         row["values"] = Json::array();
-        auto queries =
-            arguments.value("expressions", std::vector<std::string>{arguments.value("query", "_")});
+        auto queries = call_.arguments.value(
+            "expressions",
+            std::vector<std::string>{call_.arguments.value("query", "_")});
         for (auto const& query : queries) {
-            row["values"].push_back(evaluate(query, context, schema));
-            if (!incomplete_.empty())
+            row["values"].push_back(call_.query_->evaluate(query, context, schema));
+            if (!call_.incomplete_.empty())
                 break;
         }
     }
-    if (arguments.value("geometry", false) && incomplete_.empty()) {
+    if (call_.arguments.value("geometry", false) && call_.incomplete_.empty()) {
         auto geometry = feature->geomOrNull();
         if (!validity)
             row["geometry"] = geometry ?
-                valueJson(simfil::Value::field(simfil::ModelNode::Ptr(geometry))) :
+                call_.query_->valueJson(simfil::Value::field(simfil::ModelNode::Ptr(geometry))) :
                 Json(nullptr);
         else {
             // Self-contained/attribute-point validities also work without primary geometry.
             // Geometry math is not preemptible. Bound the source vertex domain before asking it
             // to allocate an effective slice; serialized vertices still consume the normal budget.
-            if (!step(feature->model().numVertices()))
+            if (!call_.step(feature->model().numVertices()))
                 throw std::length_error("geometry work");
             std::string error;
             auto computed = validity->computeGeometry(geometry, &error);
             if (!error.empty()) {
                 row["geometry"] = nullptr;
-                if (issues_.size() >= 100)
-                    truncate("diagnostic_limit");
+                if (call_.issues_.size() >= 100)
+                    call_.truncate("diagnostic_limit");
                 else
-                    issues_.push_back(boundedJson(
+                    call_.issues_.push_back(call_.query_->boundedJson(
                         {{"phase", "geometry"},
                          {"message", "Validity geometry could not be resolved."}}));
             }
@@ -553,61 +613,59 @@ bool McpNativeTools::Call::extractRow(
                     feature->model().partitionId(),
                     feature->model().stringPoolId(),
                     feature->model().mapId(),
-                    layer_,
-                    env_->strings());
+                    call_.layer_,
+                    call_.query_->runtime()->strings());
                 scratch->setGeometryAnchor(feature->model().geometryAnchor());
                 auto shape = scratch->newGeometry(computed.geomType_, computed.points_.size());
                 for (auto const& point : computed.points_)
                     shape->append(point);
                 if (!computed.polygonRingStarts_.empty())
                     shape->setPolygonRingStarts(computed.polygonRingStarts_);
-                row["geometry"] = valueJson(simfil::Value::field(simfil::ModelNode::Ptr(shape)));
+                row["geometry"] =
+                    call_.query_->valueJson(simfil::Value::field(simfil::ModelNode::Ptr(shape)));
             }
         }
     }
-    row["rowComplete"] = incomplete_.empty();
-    if (incomplete_.empty())
-        ++completeRows_;
-    return append(std::move(row)) && incomplete_.empty();
+    row["rowComplete"] = call_.incomplete_.empty();
+    if (call_.incomplete_.empty())
+        ++call_.completeRows_;
+    return call_.append(std::move(row)) && call_.incomplete_.empty();
 }
 
-Json McpNativeTools::Call::fieldSummary(simfil::ModelNode const& node)
+Json McpMapgetTools::Call::Extraction::fieldSummary(simfil::ModelNode const& node)
 {
     Json result = Json::array();
     for (uint32_t i = 0; i < node.size(); ++i) {
-        if (!step())
+        if (!call_.step())
             throw std::length_error("summary work");
         auto child = node.at(i);
         if (!child)
             continue;
-        auto value = simfil::Value::field(child);
-        auto item = boundedJson(
-            {{"name", env_->strings()->resolve(node.keyAt(i)).value_or("")},
+        auto value = simfil::Value::at(node, *child, i);
+        auto item = call_.query_->boundedJson(
+            {{"name", call_.query_->runtime()->strings()->resolve(node.keyAt(i)).value_or("")},
              {"kind", simfil::valueType2String(value.type)}});
         if (value.type == simfil::ValueType::Object || value.type == simfil::ValueType::Array)
             item["childCount"] = child->size();
         else if (value.type == simfil::ValueType::Bytes)
             item["byteCount"] = value.as<simfil::ValueType::Bytes>().bytes.size();
         else if (value.type == simfil::ValueType::String) {
-            auto view = std::get_if<std::string_view>(&value.value);
-            std::string_view text = view ?
-                *view :
-                std::string_view(std::get<std::string>(value.value));
+            auto text = value.stringView();
             if (text.size() > 512)
                 item["stringBytes"] = text.size();
             else
-                item["value"] = valueJson(value);
+                item["value"] = call_.query_->valueJson(value);
         }
         else
-            item["value"] = valueJson(value);
+            item["value"] = call_.query_->valueJson(value);
         result.push_back(std::move(item));
     }
     return result;
 }
 
-Json McpNativeTools::Call::featureSummary(model_ptr<Feature> const& feature)
+Json McpMapgetTools::Call::Extraction::featureSummary(model_ptr<Feature> const& feature)
 {
-    Json result = boundedJson(
+    Json result = call_.query_->boundedJson(
         {{"typeId", feature->typeId()},
          {"properties", Json::array()},
          {"attributeAssignments", Json::array()},
@@ -616,11 +674,11 @@ Json McpNativeTools::Call::featureSummary(model_ptr<Feature> const& feature)
          {"relationCount", feature->numRelations()}});
     result["idParts"] = Json::object();
     for (auto const& [key, value] : feature->id()->keyValuePairs()) {
-        if (!step())
+        if (!call_.step())
             throw std::length_error("summary identity work");
-        chargeString(key);
+        call_.query_->chargeString(key);
         result["idParts"][std::string(key)] = std::visit(
-            [&](auto const& part) { return valueJson(simfil::Value::make(part)); },
+            [&](auto const& part) { return call_.query_->valueJson(simfil::Value::make(part)); },
             value);
     }
     if (auto properties = feature->mergedAttributesOrNull())
@@ -633,16 +691,16 @@ Json McpNativeTools::Call::featureSummary(model_ptr<Feature> const& feature)
                 return layer->forEachAttribute(
                     [&](model_ptr<Attribute> const& attribute)
                     {
-                        if (!step())
+                        if (!call_.step())
                             throw std::length_error("summary work");
                         auto validity = attribute->validityOrNull();
-                        auto item = boundedJson(
+                        auto item = call_.query_->boundedJson(
                             {{"layer", name},
                              {"name", attribute->name()},
                              {"attributeIndex", index++},
                              {"validityCount", validity ? validity->size() : 0}});
                         if (layer->id())
-                            item["layerInstanceId"] = boundedJson(*layer->id());
+                            item["layerInstanceId"] = call_.query_->boundedJson(*layer->id());
                         item["fields"] = fieldSummary(*attribute);
                         result["attributeAssignments"].push_back(std::move(item));
                         return true;
@@ -653,14 +711,14 @@ Json McpNativeTools::Call::featureSummary(model_ptr<Feature> const& feature)
         geometry->forEachGeometry(
             [&](model_ptr<Geometry> const& shape)
             {
-                if (!step())
+                if (!call_.step())
                     throw std::length_error("summary work");
-                auto item = boundedJson({{"pointCount", shape->numPoints()}});
+                auto item = call_.query_->boundedJson({{"pointCount", shape->numPoints()}});
                 if (auto name = shape->name())
-                    item["name"] = boundedJson(*name);
+                    item["name"] = call_.query_->boundedJson(*name);
                 if (auto type =
                         static_cast<simfil::ModelNode const&>(*shape).get(StringPool::TypeStr))
-                    item["type"] = valueJson(simfil::Value::field(type));
+                    item["type"] = call_.query_->valueJson(simfil::Value::field(type));
                 result["geometries"].push_back(std::move(item));
                 return true;
             });
@@ -669,50 +727,51 @@ Json McpNativeTools::Call::featureSummary(model_ptr<Feature> const& feature)
     feature->forEachRelation(
         [&](model_ptr<Relation> const& relation)
         {
-            if (!step())
+            if (!call_.step())
                 throw std::length_error("summary work");
             auto name = relation->name();
             if (!relations.contains(std::string(name)))
-                chargeString(name);
+                call_.query_->chargeString(name);
             ++relations[std::string(name)];
             return true;
         });
     for (auto const& [name, count] : relations)
-        result["relationNames"].push_back(boundedJson({{"name", name}, {"count", count}}));
+        result["relationNames"]
+            .push_back(call_.query_->boundedJson({{"name", name}, {"count", count}}));
     if (auto references = feature->sourceDataReferences())
         result["sourceDataReferences"] =
-            valueJson(simfil::Value::field(simfil::ModelNode::Ptr(references)));
+            call_.query_->valueJson(simfil::Value::field(simfil::ModelNode::Ptr(references)));
     return result;
 }
 
-void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const& tile)
+void McpMapgetTools::Call::Extraction::extractSourceData(PartitionSourceDataLayer::Ptr const& tile)
 {
     if (!tile || tile->error()) {
-        truncate("datasource_error");
+        call_.truncate("datasource_error");
         return;
     }
-    layer_ = tile->layerInfo();
-    environment(tile->strings());
+    call_.layer_ = tile->layerInfo();
+    call_.query_->environment(tile->strings());
     size_t matchCount = 0;
     auto emit = [&](simfil::ModelNode::Ptr const& node)
     {
-        if (!step())
+        if (!call_.step())
             return false;
         Json item{
             {"mapId", tile->mapId()},
-            {"layerId", layer_->layerId_},
-            {"sourceId", source_.descriptor.sourceId},
+            {"layerId", call_.layer_->layerId_},
+            {"sourceId", call_.source_.descriptor.sourceId},
             {"partition", tile->partitionId().toJson()}};
-        if (arguments.contains("reference")) {
+        if (call_.arguments.contains("reference")) {
             item["resolution"] = {
-                {"match", arguments.value("match", "exact")},
+                {"match", call_.arguments.value("match", "exact")},
                 {"matchCount", matchCount},
                 {"ambiguous", matchCount > 1},
-                {"requestedReference", arguments.at("reference")}};
+                {"requestedReference", call_.arguments.at("reference")}};
             item["rootReadArguments"] = {
                 {"mapId", tile->mapId()},
-                {"layerId", layer_->layerId_},
-                {"sourceId", source_.descriptor.sourceId},
+                {"layerId", call_.layer_->layerId_},
+                {"sourceId", call_.source_.descriptor.sourceId},
                 {"partitions", Json::array({tile->partitionId().toJson()})}};
             item["scopeNote"] =
                 "Resolved source subrecord only. For enclosing source/SQL provenance, "
@@ -722,7 +781,7 @@ void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const
         if (node->addr().column() == PartitionSourceDataLayer::Compound) {
             auto compound = tile->resolve<SourceDataCompoundNode>(*node);
             item["reference"] = {
-                {"layerId", layer_->layerId_},
+                {"layerId", call_.layer_->layerId_},
                 {"address", std::to_string(compound->sourceDataAddress().u64())}};
             item["schemaName"] = compound->schemaName();
             item["addressFormat"] = tile->sourceDataAddressFormat() ==
@@ -730,28 +789,31 @@ void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const
                 "bitRange" :
                 "opaque";
         }
-        item = boundedJson(item);
-        item["values"] = evaluate(arguments.value("query", "_"), *node, simfil::NoSchemaId);
-        return append(std::move(item)) && incomplete_.empty();
+        item = call_.query_->boundedJson(item);
+        if (auto owner = call_.layer_->schemaOwner())
+            item["mapSchemaId"] = call_.query_->boundedJson(owner->schemaId());
+        item["values"] =
+            call_.query_->evaluate(call_.arguments.value("query", "_"), *node, node->schema());
+        return call_.append(std::move(item)) && call_.incomplete_.empty();
     };
-    if (arguments.contains("reference")) {
-        auto text = arguments["reference"]["address"].get<std::string>();
+    if (call_.arguments.contains("reference")) {
+        auto text = call_.arguments["reference"]["address"].get<std::string>();
         uint64_t address = 0;
         auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), address);
         if (error != std::errc{} || end != text.data() + text.size())
             throw std::invalid_argument("address");
         auto matches = tile->findSourceData(
             SourceDataAddress(address),
-            arguments.value("match", "exact") == "containing",
-            remainingWork_,
-            limit_,
-            [&] { return !step(); });
+            call_.arguments.value("match", "exact") == "containing",
+            call_.remainingWork_,
+            call_.limit_,
+            [&] { return !call_.step(); });
         if (!matches) {
-            issues_.push_back(
+            call_.issues_.push_back(
                 {{"phase", "address"},
                  {"message",
                   "Address resolution failed or exceeded its traversal/ambiguity limit."}});
-            truncate("address_resolution_failed");
+            call_.truncate("address_resolution_failed");
             return;
         }
         matchCount = matches->size();
@@ -760,7 +822,7 @@ void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const
                 break;
         }
         if (matches->empty())
-            issues_.push_back(
+            call_.issues_.push_back(
                 {{"phase", "address"},
                  {"message", "No matching source address; the link may be stale."}});
     }
@@ -768,7 +830,7 @@ void McpNativeTools::Call::extractSourceData(PartitionSourceDataLayer::Ptr const
         for (size_t i = 0; i < tile->numRoots(); ++i) {
             auto root = tile->root(i);
             if (!root) {
-                truncate("invalid_model_root");
+                call_.truncate("invalid_model_root");
                 break;
             }
             if (!emit(*root))

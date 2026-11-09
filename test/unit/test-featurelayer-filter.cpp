@@ -12,10 +12,12 @@
 #include <vector>
 
 #include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/mapschema.h"
 #include "mapget/model/simfilexpressioncache.h"
 #include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/locate.h"
+#include "simfil/model/schema-pool.h"
 
 using namespace mapget;
 
@@ -282,6 +284,76 @@ TEST_CASE(
     CHECK(statistics.misses == 1);
     CHECK(statistics.compiles == 1);
     CHECK(statistics.failedCompiles == 1);
+}
+
+TEST_CASE(
+    "SIMFIL expression cache distinguishes canonical roots without a layer identity",
+    "[feature-layer-filter][expression-cache][schema2]")
+{
+    for (std::string_view kind : {"anonymous", "named", "mapget"}) {
+        CAPTURE(kind);
+        bool verified = kind == "mapget";
+        std::array<std::shared_ptr<simfil::SchemaPool>, 2> owners;
+        std::array<simfil::SchemaType, 2> roots;
+        for (size_t i = 0; i < owners.size(); ++i) {
+            if (verified)
+                owners[i] = std::make_shared<MapSchema>();
+            else
+                owners[i] = std::make_shared<simfil::SchemaPool>();
+            auto root = owners[i]->newObjectType();
+            auto symbol = owners[i]->newEnumType();
+            symbol.addSymbol("MATCH");
+            root.addField(i == 0 ? "first" : "second", symbol);
+            if (verified)
+                std::static_pointer_cast<MapSchema>(owners[i])->finalize();
+            else if (kind == "named")
+                owners[i]->finalize(i == 0 ? "cache-first" : "cache-second");
+            else
+                owners[i]->finalize();
+            roots[i] = root;
+        }
+        REQUIRE(roots[0].id() == roots[1].id());
+        CHECK(roots[0].pool() != roots[1].pool());
+
+        auto strings = std::make_shared<StringPool>("RootOnlyExpressionCache");
+        auto environment = makeEnvironment(strings);
+        SimfilExpressionCache cache;
+        size_t compileCalls = 0;
+        std::array<simfil::SharedAST, 2> first;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (size_t i = 0; i < roots.size(); ++i) {
+                auto options = simfil::CompileOptions{
+                    .any = false,
+                    .rewriteMode = simfil::RewriteMode::Schema,
+                    .rootSchema = roots[i]};
+                environment->setSchema(roots[i]);
+                auto result = cache.getOrCompile(
+                    "MATCH",
+                    options,
+                    nullptr,
+                    {},
+                    [&]
+                    {
+                        ++compileCalls;
+                        return simfil::compile(*environment, "MATCH", options);
+                    });
+                REQUIRE(result);
+                CHECK(
+                    (*result)->expr().toString().find(i == 0 ? "first" : "second") !=
+                    std::string::npos);
+                if (pass == 0)
+                    first[i] = *result;
+                else if (verified)
+                    CHECK(*result == first[i]);
+                else
+                    CHECK(*result != first[i]);
+            }
+        }
+        CHECK(first[0] != first[1]);
+        CHECK(compileCalls == (verified ? 2 : 4));
+        CHECK(cache.statistics().entries == (verified ? 2 : 0));
+        CHECK(cache.statistics().hits == (verified ? 2 : 0));
+    }
 }
 
 TEST_CASE("Filter activity uses bound constant predicates conservatively", "[feature-layer-filter][filter-activity]")

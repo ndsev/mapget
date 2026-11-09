@@ -25,6 +25,7 @@ struct BBox;
 struct LineString;
 struct Polygon;
 
+/** Axis-aligned bounds for planar x/y predicates; z is ignored and corners may be unordered. */
 struct BBox
 {
     Point p1, p2;
@@ -46,15 +47,18 @@ struct BBox
     auto toString() const -> std::string;
 };
 
+/** Ordered planar x/y segments; no geodesic projection or antimeridian wrapping is applied. */
 struct LineString
 {
     std::vector<Point> points;
 
     auto bbox() const -> BBox;
 
+    /** Signed area in coordinate units squared, treating the last point as joined to the first. */
     auto linear_ring_signed_area() const -> double;
 
     auto intersects(const BBox&) const -> bool;
+    /** Exact planar interior-point test; segment endpoints are excluded. */
     auto intersects(const Point&) const -> bool;
     auto intersects(const LineString&) const -> bool;
     auto intersects(const Polygon&) const -> bool;
@@ -63,6 +67,7 @@ struct LineString
     auto toString() const -> std::string;
 };
 
+/** Planar rings with the exterior first and holes afterward; area ignores ring winding. */
 struct Polygon
 {
     std::vector<LineString> polys;
@@ -72,6 +77,9 @@ struct Polygon
 
     auto contains(const BBox&) const -> bool;
     auto contains(const Point&) const -> bool;
+
+    /** Test the supplied vertices; segments between them are not checked for leaving the polygon.
+     */
     auto contains(const LineString&) const -> bool;
 
     auto intersects(const BBox&) const -> bool;
@@ -82,10 +90,12 @@ struct Polygon
     auto toString() const -> std::string;
 };
 
-/* NOTE: There is no Multi* struct, because `geo()` returns Multi* geometries
- *       as multiple geometries. */
-
-/** Parses a GeoJSON structure into a GeoJSON value */
+/** Convert geometry nodes into transient 2D query values, discarding elevation.
+ * Reads either the input's geometry member or the input itself, and expands one
+ * GeometryCollection level. There is no Multi* struct: geo() returns Multi*
+ * geometries as multiple result emissions. This is not a lossless GeoJSON
+ * import/export interface.
+ */
 class GeoFn : public simfil::Function
 {
 public:
@@ -97,7 +107,7 @@ public:
     auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
-/** GeoJSON geometry constructors */
+/** Construct transient query points from two single numeric arguments. */
 class PointFn : public simfil::Function
 {
 public:
@@ -109,6 +119,7 @@ public:
     auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
+/** Construct query bounds from one geometry value, two points or four numbers. */
 class BBoxFn : public simfil::Function
 {
 public:
@@ -120,6 +131,7 @@ public:
     auto eval(Context, const Value&, const std::vector<ExprPtr>&, const ResultFn&) const -> tl::expected<Result, Error> override;
 };
 
+/** Collect argument emissions into a transient x/y point sequence. */
 class LineStringFn : public simfil::Function
 {
 public:

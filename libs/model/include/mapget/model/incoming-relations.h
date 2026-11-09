@@ -15,6 +15,7 @@ struct IncomingRelationReference
     std::string featureId_;
     uint32_t relationIndex_ = 0;
     std::string name_;
+
     /** Canonical target selected by the service, including secondary-ID selector resolution. */
     std::string targetFeatureId_;
 };
@@ -22,6 +23,9 @@ struct IncomingRelationReference
 /** Typed manifest accompanying immutable target/source snapshots in an incoming response. */
 struct IncomingRelationCollection
 {
+    /** Completeness refers only to the reported provider partitions, never the whole map. */
+    enum class Status { NoPossibleFamily, Complete, Partial, UnsupportedScope };
+
     static constexpr size_t MaxRelations = 4096;
     static constexpr size_t MaxSnapshots = 64;
     MapPartitionKey target_;
@@ -30,20 +34,32 @@ struct IncomingRelationCollection
     std::vector<IncomingRelationReference> relations_;
     std::vector<std::string> issues_;
     bool complete_ = true;
+    Status status_ = Status::Complete;
+
+    /** Admitted provider partitions, including providers returning no matching relations. */
+    std::vector<MapPartitionKey> scope_;
     std::optional<int64_t> expiresAtMs_;
 
     /** Encode the versioned result contract independently of feature-layer dictionaries. */
     [[nodiscard]] nlohmann::json toJson() const;
+
     /** Decode a bounded manifest, rejecting unsupported and malformed result contracts. */
     [[nodiscard]] static IncomingRelationCollection fromJson(nlohmann::json const& json);
 };
 
-/** Match a reference using the target model's canonical ID compositions, without loading data. */
+/** Match a primary-ID reference within the target model, without loading data.
+ * Secondary IDs require locate resolution.
+ */
 [[nodiscard]] bool relationTargetsFeature(Relation const& relation, Feature const& target);
 
-/** Copy only selected features while preserving provenance, ordinals and owning layer identity. */
+/**
+ * Clone found primary IDs while preserving source metadata, provenance and relation ordinals.
+ * The byte budget limits retained model capacity conservatively: exhausting it returns a
+ * partial snapshot with a warning. Missing IDs are skipped; cancellation throws.
+ */
 [[nodiscard]] PartitionFeatureLayer::Ptr cloneInspectionFeatures(
-    PartitionFeatureLayer::Ptr const& source, std::span<std::string const> featureIds,
+    PartitionFeatureLayer::Ptr const& source,
+    std::span<std::string const> featureIds,
     size_t byteBudget = std::numeric_limits<size_t>::max(),
     std::function<bool()> const& cancelled = {});
 
@@ -63,10 +79,13 @@ public:
     /** Validate the complete bundle before exposing any foreign model nodes to inspection. */
     FeatureInspectionView(IncomingRelationCollection collection,
                           std::vector<PartitionFeatureLayer::Ptr> snapshots);
+
     /** The selected target from the same response as the incoming relations. */
     [[nodiscard]] model_ptr<Feature> target() const { return target_; }
+
     /** Source-owned relation handles in stable service order. */
     [[nodiscard]] std::vector<Incoming> const& incoming() const { return incoming_; }
+
     /** Completeness, diagnostics and expiry from the backend. */
     [[nodiscard]] IncomingRelationCollection const& collection() const { return collection_; }
 

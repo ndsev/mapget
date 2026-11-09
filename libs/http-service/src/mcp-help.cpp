@@ -435,14 +435,9 @@ std::string McpHelp::matchExpression(std::string const& text)
             flush();
     }
     flush();
-    auto useful = terms;
-    for (auto stop :
-         {"a",    "an",  "and",   "are",  "can", "do",   "does", "for",    "how", "i",
-          "in",   "is",  "me",    "my",   "of",  "on",   "or",   "please", "put", "show",
-          "that", "the", "these", "this", "to",  "what", "with", "you"})
-        useful.erase(stop);
-    if (!useful.empty())
-        terms = std::move(useful);
+    // Keep literal terms, including language operators such as "and" and "in".
+    // FTS5 ranks common words below distinctive terms; a hand-maintained English
+    // stop list would silently make some documented concepts unsearchable.
     std::string result;
     size_t count = 0;
     for (auto const& term : terms) {

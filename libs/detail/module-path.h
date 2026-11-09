@@ -14,7 +14,10 @@
 namespace mapget::detail
 {
 
-/** Locate resources beside the module containing anchor, including a Python extension. */
+/**
+ * Locate resources beside the module containing anchor, including a Python extension.
+ * Return that module's directory, or the process working directory if lookup fails.
+ */
 inline std::filesystem::path moduleDirectory(void const* anchor)
 {
 #ifdef _WIN32

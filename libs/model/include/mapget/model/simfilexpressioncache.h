@@ -50,13 +50,18 @@ public:
     ~SimfilExpressionCache();
 
     SimfilExpressionCache(SimfilExpressionCache const&) = delete;
+
     auto operator=(SimfilExpressionCache const&) -> SimfilExpressionCache& = delete;
 
     /**
      * Return one shared AST, compiling on a miss and retaining the result while
      * capacity permits. Deterministic compilation failures are retained too.
+     * compile runs under the cache's exclusive lock and must not re-enter this
+     * cache. Once full, new keys compile on each miss without evicting old keys.
      *
-     * `schemaIdentity` must remain immutable while its entries are cached.
+     * `schemaIdentity` must be finalized; keys use the root's exact artifact identity and
+     * this layer name. Generic non-MapSchema roots are compiled without retention: their
+     * caller-supplied identity strings do not establish equivalent schema content.
      * `compileContext` must distinguish every other compile-affecting input,
      * including constants, bindings, and custom compiler environment state. It
      * need only be stable for this cache's lifetime.
@@ -64,7 +69,7 @@ public:
     [[nodiscard]] tl::expected<simfil::SharedAST, simfil::Error> getOrCompile(
         std::string_view query,
         simfil::CompileOptions options,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> const& schemaIdentity,
         std::string_view compileContext,
         CompileFunction const& compile);
 
@@ -74,7 +79,8 @@ public:
     /** Return exact counters without exposing cache internals. */
     [[nodiscard]] Statistics statistics() const;
 
-    /** Estimate retained keys, entries, and shared AST owner objects. */
+    /** Estimate retained keys, entries and AST owner objects; AST child allocations are excluded.
+     */
     [[nodiscard]] simfil::MemoryUsage memoryUsage() const;
 
 private:

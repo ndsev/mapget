@@ -1,7 +1,7 @@
 #pragma once
 
 #include "mcp-auth.h"
-#include "mcp-native-tools.h"
+#include "mcp-mapget-tools.h"
 
 #include <drogon/HttpAppFramework.h>
 #include <drogon/HttpClient.h>
@@ -18,7 +18,7 @@ class McpServer : public std::enable_shared_from_this<McpServer>
 {
 public:
     /** Load trust/catalog configuration before accepting any browser registrations. */
-    McpServer(McpConfig const& config, std::shared_ptr<McpNativeTools> native);
+    McpServer(McpConfig const& config, std::shared_ptr<McpMapgetTools> native, ProxyAuthentication proxyAuth = {});
 
     /** Drain callbacks and destroy thread-affine state before stopping the private control loop. */
     ~McpServer();
@@ -52,6 +52,7 @@ private:
     {
         nlohmann::json rpcId;
         McpViewerRelay::Principal principal;
+
         /** Select result framing and disconnect semantics without storing a protocol session. */
         bool modern = true;
         std::string action;
@@ -68,7 +69,7 @@ private:
     uintmax_t catalogSize_ = 0;
     bool catalogReloadFailed_ = false;
     std::shared_ptr<McpActionCatalog const> catalog_;
-    std::shared_ptr<McpNativeTools> native_;
+    std::shared_ptr<McpMapgetTools> native_;
     McpConfig::Limits limits_;
     trantor::EventLoopThread thread_{"mapget-mcp"};
     std::unique_ptr<McpViewerRelay> relay_;

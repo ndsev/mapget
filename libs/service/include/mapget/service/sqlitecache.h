@@ -11,16 +11,23 @@ namespace mapget
 
 /**
  * A persistent cache implementation that stores layers and string pools
- * in SQLite. Oldest tiles are removed automatically in FIFO order when cacheMaxTiles is
- * reached.
+ * in SQLite. Writes refresh a tile's insertion timestamp; reads do not. The
+ * oldest timestamp is evicted when a positive tile-count limit is exceeded.
  */
 class SQLiteCache : public Cache
 {
 public:
+    /**
+     * Open/create a database relative to the current directory. Zero tiles
+     * means unbounded storage; clearCache removes an existing file first.
+     * Incompatible persisted dictionaries cause both tables to be cleared.
+     */
     explicit SQLiteCache(
         uint32_t cacheMaxTiles = 1024,
         std::string cachePath = "mapget-cache.db",
         bool clearCache = false);
+
+    /** Release prepared statements and close the database after callers have stopped. */
     ~SQLiteCache() override;
 
     std::optional<std::string> getTileLayerBlob(MapPartitionKey const& k) override;
@@ -34,9 +41,16 @@ public:
     [[nodiscard]] nlohmann::json getStatistics() const override;
 
 private:
+    /** Create the persistent tile/dictionary tables and the FIFO timestamp index. */
     void initDatabase();
+
+    /** Execute constructor-time SQL, throwing a mapget error on SQLite failure. */
     void executeSQL(const std::string& sql);
+
+    /** Allocate reusable statements before this cache is exposed to worker threads. */
     void prepareStatements();
+
+    /** Evict one oldest tile; the caller must hold dbMutex_. */
     void cleanupOldestTiles();
 
     sqlite3* db_{nullptr};

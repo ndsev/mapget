@@ -24,8 +24,6 @@ Point boundsSize(model_ptr<Geometry> const& geometry)
 }
 }
 
-/** Model node impls for VertexNode. */
-
 PointNode::PointNode(
     ModelNode const& baseNode,
     simfil::ArrayIndex vertexArray,

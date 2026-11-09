@@ -24,7 +24,9 @@ class SourceDataCompoundNode
 
 public:
     SourceDataCompoundNode() = delete;
+
     SourceDataCompoundNode(const SourceDataCompoundNode&) = delete;
+
     SourceDataCompoundNode(SourceDataCompoundNode&&) = default;
 
     /**
@@ -45,11 +47,17 @@ public:
     /** Return whether this compound starts a presentation address scope. */
     [[nodiscard]] bool isSourceDataAddressScope() const;
 
+    /** Store a display/type name in the producer dictionary; this does not bind a schema type. */
     void setSchemaName(std::string_view name);
+
+    /** Attach an exact raw-data type from this partition's immutable MapSchema. */
+    void setSchema(simfil::TypeId id);
+    [[nodiscard]] simfil::TypeId schema() const override;
     std::string_view schemaName() const;
 
     /**
-     * Get this compounds object node
+     * Access the backing object. Mutable access creates it when absent; const
+     * access returns null. The returned node retains the same source-data layer.
      */
     simfil::model_ptr<simfil::Object> object();
     simfil::model_ptr<const simfil::Object> object() const;

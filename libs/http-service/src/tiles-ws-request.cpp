@@ -29,7 +29,7 @@ int64_t parseNonNegativeInt64(const nlohmann::json& j, std::string_view key)
     return 0;
 }
 
-/** Parse optional WS request chunk metadata and validate chunk sequencing fields. */
+/** Parse chunk field types; the session separately enforces index sequencing. */
 ClientRequestChunk parseClientRequestChunk(const nlohmann::json& j)
 {
     auto chunkIt = j.find("chunk");

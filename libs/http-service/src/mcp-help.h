@@ -22,16 +22,26 @@ class McpHelp
 public:
     /** Prefer registered checkout folders over bundles; extra folders/files are additive. */
     McpHelp(std::filesystem::path bundle, std::vector<std::filesystem::path> extra = {});
+
     /** Close the index after its owning native-tool service has drained worker callbacks. */
     ~McpHelp();
+
     McpHelp(McpHelp const&) = delete;
+
     McpHelp& operator=(McpHelp const&) = delete;
 
     /** Find the relocatable bundle beside this binary module, not the Python interpreter. */
     static std::filesystem::path defaultDirectory();
+
     /** Reconcile source additions/edits/deletions; failed refreshes retain the last transaction. */
     void refresh();
-    /** Refresh before searching; return three full sections and up to five title suggestions. */
+
+    /**
+     * Refresh and query by text, exact title, or an empty term for the title index.
+     * Clamp page size to 1..8; the first three items include content, later items
+     * contain titles. More matches set complete=false and nextOffset. Refresh
+     * failure retains the prior corpus and reports docs_reload_failed.
+     */
     nlohmann::json query(
         std::string const& text,
         std::string const& title,
@@ -42,6 +52,7 @@ public:
 
 private:
     using Statement = std::unique_ptr<sqlite3_stmt, int (*)(sqlite3_stmt*)>;
+
     /** One annotated heading, including independently annotated subsections in its Markdown. */
     struct Section
     {
@@ -61,20 +72,26 @@ private:
 
     /** Collect bounded, deterministic portable filenames and content, deduplicating real files. */
     std::map<std::string, std::string> readDocuments(std::function<bool()> const& keepGoing);
-    /** Parse annotated ATX sections, ignoring Markdown fences and ordinary HTML comments. */
+
+    /** Recognize annotated ATX headings outside code fences; keep code content and discard HTML comments. */
     void indexDocument(
         std::string const& source,
         std::string const& text,
         size_t& sectionBudget,
         std::function<bool()> const& keepGoing);
+
     /** Replace rows in one transaction only when the corpus fingerprint changes; mutex held. */
     void refreshLocked(std::function<bool()> const& keepGoing);
-    /** Run internal SQL and surface failures without leaving a partially rebuilt index. */
+
+    /** Run internal SQL and throw on failure; refreshLocked owns rebuild rollback. */
     void execute(char const* sql);
+
     /** Own a prepared statement through all parse/search error paths. */
     Statement prepare(char const* sql);
+
     /** Cooperatively stop document scanning and parsing on invocation cancellation/budgets. */
     static void check(std::function<bool()> const& keepGoing);
+
     /** Convert plain words into quoted OR terms, never exposing the FTS query language. */
     static std::string matchExpression(std::string const& text);
 };

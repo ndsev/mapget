@@ -1,4 +1,5 @@
 #include "locate.h"
+#include "mapget/model/featureid.h"
 
 #include <stdexcept>
 
@@ -81,6 +82,13 @@ LocateRequest::LocateRequest(const nlohmann::json& j)
         mapId_ = j["mapId"].get<std::string>();
     if (j.contains("typeId"))
         typeId_ = j["typeId"].get<std::string>();
+    if (j.contains("id")) {
+        if (j.contains("featureId") || mapId_.empty() || typeId_.empty())
+            throw std::invalid_argument(
+                "Named locate references require mapId/typeId/id, without featureId.");
+        featureId_ = parseFeatureIdPartsJson(j.at("id"));
+        return;
+    }
     if (j.contains("featureId")) {
         auto featureIdParts = j["featureId"];
         if (featureIdParts.is_string()) {
@@ -95,10 +103,12 @@ LocateRequest::LocateRequest(const nlohmann::json& j)
         for (auto kvIndex = 0; kvIndex < numFeatureIdParts; kvIndex += 2) {
             auto key = featureIdParts.at(kvIndex).get<std::string>();
             auto value = featureIdParts.at(kvIndex + 1);
-            if (value.is_number())
+            if (value.is_number_integer())
                 featureId_.emplace_back(key, value.get<int64_t>());
-            else
+            else if (value.is_string())
                 featureId_.emplace_back(key, value.get<std::string>());
+            else
+                throw std::invalid_argument("Locate ID parts must be integers or strings.");
         }
     }
 }

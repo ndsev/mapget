@@ -1,6 +1,6 @@
 #pragma once
 
-#include "service.h"
+#include "mapget/service/service.h"
 
 #include <shared_mutex>
 
@@ -18,11 +18,20 @@ struct RegisteredDataSource
     /** Detached metadata snapshot shared by the catalog, scheduler, and readers. */
     std::shared_ptr<DataSourceInfo const> info;
 
+    /** Original provider binding; datasource conversion must never use composed domain IDs. */
+    std::shared_ptr<DataSourceInfo const> nativeInfo;
+
+    /** Exact add-on generations included in info; a running job never consults a newer registry. */
+    std::vector<Ptr> addOns;
+
     /** Catalog identity used to honor an optional request source selector. */
     std::string sourceId;
 
     /** Capacity-based size of the canonical detached metadata snapshot. */
     simfil::MemoryUsage metadataMemory;
+
+    /** A composed map is accessible only when every contributing provider permits access. */
+    [[nodiscard]] bool authorized(std::optional<ClientAuthorization> const& headers) const;
 };
 
 /**
@@ -56,7 +65,27 @@ public:
 
     /** Return a detached authorized metadata list for the legacy info API. */
     [[nodiscard]] std::vector<DataSourceInfo>
-    infos(std::optional<AuthHeaders> const& clientHeaders) const;
+    infos(std::optional<ClientAuthorization> const& clientAuthorization) const;
+
+    /** Resolve an exact authorized schema binding without copying metadata or doing I/O. */
+    [[nodiscard]] std::shared_ptr<MapSchema const> getSchema(
+        std::string_view sourceId,
+        std::string_view schemaId,
+        std::optional<ClientAuthorization> const& clientAuthorization) const;
+
+    /** Group authorized immutable owners; callbacks run outside locks and may abort traversal.
+     * Recheck the pinned registration snapshot as one batch before publishing, rejecting a
+     * concurrent replacement/removal with resource_unavailable_try_again instead of stale rows.
+     */
+    [[nodiscard]] nlohmann::json schemaInventory(
+        std::optional<ClientAuthorization> const& clientAuthorization,
+        std::function<bool(MapSchema const&)> const& include = {},
+        std::function<void()> const& checkpoint = {},
+        std::function<bool(std::string_view sourceId, std::string_view mapId)> const&
+            includeSource = {}) const;
+
+    /** Account unique current and retired pinned graphs; retain them only for this measurement. */
+    [[nodiscard]] MemoryUsageBreakdown schemaMemoryUsage() const;
 
     /** Return the number of ready sources. */
     [[nodiscard]] size_t size() const;
@@ -65,8 +94,14 @@ public:
     [[nodiscard]] bool empty() const;
 
 private:
+    /** Rebuild changed primary snapshots transactionally before replacing the ready registry. */
+    void compose(std::vector<RegisteredDataSource::Ptr>& sources) const;
+
+    /** Called under mutex_ after publication; retain weak observations, never the graphs. */
+    void rememberSchemas();
     mutable std::shared_mutex mutex_;
     std::vector<RegisteredDataSource::Ptr> sources_;
+    mutable std::vector<std::weak_ptr<MapSchema const>> knownSchemas_;
     uint64_t nextRuntimeSourceId_ = 0;
 };
 

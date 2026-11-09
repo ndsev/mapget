@@ -330,6 +330,7 @@ nlohmann::json geoJsonEndpointSchema()
     return std::filesystem::current_path();
 }
 
+/** Accept inline metadata or resolve a local reference relative to the config file. */
 void applyStructuredDocumentOption(
     const YAML::Node& config,
     std::optional<nlohmann::json>& inlineJsonOut,
@@ -415,13 +416,11 @@ public:
         std::ifstream ifs(config_path);
         YAML::Node root = ifs ? YAML::Load(ifs) : YAML::Node();
 
-        // Create or clear the 'mapget' node
+        // Regenerate only mapget CLI settings, preserving unrelated top-level sections.
         auto mapgetNode = root["mapget"] = YAML::Node(YAML::NodeType::Map);
 
-        // Process current app configuration into 'mapget' node
         toYaml(mapgetNode, app, defaultAlso);
 
-        // Output the YAML content as a formatted string
         std::stringstream ss;
         ss << root;
         return ss.str();
@@ -506,10 +505,10 @@ void registerDefaultDatasourceTypes()
     auto& service = DataSourceConfigService::get();
     service.registerDataSourceType(
         "DataSourceHost",
-        [](YAML::Node const& config) -> DataSource::Ptr
+        [](YAML::Node const& config, DataSourceInitContext& context) -> DataSource::Ptr
         {
             if (auto url = config["url"])
-                return RemoteDataSource::fromHostPort(url.as<std::string>());
+                return RemoteDataSource::fromHostPort(url.as<std::string>(), context.isCancelled);
             else
                 throw std::runtime_error("Missing `url` field.");
         },
@@ -600,6 +599,7 @@ struct ServeCommand
     bool noLocation_ = false;
     std::string locationDbPath_;
     McpConfig mcp_;
+    ProxyAuthentication proxyAuth_;
     int64_t locationMaxLimit_ = HttpServiceConfig{}.locationResultMaxLimit;
     ServeStartedCallback startedCallback_;
     CLI::App& app_;
@@ -736,6 +736,7 @@ struct ServeCommand
             ->default_val(locationMaxLimit_);
         serveCmd->add_flag("--no-location", noLocation_, "Disable the /location endpoint.");
         mcp_.addOptions(*serveCmd);
+        proxyAuth_.addOptions(*serveCmd);
         serveCmd->callback([this]() { serve(); });
     }
 
@@ -861,7 +862,6 @@ struct ServeCommand
             raise(fmt::format("Cache type {} not supported!", cacheType_));
         }
 
-        // Build HttpServiceConfig
         HttpServiceConfig httpConfig;
         httpConfig.watchConfig = config && *config;
         httpConfig.defaultTtl = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -879,13 +879,14 @@ struct ServeCommand
             httpConfig.locationDatabasePath = std::filesystem::path(locationDbPath_);
         }
         httpConfig.mcp = mcp_;
+        httpConfig.proxyAuth = proxyAuth_;
 
         // HttpService will subscribe to DataSourceConfigService.
         HttpService srv(cache, httpConfig);
 
         if (config && *config) {
-            // Registration and schema assembly are side-effect free. Actual
-            // datasource construction must wait until the listener is bound.
+            // Register factories and schemas now; constructing datasource instances
+            // waits until the listener is bound.
             registerDefaultDatasourceTypes();
             loadConfigSchemaPatch(getPathToSchemaPatch());
         }
@@ -1025,6 +1026,7 @@ struct FetchCommand
 };
 
 std::string pathToSchema = "";
+
 int runFromCommandLine(
     std::vector<std::string> args,
     bool requireSubcommand,

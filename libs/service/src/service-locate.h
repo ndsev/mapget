@@ -10,7 +10,8 @@ class LocateRequestExecution
 {
 public:
     /** Capture the service and portable identity request for synchronous resolution. */
-    LocateRequestExecution(Service::Impl& service, LocateRequest request);
+    LocateRequestExecution(Service::Impl& service, LocateRequest request,
+                          std::optional<ClientAuthorization> authorization);
 
     /** Resolve all candidate groups and return stable-deduplicated results. */
     std::vector<LocateResponse> run();
@@ -19,7 +20,7 @@ private:
     /** Candidate selectors sharing one source-specific tile load. */
     struct CandidateGroup
     {
-        std::string sourceId;
+        RegisteredDataSource::Ptr registration;
         MapPartitionKey tileKey;
         std::vector<LocateCandidate> candidates;
     };
@@ -29,6 +30,7 @@ private:
 
     Service::Impl& service_;
     LocateRequest request_;
+    std::optional<ClientAuthorization> authorization_;
     std::mutex mutex_;
     std::condition_variable cv_;
     size_t pending_ = 0;

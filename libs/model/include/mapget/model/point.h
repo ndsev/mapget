@@ -25,8 +25,10 @@ struct Point : public glm::dvec3
 {
     /** Define trivial constructors */
     Point();
+
     Point(Point const&) = default;
     Point(double const& x, double const& y, double const& z = .0);
+
     /** Construct from a longitude/latitude pair, mapped to x/y with z=0. */
     Point(std::pair<double, double> const& lonLat);  // NOLINT: Allow concise lon/lat conversion
 
@@ -45,10 +47,13 @@ struct Point : public glm::dvec3
 
     [[nodiscard]] std::string toString() const;
 
+    /** Planar bearing toward o in radians, measured from positive x; elevation is ignored. */
     [[nodiscard]] double angleTo(const glm::dvec3& o) const;
 
+    /** Euclidean 3D distance in the input coordinate units. */
     [[nodiscard]] double distanceTo(const glm::dvec3& o) const;
 
+    /** Spherical surface distance in metres for x=longitude/y=latitude degrees; ignores z. */
     [[nodiscard]] double geographicDistanceTo(const glm::dvec3& other) const;
 
     bool operator==(const Point& o) const;
@@ -57,6 +62,6 @@ struct Point : public glm::dvec3
 /** nlohmann::json bindings */
 void to_json(nlohmann::json& j, const Point& p);
 
+/** Read [x, y, optional z]; an omitted z leaves the destination point's elevation unchanged. */
 void from_json(const nlohmann::json& j, Point& p);
-
 }

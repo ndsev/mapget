@@ -23,6 +23,7 @@ constexpr size_t INTERACTIVE_CONTROL_THREAD_COUNT = 2;
 
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
+    config_.proxyAuth.validate();
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
     for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {
         if (!addAuthHeaderRegexMatchOption(normalizedCacheResetAlternatives, header, pattern)) {
@@ -47,7 +48,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
     // Validate trust/catalog and establish borrowed collectors before maintenance threads start.
     if (config_.mcp.mode != McpConfig::Mode::Off) {
-        auto native = std::make_shared<detail::McpNativeTools>(
+        auto native = std::make_shared<detail::McpMapgetTools>(
             self_,
             config_.mcp,
             [this] { return statusSnapshot(); },
@@ -55,7 +56,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
             [this] { return datasourceConfiguration(); },
             [this](auto const& model, auto const& revision)
             { return updateDatasourceConfiguration(model, revision); });
-        mcp_ = std::make_shared<detail::McpServer>(config_.mcp, std::move(native));
+        mcp_ = std::make_shared<detail::McpServer>(config_.mcp, std::move(native), config_.proxyAuth);
     }
 
     auto const allocator = detail::allocatorMemoryStatistics();

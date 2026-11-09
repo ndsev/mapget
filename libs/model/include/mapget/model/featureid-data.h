@@ -14,7 +14,9 @@ struct FeatureIdData
     bool useCommonTilePrefix_ = false;
     uint8_t idCompositionIndex_ = 0;
     simfil::StringId typeId_ = 0;
-    simfil::ArrayIndex idPartValues_ = simfil::InvalidArrayIndex;
+
+    /** Array for schema-backed local parts; Object for named foreign parts. */
+    simfil::ModelNodeAddress idParts_;
     simfil::StringId extMapId_ = simfil::StringPool::Empty;
 };
 

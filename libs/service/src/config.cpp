@@ -81,6 +81,17 @@ nlohmann::json authHeaderSchema()
     };
 }
 
+nlohmann::json authClaimsSchema()
+{
+    return {
+        {"type", "object"},
+        {"title", "Required identity claims"},
+        {"description", "JSON-pointer keys with exact string or array-member requirements. All must match, in addition to auth-header."},
+        {"propertyNames", {{"pattern", "^(/([^~]|~[01])*)+$"}}},
+        {"additionalProperties", {{"type", "string"}}}
+    };
+}
+
 nlohmann::json enabledSchema()
 {
     return {
@@ -142,8 +153,9 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
 
 /**
  * Build a display-only name for a catalog row that has no authoritative
- * DataSourceInfo yet. A configured map ID wins; otherwise non-secret
- * top-level scalar values are concatenated in YAML order.
+ * DataSourceInfo yet. A configured map ID wins; otherwise top-level scalars
+ * not matched by isSecretConfigKey are concatenated in YAML order. That key
+ * heuristic does not establish that the resulting display name is secret-free.
  */
 [[nodiscard]] std::string dataSourceDisplayName(
     YAML::Node const& descriptor,
@@ -181,11 +193,34 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
 [[nodiscard]] std::unordered_map<std::string, std::regex> parseAuthHeaderAlternatives(YAML::Node const& descriptor)
 {
     std::unordered_map<std::string, std::regex> result;
-    for (auto authOption : descriptor["auth-header"]) {
+    auto const options = descriptor["auth-header"];
+    if (!options)
+        return result;
+    if (!options.IsMap())
+        throw std::invalid_argument("auth-header must be a map of header names to regular expressions.");
+    for (auto authOption : options) {
         auto key = authOption.first.as<std::string>();
         auto value = authOption.second.as<std::string>();
-        std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        result.emplace(std::move(key), std::regex(value));
+        if (!addAuthHeaderRegexMatchOption(result, key, std::regex(value)))
+            throw std::invalid_argument("auth-header names must be unique ignoring case.");
+    }
+    return result;
+}
+
+AuthClaimRequirements parseAuthClaims(YAML::Node const& descriptor)
+{
+    AuthClaimRequirements result;
+    auto const claims = descriptor["auth-claims"];
+    if (!claims)
+        return result;
+    if (!claims.IsMap())
+        throw std::invalid_argument("auth-claims must be a map of JSON pointers to strings.");
+    for (auto const& entry : claims) {
+        if (!entry.first.IsScalar() || !entry.second.IsScalar())
+            throw std::invalid_argument("auth-claims requires JSON-pointer keys and string values.");
+        auto pointer = nlohmann::json::json_pointer(entry.first.as<std::string>());
+        if (pointer.empty() || !result.emplace(std::move(pointer), entry.second.as<std::string>()).second)
+            throw std::invalid_argument("auth-claims requires unique nonempty JSON pointers.");
     }
     return result;
 }
@@ -203,6 +238,9 @@ void applyGenericDataSourceOptions(DataSource& dataSource, YAML::Node const& des
 
     for (auto const& [key, value] : parseAuthHeaderAlternatives(descriptor)) {
         dataSource.requireAuthHeaderRegexMatchOption(key, value);
+    }
+    for (auto const& [pointer, value] : parseAuthClaims(descriptor)) {
+        dataSource.requireAuthClaim(pointer.to_string(), value);
     }
 }
 
@@ -234,7 +272,7 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     auto sub = std::make_unique<Subscription>(nextSubscriptionId_++);
     log().debug("Registering config subscription with ID: {}", sub->id_);
     subscriptions_[sub->id_] = {successCallback, errorCallback};
-    // Optionally, trigger the callback with the current configuration immediately
+    // Replay only a nonempty accepted list, synchronously under the recursive member lock.
     if (!currentConfig_.empty()) {
         log().debug("Triggering immediate callback for subscription {} with {} config nodes", 
                     sub->id_, currentConfig_.size());
@@ -259,9 +297,8 @@ void DataSourceConfigService::loadConfig(std::string const& path, bool startWatc
         // Force reload by clearing checksum.
         lastConfigSHA256_.clear();
 
-        // Notify subscribers immediately to allow dependent apps to proceed
-        // This is needed as there otherwise apps would have to wait manually
-        // for the callback to be called before they can continue.
+        // Reconcile synchronously before starting the polling thread so subscribers
+        // can enqueue initial construction without waiting for the first poll.
         loadConfig();
     }
 
@@ -445,15 +482,9 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
         result.addOn = false;
     }
 
-    try {
-        result.authHeaderAlternatives = parseAuthHeaderAlternatives(descriptor);
-    }
-    catch (std::exception const& e) {
-        log().warn(
-            "Could not parse auth-header options for datasource config index {}: {}",
-            configIndex,
-            e.what());
-    }
+    // Invalid gates must not publish an unrestricted initializing/failed catalog entry.
+    result.authHeaderAlternatives = parseAuthHeaderAlternatives(descriptor);
+    result.requiredClaims = parseAuthClaims(descriptor);
 
     return result;
 }
@@ -571,8 +602,8 @@ nlohmann::json parseStructuredDocument(
             return nlohmann::json::parse(trimmed);
         }
         catch (const std::exception&) {
-            // Fall back to YAML parsing below. YAML is a superset of JSON,
-            // so this keeps error handling consistent for malformed input.
+            // A leading brace/bracket can also start YAML flow syntax. Try the
+            // YAML parser after JSON rejects it; conversion uses YAML scalar coercion.
         }
     }
 
@@ -695,6 +726,7 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
             properties["ttl"] = ttlSchema();
         if (!properties.contains("auth-header"))
             properties["auth-header"] = authHeaderSchema();
+        properties["auth-claims"] = authClaimsSchema();
 
         auto& required = schema["required"];
         if (!required.is_array())
@@ -720,7 +752,8 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
             }},
             {"enabled", enabledSchema()},
             {"ttl", ttlSchema()},
-            {"auth-header", authHeaderSchema()}
+            {"auth-header", authHeaderSchema()},
+            {"auth-claims", authClaimsSchema()}
         }},
         {"required", nlohmann::json::array({"type"})},
         {"additionalProperties", true}
@@ -915,10 +948,20 @@ void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) cons
             return;
     }
     auto _ = validator_->validate(json);
+    for (auto const& source : json.at("sources")) {
+        auto const descriptor = jsonToYaml(source);
+        (void)parseAuthHeaderAlternatives(descriptor);
+        (void)parseAuthClaims(descriptor);
+    }
 }
 
 void DataSourceConfigService::validateDataSourceConfig(YAML::Node yaml) const
 {
+    // YAML-to-JSON conversion would otherwise discard duplicate gate keys.
+    for (auto const& source : yaml["sources"]) {
+        (void)parseAuthHeaderAlternatives(source);
+        (void)parseAuthClaims(source);
+    }
     nlohmann::json filtered = nlohmann::json::object();
     for (auto const& key : topLevelDataSourceConfigKeys()) {
         if (auto n = yaml[key])

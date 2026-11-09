@@ -17,7 +17,8 @@ namespace mapget
 /** Restart-scoped MCP settings shared by the CLI and native HttpService embedders. */
 struct McpConfig
 {
-    /** Local access is explicitly loopback-only, never an OAuth fallback. */
+    /** Local access is unauthenticated and shares the server's network exposure, never an OAuth
+     * fallback. */
     enum class Mode { Off, Local, OAuth };
 
     /** Hard admission limits, including mutations whose completion is still uncertain. */
@@ -63,11 +64,14 @@ struct McpConfig
     std::string diagnosticsValue;
     bool configReadEnabled = false;
     bool configWriteEnabled = false;
+
     /** Explicit operator assertion that this file, not a transformed container copy, is durable. */
     bool directConfigPersistence = false;
+
     /** Fixed lowercase header=value grants for authenticated OAuth bearer and browser principals.
      */
     std::vector<std::string> datasourceHeaders;
+
     /** Lowercase header=JSON-pointer mappings, evaluated only on verified JWT scalar claims. */
     std::vector<std::string> datasourceHeaderClaims;
 
@@ -81,8 +85,8 @@ struct McpConfig
     /** Bind individual CLI11 options; this object must outlive parsing/callbacks on serve. */
     void addOptions(CLI::App& serve);
 
-    /** Fill omitted local hints/catalog from startup inputs; reject non-loopback local listeners.
-     */
+    /** Derive local endpoint/allowlists from startup inputs; wildcard listeners advertise
+     * localhost. */
     void resolveDefaults(std::string const& host, int port, std::filesystem::path const& webRoot);
 
     /** Reject incomplete trust settings and invalid bounds before accepting connections. */

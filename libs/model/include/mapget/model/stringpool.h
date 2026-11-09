@@ -8,16 +8,17 @@ namespace mapget
 
 /**
  * The StringPool class is a case-insensitive dictionary of uint16_t to strings and vice versa.
- * Multiple TileFeatureLayers can share the same pool, reducing the size of serialized FeatureLayers.
+ * Multiple TileFeatureLayers can share the same pool, reducing the size of serialized
+ * FeatureLayers.
  *
- * The inherited mapget::StringPool contains static string IDs for various purposes.
+ * Inherited simfil keys and mapget's own static keys have fixed protocol IDs.
  *
  * String IDs are uint16 values, which are smaller and faster to work with than strings.
  * When querying strings by name, the pool is used to look up a string ID.
  * Subsequent searches are performed using this 16-bit integer for improved efficiency.
  *
- * Note: A StringPool is always unique per datasource node. Therefore,
- * the object must be constructed with a datasource node id.
+ * A streamed pool is identified by the producer's stringPoolId. Retain that
+ * namespace with serialized tiles; the catalog sourceId is a separate identity.
  */
 struct StringPool : public simfil::StringPool
 {
@@ -31,7 +32,6 @@ struct StringPool : public simfil::StringPool
         DirectionStr,
         ValidityStr,
         PropertiesStr,
-        NameStr,
         TargetStr,
         SourceValidityStr,
         TargetValidityStr,
@@ -122,26 +122,30 @@ struct StringPool : public simfil::StringPool
         HostValueErrorsStr,
         ExpressionIndexStr,
         StageStr,
-        MessageStr,
-        SchemaBitmaskStr
+        MessageStr
     };
 
+    // Shared vocabulary must have one ID: name lookup and procedural fields use the same key.
+    static constexpr simfil::StringId NameStr = simfil::StringPool::SchemaName;
+    static constexpr simfil::StringId SchemaBitmaskStr = simfil::StringPool::SchemaBitmask;
+
     static_assert(
-        int(SchemaBitmaskStr) < int(FirstDynamicId),
+        int(MessageStr) < int(FirstDynamicId),
         "Mapget static keys must not overlap dynamic strings.");
 
     explicit StringPool(const std::string_view& stringPoolId);
 
     /**
      * Write is overloaded, because it prepends the stream with
-     * this dictionary's data source node id. On the read side, the
+     * this dictionary's stringPoolId. On the read side, the
      * consumer must call readDataSourceStringPoolId() before calling read().
      */
     tl::expected<void, simfil::Error>
     write(std::ostream& outputStream, simfil::StringId offset) const override;
 
     /**
-     * Parse the datasource node id prefix from a serialized StringPool message.
+     * Parse the stringPoolId prefix at offset. bytesRead reports prefix bytes
+     * consumed relative to that offset; malformed/truncated input throws.
      */
     static std::string readDataSourceStringPoolId(
         const std::vector<uint8_t>& input,

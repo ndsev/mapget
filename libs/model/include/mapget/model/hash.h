@@ -14,6 +14,8 @@ namespace mapget
 
 /// Small, chainable FNV-1a hasher with overloads for common types.
 /// The byte order for integers is fixed to little-endian for cross-compiler stability.
+/// Strings have no delimiter or length prefix: chained values must have unambiguous
+/// boundaries when used as a compound key.
 struct Hash
 {
     // FNV-1a 64-bit constants (public for reuse).

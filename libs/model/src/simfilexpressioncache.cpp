@@ -1,4 +1,6 @@
 #include "mapget/model/simfilexpressioncache.h"
+#include "mapget/model/layerschema.h"
+#include "mapget/model/mapschema.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,20 +23,28 @@ public:
     tl::expected<simfil::SharedAST, simfil::Error> getOrCompile(
         std::string_view query,
         simfil::CompileOptions options,
-        LayerSchema const* schemaIdentity,
+        simfil::model_ptr<LayerSchema> const& schemaIdentity,
         std::string_view compileContext,
         CompileFunction const& compile)
     {
+        // Only MapSchema's verified content identity establishes graph equivalence across
+        // readers. Generic pools may be anonymous or carry arbitrary caller-supplied names.
+        auto const* rootOwner = dynamic_cast<MapSchema const*>(options.rootSchema.pool());
+        bool cacheable = !options.rootSchema || (rootOwner && rootOwner->finalized());
         CacheKey key{
             std::string(query),
             options.any,
             options.rewriteMode,
-            options.rootSchema,
-            reinterpret_cast<std::uintptr_t>(schemaIdentity),
+            options.rootSchema.id(),
+            std::pair(
+                options.rootSchema ? std::string(options.rootSchema.pool()->identity()) :
+                    schemaIdentity ? std::string(schemaIdentity->mapSchema()->schemaId()) :
+                                     std::string{},
+                schemaIdentity ? std::string(schemaIdentity->name()) : std::string{}),
             std::string(compileContext),
         };
 
-        {
+        if (cacheable) {
             std::shared_lock lock(mutex_);
             if (auto found = cache_.find(key); found != cache_.end()) {
                 ++hits_;
@@ -45,9 +55,11 @@ public:
         // Serializing misses prevents a large worker set from compiling the
         // same first-use expression concurrently. Hits remain shared-lock only.
         std::unique_lock lock(mutex_);
-        if (auto found = cache_.find(key); found != cache_.end()) {
-            ++hits_;
-            return found->second.result();
+        if (cacheable) {
+            if (auto found = cache_.find(key); found != cache_.end()) {
+                ++hits_;
+                return found->second.result();
+            }
         }
         ++misses_;
 
@@ -71,7 +83,7 @@ public:
             ++failedCompiles_;
         }
 
-        if (cache_.size() >= maxEntries_)
+        if (!cacheable || cache_.size() >= maxEntries_)
             return entry.result();
 
         auto inserted = cache_.emplace(std::move(key), std::move(entry));
@@ -112,6 +124,11 @@ public:
         for (auto const& [key, entry] : cache_) {
             result.logicalBytes += key.query_.size() + key.compileContext_.size();
             result.allocatedBytes += key.query_.capacity() + 1 + key.compileContext_.capacity() + 1;
+            for (auto const* identity : {&key.schemaIdentity_.first, &key.schemaIdentity_.second}) {
+                auto usage = stringMemoryUsage(*identity);
+                result.logicalBytes += usage.logicalBytes;
+                result.allocatedBytes += usage.allocatedBytes;
+            }
             if (entry.error_) {
                 result.logicalBytes += entry.error_->message.size();
                 result.allocatedBytes += entry.error_->message.capacity() + 1;
@@ -131,8 +148,10 @@ private:
         std::string query_;
         bool anyMode_ = true;
         simfil::RewriteMode rewriteMode_ = simfil::RewriteMode::None;
-        simfil::SchemaId rootSchema_ = simfil::NoSchemaId;
-        std::uintptr_t schemaIdentity_ = 0;
+        simfil::TypeId rootSchema_ = simfil::NoTypeId;
+        // LayerSchema is now a temporary ModelNode view. Pointer identity would alias unrelated
+        // layers and dangle; the exact artifact + layer name is stable across readers/reloads.
+        std::pair<std::string, std::string> schemaIdentity_;
         std::string compileContext_;
 
         bool operator<(CacheKey const& other) const
@@ -187,7 +206,7 @@ SimfilExpressionCache::~SimfilExpressionCache() = default;
 tl::expected<simfil::SharedAST, simfil::Error> SimfilExpressionCache::getOrCompile(
     std::string_view query,
     simfil::CompileOptions options,
-    LayerSchema const* schemaIdentity,
+    simfil::model_ptr<LayerSchema> const& schemaIdentity,
     std::string_view compileContext,
     CompileFunction const& compile)
 {
