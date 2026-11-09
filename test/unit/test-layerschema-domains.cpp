@@ -1576,6 +1576,66 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Generic enum field predicates do not style incompatible attribute values",
+    "[search-preparation]")
+{
+    auto graph = std::make_shared<MapSchema>();
+    auto layer = graph->newLayer("Road", LayerType::Features);
+    REQUIRE(layer->newFeature(testFeatureType("Road", "identifier")).id() != simfil::NoTypeId);
+    auto sign = graph->newScalarType(Kind::String);
+    sign.asEnum().addSymbol("SPEED_LIMIT");
+    sign.asEnum().addSymbol("ANIMALS");
+    auto other = graph->newScalarType(Kind::String);
+    other.asEnum().addSymbol("UNRELATED");
+    auto number = graph->schemaType(graph->primitive(Kind::Int));
+
+    // The enum suggestion is portable across these two physical field names.
+    // Many other attributes also have a `value` leaf, but their declarations
+    // prove that they cannot satisfy this positive string comparison.
+    for (auto const* name : {"WARNING_SIGN", "MOVABLE_WARNING_SIGN"}) {
+        auto attribute = graph->newAttribute(name);
+        attribute.asObject()
+            .addField(std::string_view(name) == "WARNING_SIGN" ? "warningSign" : "value", sign);
+        layer->bindAttribute(attribute, "Road", "rules", name);
+    }
+    for (int index = 0; index < 60; ++index) {
+        auto name = "UNRELATED_" + std::to_string(index);
+        auto attribute = graph->newAttribute(name);
+        attribute.asObject().addField("value", index % 2 ? other : number);
+        layer->bindAttribute(attribute, "Road", "rules", name);
+    }
+    graph->finalize();
+    auto suggestions = layer->enumSearchInterpretations(
+        "SPEED_LIMIT",
+        LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(suggestions.size() == 1);
+    auto const& query = suggestions.front().expression_;
+    CHECK(query == "(**.value == \"SPEED_LIMIT\") or (**.warningSign == \"SPEED_LIMIT\")");
+    auto prepared =
+        layer->searchInterpretations(query, LayerSchema::SearchQueryRequestedScope::Auto);
+    REQUIRE(prepared);
+    REQUIRE(prepared->size() == 1);
+    CHECK(prepared->front().scope_ == LayerSchema::SearchQueryConcreteScope::Attribute);
+    CHECK(prepared->front().attributeScopes_.size() == 2);
+    CHECK(prepared->front().query_ == query);
+    CHECK(prepared->front().expression_ == query);
+
+    // Discovery must not narrow the expression itself to these current owners.
+    // A free string on a later map is still allowed to carry the same label.
+    auto strings = std::make_shared<StringPool>("PortableStringPredicate");
+    auto model = std::make_shared<simfil::ModelPool>(strings);
+    auto data = model->newObject();
+    REQUIRE(data->addField("value", std::string_view("SPEED_LIMIT")));
+    auto env = makeEnvironment(strings);
+    auto ast = simfil::compile(*env, prepared->front().query_);
+    REQUIRE(ast);
+    auto values = simfil::eval(*env, **ast, *data, nullptr);
+    REQUIRE(values);
+    REQUIRE(values->size() == 1);
+    CHECK(values->front().as<simfil::ValueType::Bool>());
+}
+
+TEST_CASE(
     "Accepted enum expressions survive new schemas and recursive wrappers",
     "[search-preparation]")
 {

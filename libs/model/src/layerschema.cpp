@@ -449,6 +449,12 @@ tl::expected<FeatureQueryAnalysis, simfil::Error> analyzeFeatureQueryAst(
         std::optional<std::string>>>
         seenReferences;
     for (auto const& reference : references->paths) {
+        // A generic leaf such as `**.value == "SPEED_LIMIT"` also references
+        // numeric values and enums which cannot contain that label. They are
+        // not search/style owners. Simfil retains uncertain and negated cases;
+        // this evidence never narrows the portable expression sent to execution.
+        if (!reference.predicateCanMatch)
+            continue;
         auto fieldPath = schemaPathFieldNames(graph->dictionary(), reference.path);
         auto expressionPath = schemaPathExpressionSegments(graph->dictionary(), reference.path);
         if (!fieldPath || !expressionPath) {
