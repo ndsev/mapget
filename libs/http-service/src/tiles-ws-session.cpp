@@ -2057,7 +2057,22 @@ private:
     /** Send a status frame describing the current request statuses. */
     void queueStatusMessage(std::string message)
     {
-        sendControlMessage(TileLayerStream::MessageType::Status, buildStatusPayload(std::move(message)));
+        // Capture and send on the same loop: concurrent completion callbacks
+        // must not enqueue an older Open snapshot after a terminal snapshot.
+        drogon::app().getLoop()->queueInLoop(
+            [weak = weak_from_this(), message = std::move(message)]() mutable {
+                if (auto self = weak.lock()) {
+                    try {
+                        self->sendControlMessageOnLoop(
+                            TileLayerStream::MessageType::Status,
+                            self->buildStatusPayload(std::move(message)));
+                    }
+                    catch (std::exception const& e) {
+                        log().warn("WebSocket status serialization failed: {}", e.what());
+                        self->cancelNoStatus();
+                    }
+                }
+            });
     }
 
     /** Send a datasource-catalog invalidation frame for this interactive session. */

@@ -30,6 +30,7 @@
 #include <unistd.h>
 #endif
 
+#include <drogon/HttpAppFramework.h>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/WebSocketClient.h>
@@ -180,7 +181,7 @@ public:
         ++fillCounts_[tile->tileId()];
         started_.insert(tile->tileId());
         stateChanged_.notify_all();
-        stateChanged_.wait(lock, [this] { return released_; });
+        stateChanged_.wait(lock, [this, &tile] { return released_ || releasedTiles_.contains(tile->tileId()); });
     }
 
     /** Reject unsupported source-data requests. */
@@ -213,6 +214,16 @@ public:
         return found == fillCounts_.end() ? 0 : found->second;
     }
 
+    /** Release selected fills while keeping other requests in flight. */
+    void release(std::set<PartitionId> const& tileIds)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            releasedTiles_.insert(tileIds.begin(), tileIds.end());
+        }
+        stateChanged_.notify_all();
+    }
+
     /** Release every currently blocked datasource call. */
     void releaseAll()
     {
@@ -229,6 +240,7 @@ private:
     std::condition_variable stateChanged_;
     std::map<PartitionId, size_t> fillCounts_;
     std::set<PartitionId> started_;
+    std::set<PartitionId> releasedTiles_;
     bool released_ = false;
 };
 
@@ -490,6 +502,7 @@ public:
     {
         std::lock_guard lock(mutex_);
         lastStatus_.reset();
+        statusHistory_.clear();
         error_.clear();
     }
 
@@ -551,6 +564,14 @@ public:
             lock,
             timeout,
             [this] { return !error_.empty() || lastStatus_.has_value(); });
+    }
+
+    /** Observe every status frame, including an obsolete frame following completion. */
+    std::vector<nlohmann::json> waitForStatuses(size_t count, std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        cv_.wait_for(lock, timeout, [&] { return !error_.empty() || statusHistory_.size() >= count; });
+        return statusHistory_;
     }
 
     std::optional<nlohmann::json> lastStatus() const
@@ -621,8 +642,10 @@ private:
                 auto parsed = nlohmann::json::parse(payload);
                 {
                     std::lock_guard lock(mutex_);
-                    if (type == TileLayerStream::MessageType::Status)
+                    if (type == TileLayerStream::MessageType::Status) {
+                        statusHistory_.push_back(parsed);
                         lastStatus_ = std::move(parsed);
+                    }
                     else
                         lastActionControl_ = std::move(parsed);
                 }
@@ -678,6 +701,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
+    std::vector<nlohmann::json> statusHistory_;
     std::optional<nlohmann::json> lastActionControl_;
     std::string error_;
     std::mutex readerMutex_;
@@ -891,6 +915,91 @@ TEST_CASE(
         } while (!removed && std::chrono::steady_clock::now() < deadline);
         REQUIRE(removed);
     }
+}
+
+TEST_CASE("Interactive aggregate status is sampled when sent", "[HttpDataSource][interactive-status]")
+{
+    auto& service = test::httpService();
+    auto source = std::make_shared<BlockingInteractiveDataSource>("StatusFreshnessMap");
+    service.add(source);
+    auto releaseFills = [&service, &source](BlockingInteractiveDataSource* value) {
+        try {
+            value->releaseAll();
+            service.remove(source);
+        }
+        catch (...) {
+            // Preserve assertion failures; normal-path removal is checked below.
+        }
+    };
+    std::unique_ptr<BlockingInteractiveDataSource, decltype(releaseFills)> releaseOnExit(source.get(), releaseFills);
+    WsTilesClient client(service.port(), source->info().getLayer("BlockingLayer"));
+    REQUIRE(client.connect(true));
+
+    auto sendRequest = [&](uint64_t id, std::initializer_list<int32_t> tileIds) {
+        client.send(nlohmann::json{
+            {"requestId", id},
+            {"requests", {{{"mapId", "StatusFreshnessMap"}, {"layerId", "BlockingLayer"},
+                           {"tileIds", tileIds}, {"priorityTileIds", tileIds}}}}}.dump());
+    };
+    auto const tileA = TileId::fromValue(kHttpTileIdValue);
+    auto const tileB = TileId::fromValue(kSecondHttpTileIdValue);
+    auto const tileC = TileId::fromValue(kThirdHttpTileIdValue);
+    sendRequest(101, {kHttpTileIdValue, kSecondHttpTileIdValue});
+    REQUIRE(source->waitForStarted({tileA, tileB}, std::chrono::seconds(5)));
+    REQUIRE(client.waitForStatus(std::chrono::seconds(5)));
+    client.resetStatus();
+    sendRequest(102, {kSecondHttpTileIdValue, kThirdHttpTileIdValue});
+    REQUIRE(source->waitForStarted({tileC}, std::chrono::seconds(5)));
+    REQUIRE(client.waitForStatus(std::chrono::seconds(5)));
+    REQUIRE(client.error().empty());
+    auto const openStatus = client.lastStatus();
+    REQUIRE(openStatus.has_value());
+    REQUIRE(openStatus->at("requestId") == 102);
+    REQUIRE_FALSE(openStatus->at("allDone").get<bool>());
+    client.resetStatus();
+
+    // Hold the send loop, not the source workers. Destruction of releaseLoop
+    // also unblocks wait() on assertion unwind, before client teardown.
+    std::promise<void> releaseLoop;
+    auto entered = std::make_shared<std::promise<void>>();
+    auto enteredFuture = entered->get_future();
+    drogon::app().getLoop()->queueInLoop(
+        [entered, release = releaseLoop.get_future().share()] {
+            entered->set_value();
+            release.wait();
+        });
+    REQUIRE(enteredFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    auto waitForWorkers = [&](size_t count) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            // Unlike in-flight-tile-jobs, running includes completion callbacks.
+            auto stats = service.getStatistics(false, false);
+            if (stats["workers"]["running"] == count && stats["queued-service-tasks"] == 0)
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    source->release({tileA, tileB});
+    REQUIRE(waitForWorkers(1));
+    source->releaseAll();
+    REQUIRE(waitForWorkers(0));
+    releaseLoop.set_value();
+
+    // Both callbacks completed before any queued status could be sent. This
+    // tests send-time freshness, not the separate producer enqueue inversion.
+    auto statuses = client.waitForStatuses(2, std::chrono::seconds(5));
+    REQUIRE(client.error().empty());
+    REQUIRE(statuses.size() >= 2);
+    for (auto const& status : statuses) {
+        INFO(status.dump());
+        CHECK(status.at("requestId") == 102);
+        CHECK(status.at("allDone").get<bool>());
+    }
+    REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+    CHECK(client.receivedTileCount() == 2);
+    client.stop();
+    service.remove(source);
 }
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
