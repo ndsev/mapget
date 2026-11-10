@@ -2515,17 +2515,30 @@ void FeatureLayerFilterTilesRequest::notifyIncomingRelations(IncomingRelationCol
 
 void FeatureLayerFilterTilesRequest::setStatus(RequestStatus s)
 {
-    auto expected = RequestStatus::Open;
-    if (!status_.compare_exchange_strong(expected, s)) {
-        return;
+    {
+        // Pair publication with wait()'s predicate-to-sleep handoff. An atomic
+        // status alone cannot prevent a notification from arriving in that gap.
+        std::lock_guard lock(statusMutex_);
+        auto expected = RequestStatus::Open;
+        if (!status_.compare_exchange_strong(expected, s)) {
+            return;
+        }
     }
+    // Consumers may reenter wait(), cancellation or another terminal transition.
     notifyStatus();
 }
 
 void FeatureLayerFilterTilesRequest::notifyStatus()
 {
-    if (isDone() && onDone_) {
-        onDone_(status_);
+    try {
+        if (isDone() && onDone_) {
+            onDone_(status_);
+        }
+    }
+    catch (...) {
+        // The terminal state still won, even when its consumer throws.
+        statusConditionVariable_.notify_all();
+        throw;
     }
     statusConditionVariable_.notify_all();
 }

@@ -17,6 +17,7 @@ add_executable(test.mapget
   test-pointcloud-sampler.cpp
   test-incoming-relations.cpp
   test-filter-service.cpp
+  test-filter-request.cpp
   test-subsetlayer.cpp
   test-subset-schema.cpp
   test-featurelayer-filter.cpp

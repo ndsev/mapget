@@ -331,6 +331,7 @@ private:
  */
 class FeatureLayerFilterTilesRequest
 {
+    friend struct FilterRequestWaitTest;
     friend class Service;
     friend class HttpClient;
     friend class detail::FilterRequestExecution;
