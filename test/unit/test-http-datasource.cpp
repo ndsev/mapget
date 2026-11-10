@@ -20,7 +20,12 @@
 #include <thread>
 #include <tuple>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
 #endif
@@ -2309,14 +2314,27 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
     std::ifstream unchangedFile(readOnlyFile);
     REQUIRE(std::string(std::istreambuf_iterator<char>(unchangedFile), {}) == "unchanged");
 
-    // An overlong filename forces a filesystem error without relying on user
-    // privileges. Explicit cleanup must report it; destruction must not throw.
-    {
-        MountGuard failing{writablePrefix, readOnlyPrefix, tempDir / std::string(4096, 'x')};
-        CHECK_THROWS_AS(failing.cleanup(), fs::filesystem_error);
-    }
     updatedFile.close();
     unchangedFile.close();
+
+    // Force a real cleanup failure without changing permissions: a sharing
+    // violation on Windows, and an overlong filename on POSIX. Windows can treat
+    // malformed paths as "not found", which would not exercise the catch path.
+    {
+#ifdef _WIN32
+        auto failurePath = tempDir / "cleanup-locked.tmp";
+        auto handle = CreateFileW(
+            failurePath.c_str(), GENERIC_READ, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(handle != INVALID_HANDLE_VALUE);
+        auto closeHandle = [](void* value) { CloseHandle(value); };
+        std::unique_ptr<void, decltype(closeHandle)> lockedFile(handle, closeHandle);
+#else
+        auto failurePath = tempDir / std::string(4096, 'x');
+#endif
+        MountGuard failing{writablePrefix, readOnlyPrefix, failurePath};
+        CHECK_THROWS_AS(failing.cleanup(), fs::filesystem_error);
+    }
     guard.cleanup();
 }
 
