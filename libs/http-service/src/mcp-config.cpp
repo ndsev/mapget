@@ -16,6 +16,9 @@ namespace mapget
 
 void McpConfig::addOptions(CLI::App& serve)
 {
+    // Disabled product builds must not accept MCP from either CLI flags or YAML.
+    if constexpr (!MAPGET_WITH_MCP)
+        return;
     auto option = [&serve](auto const& name, auto& value, auto const& description)
     {
         return serve.add_option(name, value, description)->group("MCP");
@@ -187,6 +190,8 @@ void McpConfig::resolveDefaults(
 {
     if (mode == Mode::Off)
         return;
+    if constexpr (!MAPGET_WITH_MCP)
+        throw std::invalid_argument("MCP support is not included in this build.");
     if (catalogPath.empty() && !webRoot.empty())
         catalogPath = webRoot / "web-mcp-actions.json";
     if (!webRoot.empty())
@@ -266,6 +271,8 @@ void McpConfig::validate() const
     // Disabling MCP must also work when a YAML file retains hosted deployment settings.
     if (mode == Mode::Off)
         return;
+    if constexpr (!MAPGET_WITH_MCP)
+        throw std::invalid_argument("MCP support is not included in this build.");
     if (mode != Mode::Local && mode != Mode::OAuth)
         throw std::invalid_argument("MCP mode must be off, local or oauth.");
     static std::regex const

@@ -1,6 +1,8 @@
 #include "http-service-impl.h"
 
+#if MAPGET_WITH_MCP
 #include "mcp-server.h"
+#endif
 #include "tiles-ws-controller.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -26,9 +28,11 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
 
 HttpService::~HttpService()
 {
+#if MAPGET_WITH_MCP
     // Complete MCP callers while HTTP connections still exist, then tear down Drogon.
     if (impl_->mcp_)
         impl_->mcp_->stop();
+#endif
     // Stop Drogon before destroying the executor used by websocket sessions.
     stop();
 }
@@ -41,6 +45,7 @@ bool HttpService::enqueueInteractiveControlTask(std::function<void()> task)
 void HttpService::setup(drogon::HttpAppFramework& app)
 {
     detail::registerTilesWebSocketController(app, *this, impl_->mcp_, impl_->config_.proxyAuth);
+#if MAPGET_WITH_MCP
     if (impl_->mcp_) {
         impl_->mcp_->setup(app);
     }
@@ -58,6 +63,7 @@ void HttpService::setup(drogon::HttpAppFramework& app)
             },
             {drogon::Get});
     }
+#endif
 
     app.registerHandler(
         "/tiles",

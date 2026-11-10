@@ -1,8 +1,5 @@
 project(mapget-http-service CXX)
 
-set_source_files_properties(src/mcp-server.cpp PROPERTIES COMPILE_DEFINITIONS
-  "MAPGET_MCP_VERSION=\"${MAPGET_VERSION}\"")
-
 add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
   include/mapget/http-service/http-client.h
@@ -21,27 +18,7 @@ add_library(mapget-http-service STATIC
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp
-  src/mcp-action-catalog.h
-  src/mcp-action-catalog.cpp
-  src/mcp-auth.h
-  src/mcp-auth.cpp
   src/mcp-config.cpp
-  src/mcp-help.h
-  src/mcp-help.cpp
-  src/mcp-mapget-tools.h
-  src/mcp-mapget-tools.cpp
-  src/mcp-mapget-call.h
-  src/mcp-mapget-call.cpp
-  src/mcp-mapget-query.h
-  src/mcp-mapget-query.cpp
-  src/mcp-mapget-extraction.h
-  src/mcp-mapget-extraction.cpp
-  src/mcp-mapget-catalog.h
-  src/mcp-mapget-catalog.cpp
-  src/mcp-server.h
-  src/mcp-server.cpp
-  src/mcp-viewer-relay.h
-  src/mcp-viewer-relay.cpp
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
@@ -62,6 +39,23 @@ add_library(mapget-http-service STATIC
   src/tiles-ws-status.h
   src/tiles-ws-status.cpp
   src/cli.cpp)
+
+target_compile_definitions(mapget-http-service PUBLIC MAPGET_WITH_MCP=$<BOOL:${MAPGET_WITH_MCP}>)
+if(MAPGET_WITH_MCP)
+  set_source_files_properties(src/mcp-server.cpp PROPERTIES COMPILE_DEFINITIONS
+    "MAPGET_MCP_VERSION=\"${MAPGET_VERSION}\"")
+  target_sources(mapget-http-service PRIVATE
+    src/mcp-action-catalog.cpp
+    src/mcp-auth.cpp
+    src/mcp-help.cpp
+    src/mcp-mapget-tools.cpp
+    src/mcp-mapget-call.cpp
+    src/mcp-mapget-query.cpp
+    src/mcp-mapget-extraction.cpp
+    src/mcp-mapget-catalog.cpp
+    src/mcp-server.cpp
+    src/mcp-viewer-relay.cpp)
+endif()
 
 target_include_directories(mapget-http-service
   PUBLIC

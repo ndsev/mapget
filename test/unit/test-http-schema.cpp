@@ -1,5 +1,7 @@
 #include "test-http-service-fixture.h"
+#if MAPGET_WITH_MCP
 #include "../../libs/http-service/src/mcp-mapget-tools.h"
+#endif
 
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-datasource/detail/schema-response.h"
@@ -585,6 +587,7 @@ TEST_CASE(
     CHECK_FALSE(rest["items"][0].contains("expandArguments"));
     CHECK_FALSE(rest.contains("rootMatches"));
 
+#if MAPGET_WITH_MCP
     auto tools = std::make_shared<detail::McpMapgetTools>(
         fixture.service_,
         McpConfig{},
@@ -622,6 +625,7 @@ TEST_CASE(
     CHECK(mcp["discovery"] == rest["discovery"]);
     CHECK(mcp["complete"] == rest["complete"]);
     CHECK(mcp["reason"] == rest["reason"]);
+#endif
 
     parameters.back().second = "not-present";
     auto absent = Json::parse(fixture.get("/schema/inspect", parameters, headers)->body());

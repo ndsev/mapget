@@ -125,6 +125,17 @@ jobs:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
           path: build/bin/wheel/*.whl
 
+      # The published standalone wheel keeps MCP enabled. Reuse its native
+      # dependency build afterward to test product embedders that omit MCP.
+      - name: Test MCP-free embedding build
+        if: matrix.python-version == '3.14'
+        run: |
+          . ./venv/bin/activate
+          cmake -S . -B build -DMAPGET_WITH_MCP=OFF -DMAPGET_WITH_WHEEL=OFF
+          cmake --build build --target mapget test.mapget
+          build/bin/test.mapget '[mcp-build],[HttpDataSource],[DataSourceConfig]'
+          ctest --test-dir build -R '^test-mcp-build-cli$' --output-on-failure --no-tests=error
+
   build-manylinux-aarch64:
     needs: [determine-version]
     if: |

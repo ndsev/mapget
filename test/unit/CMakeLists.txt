@@ -4,12 +4,8 @@ add_executable(test.mapget
   test-main.cpp
   test-object-partitions.cpp
   test-model.cpp
-  test-mcp-actions.cpp
-  test-mcp-relay.cpp
-  test-mcp-auth.cpp
+  test-mcp-build.cpp
   test-datasource-auth.cpp
-  test-mcp-native.cpp
-  test-mcp-help.cpp
   test-featureidentity.cpp
   test-feature-id-index.cpp
   test-foreign-feature-id.cpp
@@ -29,7 +25,6 @@ add_executable(test.mapget
   test-mapschema-descriptor.cpp
   test-mapschema-compose.cpp
   test-http-schema.cpp
-  test-mcp-schema2.cpp
   test-layerschema-domains.cpp
   test-layer-schema-binding.cpp
   test-schema-composition.cpp
@@ -45,6 +40,16 @@ add_executable(test.mapget
   test-gridsource.cpp
   utility.cpp
   utility.h)
+
+if(MAPGET_WITH_MCP)
+  target_sources(test.mapget PRIVATE
+    test-mcp-actions.cpp
+    test-mcp-relay.cpp
+    test-mcp-auth.cpp
+    test-mcp-native.cpp
+    test-mcp-help.cpp
+    test-mcp-schema2.cpp)
+endif()
 
 add_executable(test.mapget.filelog
   test-file-logging.cpp)
@@ -114,3 +119,9 @@ include(Catch)
 include(CTest)
 catch_discover_tests(test.mapget)
 catch_discover_tests(test.mapget.filelog)
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME test-mcp-build-cli
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../integration/test-mcp-build-cli.py"
+    "$<TARGET_FILE:mapget>" "$<BOOL:${MAPGET_WITH_MCP}>")
+set_tests_properties(test-mcp-build-cli PROPERTIES TIMEOUT 60)

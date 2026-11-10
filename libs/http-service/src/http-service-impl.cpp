@@ -1,5 +1,7 @@
 #include "http-service-impl.h"
+#if MAPGET_WITH_MCP
 #include "mcp-server.h"
+#endif
 
 #include "mapget/log.h"
 #include "mapget/service/detail/allocator-memory.h"
@@ -23,6 +25,10 @@ constexpr size_t INTERACTIVE_CONTROL_THREAD_COUNT = 2;
 
 HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : self_(self), config_(config)
 {
+    // The C++ embedding API cannot bypass the same build restriction as the CLI.
+#if !MAPGET_WITH_MCP
+    config_.mcp.validate();
+#endif
     config_.proxyAuth.validate();
     AuthHeaderRegexMap normalizedCacheResetAlternatives;
     for (auto const& [header, pattern] : config_.cacheResetAuthHeaderAlternatives) {
@@ -47,6 +53,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
     }
 
     // Validate trust/catalog and establish borrowed collectors before maintenance threads start.
+#if MAPGET_WITH_MCP
     if (config_.mcp.mode != McpConfig::Mode::Off) {
         auto native = std::make_shared<detail::McpMapgetTools>(
             self_,
@@ -58,6 +65,7 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
             { return updateDatasourceConfiguration(model, revision); });
         mcp_ = std::make_shared<detail::McpServer>(config_.mcp, std::move(native), config_.proxyAuth);
     }
+#endif
 
     auto const allocator = detail::allocatorMemoryStatistics();
     if (allocator.is_object() && allocator.value("backend", "") == "jemalloc") {
@@ -84,8 +92,10 @@ HttpService::Impl::Impl(HttpService& self, const HttpServiceConfig& config) : se
 
 HttpService::Impl::~Impl()
 {
+#if MAPGET_WITH_MCP
     if (mcp_)
         mcp_->stop();
+#endif
     {
         std::lock_guard lock(interactiveControlMutex_);
         stopInteractiveControl_ = true;

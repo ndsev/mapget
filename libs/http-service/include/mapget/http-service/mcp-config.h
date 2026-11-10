@@ -82,14 +82,14 @@ struct McpConfig
     std::string expiryHeader;
     std::string permissionsHeader;
 
-    /** Bind individual CLI11 options; this object must outlive parsing/callbacks on serve. */
+    /** Bind CLI11 options when MCP is compiled in; this object must outlive parsing/callbacks. */
     void addOptions(CLI::App& serve);
 
     /** Derive local endpoint/allowlists from startup inputs; wildcard listeners advertise
      * localhost. */
     void resolveDefaults(std::string const& host, int port, std::filesystem::path const& webRoot);
 
-    /** Reject incomplete trust settings and invalid bounds before accepting connections. */
+    /** Reject unavailable MCP support, incomplete trust settings and invalid bounds. */
     void validate() const;
 };
 

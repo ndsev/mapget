@@ -5,6 +5,17 @@ Mapget exposes native data/query tools and a trusted browser-action catalog thro
 explicitly configured**. It does not create another datasource, tile worker
 pool, or browser session protocol.
 
+MCP is included in standalone builds by default. Embedders can configure
+`-DMAPGET_WITH_MCP=OFF` to omit the server, native tools, browser relay and bundled
+MCP help. Such builds register no MCP HTTP endpoints (including `/mcp/info`), expose
+no MCP CLI options, and reject MCP options in YAML. Setting a non-`Off`
+`HttpServiceConfig::mcp.mode` also fails instead of silently ignoring the request.
+Ordinary HTTP APIs and interactive tile streaming remain available.
+
+MapViewer sets this build option from its edition: MCP is available only in
+Member Edition. Standalone mapget keeps its default; the product restriction
+does not change the standalone API or wheel policy.
+
 The core browser tools are:
 
 | Tool | Purpose | Permission |

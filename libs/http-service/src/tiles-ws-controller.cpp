@@ -1,7 +1,9 @@
 #include "tiles-ws-controller.h"
 #include "bounded-json.h"
 
+#if MAPGET_WITH_MCP
 #include "mcp-server.h"
+#endif
 #include "tiles-ws-session.h"
 
 #include "mapget/log.h"
@@ -45,9 +47,11 @@ public:
             tilesWsRegisterForMetrics(session);
             conn->setContext(session);
             tilesWsRegisterSession(session);
+#if MAPGET_WITH_MCP
             if (auto mcp = mcp_.lock()) {
                 mcp->attach(tilesWsSessionClientId(session), req, conn);
             }
+#endif
         }
         catch (std::exception const& e) {
             // In particular, failed secure UUID generation must not escape Drogon's callback.
@@ -122,6 +126,7 @@ public:
             if (j.is_object() && j.contains("type") && j["type"].is_string() &&
                 j["type"].get_ref<std::string const&>().starts_with("mapget.actions."))
             {
+#if MAPGET_WITH_MCP
                 if (auto mcp = mcp_.lock()) {
                     mcp->receive(
                         tilesWsSessionClientId(session),
@@ -129,7 +134,9 @@ public:
                         message.size(),
                         conn);
                 }
-                else {
+                else
+#endif
+                {
                     conn->send(
                         tilesWsEncodeStreamMessage(
                             TileLayerStream::MessageType::ActionControl,
@@ -168,8 +175,10 @@ public:
     {
         tilesWsRecordConnectionClosed();
         if (auto session = conn->getContext<TilesWsSession>()) {
+#if MAPGET_WITH_MCP
             if (auto mcp = mcp_.lock())
                 mcp->disconnect(tilesWsSessionClientId(session));
+#endif
             tilesWsUnregisterSession(tilesWsSessionClientId(session));
             tilesWsCancel(session, "WebSocket connection closed.");
         }

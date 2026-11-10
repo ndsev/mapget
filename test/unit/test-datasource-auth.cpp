@@ -3,8 +3,10 @@
 #include "mapget/service/service.h"
 #include "mapget/http-service/proxy-auth.h"
 #include "../../libs/http-service/src/bounded-json.h"
+#if MAPGET_WITH_MCP
 #include "../../libs/http-service/src/mcp-auth.h"
 #include "mcp-test-issuer.h"
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -127,6 +129,7 @@ TEST_CASE("Proxy claim trust is explicit and bounded", "[datasource-auth]")
     CHECK_THROWS(detail::parseBoundedJson(std::string(1025, ' '), 1024, 16));
 }
 
+#if MAPGET_WITH_MCP
 TEST_CASE("MCP retains verified claims without granting datasource membership or tool roles", "[datasource-auth][mcp-auth]")
 {
     test::McpTestIssuer issuer;
@@ -152,6 +155,8 @@ TEST_CASE("MCP retains verified claims without granting datasource membership or
     claims["aud"] = "https://wrong.example/mcp";
     CHECK_FALSE(auth.bearer(issuer.token(claims), insufficient).datasourceAuthorization.claims);
 }
+
+#endif
 
 TEST_CASE("Datasource headers and claims are cumulative across catalog cache and locate", "[datasource-auth]")
 {

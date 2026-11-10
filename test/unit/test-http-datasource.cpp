@@ -554,6 +554,16 @@ public:
         return lastStatus_;
     }
 
+    std::optional<nlohmann::json> waitForActionControl(std::chrono::seconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        cv_.wait_for(
+            lock,
+            timeout,
+            [this] { return !error_.empty() || lastActionControl_.has_value(); });
+        return lastActionControl_;
+    }
+
     std::string error() const
     {
         std::lock_guard lock(mutex_);
@@ -596,7 +606,9 @@ private:
             return;
         }
 
-        if (type == TileLayerStream::MessageType::Status) {
+        if (type == TileLayerStream::MessageType::Status ||
+            type == TileLayerStream::MessageType::ActionControl)
+        {
             auto payload = std::string_view{
                 msg.data() + static_cast<std::ptrdiff_t>(headerBytes),
                 payloadSize};
@@ -604,7 +616,10 @@ private:
                 auto parsed = nlohmann::json::parse(payload);
                 {
                     std::lock_guard lock(mutex_);
-                    lastStatus_ = std::move(parsed);
+                    if (type == TileLayerStream::MessageType::Status)
+                        lastStatus_ = std::move(parsed);
+                    else
+                        lastActionControl_ = std::move(parsed);
                 }
                 cv_.notify_all();
             }
@@ -658,6 +673,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
+    std::optional<nlohmann::json> lastActionControl_;
     std::string error_;
     std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
@@ -1584,6 +1600,16 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(wsClient.connect(true));
 
                 auto conn = requireConnected(wsClient);
+
+                // MCP is off in this fixture, including builds where it is not compiled.
+                // Reject browser relay registration without breaking ordinary tile delivery.
+                conn->send(
+                    R"({"type":"mapget.actions.register"})",
+                    drogon::WebSocketMessageType::Text);
+                auto action = wsClient.waitForActionControl(std::chrono::seconds(5));
+                REQUIRE(action.has_value());
+                REQUIRE(action->at("error").at("code") == "not_available");
+                REQUIRE(conn->connected());
 
                 // Ping/Pong connection-health traffic is transport control,
                 // not an invalid tile request.
