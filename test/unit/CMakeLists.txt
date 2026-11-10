@@ -41,6 +41,10 @@ add_executable(test.mapget
   utility.cpp
   utility.h)
 
+if(WIN32)
+  target_link_libraries(test.mapget PRIVATE advapi32)
+endif()
+
 if(MAPGET_WITH_MCP)
   target_sources(test.mapget PRIVATE
     test-mcp-actions.cpp

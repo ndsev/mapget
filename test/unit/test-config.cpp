@@ -6,9 +6,16 @@
 #include <fstream>
 #include <future>
 #include <string>
+#include <system_error>
 #include <utility>
+#include <vector>
 #ifdef _WIN32
 #include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <sddl.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -25,6 +32,80 @@
 
 namespace fs = std::filesystem;
 using namespace mapget;
+
+TEST_CASE("Temporary config directories are private and exclusively owned", "[DataSourceConfig][temporary-directory]")
+{
+    auto root = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_private");
+    {
+        test::TemporaryDirectory directory(root);
+        REQUIRE(fs::is_directory(root));
+#ifdef _WIN32
+        DWORD bytes = 0;
+        GetFileSecurityW(root.c_str(), DACL_SECURITY_INFORMATION, nullptr, 0, &bytes);
+        REQUIRE(GetLastError() == ERROR_INSUFFICIENT_BUFFER);
+        std::vector<unsigned char> descriptor(bytes);
+        REQUIRE(GetFileSecurityW(
+            root.c_str(),
+            DACL_SECURITY_INFORMATION,
+            descriptor.data(),
+            bytes,
+            &bytes));
+        SECURITY_DESCRIPTOR_CONTROL control;
+        DWORD revision;
+        REQUIRE(GetSecurityDescriptorControl(descriptor.data(), &control, &revision));
+        CHECK((control & SE_DACL_PROTECTED) != 0);
+        BOOL present, defaulted;
+        PACL acl = nullptr;
+        REQUIRE(GetSecurityDescriptorDacl(descriptor.data(), &present, &acl, &defaulted));
+        REQUIRE(present);
+        REQUIRE(acl);
+        REQUIRE(acl->AceCount == 1);
+        void* entry = nullptr;
+        REQUIRE(GetAce(acl, 0, &entry));
+        auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(entry);
+        REQUIRE(ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE);
+        CHECK(ace->Mask == FILE_ALL_ACCESS);
+        CHECK(ace->Header.AceFlags == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE));
+        LPWSTR sid = nullptr;
+        REQUIRE(ConvertSidToStringSidW(&ace->SidStart, &sid));
+        auto ownerRights = std::wstring(sid) == L"S-1-3-4";
+        LocalFree(sid);
+        CHECK(ownerRights);
+#else
+        CHECK((fs::status(root).permissions() & fs::perms::all) == fs::perms::owner_all);
+#endif
+
+        auto sentinel = root / "sentinel";
+        std::ofstream(sentinel) << "must survive rejected adoption";
+        CHECK_THROWS_AS(test::TemporaryDirectory{root}, std::system_error);
+        CHECK_THROWS_AS(test::TemporaryDirectory{sentinel}, std::system_error);
+        CHECK(fs::is_regular_file(sentinel));
+        std::ifstream contents(sentinel);
+        std::string line;
+        std::getline(contents, line);
+        CHECK(line == "must survive rejected adoption");
+
+#ifndef _WIN32
+        // Symlink creation requires special privileges on Windows runners.
+        auto link = root / "link";
+        fs::create_directory_symlink(root, link);
+        CHECK_THROWS_AS(test::TemporaryDirectory{link}, std::system_error);
+        CHECK(fs::is_symlink(link));
+        CHECK(fs::exists(sentinel));
+#endif
+    }
+    CHECK_FALSE(fs::exists(root));
+
+    CHECK_THROWS_AS(
+        [&root]
+        {
+            test::TemporaryDirectory directory(root);
+            std::ofstream(root / "config.yaml") << "sources: []";
+            throw std::runtime_error("fixture construction failed");
+        }(),
+        std::runtime_error);
+    CHECK_FALSE(fs::exists(root));
+}
 
 struct TestDataSource : public DataSource
 {
@@ -194,7 +275,6 @@ public:
         : directory_(
               fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_reload"))
     {
-        fs::create_directories(directory_);
         auto& config = DataSourceConfigService::get();
         config.reset();
         config.registerDataSourceType(
@@ -215,14 +295,12 @@ public:
     {
         service.reset();
         DataSourceConfigService::get().reset();
-        std::error_code ignored;
-        fs::remove_all(directory_, ignored);
     }
 
     /** Publish exactly these bytes, optionally changing the config file path. */
     void load(std::string_view yaml, std::string const& filename = "config.yaml")
     {
-        auto path = directory_ / filename;
+        auto path = directory_.path() / filename;
         {
             std::ofstream file(path);
             file << yaml;
@@ -270,7 +348,7 @@ public:
     std::unique_ptr<Service> service;
 
 private:
-    fs::path directory_;
+    test::TemporaryDirectory directory_;
 };
 
 TEST_CASE(
@@ -749,7 +827,7 @@ TEST_CASE("Config JSON preserves empty container types in YAML", "[DataSourceCon
 TEST_CASE("Mapget Config", "[MapgetConfig]")
 {
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_config");
-    fs::create_directory(tempDir);
+    test::TemporaryDirectory directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
     SECTION("Bad Config")
@@ -788,7 +866,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     setLogLevel("trace", log());
 
     auto tempDir = fs::temp_directory_path() / test::generateTimestampedDirectoryName("mapget_test_ds_config");
-    fs::create_directory(tempDir);
+    test::TemporaryDirectory directory(tempDir);
     auto tempConfigPath = tempDir / "temp_config.yaml";
 
     log().info("Created temp directory at: {}", tempDir.string());
@@ -888,8 +966,7 @@ TEST_CASE("Datasource Config", "[DataSourceConfig]")
     waitForCondition([&service]() { return service.info().empty(); });
     REQUIRE(service.info().empty());
 
-    // Cleanup
-    fs::remove_all(tempDir);
+    // Join the watcher before the directory owner removes its inputs.
     DataSourceConfigService::get().end();
 }
 
