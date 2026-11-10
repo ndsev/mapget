@@ -2260,12 +2260,23 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
         std::string readOnlyPrefix;
         fs::path tempDir;
 
-        /** Removes process-global test mounts and their temporary files. */
-        ~MountGuard()
+        /** Explicit cleanup reports failures to the test on its normal exit path. */
+        void cleanup()
         {
             removeStaticMount(writablePrefix);
             removeStaticMount(readOnlyPrefix);
             fs::remove_all(tempDir);
+        }
+
+        /** Best-effort cleanup during unwinding must preserve the original test failure. */
+        ~MountGuard()
+        {
+            try {
+                cleanup();
+            }
+            catch (...) {
+                // Normal-path cleanup is checked explicitly below.
+            }
         }
     } guard{writablePrefix, readOnlyPrefix, tempDir};
     REQUIRE(ensureStaticMount(readOnlyPrefix, tempDir));
@@ -2297,6 +2308,16 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
 
     std::ifstream unchangedFile(readOnlyFile);
     REQUIRE(std::string(std::istreambuf_iterator<char>(unchangedFile), {}) == "unchanged");
+
+    // An overlong filename forces a filesystem error without relying on user
+    // privileges. Explicit cleanup must report it; destruction must not throw.
+    {
+        MountGuard failing{writablePrefix, readOnlyPrefix, tempDir / std::string(4096, 'x')};
+        CHECK_THROWS_AS(failing.cleanup(), fs::filesystem_error);
+    }
+    updatedFile.close();
+    unchangedFile.close();
+    guard.cleanup();
 }
 
 TEST_CASE("Startup root static mounts serve nested files", "[StaticMount]")
