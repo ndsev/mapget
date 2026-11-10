@@ -24,6 +24,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+// Drogon uses Winsock 2; prevent windows.h from importing legacy winsock.h first.
+#include <winsock2.h>
 #include <windows.h>
 #else
 #include <fcntl.h>
