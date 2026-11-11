@@ -206,6 +206,7 @@ public:
         else {
             tile->setTtl(errorTtl_);
             tile->setError("synthetic recoverable tile error");
+            tile->setErrorCode(503);
         }
     }
 
@@ -2534,15 +2535,46 @@ TEST_CASE(
     auto source = std::make_shared<ErrorReportingFilterDataSource>();
     service.add(source);
 
+    auto definition = filterDefinition();
+    std::optional<std::string> relationFilter;
+    SECTION("Feature and attribute styles") {}
+    SECTION("Relation styles")
+    {
+        relationFilter = "true";
+    }
+    SECTION("Inactive relation styles")
+    {
+        relationFilter = "false";
+    }
+    if (relationFilter) {
+        // Keep the relation after the ordinary channels: a failed source must
+        // preserve both channel identity and position throughout finalization.
+        definition.channels_.push_back(FeatureLayerFilterChannel{
+            .channelId_ = "relations",
+            .entryFilter_ = *relationFilter,
+            .scope_ = FeatureLayerFilterScope::Relation,
+            .relation_ = FeatureLayerStoredRelationOptions{},
+        });
+    }
+
     auto requestOutputs = [&]
     {
         auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             "FilterMap",
             "Road",
             std::vector<TileId>{firstTile(), secondTile()},
-            filterDefinition());
+            definition);
         std::mutex mutex;
         std::map<PartitionId, TileSubsetLayer::Ptr> results;
+        std::vector<std::string> requestErrors;
+        request->onStatus(
+            [&](nlohmann::json const& status)
+            {
+                if (status.contains("error")) {
+                    std::lock_guard lock(mutex);
+                    requestErrors.push_back(status.at("error").get<std::string>());
+                }
+            });
         request->onFilterResult(
             [&](TileSubsetLayer::Ptr layer)
             {
@@ -2552,17 +2584,21 @@ TEST_CASE(
         REQUIRE(service.request(request));
         request->wait();
         REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(requestErrors.empty());
         REQUIRE(results.size() == 2);
         return results;
     };
     auto results = requestOutputs();
     auto bad = results.at(firstTile());
     REQUIRE(bad->error() == "synthetic recoverable tile error");
+    REQUIRE(bad->errorCode() == 503);
+    REQUIRE(bad->size() == definition.channels_.size());
     REQUIRE(bad->ttl() == std::chrono::seconds(5));
     REQUIRE(bad->toServiceJson()["ttl"] == 5000);
     REQUIRE(bad->toServiceJson()["error"]["message"] == *bad->error());
     REQUIRE_FALSE(results.at(secondTile())->error());
     REQUIRE(results.at(secondTile())->localSourceFeatureCount() == 1);
+    REQUIRE(results.at(secondTile())->at(0)->featureEntryCount() == 1);
 
     // Inspection restrictions preserve the same failed value and expiry.
     auto inspection = std::make_shared<
@@ -2589,6 +2625,81 @@ TEST_CASE(
     REQUIRE_FALSE(recovered->error());
     REQUIRE(recovered->localSourceFeatureCount() == 1);
     REQUIRE_FALSE(recovered->ttl());
+}
+
+TEST_CASE(
+    "An errored point-group output retains healthy halo contributions",
+    "[feature-layer-filter][Service][point-group][failure][TTL]")
+{
+    auto const western = TileId::fromTileXY(10, 4, 4);
+    auto const eastern = western.eastNeighbour();
+    auto const boundary = western.northEastWgs84().first;
+    auto const latitude = western.centerWgs84().second;
+    auto source = std::make_shared<PointGroupDataSource>(
+        western,
+        eastern,
+        Point{boundary - 0.25, latitude, 0},
+        Point{boundary + 0.25, latitude, 0});
+    auto cache = std::make_shared<MemCache>(64);
+    Service service(cache, false);
+    service.add(source);
+
+    // The grid cell belongs to the eastern output. Its own source fails, but
+    // the western halo still contributes a valid point to that same cell.
+    auto info = source->info();
+    auto failed = std::make_shared<PartitionFeatureLayer>(
+        eastern,
+        info.stringPoolId_,
+        info.mapId_,
+        info.getLayer("Road"),
+        cache->getStringPool(info.stringPoolId_));
+    failed->setError("output source unavailable");
+    failed->setErrorCode(503);
+    failed->setTtl(std::chrono::seconds{5});
+    cache->putTileLayer(failed);
+
+    FeatureLayerFilterRequest definition{
+        .filterId_ = "failed-group-output",
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "merged",
+                    .entryFields_ = {"count($features.*)"},
+                    .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                    .geometryName_ = "merge",
+                    .group_ =
+                        FeatureLayerPointGridGroup{
+                            .origin_ = {boundary - 1.0, latitude - 1.0, -5.0},
+                            .cellSize_ = {2.0, 2.0, 10.0},
+                        },
+                },
+            },
+    };
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{eastern},
+        definition);
+    PartitionSubsetLayer::Ptr output;
+    request->onFilterResult([&](PartitionSubsetLayer::Ptr layer) { output = std::move(layer); });
+    REQUIRE(service.request(request));
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(output);
+    CHECK(output->error() == failed->error());
+    CHECK(output->errorCode() == failed->errorCode());
+    CHECK(output->timestamp() == failed->timestamp());
+    CHECK(output->ttl() == failed->ttl());
+    REQUIRE(output->size() == 1);
+    REQUIRE(output->at(0)->groupEntryCount() == 1);
+    output->at(0)->forEachGroupEntry(
+        [&](model_ptr<GroupEntry> const& group)
+        {
+            CHECK(group->memberFeatureIds()->size() == 1);
+            CHECK(group->values()->toJson() == nlohmann::json::array({nlohmann::json::array({1})}));
+            return true;
+        });
 }
 
 TEST_CASE(

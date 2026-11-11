@@ -430,6 +430,89 @@ TEST_CASE("Inactive filter gates preserve predicate and relation-pattern errors"
 }
 
 TEST_CASE(
+    "Error subsets retain channel definitions without evaluating partial source features",
+    "[feature-layer-filter][failure]")
+{
+    auto source = makeRelationSource();
+    source->setError("Datasource conversion failed after creating partial features");
+    source->setErrorCode(503);
+    source->setTtl(std::chrono::seconds{5});
+    source->setLegalInfo("Datasource attribution");
+    source->addWarning("Datasource warning");
+    source->setGlbAttachmentName("partial-conversion.glb");
+
+    FeatureLayerFilterRequest request{
+        .filterId_ = "failed-source",
+        .generation_ = 7,
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "features",
+                    .featureFields_ = {"typeId"},
+                    .geometryName_ = "centerline",
+                },
+                FeatureLayerFilterChannel{
+                    .channelId_ = "attributes",
+                    .scope_ = FeatureLayerFilterScope::Attribute,
+                    .entryFields_ = {"$name"},
+                },
+                FeatureLayerFilterChannel{
+                    .channelId_ = "relations",
+                    .scope_ = FeatureLayerFilterScope::Relation,
+                    .entryFields_ = {"$target.typeId"},
+                    .relation_ = FeatureLayerStoredRelationOptions{},
+                },
+                FeatureLayerFilterChannel{
+                    .channelId_ = "groups",
+                    .entryFields_ = {"count($features.*)"},
+                    .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                    .group_ =
+                        FeatureLayerPointGridGroup{
+                            .origin_ = {0, 0, 0},
+                            .cellSize_ = {1, 1, 1},
+                        },
+                },
+            },
+    };
+
+    auto result = request.filterSource(*source, true);
+    REQUIRE(result);
+    REQUIRE(result->layer_);
+    auto const& output = *result->layer_;
+    CHECK(output.error() == source->error());
+    CHECK(output.errorCode() == source->errorCode());
+    CHECK(output.timestamp() == source->timestamp());
+    CHECK(output.ttl() == source->ttl());
+    CHECK(output.legalInfo() == source->legalInfo());
+    CHECK(output.warnings() == source->warnings());
+    CHECK_FALSE(output.glbAttachmentName());
+    CHECK(output.localSourceFeatureCount() == source->size());
+    CHECK(result->relationDescriptors_.empty());
+    CHECK(result->pointGroupMembers_.empty());
+    REQUIRE(output.size() == request.channels_.size());
+    auto const scopes = std::array{Scope::Feature, Scope::Attribute, Scope::Relation, Scope::Group};
+    for (size_t index = 0; index < request.channels_.size(); ++index) {
+        auto channel = output.at(index);
+        auto const& definition = request.channels_[index];
+        CHECK(channel->channelId() == definition.channelId_);
+        CHECK(channel->scope() == scopes[index]);
+        CHECK(channel->featureFields() == definition.featureFields_);
+        CHECK(channel->entryFields() == definition.entryFields_);
+        CHECK(channel->geometryTypes() == definition.geometryTypes_);
+        CHECK(channel->geometryName() == definition.geometryName_);
+        CHECK(channel->entryCount() == 0);
+    }
+
+    // A failed halo contributes diagnostics and lifetime, but never partially
+    // converted features or relation targets to another output's finalization.
+    auto halo = request.filterSource(*source, false);
+    REQUIRE(halo);
+    CHECK_FALSE(halo->layer_);
+    CHECK(halo->relationDescriptors_.empty());
+    CHECK(halo->pointGroupMembers_.empty());
+}
+
+TEST_CASE(
     "SIMFIL expression cache compiles a concurrent first use once",
     "[feature-layer-filter][expression-cache]")
 {

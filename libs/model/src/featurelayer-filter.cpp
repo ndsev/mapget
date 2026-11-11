@@ -1794,28 +1794,6 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
         });
     }
 
-    // Errors are tile values with a finite lifetime, not failed filter requests.
-    // Do not evaluate a partially converted model; retain its diagnostic instead.
-    if (sourceLayer.error()) {
-        FeatureLayerFilterSourceResult result;
-        result.sourceFeatureCount_ = static_cast<uint32_t>(sourceLayer.size());
-        if (materializeOutput) {
-            result.layer_ = std::make_shared<PartitionSubsetLayer>(
-                sourceLayer.partitionId(),
-                sourceLayer.stringPoolId(),
-                sourceLayer.mapId(),
-                sourceLayer.layerInfo(),
-                sourceLayer.strings(),
-                request.filterId_,
-                request.generation_);
-            result.layer_->adoptSourceInfo(sourceLayer);
-            result.layer_->setError(sourceLayer.error());
-            result.layer_->setErrorCode(sourceLayer.errorCode());
-            result.layer_->addDependency(MapPartitionKey(sourceLayer), result.sourceFeatureCount_);
-        }
-        return result;
-    }
-
     SourceEvaluation evaluation(
         request,
         sourceLayer,
@@ -1823,6 +1801,16 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
         exactRoots,
         cancellationCheck,
         expressionCache);
+    evaluation.prepare();
+
+    // Error tiles keep their diagnostic and lifetime without evaluating a
+    // partially converted model. They still need the requested channels:
+    // relation completion checks their identity even with no matches, and a
+    // point-group output can receive healthy members from neighboring tiles.
+    if (sourceLayer.error()) {
+        return evaluation.finish();
+    }
+
     auto evaluator = ExpressionEvaluator::create(
         sourceLayer,
         request.bindings_,
@@ -1832,7 +1820,6 @@ FeatureLayerFilterRequest::SourceEvaluation::run(
         return tl::unexpected(evaluator.error());
     }
     evaluation.evaluator_ = std::move(*evaluator);
-    evaluation.prepare();
 
     // Cancellation stops scans at checkpoints and can leave collected candidates.
     // The service checks cancellation again before committing this partial result.
@@ -1854,10 +1841,14 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
             request_.generation_);
         resultLayer_->setGeometryAnchor(sourceLayer_.geometryAnchor());
         resultLayer_->adoptSourceInfo(sourceLayer_);
+        resultLayer_->setError(sourceLayer_.error());
+        resultLayer_->setErrorCode(sourceLayer_.errorCode());
         resultLayer_->addDependency(
             MapPartitionKey(sourceLayer_),
             static_cast<uint32_t>(sourceLayer_.size()));
-        if (auto const& attachmentName = sourceLayer_.glbAttachmentName()) {
+        if (auto const& attachmentName = sourceLayer_.glbAttachmentName();
+            attachmentName && !sourceLayer_.error())
+        {
             resultLayer_->setGlbAttachmentName(*attachmentName);
         }
     }
