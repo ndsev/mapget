@@ -82,6 +82,11 @@ Every datasource entry accepts these generic fields in addition to type-specific
 
 Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
+<!-- mcp:
+title: "Datasource header access restrictions"
+keywords: ["datasource permissions", "auth-header", "access denied", "source visibility", "proxy"]
+hint: "Header alternatives are ORed, not ANDed. Authenticate at a trusted proxy, strip client-supplied identity headers, and keep the backend private."
+-->
 ### Restricting access with `auth-header`
 
 <!-- --8<-- [start:restrict-access] -->
@@ -102,6 +107,18 @@ sources:
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
+Header names are case-insensitive and values must match the entire regular
+expression. Multiple entries are alternatives: matching **one** is sufficient.
+For identity-based access, the proxy must remove client-supplied copies and
+replace them with authenticated values; keep the backend listener private.
+A header gate alone does not authenticate its sender. Use `auth-claims` below
+when every configured identity requirement must match; both gates apply when
+both are configured.
+
+<!-- mcp:
+title: "Datasource claim access restrictions"
+keywords: ["datasource permissions", "auth-claims", "groups", "verified identity", "proxy", "access token"]
+-->
 ### Restricting access with `auth-claims`
 
 Use `auth-claims` for identity-based datasource permissions shared by browser,

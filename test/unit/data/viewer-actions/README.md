@@ -5,16 +5,21 @@ Snapshot of the coordinated erdblick working-tree contract (27 actions and
 
 `sha256:130434ea0efff9d05394cac2a25126e11bed16b8f9ffd299440a072679260d3e`
 
-- `web-mcp-actions.json`: erdblick `app/actions/generated/web-mcp-actions.json`.
+For a coordinated refresh from the current erdblick source layout, copy:
+
+- `web-mcp-actions.json`: erdblick `app/action/generated/web-mcp-actions.json`.
 - `viewer-action-relay.schema.json`: erdblick
-  `app/actions/generated/viewer-action-relay.schema.json`.
-- `fixtures.json`: erdblick `test/viewer-actions/fixtures.json`.
+  `app/action/generated/viewer-action-relay.schema.json`.
+- `fixtures.json`: erdblick `tests/fixtures/viewer-actions/fixtures.json`.
 
 Generate the two artifacts with erdblick's `npm run generate:viewer-actions`.
-The sources are `app/actions/viewer-action.contract.ts`,
-`app/actions/viewer-operation.contract.ts`, `app/actions/viewer-ui.contract.ts`,
-`app/actions/viewer-action-relay.contract.ts`, and
-`app/shared/app-state-channel.contract.ts`.
+Domain controllers declare actions and controls through `registerActions` and
+`registerControls`; `app/application-registration.ts` collects them. The generator
+uses that same registration through `tools/export-viewer-actions.ts`, rather than
+a separate centralized action-schema file. Relay messages remain defined in
+`app/action/viewer-action-relay.contract.ts`.
+Update the snapshot date, catalog ID and counts above when refreshing; the
+historical snapshot is not a claim about the current frontend inventory.
 
 Refresh these snapshots together after a coordinated contract change. Keeping
 them here lets standalone mapget CI test the same acceptance/rejection cases

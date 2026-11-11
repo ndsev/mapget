@@ -629,9 +629,12 @@ keywords: [schema discovery, query, feature type, attributes, filtering, cardina
 Start with `viewer_get_controls` and its active `view.layers` map/layer identities.
 Layer names are not feature types: a `Road` layer can contain `Road`, `Intersection`,
 and indirect attribute features. Use `mapget_list_sources` filtered to that layer
-for compact type names. `featureTypes` advertises identifier compositions, which
-can include types used only by references. Its `produced` flag distinguishes actual
-feature schema roots available for introspection in that layer. This inventory does not prove
+for compact type names. `featureTypes` lists only types produced by that layer;
+each entry's `produced` flag is always `true`. Focused discovery also includes
+their identifier compositions. Reference-only identities belong to the map-wide
+schema, not this layer inventory. Inspect a known reference-only identity with
+`mapget_query_schema` and `featureType`; its contract does not imply a producing
+layer or a data root. This inventory does not prove
 that a particular tile contains instances. If a type is absent from the current
 layer's roots, check other layers in the same map before concluding it is unavailable.
 Focused `mapId`/`sourceId` discovery includes ordered primary/secondary ID compositions
@@ -781,7 +784,9 @@ actual serialized size is checked before sending.
 These are cooperative guards, **not a hard sandbox**: datasource I/O, compilation, regex
 engines, custom functions and individual model accessors can contain non-preemptible work.
 A client timeout does not imply rollback of a config mutation. Do not retry uncertain writes
-without rereading the revision. No response-task continuation or paging snapshot is retained.
+without rereading the revision. There are no MCP protocol tasks. Feature-extraction
+cursors retain bounded scan checkpoints, including the active tile, as described
+below; they do not retain a whole-source snapshot.
 
 JSON values preserve zero, one or many expression results as arrays. Actual arrays remain
 nested arrays; objects remain objects. Non-JSON/lossy scalars use explicit tags:
