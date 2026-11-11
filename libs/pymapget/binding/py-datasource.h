@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mapget/http-datasource/datasource-server.h"
+#include "py-schema.h"
 
 #include <chrono>
 #include <pybind11/functional.h>
@@ -163,10 +164,11 @@ void bindDataSourceServer(py::module_& m)
         .value("SOURCE_DATA", LayerType::SourceData);
 
     py::class_<MapPartitionKey>(m, "MapPartitionKey", R"pbdoc(
-        Fully qualified tile address used by datasource, cache and locate APIs.
+        Fully qualified partition address used by datasource, cache and locate APIs.
 
-        A key contains the layer type, map id, layer id, and
-        ndslive.math.PackedTileId.
+        A key contains the layer type, map id, layer id, and a tagged PartitionId.
+        Tile partitions wrap ndslive.math.PackedTileId; object partitions retain
+        an unsigned 64-bit ID without spatial tile semantics.
     )pbdoc")
         .def(py::init<>(), "Construct an empty map tile key.")
         .def(
@@ -509,25 +511,46 @@ void bindDataSourceServer(py::module_& m)
     )pbdoc")
         .def(
             py::init(
-                [](py::dict const& dict)
+                [](py::dict const& dict, MapSchema::ConstPtr schema)
                 {
-                    // import json.dumps
+                    // Reuse Python's JSON conversion before native metadata validation.
                     py::module json_module = py::module::import("json");
                     py::function json_dumps = json_module.attr("dumps");
 
-                    // convert py::dict to JSON string
                     auto json_str = json_dumps(dict).cast<std::string>();
 
-                    // parse JSON string into nlohmann::json
                     nlohmann::json j = nlohmann::json::parse(json_str);
 
-                    // construct DataSource
-                    return std::make_unique<DataSourceServer>(DataSourceInfo::fromJson(j));
+                    SchemaResolveFun resolve;
+                    if (schema)
+                        resolve = [owner = schema](std::string_view id)
+                        {
+                            if (id != owner->schemaId())
+                                throw py::value_error(
+                                    "map_schema does not match info_dict schemaId");
+                            return owner;
+                        };
+                    auto info = DataSourceInfo::fromJson(j, resolve);
+                    if (schema) {
+                        // Legacy import still validates its declarations; an explicit owner
+                        // may replace it only when it identifies exactly the same contract.
+                        if (info.schemaId_ != schema->schemaId())
+                            throw py::value_error("map_schema does not match normalized metadata");
+                        info.setMapSchema(schema);
+                    }
+                    return std::make_unique<DataSourceServer>(std::move(info));
                 }),
             R"pbdoc(
-                Construct a DataSource with a DataSourceInfo metadata instance.
+                Construct a datasource from metadata and an optional exact MapSchema.
+
+                Existing featureTypes/featureModelSchema dictionaries normalize through
+                the native legacy adapter without changes. Canonical metadata contains
+                schemaId references instead: pass the matching finalized map_schema.
+                Wrong identity, missing layers, or incompatible layer kinds raise.
+                No constructor network I/O or per-tile schema reconstruction occurs.
         )pbdoc",
-            py::arg("info_dict"))
+            py::arg("info_dict"),
+            py::arg("map_schema") = nullptr)
         .def(
             "on_tile_feature_request",
             [](DataSourceServer& self, py::function callback) -> DataSourceServer&
@@ -544,7 +567,7 @@ void bindDataSourceServer(py::module_& m)
             Set the Callback which will be invoked when a `/tile`-request for a
             feature layer is received.
             The callback argument is a fresh PartitionFeatureLayer, which the callback must
-            fill according to the set PartitionFeatureLayer's layer info and tile id. If an
+            fill according to its layer metadata and tagged tile/object partition ID. If an
             error occurs while filling the tile, the callback can use
             PartitionFeatureLayer::setError(...) to signal the error downstream.
         )pbdoc")
@@ -564,7 +587,7 @@ void bindDataSourceServer(py::module_& m)
             Set the Callback which will be invoked when a `/tile`-request for a
             source-data layer is received.
             The callback argument is a fresh PartitionSourceDataLayer, which the callback must
-            fill according to the set PartitionSourceDataLayer's layer info and tile id. If an
+            fill according to its layer metadata and tagged tile/object partition ID. If an
             error occurs while filling the tile, the callback can use
             PartitionSourceDataLayer::setError(...) to signal the error downstream.
         )pbdoc")
@@ -670,9 +693,9 @@ void bindDataSourceServer(py::module_& m)
             &DataSourceServer::waitForSignal,
             py::call_guard<py::gil_scoped_release>(),
             R"pbdoc(
-            Blocks until SIGINT or SIGTERM is received, then shuts down the server.
-            Note: You can never run this function in parallel for multiple sources
-            within the same process!
+            Install process SIGINT/SIGTERM handlers and wait until the server stops.
+            Either signal requests shutdown; explicit stop() also ends the wait.
+            Only one HTTP server may run in the process.
         )pbdoc")
         .def(
             "port",
@@ -684,6 +707,14 @@ void bindDataSourceServer(py::module_& m)
             "info",
             [](DataSourceServer& self) { return datasourceJsonToPython(self.info().toJson()); },
             R"pbdoc(
-            Get the DataSourceInfo metadata which this instance was constructed with.
-        )pbdoc");
+            Return a detached canonical DataSourceInfo dictionary. This retains the
+            existing dictionary API, but emits mapFormat/schemaId references rather
+            than legacy inline featureTypes/featureModelSchema. Use map_schema for
+            native type definitions; pass it alongside this dictionary to reconstruct
+            a datasource without losing its identity contract.
+        )pbdoc")
+        .def_property_readonly(
+            "map_schema",
+            [](DataSourceServer& self) { return self.info().mapSchema_; },
+            "Return the shared immutable MapSchema, retaining its native owner.");
 }

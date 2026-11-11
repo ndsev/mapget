@@ -8,7 +8,7 @@ using namespace mapget;
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
-// Class to encapsulate all logic of our data source
+// Serve a synthetic Way layer over HTTP using the catalog loaded from a local JSON file.
 class MyRemoteDataSource
 {
 private:
@@ -17,7 +17,7 @@ private:
     int servedTiles = 0;
 
 public:
-    // The constructor
+    // Load the catalog and register the fill callback; run() starts the HTTP listener.
     MyRemoteDataSource(const std::string& jsonFilename, int port)
         : ds(loadDataSourceInfoFromJson(jsonFilename)), port(port)
     {
@@ -29,6 +29,7 @@ public:
             });
     }
 
+    // Append demonstration geometry/attributes and record how often this callback has run.
     void fill(TileFeatureLayer::Ptr const& tile)
     {
         // Add some ID parts that are shared by all features in the tile.
@@ -60,7 +61,7 @@ public:
         tile->setInfo("servedTiles", ++servedTiles);
     }
 
-    // The function to load the DataSourceInfo from a JSON file
+    // Read a catalog relative to the working directory; stream/JSON/catalog errors propagate.
     static DataSourceInfo loadDataSourceInfoFromJson(const std::string& filename)
     {
         std::string full_path = fs::current_path().string() + "/" + filename;
@@ -71,7 +72,7 @@ public:
         return DataSourceInfo::fromJson(j);
     }
 
-    // The function to start the server
+    // Listen on all interfaces and wait for a termination signal; port zero selects an available port.
     void run()
     {
         ds.go("0.0.0.0", port);

@@ -60,7 +60,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {RelationDirection::Reverse, "reverse"},
     })
 
-/** One complete source tile consulted while producing an output subset. */
+/** One complete source partition consulted while producing an output subset. */
 struct TileSubsetDependency
 {
     MapPartitionKey sourceTileKey_;
@@ -79,6 +79,16 @@ struct FilterIssue
     uint64_t occurrenceCount_ = 1;
 
     bool operator==(FilterIssue const&) const = default;
+};
+
+/** Failure of one projected expression. Its result slot remains an empty sequence. */
+struct ProjectedValueError
+{
+    uint32_t expressionIndex_ = 0;
+    std::string stage_;
+    std::string message_;
+
+    bool operator==(ProjectedValueError const&) const = default;
 };
 
 /** Transport identity readable immediately after the ordinary PartitionLayer bytes. */
@@ -138,6 +148,7 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     FilterTrace() = delete;
 
 private:
@@ -152,16 +163,18 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(12);
+        MODEL_COLUMN_TYPE(16);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
     };
 
     [[nodiscard]] model_ptr<FeatureId> featureId() const;
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
 protected:
@@ -182,6 +195,7 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     FeatureEntry() = delete;
 
 private:
@@ -196,21 +210,26 @@ public:
 
     /** Sentinel used when an attribute candidate has no source-array index. */
     static constexpr uint32_t InvalidAttributeIndex = std::numeric_limits<uint32_t>::max();
+
     /** Sentinel used when geometry has no semantic transition split point. */
     static constexpr uint32_t InvalidTransitionPivotIndex = std::numeric_limits<uint32_t>::max();
+
     /** Semantic validity geometry representation retained by the subset entry. */
     using GeometryDescriptionType = ValidityData::GeometryDescriptionType;
+
     /** Connected endpoint of a feature participating in a transition. */
     using TransitionEnd = ValidityData::TransitionEnd;
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(52);
+        MODEL_COLUMN_TYPE(60);
 
         simfil::ModelNodeAddress featureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress hostValues_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress hostValueErrors_{};
+        simfil::ModelNodeAddress valueErrors_{};
         simfil::ModelNodeAddress attributeLayer_{};
         simfil::ModelNodeAddress attributeName_{};
         simfil::ModelNodeAddress transitionFromFeatureId_{};
@@ -228,24 +247,33 @@ public:
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> hostValues() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> hostValueErrors() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] std::optional<std::string> attributeLayer() const;
     [[nodiscard]] std::optional<std::string> attributeName() const;
     [[nodiscard]] std::optional<uint32_t> attributeIndex() const;
     [[nodiscard]] bool hasValidity() const;
     [[nodiscard]] uint32_t validityIndex() const;
     [[nodiscard]] uint32_t validityCount() const;
+
     /** Return the semantic kind represented by the materialized geometry. */
     [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
+
     /** Return whether this entry carries complete feature-transition metadata. */
     [[nodiscard]] bool isFeatureTransition() const;
+
     /** Return the incoming feature ID for a semantic transition, if present. */
     [[nodiscard]] model_ptr<FeatureId> transitionFromFeatureId() const;
+
     /** Return the outgoing feature ID for a semantic transition, if present. */
     [[nodiscard]] model_ptr<FeatureId> transitionToFeatureId() const;
+
     /** Return the connected endpoint on the incoming transition feature. */
     [[nodiscard]] std::optional<TransitionEnd> transitionFromConnectedEnd() const;
+
     /** Return the connected endpoint on the outgoing transition feature. */
     [[nodiscard]] std::optional<TransitionEnd> transitionToConnectedEnd() const;
+
     /** Return the line-point index separating incoming and outgoing geometry. */
     [[nodiscard]] std::optional<uint32_t> transitionPivotIndex() const;
     [[nodiscard]] nlohmann::json toJson() const override;
@@ -268,6 +296,7 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     AttributeValidityEntry() = delete;
 
 private:
@@ -282,7 +311,7 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(36);
+        MODEL_COLUMN_TYPE(40);
 
         simfil::ModelNodeAddress relationId_{};
         simfil::ModelNodeAddress name_{};
@@ -292,6 +321,7 @@ public:
         simfil::ModelNodeAddress sourceGeometry_{};
         simfil::ModelNodeAddress targetGeometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
         RelationDirection direction_ = RelationDirection::Forward;
         bool twoway_ = false;
     };
@@ -306,6 +336,7 @@ public:
     [[nodiscard]] model_ptr<GeometryCollection> sourceGeometry() const;
     [[nodiscard]] model_ptr<GeometryCollection> targetGeometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
 protected:
@@ -326,6 +357,7 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     RelationEntry() = delete;
 
 private:
@@ -340,12 +372,13 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(20);
+        MODEL_COLUMN_TYPE(24);
 
         simfil::ModelNodeAddress groupKey_{};
         simfil::ModelNodeAddress representativeFeatureId_{};
         simfil::ModelNodeAddress geometry_{};
         simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
         simfil::ModelNodeAddress memberFeatureIds_{};
     };
 
@@ -353,6 +386,7 @@ public:
     [[nodiscard]] model_ptr<FeatureId> representativeFeatureId() const;
     [[nodiscard]] model_ptr<GeometryCollection> geometry() const;
     [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
     [[nodiscard]] model_ptr<Array> memberFeatureIds() const;
     [[nodiscard]] nlohmann::json toJson() const override;
 
@@ -374,13 +408,20 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     GroupEntry() = delete;
 
 private:
     Data* data_ = nullptr;
 };
 
-/** One ordered result schema and its typed aggregate entry arrays. */
+/**
+ * One ordered projection schema and its typed entry arrays. Each values/hostValues
+ * slot is an array containing one expression's result sequence, including an empty
+ * array for no result. Entry factories enforce the channel scope and projection
+ * counts, then append the new entry to this channel. All supplied nodes must belong
+ * to the same subset model; cross-model nodes must be cloned before insertion.
+ */
 class TileSubsetChannel : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
 {
 public:
@@ -419,12 +460,16 @@ public:
     [[nodiscard]] size_t attributeValidityEntryCount() const;
     [[nodiscard]] size_t relationEntryCount() const;
     [[nodiscard]] size_t groupEntryCount() const;
+
+    /** Count terminal rows for scope(); relation-supporting feature rows are excluded. */
     [[nodiscard]] size_t entryCount() const;
 
     model_ptr<FeatureEntry> newFeatureEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
+
     /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
@@ -446,7 +491,9 @@ public:
         AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
             ValidityData::Start,
         uint32_t transitionPivotIndex =
-            AttributeValidityEntry::InvalidTransitionPivotIndex);
+            AttributeValidityEntry::InvalidTransitionPivotIndex,
+        std::span<ProjectedValueError const> hostValueErrors = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
@@ -457,13 +504,15 @@ public:
         model_ptr<FeatureEntry> const& target,
         model_ptr<GeometryCollection> const& sourceGeometry,
         model_ptr<GeometryCollection> const& targetGeometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<GroupEntry> newGroupEntry(
         simfil::ModelNode::Ptr const& groupKey,
         model_ptr<FeatureId> const& representativeFeatureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values,
-        std::span<model_ptr<FeatureId> const> memberFeatureIds);
+        std::span<model_ptr<FeatureId> const> memberFeatureIds,
+        std::span<ProjectedValueError const> valueErrors = {});
 
     bool forEachFeatureEntry(
         std::function<bool(model_ptr<FeatureEntry> const&)> const& callback) const;
@@ -494,6 +543,7 @@ public:
         simfil::ModelConstPtr pool,
         simfil::ModelNodeAddress address,
         simfil::detail::mp_key key);
+
     TileSubsetChannel() = delete;
 
 private:
@@ -501,11 +551,14 @@ private:
 };
 
 /**
- * Immutable-on-publication server-evaluated subset for one output tile.
+ * Immutable-on-publication server-evaluated subset for one output partition.
  *
  * During request execution one single writer may construct this value. Channel
  * roots are the only public root enumeration; all typed entries remain in
  * layer-owned columns and are reached through their channel aggregate arrays.
+ * Entry factories on this layer allocate rows without attaching them to a channel;
+ * use the corresponding TileSubsetChannel factories to publish terminal rows.
+ * Supplied IDs, geometries and projected result arrays must be owned by this model.
  */
 class PartitionSubsetLayer : public PartitionFeatureModelLayerBase
 {
@@ -538,10 +591,12 @@ public:
     PartitionSubsetLayer(
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
-        StringPoolResolveFun const& stringPoolGetter);
+        StringPoolResolveFun const& stringPoolGetter,
+        SchemaResolveFun const& schemas = {});
 
     ~PartitionSubsetLayer() override;
 
+    /** Decode only the routing identity; bytesRead is an offset from the start of input. */
     [[nodiscard]] static FilterIdentity readFilterIdentity(
         std::vector<uint8_t> const& input,
         LayerInfoResolveFun const& layerInfoResolveFun,
@@ -556,7 +611,10 @@ public:
     [[nodiscard]] std::string const& filterId() const;
     [[nodiscard]] uint64_t generation() const;
 
+    /** Copy timestamp, TTL, info, legal text and warnings; preserve this subset's identity. */
     void adoptSourceInfo(PartitionFeatureLayer const& source);
+
+    /** Sort and deduplicate source keys; conflicting counts for one key throw. */
     void setDependencies(std::vector<TileSubsetDependency> dependencies);
     void addDependency(MapPartitionKey sourceTileKey, uint32_t sourceFeatureCount);
     [[nodiscard]] std::vector<TileSubsetDependency> const& dependencies() const;
@@ -574,8 +632,8 @@ public:
     void setGlbAttachmentName(std::optional<std::string> name);
     [[nodiscard]] std::optional<std::string> const& glbAttachmentName() const;
 
-    [[nodiscard]] simfil::ModelNode::Ptr materializeValue(simfil::Value const& value);
-
+    /** Create a unique nonempty channel ID and publish it as a root; null geometryName is wildcard.
+     */
     model_ptr<TileSubsetChannel> newChannel(
         std::string_view channelId,
         Scope scope,
@@ -586,7 +644,9 @@ public:
     model_ptr<FeatureEntry> newFeatureEntry(
         model_ptr<FeatureId> const& featureId,
         model_ptr<GeometryCollection> const& geometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
+
     /** Add one attribute candidate, retaining semantic transition metadata when supplied. */
     model_ptr<AttributeValidityEntry> newAttributeValidityEntry(
         model_ptr<FeatureId> const& featureId,
@@ -608,7 +668,9 @@ public:
         AttributeValidityEntry::TransitionEnd transitionToConnectedEnd =
             ValidityData::Start,
         uint32_t transitionPivotIndex =
-            AttributeValidityEntry::InvalidTransitionPivotIndex);
+            AttributeValidityEntry::InvalidTransitionPivotIndex,
+        std::span<ProjectedValueError const> hostValueErrors = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<RelationEntry> newRelationEntry(
         std::string_view relationId,
         std::string_view name,
@@ -619,18 +681,16 @@ public:
         model_ptr<FeatureEntry> const& target,
         model_ptr<GeometryCollection> const& sourceGeometry,
         model_ptr<GeometryCollection> const& targetGeometry,
-        std::span<simfil::ModelNode::Ptr const> values = {});
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
     model_ptr<GroupEntry> newGroupEntry(
         simfil::ModelNode::Ptr const& groupKey,
         model_ptr<FeatureId> const& representativeFeatureId,
         model_ptr<GeometryCollection> const& geometry,
         std::span<simfil::ModelNode::Ptr const> values,
-        std::span<model_ptr<FeatureId> const> memberFeatureIds);
+        std::span<model_ptr<FeatureId> const> memberFeatureIds,
+        std::span<ProjectedValueError const> valueErrors = {});
 
-    model_ptr<FeatureId> newFeatureId(
-        std::string_view const& typeId,
-        KeyValueViewPairs const& featureIdParts,
-        std::optional<std::string_view> externalMapId = std::nullopt) override;
     model_ptr<GeometryCollection> newGeometryCollection(
         size_t initialCapacity = 2,
         bool fixedSize = false) override;
@@ -694,7 +754,12 @@ private:
 
     [[nodiscard]] model_ptr<Array> newValueArray(
         std::span<simfil::ModelNode::Ptr const> values);
+    [[nodiscard]] model_ptr<Array> newValueErrors(
+        std::span<ProjectedValueError const> errors, size_t expressionCount);
+    [[nodiscard]] std::vector<ProjectedValueError> readValueErrors(
+        simfil::ModelNodeAddress address) const;
     [[nodiscard]] model_ptr<Array> newStringArray(std::span<std::string const> values);
+
     /** Reuse one immutable empty array for every empty projected row and schema. */
     [[nodiscard]] model_ptr<Array> sharedEmptyArray();
     [[nodiscard]] static std::string nodeString(simfil::ModelNode::Ptr const& node);

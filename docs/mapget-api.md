@@ -1,10 +1,27 @@
 # HTTP / WebSocket API Guide
 
-Mapget protocol 5 exposes complete source partitions to trusted clients and
+Mapget protocol 6 exposes complete source partitions to trusted clients and
 server-evaluated `TileSubsetLayer` values to interactive renderers. There is no
 staged loading, backend feature LOD, `/search`, or
 `TileSearchResultLayer`. Search, styling, selection, and relation
 visualization all use `/filter`.
+
+The opt-in [MCP API](mapget-mcp.md) exposes `POST /mcp`, `GET /mcp/info`,
+OAuth resource metadata, native data/schema/query/diagnostics tools, and browser
+actions over the existing interactive WebSocket. Native tools work without an
+open browser; partition extraction reuses service scheduling and authorization.
+MCP is disabled unless `--mcp local` or `--mcp oauth` is supplied (or
+equivalent `mapget.serve.mcp` YAML / `HttpServiceConfig::mcp` settings).
+
+Datasource access requires a matching `auth-header` alternative, when configured,
+AND every `auth-claims` requirement. HTTP/WebSocket claims come only from an
+explicitly trusted authenticating proxy; an arbitrary claims header or bearer
+token on an ordinary REST route does not establish identity. This applies to
+catalog/schema discovery, tiles, filtering, locate, object discovery and
+attachments, including cached and indirect requests. See
+[configuration](mapget-config.md#restricting-access-with-auth-claims) for the trust setup.
+Global `/status` and `/status-data` remain global diagnostics; configuration
+endpoints retain their separate administrative policy.
 
 ## Base URL and stream formats
 
@@ -15,6 +32,13 @@ support:
 - `application/jsonl`: one JSON value per line.
 - a top-level `responseType` of `binary`, `jsonl`, or `json`; `json` is an
   alias for JSON Lines.
+
+Binary producers and consumers must use the same major/minor stream version.
+The current format, 6.3.0, changes static dictionary IDs to include schema enum
+`rawValue` and field-multiplicity metadata; readers reject older streams before interpreting their
+payload fields. Rebuild and deploy native servers, binary datasource clients
+and browser WASM together. Its schema artifacts use MapSchema codec 7 and
+SchemaPool codec 4, which likewise reject older encodings.
 
 `/filter` JSON Lines interleaves status records with payload records. Select
 payloads by `type: "PartitionSubsetLayer"`; do not assume the first line is a
@@ -159,11 +183,17 @@ endpoint: `{ "layerId": "Road", "tileId": 536870912 }` returns one discovery
 result directly, without `requests`/`responses` wrappers. This is the
 service-to-datasource protocol, not the client-facing API above.
 
+<!-- mcp:
+title: "Datasource discovery contract"
+keywords: ["sources", "initialization", "not ready", "failed source", "layer catalog"]
+hint: "This is the HTTP contract. Native MCP source discovery exposes a compact projection; query coverage and schema separately."
+-->
 ## `GET /sources`
 
 `/sources` returns the datasource catalog as a JSON array. Ready entries
-contain `sourceId`, `stringPoolId`, `mapId`, layer metadata, feature ID
-compositions, feature-model schemas, coverage, and supported zoom levels.
+contain `sourceId`, `stringPoolId`, `mapId`, `mapFormat`, `schemaId`, small layer
+metadata, coverage, and supported zoom levels. Feature types, ID compositions,
+and feature-model schemas live in the separately retrieved schema artifact.
 `stringPoolId` is the serialized string namespace; it is not datasource
 routing identity.
 
@@ -174,14 +204,198 @@ know the catalog entry.
 
 By default the endpoint waits for the current datasource reload. Use
 `?blocking=false` to receive initializing and failed catalog placeholders.
+Unchanged ready sources remain ready during a reload and retain their
+`stringPoolId`; only new or replaced instances need initialization. A catalog
+revision change does not itself imply a dictionary change. Clients must still
+reset dictionary-dependent data when a source's actual `stringPoolId` changes.
 Catalog entries include:
 
 - `status`: `initializing`, `ready`, or `failed`;
-- `statusMessage` and optional `progress`;
+- `statusMessage`, optional `progress`, and `retrying` (initialization recovery);
 - `configIndex` and configured datasource `type`.
 
 Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
-`"sources-<revision>"`. `If-None-Match` may produce `304 Not Modified`.
+`"sources-<revision>-<visible-source-digest>"`. Validators include the authorized
+source IDs, so a changed identity cannot reuse a broader catalog at the same
+revision. Responses are `Cache-Control: private, no-cache`; `If-None-Match` may
+produce `304 Not Modified` only for the same visible catalog.
+
+Both 200 and 304 responses include `X-Mapget-Sources-Config-Status` (`ok` or
+`error`). A rejected configuration leaves the last accepted catalog available;
+`X-Mapget-Sources-Config-Message` carries an ASCII, single-line explanation capped
+at 1024 bytes. The detailed server log retains the original message. Unchanged
+invalid input does not keep advancing the catalog revision. Restoring valid
+input clears this status. An unavailable datasource type is instead a terminal
+failed row in an otherwise accepted configuration, with `retrying: false`.
+
+## `GET /schema`
+
+Resolve a ready source's exact immutable schema before constructing or parsing
+its feature/source/subset partitions:
+
+```http
+GET /schema?sourceId=datasource-0&schemaId=<percent-encoded-schemaId>
+Accept: application/octet-stream
+```
+
+Both parameters are required, nonempty, and at most 4096 bytes each. Use the
+`sourceId` and `schemaId` from the same catalog entry. `mapFormat` describes the
+source format but is **not** a lookup key or a substitute for `schemaId`;
+two providers with the same format can have different projected contracts.
+The request never chooses a schema by a caller-supplied format description.
+
+Successful responses contain the binary `MapSchema` artifact, not JSON Schema
+or a tile stream. It includes its versioned envelope, exact identity, private
+schema dictionary, and native model columns. Readers validate the complete
+artifact and expected identity before installing it. The current transport
+accepts artifacts up to 64 MiB. This dictionary is independent of the
+datasource's streamed `StringPool`.
+The size check applies to the encoded artifact; it does not impose an allocator
+budget on schema construction or the transient encoding buffers.
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Complete binary artifact for the current authorized source binding. |
+| `304` | Authorized binding exists and `If-None-Match` matches. No body. |
+| `400` | Missing, empty, or oversized selector. |
+| `404` | Source is absent, not ready, unauthorized, removed, or bound to another token. |
+| `503` | Bounded work queue is full or shutting down; retry later. |
+| `500` | Artifact serialization failed. |
+
+An artifact-digest ETag supports `If-None-Match`, including weak validators,
+validator lists, and `*`. Responses use `Cache-Control: private, no-cache,
+no-transform` and `Vary: *`: immutable bytes do not grant source access. Every
+request, **including a conditional request or an encoded-cache hit**, checks
+source authorization and the current exact token. Unknown and unauthorized
+bindings return the same `404` without an ETag. A source removed or rebound
+while encoding is rechecked before publication. Re-fetch the catalog after a
+stale binding; do not reinterpret old numeric type IDs under a new schema.
+
+Encoding runs outside the HTTP event loop and catalog locks on the bounded
+service worker pool. The HTTP representation cache retains at most its most
+recent encoded artifact; response streams share those bytes without full-body
+copies. Active transmissions remain valid after cache eviction.
+
+`/status-data` includes the public endpoint's encoded buffers under
+`memory.transport.schema-artifacts`: `allocated-bytes` counts shared allocations
+once across the cache and active responses, `retained-cache-capacity-bytes` is
+the cache-only subset, and `max-artifact-bytes` advertises the codec limit.
+These allocations contribute once to known ownership. Decoded graph storage
+remains part of service metadata accounting, not this transport subtotal.
+
+### Remote datasource boundary
+
+`DataSourceServer` exposes `GET /schema?schemaId=...` for its one initialized
+datasource. This is the trusted remote/process protocol, not the public
+source-authorization endpoint; secure that listener at the deployment boundary.
+`GET /info` advertises only the small metadata and artifact reference. The
+datasource server encodes off its I/O loop with one lazy worker and at most
+32 admitted schema requests. Its conditional/cache/binary behavior matches
+the public endpoint.
+
+`RemoteDataSource` and `HttpClient` resolve the advertised artifact during
+initialization, before exposing usable metadata. An authorized conditional
+binding check precedes reuse of the shared decoded-content cache; concurrent
+misses coalesce by exact identity and failures remain retryable. Model metadata
+constructors and binary layer readers never perform network I/O. Legacy inline
+`featureTypes` and `featureModelSchema` inputs still normalize into a local
+`MapSchema`, but canonical catalogs no longer emit those redundant fields.
+
+Schema requests use a 30-second network timeout, as does `RemoteDataSource`'s
+initial `/info` request. `HttpClient`'s initial `/sources` request does not set a
+network timeout or expose initialization cancellation. `RemoteDataSource` checks
+initialization cancellation around network requests and during shared schema
+waits; a cancelled waiter exits without cancelling a loader still used by another
+source. A synchronous network request already in progress may wait until its timeout.
+The current HTTP client buffers the response before
+the 64 MiB decoder check, so this is not yet a pre-buffer network byte limit.
+
+`HttpClient::getSchema(sourceId, schemaId)` fetches/revalidates the exact artifact.
+`HttpClient::sourceCatalog()` returns initialized catalog dictionaries retaining
+their real source IDs, including add-ons sharing a map ID. `sources()` retains
+its typed C++ return value. Installed schema owners are supplied to the binary
+reader for cross-layer projected values; unknown identities fail explicitly.
+
+## `GET /schemas` and `GET /schema/inspect`
+
+`/schemas` returns `{ "schemas": [...] }`: one row per exact currently authorized
+artifact, with `mapSchemaId`, descriptive `mapFormat`, layer roots, produced
+feature roots, cached graph statistics, and authorized `consumers`. A consumer's
+`role` distinguishes the published effective graph from a provider's native
+contract; composed consumers also list their constituent identities/formats.
+`ownerInstances` and `retainedBytes` count distinct in-memory owners, even if
+independent owners have equal content identities. These capacities are not RSS.
+Retired graphs are weakly observed for aggregate memory accounting, not retained
+or exposed as an authorization-free historical catalog.
+
+`statistics.counts.physicalTypes` and `queryContexts` separate stored value
+definitions from generated query contexts; `types` is their total consumption
+of the shared ID namespace, whose maximum is `statistics.limits.typeId`.
+Layer and feature roots use numeric `typeId` and report `open` and
+`reachabilityComplete`. A layer's presentation `category` is `Features`,
+`SourceData`, or `Metadata`; the last category is explicitly a heuristic for
+SourceData layer names beginning with `Metadata-`, not another transport type.
+
+`/schema/inspect?mapSchemaId=<exact-artifact>&typeId=<numeric-type>` returns
+one native descriptor's metadata and `fields`, `elements`, `alternatives` links.
+Children carry `$ref` type IDs rather than recursively expanded graphs, so
+shared and cyclic types are safe to explore. Field links retain edge-specific
+`required` and `role` metadata, plus shallow native `descriptor` facts (`kind`,
+`typename`, `nullable`) for useful labels without fetching descendants. Native
+`enumCount`, `namedValueCount` and up to three `namedValueNames` distinguish
+symbolic values from numeric alternatives without copying large value tables
+onto every edge. Expanding the type returns its complete value metadata.
+Numeric previews retain `numericDomain` bounds, unit, encoding and conversion
+metadata, with at most two `ordinaryRanges` and their full `ordinaryRangeCount`.
+The UI labels these as raw ranges and shows scale/offset separately; it does not
+reinterpret them as converted display values. Exact large integers remain lossless.
+Opening a produced feature root also returns its
+`featureTypes` contracts: ID compositions, production status and source-owned
+forward relation declarations with explicit completeness/locality. An absent
+relation inventory is not an assertion of no possible relations.
+Add `layerId=<layer>&find=<name>` to search descendants of the selected `typeId`
+instead of opening its descriptor. This uses the same `LayerSchema::find`
+implementation as MCP `mapget_query_schema(find=...)`: case, spaces, underscores
+and hyphens are ignored; field names, producer type names, enum symbols and named
+constants are ranked together. Lookup-only context edges are not traversed.
+The result contains `items`, `complete`, `reason`, and `discovery`, plus the exact
+artifact/layer/root identity. Items include `typeId`, kind/type, representative
+path segments and matching symbol previews; a type can occur on more paths
+than the response lists. Search returns at most 32 types and is bounded to
+100,000 work units, two seconds and one MiB. Partial scans or omitted matches
+are explicitly marked; an empty partial response does not establish absence.
+Use a narrower root or search term rather than treating partial results as a
+complete inventory. The `find` term is limited to 128 bytes.
+
+The status page's **Schemas** tab uses these endpoints. The overview includes
+subsystem name/version pairs and can be filtered by format, module, version or
+consumer. **Explore** opens a focused view with a Back button and a bookmarkable
+`#schemas/<artifact>[/<layer>/<root>]` fragment, hiding the overview and monitoring
+graph while exploring. A searchable layer/type navigator
+selects one root at a time. It starts with **Features**; **Raw Source Data** and
+**Metadata** are separate category choices. Open/partial contracts are explicit.
+The inventory and artifact details separate physical types, query contexts and
+remaining type-ID capacity. Equal format labels may have different layer
+inventories, so navigation always retains the exact artifact identity.
+**Find in root** runs the shared descendant search;
+**Filter immediate members** only filters that expanded node's visible children
+and does not fetch descendants. Descriptors, identifier compositions, relations,
+units and named values appear as structured facts/tables, not JSON blocks.
+Named values retain optional physical `rawValue` ordinals separately from their
+logical values. Nullable types get a compact label; real alternatives remain
+individually navigable even when their labels happen to match.
+Ordinary polling never traverses every schema type or loads map partitions.
+Type IDs must always be interpreted within the exact artifact returned by the
+inventory.
+
+Both endpoints check datasource authorization. Removed, inaccessible or stale
+artifacts return 404; malformed selectors return 400. An inventory changing during
+collection returns 409; retry the snapshot rather than combining generations.
+Inventory traversal has a 16,384-step/two-second budget; non-search type inspection is bounded to
+16,384 metadata nodes and a one-MiB response, returning 413 with guidance for a
+focused MCP query rather than silently omitting information. Responses are
+`Cache-Control: no-store`. Binary `/schema` remains the source-bound installation
+API; a format description is not an authorization token.
 
 ## `POST /tiles`
 
@@ -305,15 +519,38 @@ All filters and fields are schema-compiled in their actual context.
 `entryFilter`; `rewrite: false` does not disable ordinary schema compilation.
 Relation channels require `rewrite: false`.
 
+Prepared-search channels may include `schemaId` with the exact artifact identity used during client-side interpretation. The service checks it against the selected datasource before requesting any tiles. A mismatch rejects the request with a preparation-required diagnostic. These channels carry explicit predicates and scope with `rewrite: false`; the server compiles that meaning without selecting an alternative interpretation.
+
+
 SIMFIL truthiness is used: zero results, `false`, `null`, and undefined are
-false; every other successfully evaluated value is true. A projection with no
-result becomes null. If an expression yields several values, the first is
-used. Candidate-local evaluation failures reject that candidate and are
-aggregated into structured channel issues instead of aborting the viewport.
+false; every other successfully evaluated value is true. Candidate-local
+filter failures reject that candidate and are aggregated into structured
+channel issues instead of aborting the viewport.
+
+Since binary protocol 5.3, `values` and `hostValues` contain **one array per
+requested expression**, preserving every result in evaluation order. Examples:
+`[]` is no result; `[null]` is one null; `[{"name":"Road"}]` is one object;
+`[[1,2]]` is one array-valued result; `[1,2]` is two scalar results. These are
+individual expression slots, so a complete two-expression `values` might be
+`[[42], [{"name":"Road"}]]`. Compound values are copied into the subset's
+model, not stringified or retained as pointers into a source tile. Native
+undefined is distinct from null; its JSON representation is `{"_undefined":true}`.
+
+A failed projection slot is empty and has a corresponding `valueErrors` or
+`hostValueErrors` record with `expressionIndex` (zero-based), `stage`
+(`compilation`, `evaluation`, or `materialization`) and `message`. Aggregate
+channel issues remain available. No partial sequence is published as success
+when a budget or materialization error occurs. Source-owned string pools are
+never extended by projection; an object field name absent from the destination
+dictionary is an explicit materialization failure.
 
 `bindings` accepts null, boolean, signed integer, finite floating-point, and
 string values. Bindings are available as SIMFIL constants and overlay fields.
 
+<!-- mcp:
+title: "Filter attribute contexts"
+keywords: ["attribute scope", "validity", "feature scope", "attributeIndex", "validityIndex"]
+-->
 ### Attribute contexts
 
 Attribute rows expose the attribute as their root and add:
@@ -328,6 +565,10 @@ The explicit validity bit distinguishes an attribute with no validity from the
 first validity of an attribute which has one. Effective validity geometry is
 copied into the returned `AttributeValidityEntry`.
 
+<!-- mcp:
+title: "Filter geometry selection"
+keywords: ["geometry selector", "semantic geometry", "boundary", "centerline", "validity geometry"]
+-->
 ### Geometry selectors
 
 `geometryName` is either a concrete semantic name such as `centerline`, or
@@ -536,9 +777,19 @@ update.
 
 Server control messages are binary VTLV frames:
 
-- `RequestContext`: JSON with `requestId`, `clientId`, and catalog revision;
+- `RequestContext`: JSON with `requestId`, opaque UUIDv4 `clientId`, and catalog revision;
 - `Status`: per-request state and final `allDone`;
-- `SourceCatalogChange`: catalog revision/progress notifications.
+- `SourceCatalogChange`: catalog revision/progress notifications;
+- `ActionControl` (type 9): UTF-8 JSON for the separately versioned browser-action
+  relay. This control type is not a tile request or a tile payload.
+
+Since protocol 5.3, `clientId` is a cryptographically random, canonical lowercase
+UUIDv4 string. It stays unchanged for the lifetime of its WebSocket connection;
+reconnect creates a new ID. The server announces it in an initial `RequestContext`
+with `requestId: 0`, without waiting for a tile request. Treat it as opaque
+everywhere, including diagnostics.
+Numeric IDs are no longer accepted. If handshake/session state is lost, the server
+closes the connection instead of reconstructing it with empty authentication headers.
 
 Per-partition load-state records use tagged `partition` identity, for tiles
 as well as objects. Do not assume that a control record's identity is a numeric
@@ -551,15 +802,26 @@ It does not change `POST /tiles` semantics.
 
 Query parameters:
 
-- `clientId`: required ID from `RequestContext`;
+- `clientId`: required UUID string from `RequestContext`;
 - `waitMs`: long-poll timeout, up to 30 seconds;
 - `maxBytes`: pre-compression batch budget, capped at 64 MiB;
 - `compress=1`: allow gzip when `Accept-Encoding` also permits it.
 
 Responses are `200 application/octet-stream`, `204` on timeout, or `410` when
-the session has gone away. `/tiles/next` remains a deployment-compatibility
-alias.
+the session has gone away. A missing or malformed UUID returns `400`.
+`/tiles/next` remains a deployment-compatibility alias with identical validation.
+All payload responses, including errors, use `Cache-Control: no-store`.
 
+Payload pulls do not yet check authenticated session ownership: knowing a live
+UUID permits draining its queued data. Random IDs prevent practical guessing, not
+leakage. Do not publish IDs in status pages or log them in proxy/access logs; use
+HTTPS remotely. Disconnect invalidates the ID. This accepted limitation does not
+replace the authenticated same-owner checks required for MCP actions.
+
+<!-- mcp:
+title: "Feature lookup and locate"
+keywords: ["locate", "feature ID", "secondary identity", "canonical ID", "feature reference"]
+-->
 ## `POST /locate`
 
 `/locate` resolves secondary or canonical IDs:
@@ -575,12 +837,20 @@ alias.
     {
       "mapId": "Tropico",
       "featureId": "Road.545554572.1001"
+    },
+    {
+      "mapId": "TargetMap",
+      "typeId": "Road",
+      "id": {"tileId": 33587669, "roadId": 42}
     }
   ]
 }
 ```
 
 Requests may also restrict lookup with `layerId` and a tagged `partition`.
+Unauthorized sources are excluded before invoking datasource locate and again
+before loading candidate partitions. An inaccessible target returns no matches,
+including when another caller has already warmed its cache.
 The response contains a parallel `responses` array. Each resolved result
 includes `partitionKey`, tagged `partition`, `layerId`, and
 `canonicalFeatureId`. Tile results additionally retain the legacy `tileId`
@@ -596,9 +866,13 @@ For example, an object result's identity fields are:
 }
 ```
 
-Canonical input
-is resolved against the ID compositions
-advertised by the layer before datasource dispatch. Datasources only plan
+Canonical strings and named parts are resolved against the target layer's ID
+compositions before datasource dispatch. The named `id` form is the same object
+exported for foreign feature references; it requires `mapId` and `typeId` and
+must not also contain `featureId`. Named parts are reordered by the matching
+composition; missing required parts, unknown parts, and incompatible values do
+not resolve. Only layers producing the requested type are considered, not layers
+which merely declare its identity for references. Datasources only plan
 candidate partitions and portable selectors; mapget loads candidates through its
 normal cache/coalescing path and returns concrete primary feature identities.
 Discovery is not a general feature-to-object index: object locate still needs
@@ -614,10 +888,44 @@ full-tile expression for every candidate feature.
 ## `GET /location`
 
 `/location?name=munich&limit=10` searches the configured place-name database.
-Results contain `name`, WGS84 `lonLat`, and an `aabb`. The endpoint returns
-`503` when no location database is available. Native deployments and the
-Python wheel bundle the default GeoNames database beside their mapget binary;
-`mapget serve --location-db` can select a different SQLite database.
+The response remains an array of matches with a stable provider-qualified `id`,
+display `name`, WGS84 `[longitude, latitude]` `lonLat`, `source`, `countryCode`,
+optional `population`, and `aabb: [[west, south], [longitudeExtent, latitudeExtent]]`.
+The limit defaults to 10 and is capped at 50 and `--location-max-limit`.
+Names shorter than two bytes return no matches; names over 200 bytes are rejected.
+This is place lookup, **not** `/locate` (map feature-reference resolution).
+
+Use `/location?id=wof:85633111` to resolve one exact place ID, including its
+boundary when available. The response is still an array, with zero or one result.
+`name` and `id` are mutually exclusive; there is no geometry toggle.
+Malformed/missing IDs return an empty array. Name search never reads boundary coordinates.
+
+| Field | Meaning |
+| --- | --- |
+| `placeType` | WOF category, e.g. `country`, `region` (state/province), `locality` |
+| `geometryAvailable` | Whether this prepared database retains an actual boundary |
+| `geometry` | Optional GeoJSON `Polygon`/`MultiPolygon`, including holes/islands; returned by ID only |
+| `attribution` | `name`, `url`, `licenseUrl`; display the credit and distribute the artifact's embedded notices |
+
+An extent is not a polygon. Point-only places never receive fabricated boundaries.
+A dateline-crossing extent has a positive eastward longitude span even when its
+east edge is west of its west edge. The representative `lonLat` need not be the
+bounding-box center. Geometry is quantized to NDS integer coordinates; ingestion
+repairs invalid areas and removes collapsed rings/components. Optional simplification
+preserves individual feature topology, not shared administrative edges. Preparation
+parameters, source notices and repair statistics live in dataset metadata, not per-place JSON.
+
+The endpoint returns `400` for contradictory/invalid options, `413` for a boundary
+over the packed-byte, decoder-allocation or vertex budget, and `503` when the
+database or worker capacity is unavailable. Lookup/decoding runs on service
+workers, not the HTTP event loop. Defaults are 16 MiB packed input, 32 MiB decoder
+allocations and one million decoded vertices; no partial polygon is returned.
+
+Configure a prepared plazs format-1 artifact with `mapget serve --location-db`, or
+bundle it as `mapget-places.sqlite` next to the binary/module. Raw WOF exports,
+GeoNames and the former JSON-boundary database are not accepted. See
+[offline gazetteer preparation](mapget-location.md). No runtime network geocoder,
+SpatiaLite extension, Python or GIS library is required.
 
 ## `GET /status`, `GET /status-data`, and `POST /status-data/cache-report`
 
@@ -697,7 +1005,7 @@ exact map ID. The JSON request body is:
 The endpoint is disabled by default. It is available only when mapget starts
 with `--allow-cache-reset` and at least one
 `--cache-reset-auth-header HEADER=REGEX` gate. A request must satisfy that global gate and the target
-map's ordinary datasource `auth-header` gate. Header names are matched without
+map's ordinary datasource `auth-header` and `auth-claims` gates. Header names are matched without
 case sensitivity, values use full regular-expression matching, and multiple
 configured alternatives are ORed.
 
@@ -754,6 +1062,80 @@ include `Cache-Control: private, no-store`.
 
 Binary tile headers and JSONL responses preserve nonfatal `warnings: string[]` independently of `error`. A tile with warnings and no error is usable. Feature-restricted responses, addon enrichment and filtered outputs preserve relevant warnings, including warnings from dependencies that yielded no matching entries. Nonlocal filter warnings identify their source partition. Source-data service JSON uses a `SourceData` envelope with the raw roots under `data`; the in-process source-data `toJson()` API remains an array.
 
-Fatal tile values are cached for at most `mapget.serve.error-tile-ttl` seconds (default five), using ordinary `timestamp` and `ttl` metadata. Service JSON envelopes expose both too (`timestamp` in Unix microseconds, `ttl` in milliseconds). Filtered outputs propagate their dependencies' errors and earliest expiry; healthy outputs still complete normally. Successful empty source tile/object payloads are similarly bounded by `mapget.serve.empty-tile-ttl` (default five seconds). Empty filter/inspection matches inherit their source lifetimes rather than receiving this cap independently. Consumers renew only still-retained, expired values. A failed tile must not suppress unrelated new viewport coverage. Invalid filter definitions and request-level failures remain request errors, not expiring tile values. Stateless requests terminate with their diagnostics; the server does not keep them open through an outage.
+Fatal tile values are cached for at most `mapget.serve.error-tile-ttl` seconds (default five), using ordinary `timestamp` and `ttl` metadata. Service JSON envelopes expose both too (`timestamp` in Unix microseconds, `ttl` in milliseconds). Filtered outputs propagate their dependencies' errors and earliest expiry; healthy outputs still complete normally. Successful empty source tile/object payloads are similarly bounded by `mapget.serve.empty-tile-ttl` (default one hour). Per-source `error-tile-ttl` and `empty-tile-ttl` override these globals. Zero disables expiry for that outcome, overriding positive producer TTLs; positive policies preserve shorter producer lifetimes. Zero does not prevent eviction or manual invalidation, and another contributor can still expire a whole add-on composition. Empty filter/inspection matches inherit their source lifetimes rather than receiving this cap independently. Consumers renew only still-retained, expired values. A failed tile must not suppress unrelated new viewport coverage. Invalid filter definitions and request-level failures remain request errors, not expiring tile values. Stateless requests terminate with their diagnostics; the server does not keep them open through an outage.
 
 Catalog snapshots and source-change deltas expose a `retrying` boolean for datasource **initialization**. It stays true while a failed constructor is waiting or attempting recovery, then clears on success or terminal failure. The lifecycle status remains `failed` until ready. Constructor retry policy and browser transport reconnection are independent of runtime tile expiry.
+
+
+### Explicit point-cloud visualization channels
+
+Layer metadata may publish optional `defaultVisible: false` for alternative
+representations which should start hidden. Clients retain saved user visibility
+in preference to this default; omission preserves their existing defaults.
+
+A feature-scope, point-only filter channel may set `pointCloudMaxPoints` to an
+unsigned 32-bit integer. A positive value limits each candidate feature's
+matching point geometries together. Objects within the quota retain every point,
+including duplicates. Larger objects retain exactly the requested number of
+original records, spaced evenly through source order, including both endpoints
+when the quota exceeds one. Quotas are independent across features and channels. Feature membership and projected expressions are
+evaluated on the source model before selection. Grouping and relation channels
+cannot use this option.
+
+Omitting the field preserves ordinary filtering. Zero explicitly requests exact
+backend geometry. The field participates in subscription identity, so changing
+it starts a new filter generation. When a positive-quota channel materializes
+candidate features, result info includes `PointCloud/SourceRecords`,
+`PointCloud/DeliveredRecords` and `PointCloud/Representation`. Counts include
+repeated channel instances. The representation is `visualization/proportional-v1`.
+This visualization option does not change the
+canonical feature model or make an explicitly approximate source layer exact.
+
+### Deferred incoming inspection
+
+`POST /filter` supports `relation.traversal: "incoming"` for relation families derived
+from the provider's forward feature-model declarations; no incoming opt-in is required. It is an inspection operation: regular
+outgoing relation filters retain their existing behavior. Interactive incoming traversal
+is rejected.
+
+```json
+{
+  "channels": [{"channelId": "incoming", "scope": "relation", "relation": {"traversal": "incoming"}}],
+  "requests": [{"mapId": "Map", "layerId": "RoadSurface", "partitions": [{"kind": "tile", "id": 545379780}],
+    "roots": [{"partition": {"kind": "tile", "id": 545379780}, "featureId": "RoadSurface.545379780.101"}]}]
+}
+```
+
+The envelope contains one layer request, with at most 16 exact roots and 16 partitions.
+The service discovers authorized providers in the same map and **same tagged partition**,
+including configured composite contributions. It uses schema declarations to restrict
+both provider layers and relation names. Secondary IDs may use the normal locate selectors
+against the already loaded target snapshot; this never schedules another partition load.
+Recursion, two-way merging, filters, projections, geometry selection and point grouping
+are unsupported in this mode.
+
+The response sends ordinary feature snapshots, then typed incoming manifests, terminal
+filter status, and EndOfStream. The binary stream uses message type **10** for the manifest;
+JSONL sends the same manifest object as a line. Its `type` is `mapget.incoming.relations`
+and `version` is `2`. Each manifest identifies `target`, `featureId`, required `snapshots`,
+and `relations` containing the original `source` partition key, source `featureId`,
+`relationIndex`, `name`, and resolved `targetFeatureId`. Relations remain source-owned.
+`scope` lists admitted provider partition keys, including providers that returned no
+matches. `status` is `no-possible-family`, `complete`, `partial`, or `unsupported-scope`.
+The convenience `complete` flag is true for the first two states, strictly within
+that scope. `issues` explains missing declarations, incompatible identity/partition
+contracts, provider errors or limits. Unknown inventories are not evidence that
+there are no incoming relations. Different tile levels or partition kinds are not
+implicitly routed. Optional `expiresAtMs` includes empty provider dependencies.
+
+Limits are 64 provider/snapshot keys, 4096 associations per target, 64 MiB retained models,
+and 64 MiB snapshot output. Limiting source snapshots yields a consistent partial result;
+an unavailable or oversized selected target fails the request. Catalog replacement invalidates
+the response. Clients must require every promised snapshot, validate exact target ownership,
+and observe successful termination before publishing the section. Cancellation aborts child
+requests through the existing scheduler.
+
+Native clients receive snapshots with `onFeatureSnapshot` and manifests with
+`onIncomingRelations`; `FeatureInspectionView` validates and retains the bundle.
+Python clients can call `Client.incoming_relations(map_id, layer_id, partition, feature_id)`.
+The result exposes `target()`, `incoming()` and `collection()`.

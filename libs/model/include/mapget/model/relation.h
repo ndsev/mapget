@@ -48,7 +48,7 @@ public:
     [[nodiscard]] std::string_view name() const;
 
     /**
-     * Read-only target feature accessors.
+     * Return the stored target identity. This does not locate or load the target feature.
      */
     [[nodiscard]] model_ptr<FeatureId> target() const;
 
@@ -66,8 +66,9 @@ public:
     [[nodiscard]] std::optional<uint16_t> featureRelationIndex() const;
 
 protected:
-    /** Actual per-attribute data that is stored in the model's attributes-column. */
-    struct Data {
+    /** Persisted relation data: target identity, validity links and source provenance. */
+    struct Data
+    {
         MODEL_COLUMN_TYPE(20);
 
         simfil::StringId name_ = 0;
@@ -83,10 +84,12 @@ public:
         : simfil::ProceduralObject<6, Relation, PartitionFeatureLayer>(key)
     {
     }
-    Relation(Data* data,
-             simfil::ModelConstPtr l,
-             simfil::ModelNodeAddress a,
-             simfil::detail::mp_key key);
+    Relation(
+        Data* data,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     Relation() = delete;
 
 protected:
@@ -115,9 +118,11 @@ public:
         : simfil::ProceduralObject<6, RelationReference, PartitionFeatureLayer>(key)
     {
     }
-    RelationReference(simfil::ModelConstPtr l,
-                      simfil::ModelNodeAddress a,
-                      simfil::detail::mp_key key);
+    RelationReference(
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     RelationReference() = delete;
 
     /** Resolve the canonical relation referenced by this node. */

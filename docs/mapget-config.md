@@ -28,6 +28,37 @@ Embedded applications can also register additional public top-level sections for
 
 Changes to the `sources` section take effect while the server is running. Changes to options under `mapget` only apply after the server is restarted.
 
+Reloading reconciles individual datasource rows. An already-ready datasource
+keeps its instance, string pool, cached tiles and in-flight requests when its
+effective `sourceId` and complete constructor configuration are unchanged.
+For example, disabling one source does not reconnect the other ready sources.
+YAML key order, quoting and comments do not force reconstruction; scalar
+spelling, explicit type tags and sequence order remain significant.
+
+New or changed sources initialize asynchronously. Removed or disabled sources
+are withdrawn, and their maps are invalidated. Failed sources are retried on a
+reload; unfinished constructors are cancelled and restarted with the new
+generation. Changing shared settings outside `sources`, or the config file
+path, conservatively reconstructs all configured sources. To deliberately
+reconnect an otherwise unchanged source, disable it, apply, then re-enable it.
+Adding or removing an add-on invalidates its composed map's tiles even when
+the primary datasource itself is retained.
+
+The default source identity is `datasource-<configIndex>`. Moving a row changes
+that default identity; an explicit unchanged `sourceId` permits instance reuse
+across reordering while `configIndex` continues to reflect current YAML order.
+
+Agent access is opt-in through `--mcp local` or `--mcp oauth`; the default is
+`off`. All MCP options share the normal CLI11/YAML pipeline under `mapget.serve`,
+with CLI values overriding YAML (including complete replacement of lists).
+The [MCP guide](mapget-mcp.md) covers local defaults, the generated
+`web-mcp-actions.json` catalog, provider-neutral OAuth/proxy settings, artifact
+path resolution, and the full option reference. These restart-scoped settings
+stay outside the browser-readable/writable `/config` model. Native embedders
+set the typed `HttpServiceConfig::mcp` directly. Unknown options in the `mapget`
+section now fail startup, just like unknown CLI options; unrelated top-level
+YAML sections are unaffected.
+
 ## The `sources` section
 
 The `sources` key must contain a YAML list. Each entry describes a datasource and must provide a `type` field. At runtime, mapget matches the type string to a registered constructor and passes the remaining fields in the entry as configuration.
@@ -47,9 +78,36 @@ Every datasource entry accepts these generic fields in addition to type-specific
 - `enabled` (optional, default `true`): when set to `false`, the entry is skipped before its type-specific constructor is called.
 - `ttl` (optional): cache time-to-live override in seconds. `0` means infinite.
 - `auth-header` (optional): header-to-regular-expression map as described below.
+- `auth-claims` (optional): JSON-pointer-to-string requirements on the verified identity. Every entry must match, in addition to `auth-header`.
 
 Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
+### Unavailable datasource types and reloads
+
+A nonempty `type` that this build has not registered is allowed in the file.
+An enabled entry becomes one terminal failed catalog row; it does not prevent
+supported sources from starting and receives no automatic retry. A disabled
+unavailable entry is skipped. Registered types still undergo their full schema
+validation, and generic fields and authorization rules remain validated even
+for unavailable types. Check spelling or install a build providing the type;
+disable or remove entries that this deployment should not use.
+
+The file watcher reports unchanged invalid content once, keeps the last accepted
+catalog, and clears the error when valid content is restored, including the exact
+previous file. Changing the file path or available schema triggers revalidation.
+Automatic reloads retain a source's instance or pending initialization/retry
+when both its `sourceId` and effective configuration fingerprint match. Default identities depend on their index, so reordering can restart a source.
+For types whose registered schema admits `sourceId`, an explicit identity also
+allows reuse across reordering. Shared top-level context changes can also invalidate fingerprints.
+An explicit forced reload retries failed entries, while retaining unchanged ready
+instances. Changing an affected source or restarting the service starts a new
+initialization lifetime.
+
+<!-- mcp:
+title: "Datasource header access restrictions"
+keywords: ["datasource permissions", "auth-header", "access denied", "source visibility", "proxy"]
+hint: "Header alternatives are ORed, not ANDed. Authenticate at a trusted proxy, strip client-supplied identity headers, and keep the backend private."
+-->
 ### Restricting access with `auth-header`
 
 <!-- --8<-- [start:restrict-access] -->
@@ -70,6 +128,97 @@ sources:
 
 With this configuration the datasource is only visible to clients that send an `X-User-Role` header whose value matches the `privileged` pattern.
 
+Header names are case-insensitive and values must match the entire regular
+expression. Multiple entries are alternatives: matching **one** is sufficient.
+For identity-based access, the proxy must remove client-supplied copies and
+replace them with authenticated values; keep the backend listener private.
+A header gate alone does not authenticate its sender. Use `auth-claims` below
+when every configured identity requirement must match; both gates apply when
+both are configured.
+
+<!-- mcp:
+title: "Datasource claim access restrictions"
+keywords: ["datasource permissions", "auth-claims", "groups", "verified identity", "proxy", "access token"]
+-->
+### Restricting access with `auth-claims`
+
+Use `auth-claims` for identity-based datasource permissions shared by browser,
+REST, WebSocket and native MCP data access:
+
+```yaml
+sources:
+  - type: DataSourceHost
+    url: https://example.com/mapget
+    auth-header:
+      X-MapViewer-Supplier: "^(here|mcp)$"
+    auth-claims:
+      /groups: SMS_users
+```
+
+Keys are JSON pointers into verified identity claims. Values are strings matched
+exactly against a string claim or a member of an array; they are not regular
+expressions. All configured requirements must match. Missing claims, wrong types
+and unverified identities fail a configured requirement. Header alternatives keep
+their existing OR behavior, but the header gate and the claim gate are combined
+with AND. Static MCP header grants therefore cannot bypass claim requirements.
+
+The same policy applies to source discovery (including initializing/failed rows),
+schema inventory and retrieval, tiles, filters, locate, attachments and object
+discovery. Cached data does not bypass authorization. Add-on and indirect source
+loads retain the caller's authorization. MCP read/control permissions remain
+separate: group membership does not grant tool permissions, and an MCP reader
+without a required group cannot access that datasource. There is no global MCP
+group requirement; other unrestricted datasources remain available.
+Global `/status` and `/status-data` remain global diagnostics, and configuration
+endpoints retain their separate administrative policies. These are not
+per-datasource projections.
+
+OAuth MCP uses the verified access token's claims. Ensure the identity provider
+actually includes the required claim in **access tokens**; a browser's ID token
+or user-info claim alone is not enough. Local MCP has no verified identity and
+cannot satisfy an `auth-claims` restriction.
+
+For ordinary browser requests, configure an authenticating reverse proxy to
+export its verified claims as one UTF-8 JSON object, encoded with unpadded base64url:
+
+```yaml
+mapget:
+  serve:
+    auth-trusted-proxy-addresses: [127.0.0.1]
+    auth-claims-header: x-mapviewer-claims
+```
+
+Both options are required together and take effect on restart. Peer addresses
+are exact canonical IP addresses, not CIDRs or forwarded addresses. The proxy
+must remove client-supplied `X-MapViewer-Claims` and replace it only after
+authentication. Mapget accepts the header only from a configured socket peer;
+`X-Forwarded-For` does not establish trust. The decoded header must be a JSON object of
+at most 16 KiB and depth 16, without duplicate keys. Only the base64url alphabet
+(`A-Z`, `a-z`, `0-9`, `-`, `_`) is accepted, without padding; raw JSON and complete
+JWTs are not accepted. Encoding keeps non-ASCII claims intact across HTTP proxies.
+Missing, malformed or
+untrusted headers supply no verified claims. No bearer token or private signing
+key needs to be forwarded from the browser.
+
+The proxy must authenticate **every** ordinary data route, not only MCP. This
+export is independent of MCP read/control roles, so browser users do not need
+an MCP role to use a map. Native `/mcp` takes claims only from its verified bearer
+token; `/mcp/browser` additionally requires its existing trusted browser identity
+and permission headers. Keep the direct backend listener private to the trusted
+proxy. Interactive connections retain their opening authorization until
+disconnect; changed group membership is not pushed into existing sockets.
+
+Native embedders pass `ClientAuthorization` to service operations. Header-only
+values have no verified claims. Omitting the optional authorization is explicit
+trusted in-process access, not anonymous network access; HTTP and MCP adapters
+always supply an authorization value. Extraction cursors reject changed
+authorization, including changed claims; start a new extraction after a token
+refresh changes that identity snapshot.
+
+<!-- mcp:
+title: "Mapget tile TTL"
+keywords: ["TTL", "tile expiry", "expiration", "refresh interval"]
+-->
 ### Tile TTL
 
 <!-- --8<-- [start:ttl] -->
@@ -82,39 +231,54 @@ and to feature and SourceData layers.
 | --- | --- | --- | --- | --- |
 | `mapget.serve.ttl` | `--ttl` | `0` | Nonnegative; `0` means no expiry | Fallback for successful nonempty source payloads |
 | `sources[].ttl` | None | Inherit `mapget.serve.ttl` | Nonnegative; `0` means no expiry | Per-datasource override of the nonempty fallback |
-| `mapget.serve.error-tile-ttl` | `--error-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a payload carrying a fatal error |
-| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `5` | Positive; must fit a signed 64-bit millisecond duration | Maximum lifetime of a successful source layer with no root nodes (no features or SourceData roots) |
+| `mapget.serve.error-tile-ttl` | `--error-tile-ttl` | `5` | Nonnegative; `0` disables expiry-based retries | Lifetime policy for a payload carrying a fatal error |
+| `sources[].error-tile-ttl` | None | Inherit `mapget.serve.error-tile-ttl` | Nonnegative; `0` disables expiry-based retries | Per-datasource error policy |
+| `mapget.serve.empty-tile-ttl` | `--empty-tile-ttl` | `3600` | Nonnegative; `0` disables expiry-based retries | Lifetime policy for a successful source layer with no root nodes (no features or SourceData roots) |
+| `sources[].empty-tile-ttl` | None | Inherit `mapget.serve.empty-tile-ttl` | Nonnegative; `0` disables expiry-based retries | Per-datasource empty policy |
+
+Error/empty durations must fit a signed 64-bit millisecond value after conversion from seconds.
+Negative values and overflowing conversions are rejected.
 
 ```yaml
 mapget:
   serve:
-    ttl: 86400        # Nonempty fallback: one day; 0 disables expiry.
-    error-tile-ttl: 5 # Retry failed payloads after at most five seconds.
-    empty-tile-ttl: 5 # Recheck missing/empty payloads after at most five seconds.
+    ttl: 86400          # Nonempty fallback: one day; 0 disables expiry.
+    error-tile-ttl: 5   # Retry failed payloads after at most five seconds.
+    empty-tile-ttl: 3600 # Recheck missing/empty payloads after at most one hour.
 sources:
   - type: GeoJsonFolder
     folder: /maps/my-geojson-tiles
     ttl: 60          # Nonempty fallback for this datasource: one minute.
+    empty-tile-ttl: 0 # Keep empty values until eviction, reset or source replacement.
+    # error-tile-ttl omitted: inherit the global five-second error policy.
 ```
 
 **Precedence:** Nonempty success uses the explicit payload TTL, then the
 datasource `ttl`, then the service `ttl`. Errors instead use `error-tile-ttl`;
-empty successes use `empty-tile-ttl`. Each limit preserves a shorter positive
-**explicit payload TTL**, but replaces missing, zero, negative or longer payload
-TTLs. Neither limit inherits the ordinary datasource/service fallback. An empty
-payload with an error uses the error limit, not the empty limit. Both limits
-reject zero and negative configuration values: absence and failures must not be
-cached indefinitely merely because ordinary successful data is static.
+empty successes use `empty-tile-ttl`. Each policy uses the per-source override
+when present, otherwise the corresponding global setting. A **positive** policy
+preserves a shorter positive **explicit payload TTL**, but replaces missing,
+zero, negative or longer payload TTLs. An explicit **zero** policy instead sets
+the payload TTL to zero, even if the producer supplied a positive lifetime:
+expiry cannot cause repeated requests for this cached result. Neither policy
+inherits the ordinary datasource/service fallback. An empty payload with an error
+uses the error policy, not the empty policy. Omission and explicit zero are distinct.
 
 Emptiness is determined **before filtering**, not from the number of matches in
 a search or inspection response. Such responses inherit the source lifetime.
 Add-on source layers follow the same rules; their composed result inherits the
 earliest contributor expiry, including an empty contributor that may gain data
 later. Filter outputs likewise inherit the earliest dependency expiry.
+**Composite-cache limitation:** add-on compositions are cached as a whole. A zero
+policy contributes no expiry deadline, but another contributor's positive lifetime
+still expires the composition and reloads all its contributors. Zero does not
+independently retain one contributor across a composite refresh.
 
 All three `mapget.serve` settings are startup-only; restart to change them. CLI
-options override YAML values. Per-datasource `ttl` follows datasource config
-reload. These settings affect newly loaded payloads, not already serialized cache
+options override YAML values. Per-datasource `ttl`, `error-tile-ttl` and
+`empty-tile-ttl` follow datasource config reload; changed source configuration
+replaces the source and invalidates the map cache. These settings affect newly
+loaded payloads, not already serialized cache
 entries; use `--clear-cache` at startup if old persistent lifetimes must be discarded.
 
 Expiry is ordinary cache freshness, **not a separate request retry loop** or
@@ -122,6 +286,10 @@ periodic background fetch. On a request that encounters an expired cached
 payload, mapget invokes `DataSource::onCacheExpired` before reloading it. A
 browser may request still-visible expired values again. Ordinary FIFO eviction
 and TTL expiry are distinct; only the latter carries an expiry notification.
+Zero does not pin a cache entry: eviction, manual cache reset and source
+replacement can all lead to a new load. Configure both error and empty policies
+as zero to disable expiry-based retries for both outcomes. Startup initialization
+retries (`DataSourceInitContext::retryAfter`) are independent and unchanged.
 Datasource-internal caches remain the datasource's responsibility: LiveSource
 purges its SmartClient partition, including negative entries, on this callback.
 SmartClient's byte-bounded LRU controls retention, not freshness, and has no
@@ -129,8 +297,13 @@ independent negative-cache TTL.
 
 For embedded C++, use `HttpServiceConfig::{defaultTtl,errorTileTtl,emptyTileTtl}`
 or the `Service` constructor's corresponding arguments, in **milliseconds**.
-Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=5000)`; both
-arguments must be positive. Transport payloads also carry TTLs in milliseconds,
+Python exposes `Service(error_tile_ttl_ms=5000, empty_tile_ttl_ms=3600000)`; both
+arguments accept zero to disable expiry-based retries and reject negatives.
+Before registering an embedded C++ datasource, use `setErrorTileTtl(...)` and
+`setEmptyTileTtl(...)` with optional milliseconds; `std::nullopt` restores global
+inheritance and `0ms` disables that outcome's expiry. YAML source overrides work
+for remote/process datasources too, including Python producers.
+Transport payloads also carry TTLs in milliseconds,
 not the whole seconds used by YAML/CLI configuration.
 
 <!-- --8<-- [end:ttl] -->
@@ -462,6 +635,10 @@ The optional `http-settings` top‑level key is reserved for HTTP‑related conf
 
 Mapget itself treats this section as opaque data and does not interpret it when serving tiles. It is included in `/config.model` only when the active datasource schema contains an `http-settings` property, for example through a deployment-specific `--config-schema` patch. When returning the configuration, mapget replaces the values of any `api-key` or `password` fields with masked tokens. When a modified configuration is posted back, these tokens are resolved to the original secret values before the YAML file is updated.
 
+<!-- mcp:
+title: "Configuration environment variables"
+keywords: ["environment", "env", "secret", "configuration interpolation"]
+-->
 ## Environment variables
 
 <!-- --8<-- [start:env] -->
@@ -550,7 +727,7 @@ Cache reset is disabled by default. Enabling it without at least one valid
 `=` into an HTTP header name and regular expression, so expressions may contain
 additional equals signs. Header names are case-insensitive, values use full
 regular-expression matching, and alternatives are ORed. The reset request must
-also satisfy the selected map's normal datasource `auth-header` restriction.
+also satisfy the selected map's normal datasource `auth-header` and `auth-claims` restrictions.
 
 Use this gate only behind a trusted authentication proxy. The proxy must strip
 client-supplied copies of the identity header, inject its authenticated value,

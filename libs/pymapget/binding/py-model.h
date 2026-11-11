@@ -29,7 +29,9 @@ struct BoundModelNode
     {
         struct GetTileFeatureModelLayer : public simfil::ModelNode {
             explicit GetTileFeatureModelLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
-            auto operator()() {
+
+            auto operator()()
+            {
                 return std::dynamic_pointer_cast<PartitionFeatureModelLayerBase>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
@@ -47,7 +49,9 @@ struct BoundModelNode
     {
         struct GetTileFeatureLayer : public simfil::ModelNode {
             explicit GetTileFeatureLayer(simfil::ModelNode const& n) : simfil::ModelNode(n) {}
-            auto operator()() {
+
+            auto operator()()
+            {
                 return std::dynamic_pointer_cast<PartitionFeatureLayer>(
                     std::const_pointer_cast<simfil::Model>(model_));
             }
@@ -72,9 +76,23 @@ struct BoundModelNodeBase : public BoundModelNode
             Concrete subclasses represent objects, arrays, features, attributes,
             geometry, feature ids, subset entries, and other typed nodes.
         )pbdoc")
+            .def_property_readonly(
+                "schema_type",
+                [](BoundModelNode& self)
+                {
+                    auto node = self.node();
+                    return node ? node->schemaType().retain() : simfil::SchemaType{};
+                },
+                R"pbdoc(
+                Return an explicit, owner-retaining SchemaType for this node.
+                Unqualified scalar leaves may be described only by their parent edge;
+                a detached leaf cannot recover that context. Empty means unknown.
+                Ordinary JSON export keeps qualified primitive values primitive.
+            )pbdoc")
             .def(
                 "value",
-                [](BoundModelNode& self) {
+                [](BoundModelNode& self)
+                {
                     if (auto n = self.node())
                         return n->value();
                     return ScalarValueType{};
@@ -87,7 +105,8 @@ struct BoundModelNodeBase : public BoundModelNode
         )pbdoc")
             .def(
                 "to_json",
-                [](BoundModelNode& self) {
+                [](BoundModelNode& self)
+                {
                     if (auto n = self.node())
                         return n->toJson().dump();
                     return std::string("null");
@@ -97,7 +116,8 @@ struct BoundModelNodeBase : public BoundModelNode
             )pbdoc")
             .def(
                 "to_dict",
-                [](BoundModelNode& self) -> py::object {
+                [](BoundModelNode& self) -> py::object
+                {
                     if (auto n = self.node()) {
                         auto& model = self.featureModelLayer();
                         return nodeToPython(n, model);
@@ -123,6 +143,7 @@ struct BoundModelNodeBase : public BoundModelNode
             .value("FLOAT", ValueType::Float)
             .value("STRING", ValueType::String)
             .value("BYTES", ValueType::Bytes)
+            .value("BITMASK", ValueType::Bitmask)
             .value("OBJECT", ValueType::Object)
             .value("ARRAY", ValueType::Array);
 
@@ -197,6 +218,11 @@ struct BoundModelNodeBase : public BoundModelNode
 using ModelVariant =
     std::variant<bool, int16_t, int64_t, double, std::string_view, ModelNode::Ptr>;
 
+/**
+ * Convert supported scalars and recursively allocate list/dict containers.
+ * String views borrow pyValue until the caller inserts them into the model;
+ * wrapped nodes are shared, not cloned. None, tuples and cycles are unsupported.
+ */
 ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
 {
     if (py::isinstance<py::bool_>(pyValue)) {
@@ -219,6 +245,10 @@ ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
     }
     else if (py::isinstance<BoundModelNode>(pyValue)) {
         return pyValue.cast<BoundModelNode&>().node();
+    }
+    else if (py::isinstance<simfil::Bitmask>(pyValue)) {
+        auto const& value = pyValue.cast<simfil::Bitmask const&>();
+        return model.newBitmask(value.bits, value.type);
     }
     else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.
@@ -717,6 +747,7 @@ struct BoundAttributeLayerList : public BoundModelNode
                 auto& fl = self.featureModelLayer();
                 self.modelNodePtr_->forEachLayer(
                     [&](std::string_view name, model_ptr<AttributeLayer> const& layer) {
+                        // This dictionary keeps the last layer with a repeated layer name.
                         d[py::str(std::string(name))] = nodeToPython(layer, fl, true);
                         return true;
                     });
@@ -746,7 +777,8 @@ struct BoundFeatureId : public BoundModelNode
             .def(
                 "to_string",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->toString(); },
-                "Convert the FeatureId to a string.")
+                "Convert a local FeatureId to its canonical string. Foreign references require "
+                "to_dict().")
             .def(
                 "type_id",
                 [](BoundFeatureId& self) { return self.modelNodePtr_->typeId(); },
@@ -761,7 +793,8 @@ struct BoundFeatureId : public BoundModelNode
                 "Get the explicitly stored external map ID, or None for local references.")
             .def(
                 "key_value_pairs",
-                [](BoundFeatureId& self) {
+                [](BoundFeatureId& self)
+                {
                     KeyValuePairVec result;
                     for (auto const& [key, value] : self.modelNodePtr_->keyValuePairs()) {
                         std::visit(
@@ -1473,25 +1506,30 @@ inline void BoundRelation::bind(py::module_& m)
             "Attach source-data references to this relation.");
 }
 
-/// Recursively convert a ModelNode tree to native Python objects.
-/// Mirrors simfil's ModelNode::toJson() (nodes.cpp) but builds
-/// py::dict/py::list/scalars directly, avoiding JSON serialization.
-///
-/// Handles two special cases that toJson() also handles:
-///  - Multimap objects: when checkMultimap is true and an Object has
-///    duplicate keys, values are grouped into lists with a "_multimap"
-///    marker. Only AttributeLayer-level objects can have duplicates,
-///    so callers should only pass true at that level to avoid overhead.
-///  - ByteArray scalars: converted to {"_bytes": True, "hex": ..., "number": ...}.
+/**
+ * Recursively convert a ModelNode tree to native Python objects. Like simfil's
+ * generic ModelNode::toJson() traversal, this walks objects, arrays and scalars,
+ * but builds py::dict/py::list/scalars directly, avoiding JSON serialization.
+ * It does not invoke virtual toJson() overrides.
+ *
+ * Special cases:
+ * - ByteArray scalars become {"_bytes": True, "hex": ..., "number": ...}; number
+ *   is None when the bytes cannot be decoded as a big-endian signed integer.
+ * - Bitmasks retain their bound native value.
+ * - Ordinary objects overwrite duplicate names. checkMultimap enables a bounded
+ *   duplicate pre-scan for this object only: a duplicate of one of the first 32
+ *   field IDs groups every field's values into lists and adds a "_multimap" marker.
+ *   Nested objects use ordinary conversion; later-only duplicates are not detected.
+ *   Callers enable this for attribute-layer objects to avoid the scan elsewhere.
+ */
 py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model, bool checkMultimap)
 {
     auto type = n->type();
     if (type == ValueType::Object) {
         py::dict d;
         if (checkMultimap) {
-            // Pre-scan for duplicate field IDs using stack-allocated
-            // array with cheap uint16_t comparison. Only called for
-            // AttributeLayer-level objects, not recursively.
+            // Pre-scan duplicate field IDs using a bounded stack array and cheap
+            // uint16_t comparisons. Recursive calls do not inherit multimap mode.
             bool isMultiMap = false;
             {
                 uint16_t seen[32];
@@ -1557,6 +1595,8 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
                 d["number"] = py::none();
             return d;
         }
+        else if constexpr (std::is_same_v<T, simfil::Bitmask>)
+            return py::cast(val);
         else
             return py::none();
     }, v);

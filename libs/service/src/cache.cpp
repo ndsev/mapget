@@ -22,7 +22,8 @@ std::shared_ptr<StringPool> Cache::getStringPool(const std::string_view& stringP
         std::unique_lock stringPoolOffsetsWriteLock(stringPoolOffsetMutex_, std::defer_lock);
         std::lock(stringPoolWriteLock, stringPoolOffsetsWriteLock);
 
-        // Was the string pool inserted already now?
+        // Another reader may have populated this dictionary while the shared
+        // lock was released. Publish its offset and dictionary under both locks.
         auto it = stringPoolPerStringPoolId_.find(stringPoolId);
         if (it != stringPoolPerStringPoolId_.end())
             return it->second;
@@ -186,6 +187,8 @@ void Cache::invalidateMap(std::string_view mapId)
                 keys.push_back(key);
             }
         });
+    // Blob visitors run under implementation-owned locks; delete only after
+    // iteration has returned so an erase cannot recursively acquire that lock.
     for (auto const& key : keys) {
         eraseTileLayerBlob(key);
     }
@@ -193,6 +196,8 @@ void Cache::invalidateMap(std::string_view mapId)
 
 void Cache::putTileLayer(PartitionLayer::Ptr const& l)
 {
+    // Serialize dictionary growth and tile writes together. Persist complete
+    // dictionaries so a fresh process can decode any retained tile blob.
     std::unique_lock stringPoolOffsetLock(stringPoolOffsetMutex_);
     TileLayerStream::Writer tileWriter(
         [&l, this](auto&& msg, auto&& msgType)

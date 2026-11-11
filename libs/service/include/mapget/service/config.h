@@ -65,10 +65,12 @@ struct DataSourceDescriptor {
 
     /** Preserves current `/sources` authorization behavior before a ready DataSource exists. */
     AuthHeaderRegexMap authHeaderAlternatives;
+
+    /** Enforce the same claims on initializing/failed catalog rows as on ready sources. */
+    AuthClaimRequirements requiredClaims;
 };
 
-
-    /**
+/**
  * Singleton class that watches a particular YAML config file path.
  * The config YAML must have a top-level `sources:` key, which hosts
  * a list of datasource descriptors. Each descriptor must have a `type:`
@@ -76,7 +78,7 @@ struct DataSourceDescriptor {
  * The whole descriptor will be passed into the lambda that is registered
  * as the constructor for the given type name when calling makeDataSource().
  * Services will call subscribe() to be notified about the currently
- * active set of services from the config.
+ * active datasource descriptors from the config.
  */
 class DataSourceConfigService
 {
@@ -103,7 +105,8 @@ public:
 
     /**
      * Clear subscriptions, constructor, current config content and path,
-     * stop the file watch thread.
+     * stop the file watch thread. Requires quiescent callers: stop an active
+     * watcher with end() first, since reset clears shared state before joining.
      */
     void reset();
 
@@ -117,9 +120,12 @@ public:
          * Destructor that ensures unsubscription.
          */
         ~Subscription();
+
         Subscription(Subscription const& other) = delete;
+
         Subscription(Subscription&& other) = default;
-        Subscription& operator= (Subscription const& other) = delete;
+
+        Subscription& operator=(Subscription const& other) = delete;
 
     private:
         explicit Subscription(uint32_t id);
@@ -131,8 +137,11 @@ public:
 
     /**
      * Subscribes to configuration changes.
-     * The callback will be triggered once immediately, then whenever
-     * the config file path or content changes.
+     * Replay accepted descriptors (including an empty list) and any active error
+     * synchronously before returning. Later callbacks run on the loading/watcher thread and
+     * must stay short; enqueue datasource construction elsewhere. Success callbacks
+     * hold the recursive member lock, as do error callbacks.
+     * Unchanged watched content does not trigger notification; explicit loads may.
      * @param successCallback Function to call with the current (new) set of service config nodes.
      * @param errorCallback Function to call when applying the config failed.
      * @return Unique pointer to a Subscription object.
@@ -141,10 +150,15 @@ public:
         std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> const& successCallback,
         std::function<void(std::string const& error)> const& errorCallback={});
 
+    /** Subscribe with reload intent: explicit loads retry failed sources; watched edits reconcile them. */
+    std::unique_ptr<Subscription> subscribeWithReload(
+        std::function<void(std::vector<YAML::Node> const&, bool retryFailedSources)> const& successCallback,
+        std::function<void(std::string const& error)> const& errorCallback={});
+
     /**
      * Loads the configuration from the file.
      * @param path The file path to the YAML configuration file.
-     * @param startWatchThread True to automatically reload of changes to config file occur.
+     * @param startWatchThread True to poll for and reload subsequent file changes.
      */
     void loadConfig(std::string const& path, bool startWatchThread = true);
 
@@ -156,12 +170,14 @@ public:
     /**
      * Instantiates a data source based on the provided descriptor.
      * @param descriptor The YAML node containing the data source descriptor.
-     * @return Shared pointer to the instantiated data source, or nullptr if instantiation failed.
+     * @return Constructed source, or null for a disabled/cancelled entry, unknown type
+     * or caught constructor failure. Malformed descriptor conversions can still throw.
      */
     DataSource::Ptr makeDataSource(YAML::Node const& descriptor);
 
     /**
-     * Instantiates a data source with progress/cancellation hooks for statusful startup.
+     * Construct synchronously with progress/cancellation hooks, outside the config
+     * member lock. Generic TTL/authorization settings are applied before return.
      */
     DataSource::Ptr makeDataSource(YAML::Node const& descriptor, DataSourceInitContext& initContext);
 
@@ -169,6 +185,14 @@ public:
      * Extract cheap, non-networked catalog metadata from a datasource config entry.
      */
     [[nodiscard]] DataSourceDescriptor describeDataSource(YAML::Node const& descriptor, uint32_t configIndex) const;
+
+    /**
+     * Identify constructor inputs for lifecycle reuse, including type registration,
+     * config path and shared settings outside `sources`. Ignores YAML map order and
+     * presentation, but preserves scalar spelling, sequence order and explicit tags.
+     * The opaque hash must not be used as a public datasource or string-pool ID.
+     */
+    [[nodiscard]] std::string dataSourceConfigFingerprint(YAML::Node const& descriptor) const;
 
     /**
      * Registers a constructor for a given data source type.
@@ -264,26 +288,35 @@ private:
     void unsubscribe(uint32_t id);
 
     /**
-     * Starts watching the configuration file for changes. Will load
-     * the config immmediately if not yet occurred.
+     * Poll the current path every 500 ms and reconcile existing file contents.
+     * The initial synchronous load belongs to loadConfig(path), not this thread.
      */
     void startConfigFileWatchThread();
 
     /**
      * Uses @see configFilePath_ to load the configuration.
      */
-    void loadConfig();
+    void reloadConfig(bool retryFailedSources = false);
 
     // Path to the configuration file.
     std::string configFilePath_;
 
-    // Last config loaded.
+    // Last observed content/path/schema hash, including rejected configurations.
     std::string lastConfigSHA256_;
+    std::optional<std::string> lastConfigError_;
+    bool hasAcceptedConfig_ = false;
+    uint64_t schemaRevision_ = 0;
+
+    /** Caller holds memberAccessMutex_; hash exactly the bytes that will be parsed. */
+    [[nodiscard]] std::string configContentFingerprint(std::string const& content) const;
+
+    /** Hash of the last accepted config path and non-source settings. */
+    std::string dataSourceContextFingerprint_;
 
     // Map of subscription IDs to their respective callback functions.
     // Note: This MUST be an ORDERED map, because the subscription call order is important.
     struct SubscriptionCallbacks {
-        std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> success_;
+        std::function<void(std::vector<YAML::Node> const&, bool retryFailedSources)> success_;
         std::function<void(std::string const& error)> error_;
     };
     std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
@@ -291,6 +324,7 @@ private:
     struct DataSourceRegistration {
         DataSourceConstructor constructor_;
         nlohmann::json schema_;
+        uint64_t revision_;
     };
 
     // Map of data source type names to their respective constructor functions.
@@ -321,7 +355,13 @@ private:
     mutable std::recursive_mutex configMutationMutex_;
 };
 
-/** Convert YAML to JSON, with optional secret masking. */
+/**
+ * Convert YAML scalars/containers to JSON. Scalars are tried as bool, int64 and
+ * double before string, even when originally quoted; this is not a lossless YAML
+ * round trip. Secret masking recognizes names such as
+ * apiKey, password and secret; it is not a general secret detector. When masking,
+ * maskedSecretMap must be supplied and retains token-to-original-value mappings.
+ */
 nlohmann::json yamlToJson(
     const YAML::Node& yamlNode,
     bool maskSecrets,

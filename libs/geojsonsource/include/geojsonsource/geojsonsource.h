@@ -105,6 +105,7 @@ struct GeoJsonEndpointSourceOptions
     /**
      * Optional text fetch override used for tests or custom transports.
      * When unset, HTTP(S) URLs are fetched via the built-in HTTP client.
+     * It may be called concurrently by fill() and must synchronize shared state.
      */
     std::function<std::string(std::string const&)> fetchText;
 };
@@ -116,6 +117,10 @@ struct GeoJsonEndpointSourceOptions
  * - explicit `dataSourceInfo` plus `tilePathTemplate`
  * - legacy `manifest.json` filename mapping
  * - legacy directory scanning for `<tileId>.geojson`
+ *
+ * Explicit metadata wins over a manifest. Missing tile files produce an empty
+ * feature layer; read/parse failures set the layer error. Metadata and file indexes
+ * are fixed at construction, while tile contents are read on each fill().
  */
 class GeoJsonSource : public mapget::DataSource
 {
@@ -137,6 +142,7 @@ public:
     [[nodiscard]] std::optional<uint64_t> estimatedRetainedMemoryBytes() const override;
 
     [[nodiscard]] bool hasManifest() const { return hasManifest_; }
+
     [[nodiscard]] const Manifest& manifest() const { return manifest_; }
 
 private:
@@ -162,7 +168,9 @@ private:
 };
 
 /**
- * Data source which loads GeoJSON tiles from an HTTP endpoint.
+ * Datasource which synchronously loads GeoJSON tiles from an HTTP(S) endpoint.
+ * Construction resolves optional metadata; without it, only GeoJsonAny is
+ * advertised. Each fill fetches and parses a tile; HTTP/parse errors set its error.
  */
 class GeoJsonEndpointSource : public mapget::DataSource
 {

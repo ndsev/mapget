@@ -1,4 +1,5 @@
 #include "subsetlayer.h"
+#include "mapschema.h"
 
 #include <algorithm>
 #include <chrono>
@@ -28,6 +29,7 @@
 namespace bitsery
 {
 
+/** Store each packed vertex component as a 32-bit float in x/y/z order. */
 template <typename S>
 void serialize(S& s, glm::vec3& value)
 {
@@ -43,12 +45,14 @@ namespace mapget
 namespace
 {
 
+/** Wire prelude record; parse its canonical partition key after decoding. */
 struct DependencyWire
 {
     std::string sourceTileKey_;
     uint32_t sourceFeatureCount_ = 0;
 };
 
+/** String-based issue record readable before the model pool is hydrated. */
 struct IssueWire
 {
     std::string channelId_;
@@ -58,40 +62,7 @@ struct IssueWire
     uint64_t occurrenceCount_ = 1;
 };
 
-simfil::ArrayIndex idPartValuesToArrayIndex(
-    PartitionSubsetLayer& layer,
-    std::vector<IdPart> const& composition,
-    KeyValueViewPairs const& idParts)
-{
-    auto values = layer.newArray(std::max<size_t>(1, composition.size()), true);
-    auto part = idParts.begin();
-    for (auto const& definition : composition) {
-        if (part != idParts.end() && definition.idPartLabel_ == part->first) {
-            values->append(std::visit(
-                [&](auto&& value) -> simfil::ModelNode::Ptr {
-                    return layer.newValue(value);
-                },
-                part->second));
-            ++part;
-            continue;
-        }
-        if (!definition.isOptional_) {
-            raiseFmt(
-                "Missing non-optional ID part '{}' while materializing a subset feature ID.",
-                definition.idPartLabel_);
-        }
-        values->append(layer.resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{}));
-    }
-    if (part != idParts.end()) {
-        raiseFmt(
-            "Unexpected trailing ID part '{}' while materializing a subset feature ID.",
-            part->first);
-    }
-    return static_cast<simfil::ArrayIndex>(values->addr().index());
-}
-
+/** Export array elements in order; absent arrays become [], absent elements null. */
 nlohmann::json arrayToJson(model_ptr<Array> const& array)
 {
     auto result = nlohmann::json::array();
@@ -105,6 +76,7 @@ nlohmann::json arrayToJson(model_ptr<Array> const& array)
     return result;
 }
 
+/** Derive human-readable messages from retained evaluation diagnostics. */
 nlohmann::json diagnosticsToJson(simfil::Diagnostics const& diagnostics)
 {
     auto result = nlohmann::json::array();
@@ -128,12 +100,14 @@ nlohmann::json diagnosticsToJson(simfil::Diagnostics const& diagnostics)
     return result;
 }
 
+/** Saturate the query-facing signed counter; JSON export retains the uint64 value. */
 int64_t traceCounterToInt64(uint64_t value)
 {
     auto const max = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
     return value > max ? std::numeric_limits<int64_t>::max() : static_cast<int64_t>(value);
 }
 
+/** Preserve the diagnostic wire order and its uint16 counts/255-byte field-name limits. */
 template<typename S>
 void readWriteDiagnostics(S& serializer, simfil::Diagnostics& data)
 {
@@ -167,25 +141,30 @@ void readWriteDiagnostics(S& serializer, simfil::Diagnostics& data)
         });
 }
 
+/** Share dependency encoding with full and bounded metadata-prefix readers. */
 template<typename S>
-void readWriteDependencyWire(S& serializer, DependencyWire& dependency)
+void readWriteDependencyWire(S& serializer, DependencyWire& dependency,
+                             size_t maxTextBytes = std::numeric_limits<uint32_t>::max())
 {
     serializer.text1b(
         dependency.sourceTileKey_,
-        std::numeric_limits<uint32_t>::max());
+        maxTextBytes);
     serializer.value4b(dependency.sourceFeatureCount_);
 }
 
+/** Share issue encoding with full and bounded metadata-prefix readers. */
 template<typename S>
-void readWriteIssueWire(S& serializer, IssueWire& issue)
+void readWriteIssueWire(S& serializer, IssueWire& issue,
+                        size_t maxTextBytes = std::numeric_limits<uint32_t>::max())
 {
-    serializer.text1b(issue.channelId_, std::numeric_limits<uint32_t>::max());
-    serializer.text1b(issue.expression_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(issue.channelId_, maxTextBytes);
+    serializer.text1b(issue.expression_, maxTextBytes);
     serializer.value1b(issue.scope_);
-    serializer.text1b(issue.message_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(issue.message_, maxTextBytes);
     serializer.value8b(issue.occurrenceCount_);
 }
 
+/** Resolve a layer-local array index, with the invalid index representing absence. */
 model_ptr<Array> arrayAt(PartitionSubsetLayer const& layer, simfil::ArrayIndex index)
 {
     if (index == simfil::InvalidArrayIndex) {
@@ -197,6 +176,7 @@ model_ptr<Array> arrayAt(PartitionSubsetLayer const& layer, simfil::ArrayIndex i
     });
 }
 
+/** Copy string values directly; use JSON spelling for other nodes and empty for absence. */
 std::string nodeStringValue(simfil::ModelNode::Ptr const& node)
 {
     if (!node) {
@@ -212,6 +192,10 @@ std::string nodeStringValue(simfil::ModelNode::Ptr const& node)
     return node->toJson().dump();
 }
 
+/**
+ * Test membership by local address. The caller must separately validate model
+ * ownership before accepting a matching address from another node handle.
+ */
 bool arrayContainsAddress(
     model_ptr<Array> const& array,
     simfil::ModelNodeAddress address)
@@ -308,13 +292,19 @@ model_ptr<Array> FeatureEntry::values() const
     return model().resolve<Array>(data_->values_);
 }
 
+std::vector<ProjectedValueError> FeatureEntry::valueErrors() const
+{
+    return model().readValueErrors(data_->valueErrors_);
+}
+
 nlohmann::json FeatureEntry::toJson() const
 {
     return {
         {"type", "FeatureEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
+        {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
     };
 }
 
@@ -330,11 +320,12 @@ simfil::ModelNode::Ptr FeatureEntry::at(int64_t index) const
 
 uint32_t FeatureEntry::size() const
 {
-    return 3;
+    return 4;
 }
 
 simfil::ModelNode::Ptr FeatureEntry::get(simfil::StringId const& field) const
 {
+    if (field == StringPool::ValueErrorsStr) return model().resolve(data_->valueErrors_);
     if (field == StringPool::FeatureIdStr) return featureId();
     if (field == StringPool::GeometryStr) return geometry();
     if (field == StringPool::ValuesStr) return values();
@@ -344,6 +335,7 @@ simfil::ModelNode::Ptr FeatureEntry::get(simfil::StringId const& field) const
 simfil::StringId FeatureEntry::keyAt(int64_t index) const
 {
     switch (index) {
+    case 3: return StringPool::ValueErrorsStr;
     case 0: return StringPool::FeatureIdStr;
     case 1: return StringPool::GeometryStr;
     case 2: return StringPool::ValuesStr;
@@ -386,9 +378,19 @@ model_ptr<Array> AttributeValidityEntry::hostValues() const
     return model().resolve<Array>(data_->hostValues_);
 }
 
+std::vector<ProjectedValueError> AttributeValidityEntry::hostValueErrors() const
+{
+    return model().readValueErrors(data_->hostValueErrors_);
+}
+
 model_ptr<Array> AttributeValidityEntry::values() const
 {
     return model().resolve<Array>(data_->values_);
+}
+
+std::vector<ProjectedValueError> AttributeValidityEntry::valueErrors() const
+{
+    return model().readValueErrors(data_->valueErrors_);
 }
 
 std::optional<std::string> AttributeValidityEntry::attributeLayer() const
@@ -488,10 +490,12 @@ nlohmann::json AttributeValidityEntry::toJson() const
 {
     auto result = nlohmann::json::object({
         {"type", "AttributeValidityEntry"},
-        {"featureId", featureId() ? featureId()->toString() : ""},
+        {"featureId", featureId() ? featureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"hostValues", arrayToJson(hostValues())},
         {"values", arrayToJson(values())},
+        {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
+        {"hostValueErrors", arrayToJson(model().resolve<Array>(data_->hostValueErrors_))},
         {"hasValidity", hasValidity()},
         {"validityIndex", validityIndex()},
         {"validityCount", validityCount()},
@@ -503,8 +507,8 @@ nlohmann::json AttributeValidityEntry::toJson() const
         auto const from = transitionFromFeatureId();
         auto const to = transitionToFeatureId();
         result["geometryDescriptionType"] = "feature-transition";
-        result["transitionFromFeatureId"] = from ? from->toString() : "";
-        result["transitionToFeatureId"] = to ? to->toString() : "";
+        result["transitionFromFeatureId"] = from ? from->toJson() : nlohmann::json("");
+        result["transitionToFeatureId"] = to ? to->toJson() : nlohmann::json("");
         result["transitionFromConnectedEnd"] =
             transitionFromConnectedEnd() == ValidityData::End ? "end" : "start";
         result["transitionToConnectedEnd"] =
@@ -528,11 +532,13 @@ simfil::ModelNode::Ptr AttributeValidityEntry::at(int64_t index) const
 
 uint32_t AttributeValidityEntry::size() const
 {
-    return 10;
+    return 12;
 }
 
 simfil::ModelNode::Ptr AttributeValidityEntry::get(simfil::StringId const& field) const
 {
+    if (field == StringPool::ValueErrorsStr) return model().resolve(data_->valueErrors_);
+    if (field == StringPool::HostValueErrorsStr) return model().resolve(data_->hostValueErrors_);
     if (field == StringPool::FeatureIdStr) return featureId();
     if (field == StringPool::GeometryStr) return geometry();
     if (field == StringPool::HostValuesStr) return hostValues();
@@ -560,6 +566,8 @@ simfil::ModelNode::Ptr AttributeValidityEntry::get(simfil::StringId const& field
 simfil::StringId AttributeValidityEntry::keyAt(int64_t index) const
 {
     switch (index) {
+    case 10: return StringPool::HostValueErrorsStr;
+    case 11: return StringPool::ValueErrorsStr;
     case 0: return StringPool::FeatureIdStr;
     case 1: return StringPool::GeometryStr;
     case 2: return StringPool::HostValuesStr;
@@ -644,6 +652,11 @@ model_ptr<Array> RelationEntry::values() const
     return model().resolve<Array>(data_->values_);
 }
 
+std::vector<ProjectedValueError> RelationEntry::valueErrors() const
+{
+    return model().readValueErrors(data_->valueErrors_);
+}
+
 nlohmann::json RelationEntry::toJson() const
 {
     return {
@@ -658,6 +671,7 @@ nlohmann::json RelationEntry::toJson() const
         {"sourceGeometry", sourceGeometry() ? sourceGeometry()->toJson() : nlohmann::json()},
         {"targetGeometry", targetGeometry() ? targetGeometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
+        {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
     };
 }
 
@@ -673,11 +687,12 @@ simfil::ModelNode::Ptr RelationEntry::at(int64_t index) const
 
 uint32_t RelationEntry::size() const
 {
-    return 10;
+    return 11;
 }
 
 simfil::ModelNode::Ptr RelationEntry::get(simfil::StringId const& field) const
 {
+    if (field == StringPool::ValueErrorsStr) return model().resolve(data_->valueErrors_);
     if (field == StringPool::RelationIdStr) return model().resolve(data_->relationId_);
     if (field == StringPool::NameStr) return model().resolve(data_->name_);
     if (field == StringPool::ProvenanceStr) return model().resolve(data_->provenance_);
@@ -696,6 +711,7 @@ simfil::ModelNode::Ptr RelationEntry::get(simfil::StringId const& field) const
 simfil::StringId RelationEntry::keyAt(int64_t index) const
 {
     switch (index) {
+    case 10: return StringPool::ValueErrorsStr;
     case 0: return StringPool::RelationIdStr;
     case 1: return StringPool::NameStr;
     case 2: return StringPool::ProvenanceStr;
@@ -750,6 +766,11 @@ model_ptr<Array> GroupEntry::values() const
     return model().resolve<Array>(data_->values_);
 }
 
+std::vector<ProjectedValueError> GroupEntry::valueErrors() const
+{
+    return model().readValueErrors(data_->valueErrors_);
+}
+
 model_ptr<Array> GroupEntry::memberFeatureIds() const
 {
     return model().resolve<Array>(data_->memberFeatureIds_);
@@ -761,9 +782,10 @@ nlohmann::json GroupEntry::toJson() const
         {"type", "GroupEntry"},
         {"groupKey", groupKey() ? groupKey()->toJson() : nlohmann::json()},
         {"representativeFeatureId",
-            representativeFeatureId() ? representativeFeatureId()->toString() : ""},
+         representativeFeatureId() ? representativeFeatureId()->toJson() : nlohmann::json("")},
         {"geometry", geometry() ? geometry()->toJson() : nlohmann::json()},
         {"values", arrayToJson(values())},
+        {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
         {"memberFeatureIds", arrayToJson(memberFeatureIds())},
     };
 }
@@ -780,11 +802,12 @@ simfil::ModelNode::Ptr GroupEntry::at(int64_t index) const
 
 uint32_t GroupEntry::size() const
 {
-    return 5;
+    return 6;
 }
 
 simfil::ModelNode::Ptr GroupEntry::get(simfil::StringId const& field) const
 {
+    if (field == StringPool::ValueErrorsStr) return model().resolve(data_->valueErrors_);
     if (field == StringPool::GroupKeyStr) return groupKey();
     if (field == StringPool::RepresentativeFeatureIdStr) return representativeFeatureId();
     if (field == StringPool::GeometryStr) return geometry();
@@ -796,6 +819,7 @@ simfil::ModelNode::Ptr GroupEntry::get(simfil::StringId const& field) const
 simfil::StringId GroupEntry::keyAt(int64_t index) const
 {
     switch (index) {
+    case 5: return StringPool::ValueErrorsStr;
     case 0: return StringPool::GroupKeyStr;
     case 1: return StringPool::RepresentativeFeatureIdStr;
     case 2: return StringPool::GeometryStr;
@@ -941,7 +965,8 @@ size_t TileSubsetChannel::entryCount() const
 model_ptr<FeatureEntry> TileSubsetChannel::newFeatureEntry(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
-    std::span<simfil::ModelNode::Ptr const> values)
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
 {
     if (scope() != Scope::Feature && scope() != Scope::Relation) {
         raise("Feature entries are valid only in feature and relation channels.");
@@ -952,7 +977,7 @@ model_ptr<FeatureEntry> TileSubsetChannel::newFeatureEntry(
             values.size(),
             featureFieldCount());
     }
-    auto entry = model().newFeatureEntry(featureId, geometry, values);
+    auto entry = model().newFeatureEntry(featureId, geometry, values, valueErrors);
     arrayAt(model(), data_->featureEntries_)->append(entry);
     model().updateEntryStatistics();
     return entry;
@@ -974,7 +999,9 @@ model_ptr<AttributeValidityEntry> TileSubsetChannel::newAttributeValidityEntry(
     AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd,
     model_ptr<FeatureId> const& transitionToFeatureId,
     AttributeValidityEntry::TransitionEnd transitionToConnectedEnd,
-    uint32_t transitionPivotIndex)
+    uint32_t transitionPivotIndex,
+    std::span<ProjectedValueError const> hostValueErrors,
+    std::span<ProjectedValueError const> valueErrors)
 {
     if (scope() != Scope::Attribute) {
         raise("Attribute-validity entries are valid only in attribute channels.");
@@ -1007,7 +1034,9 @@ model_ptr<AttributeValidityEntry> TileSubsetChannel::newAttributeValidityEntry(
         transitionFromConnectedEnd,
         transitionToFeatureId,
         transitionToConnectedEnd,
-        transitionPivotIndex);
+        transitionPivotIndex,
+        hostValueErrors,
+        valueErrors);
     arrayAt(model(), data_->attributeValidityEntries_)->append(entry);
     model().updateEntryStatistics();
     return entry;
@@ -1023,7 +1052,8 @@ model_ptr<RelationEntry> TileSubsetChannel::newRelationEntry(
     model_ptr<FeatureEntry> const& target,
     model_ptr<GeometryCollection> const& sourceGeometry,
     model_ptr<GeometryCollection> const& targetGeometry,
-    std::span<simfil::ModelNode::Ptr const> values)
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
 {
     if (scope() != Scope::Relation) {
         raise("Relation entries are valid only in relation channels.");
@@ -1034,12 +1064,16 @@ model_ptr<RelationEntry> TileSubsetChannel::newRelationEntry(
             values.size(),
             entryFieldCount());
     }
+
+    // Channel membership and layer ownership are separate checks: the layer
+    // factory below rejects foreign handles even if their local addresses match.
     auto supportingEntries = arrayAt(model(), data_->featureEntries_);
     if (!source || !arrayContainsAddress(supportingEntries, source->addr()) ||
         !target || !arrayContainsAddress(supportingEntries, target->addr()))
     {
         raise("Relation endpoints must be supporting FeatureEntries of the same channel.");
     }
+
     auto entry = model().newRelationEntry(
         relationId,
         name,
@@ -1050,7 +1084,8 @@ model_ptr<RelationEntry> TileSubsetChannel::newRelationEntry(
         target,
         sourceGeometry,
         targetGeometry,
-        values);
+        values,
+        valueErrors);
     arrayAt(model(), data_->relationEntries_)->append(entry);
     model().updateEntryStatistics();
     return entry;
@@ -1061,7 +1096,8 @@ model_ptr<GroupEntry> TileSubsetChannel::newGroupEntry(
     model_ptr<FeatureId> const& representativeFeatureId,
     model_ptr<GeometryCollection> const& geometry,
     std::span<simfil::ModelNode::Ptr const> values,
-    std::span<model_ptr<FeatureId> const> memberFeatureIds)
+    std::span<model_ptr<FeatureId> const> memberFeatureIds,
+    std::span<ProjectedValueError const> valueErrors)
 {
     if (scope() != Scope::Group) {
         raise("Group entries are valid only in group channels.");
@@ -1077,7 +1113,8 @@ model_ptr<GroupEntry> TileSubsetChannel::newGroupEntry(
         representativeFeatureId,
         geometry,
         values,
-        memberFeatureIds);
+        memberFeatureIds,
+        valueErrors);
     arrayAt(model(), data_->groupEntries_)->append(entry);
     model().updateEntryStatistics();
     return entry;
@@ -1229,12 +1266,14 @@ PartitionSubsetLayer::PartitionSubsetLayer(
 PartitionSubsetLayer::PartitionSubsetLayer(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
-    StringPoolResolveFun const& stringPoolGetter)
+    StringPoolResolveFun const& stringPoolGetter,
+    SchemaResolveFun const& schemas)
     : PartitionFeatureModelLayerBase(
           input,
           layerInfoResolveFun,
           stringPoolGetter,
-          &deserializationOffsetBytes_),
+          &deserializationOffsetBytes_,
+          schemas),
       geometryAnchor_(
           partitionId_.kind() == PartitionKind::Tile ?
               partitionId_.tileId().centerWgs84() :
@@ -1248,6 +1287,8 @@ PartitionSubsetLayer::PartitionSubsetLayer(
         input.begin() + static_cast<std::ptrdiff_t>(deserializationOffsetBytes_),
         input.end()));
 
+    // Keep this prelude aligned with write(), readFilterIdentity() and
+    // readMetadata(); callers can inspect it without resolving model columns.
     serializer.text1b(filterId_, std::numeric_limits<uint32_t>::max());
     serializer.value8b(generation_);
     serializer.value8b(geometryAnchor_.x);
@@ -1317,10 +1358,13 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     if (auto result = ModelPool::read(input, modelOffset); !result) {
         raise(result.error().message);
     }
+    // Imported types already retain every graph; the transport resolver is construction-only.
+    setSchemaResolver({});
 }
 
 PartitionSubsetLayer::~PartitionSubsetLayer() = default;
 
+/** Read only the base header and filter identity; bytesRead stops before the anchor. */
 FilterIdentity PartitionSubsetLayer::readFilterIdentity(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
@@ -1336,7 +1380,7 @@ FilterIdentity PartitionSubsetLayer::readFilterIdentity(
         input.begin() + static_cast<std::ptrdiff_t>(offset),
         input.end()));
     FilterIdentity result;
-    serializer.text1b(result.filterId_, std::numeric_limits<uint32_t>::max());
+    serializer.text1b(result.filterId_, input.size());
     serializer.value8b(result.generation_);
     if (serializer.adapter().error() != bitsery::ReaderError::NoError) {
         raise("Failed to read PartitionSubsetLayer identity.");
@@ -1347,6 +1391,10 @@ FilterIdentity PartitionSubsetLayer::readFilterIdentity(
     return result;
 }
 
+/**
+ * Read dependency/issue/attachment metadata without decoding model columns or
+ * requiring a string pool. bytesRead stops before diagnostics, not at payload end.
+ */
 TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
     std::vector<uint8_t> const& input,
     LayerInfoResolveFun const& layerInfoResolveFun,
@@ -1367,24 +1415,26 @@ TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
         input.begin() + static_cast<std::ptrdiff_t>(offset),
         input.end()));
 
+    // The anchor belongs to the prelude but is not part of this metadata result.
     Point ignoredGeometryAnchor;
     serializer.value8b(ignoredGeometryAnchor.x);
     serializer.value8b(ignoredGeometryAnchor.y);
     serializer.value8b(ignoredGeometryAnchor.z);
 
     std::vector<DependencyWire> dependencyWire;
+    // Bound declared counts and text lengths by available bytes before allocating.
     serializer.container(
         dependencyWire,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& nested, DependencyWire& dependency) {
-            readWriteDependencyWire(nested, dependency);
+        input.size() / 5,
+        [&](auto& nested, DependencyWire& dependency) {
+            readWriteDependencyWire(nested, dependency, input.size());
         });
     std::vector<IssueWire> issueWire;
     serializer.container(
         issueWire,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& nested, IssueWire& issue) {
-            readWriteIssueWire(nested, issue);
+        input.size() / 12,
+        [&](auto& nested, IssueWire& issue) {
+            readWriteIssueWire(nested, issue, input.size());
         });
     bool hasGlbAttachmentName = false;
     serializer.value1b(hasGlbAttachmentName);
@@ -1392,7 +1442,7 @@ TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
         std::string glbAttachmentName;
         serializer.text1b(
             glbAttachmentName,
-            std::numeric_limits<uint32_t>::max());
+            input.size());
         result.glbAttachmentName_ = std::move(glbAttachmentName);
     }
 
@@ -1442,6 +1492,10 @@ void PartitionSubsetLayer::adoptSourceInfo(PartitionFeatureLayer const& source)
     setWarnings(source.warnings());
 }
 
+/**
+ * Sort/deduplicate by source key, rejecting conflicting counts before replacing
+ * the retained dependency vector. Source counts describe occupancy, not matches.
+ */
 void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dependencies)
 {
     std::sort(
@@ -1467,6 +1521,7 @@ void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dep
         }
         normalized.push_back(std::move(dependency));
     }
+
     dependencies_ = std::move(normalized);
 }
 
@@ -1509,6 +1564,8 @@ std::vector<FilterIssue> const& PartitionSubsetLayer::issues() const
 
 void PartitionSubsetLayer::setDiagnostics(simfil::Diagnostics const& diagnostics)
 {
+    // Input must be independent of diagnostics_: replacement clears the
+    // destination before append(), so a self-alias would also clear the source.
     diagnostics_.exprIndex_.clear();
     diagnostics_.fieldData_.clear();
     diagnostics_.comparisonData_.clear();
@@ -1520,18 +1577,24 @@ simfil::Diagnostics const& PartitionSubsetLayer::diagnostics() const
     return diagnostics_;
 }
 
+/**
+ * Replace trace rows in name order and copy their values into this model. A failed
+ * copy records an issue and keeps an empty value sequence for that trace.
+ */
 void PartitionSubsetLayer::setTraces(std::map<std::string, simfil::Trace> traces)
 {
     traces_.clear();
     for (auto&& [name, trace] : traces) {
-        auto values = newArray(std::max<size_t>(1, trace.values.size()), true);
-        for (auto const& value : trace.values) {
-            values->append(materializeValue(value));
+        auto values = copySequence(trace.values);
+        if (!values) {
+            addIssue({"", name, Scope::Feature,
+                fmt::format("Trace materialization failure: {}", values.error().message), 1});
+            values = newArray(1, true);
         }
         auto nameNode = newValue(name);
         traces_.emplace_back(FilterTrace::Data{
             nameNode->addr(),
-            values->addr(),
+            (*values)->addr(),
             static_cast<uint64_t>(trace.calls),
             static_cast<int64_t>(trace.totalus.count()),
         });
@@ -1567,53 +1630,85 @@ std::optional<std::string> const& PartitionSubsetLayer::glbAttachmentName() cons
     return glbAttachmentName_;
 }
 
-simfil::ModelNode::Ptr PartitionSubsetLayer::materializeValue(simfil::Value const& value)
-{
-    switch (value.type) {
-    case simfil::ValueType::Undef:
-    case simfil::ValueType::Null:
-        return resolve<simfil::ModelNode>(
-            {simfil::Model::Null, 1},
-            simfil::ScalarValueType{});
-    case simfil::ValueType::Bool:
-        return newSmallValue(value.as<simfil::ValueType::Bool>());
-    case simfil::ValueType::Int:
-        return newValue(value.as<simfil::ValueType::Int>());
-    case simfil::ValueType::Float:
-        return newValue(value.as<simfil::ValueType::Float>());
-    case simfil::ValueType::String:
-        return newValue(value.as<simfil::ValueType::String>());
-    case simfil::ValueType::Bytes:
-    case simfil::ValueType::TransientObject:
-    case simfil::ValueType::Object:
-    case simfil::ValueType::Array:
-        raiseFmt(
-            "PartitionSubsetLayer fields support only scalar values, not {}.",
-            value.toString());
-    case simfil::ValueType::LAST_:
-        break;
-    }
-    raise("Unsupported SIMFIL value type for PartitionSubsetLayer.");
-    return {};
-}
-
+/**
+ * Store one already-owned result array per projected expression, without cloning
+ * it. Empty projections share storage; validation failure does not roll back pool
+ * allocations made earlier in this call.
+ */
 model_ptr<Array> PartitionSubsetLayer::newValueArray(std::span<simfil::ModelNode::Ptr const> values)
 {
     if (values.empty()) {
         return sharedEmptyArray();
     }
-    auto array = newArray(values.size(), true);
+    auto created = tryNewArray(values.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
     for (auto const& value : values) {
-        if (!value) {
-            array->append(resolve<simfil::ModelNode>(
-                {simfil::Model::Null, 1},
-                simfil::ScalarValueType{}));
-            continue;
+        if (!value || value->type() != simfil::ValueType::Array) {
+            raise("Each projected expression requires a result sequence (array).");
         }
         validateOwnedNode(value, "projected value");
         array->append(value);
     }
     return array;
+}
+
+/** Materialize validated error records using the subset's fixed protocol field IDs. */
+model_ptr<Array> PartitionSubsetLayer::newValueErrors(
+    std::span<ProjectedValueError const> errors, size_t expressionCount)
+{
+    if (errors.empty()) {
+        return sharedEmptyArray();
+    }
+    auto created = tryNewArray(errors.size(), true);
+    if (!created)
+        raise<std::length_error>(created.error().message);
+    auto array = *created;
+    for (auto const& error : errors) {
+        if (error.expressionIndex_ >= expressionCount ||
+            (error.stage_ != "compilation" && error.stage_ != "evaluation" &&
+             error.stage_ != "materialization"))
+        {
+            raise("Invalid projected-value error index or stage.");
+        }
+        auto createdEntry = tryNewObject(3, true);
+        if (!createdEntry)
+            raise<std::length_error>(createdEntry.error().message);
+        auto entry = *createdEntry;
+        auto addValue = [&](std::string_view key, auto const& value)
+        {
+            auto node = tryNewValue(value);
+            if (!node)
+                raise<std::length_error>(node.error().message);
+            if (auto added = entry->addField(key, *node); !added)
+                raise(added.error().message);
+        };
+        addValue("expressionIndex", static_cast<int64_t>(error.expressionIndex_));
+        addValue("stage", error.stage_);
+        addValue("message", error.message_);
+        array->append(entry);
+    }
+    return array;
+}
+
+/** Decode the error-record shape produced by newValueErrors; this is not a validator. */
+std::vector<ProjectedValueError> PartitionSubsetLayer::readValueErrors(
+    simfil::ModelNodeAddress address) const
+{
+    std::vector<ProjectedValueError> result;
+    auto array = resolve<Array>(address);
+    if (!array) return result;
+    result.reserve(array->size());
+    for (uint32_t index = 0; index < array->size(); ++index) {
+        auto entry = array->at(index);
+        result.push_back({
+            static_cast<uint32_t>(std::get<int64_t>(entry->get(StringPool::ExpressionIndexStr)->value())),
+            nodeStringValue(entry->get(StringPool::StageStr)),
+            nodeStringValue(entry->get(StringPool::MessageStr)),
+        });
+    }
+    return result;
 }
 
 model_ptr<Array> PartitionSubsetLayer::newStringArray(std::span<std::string const> values)
@@ -1628,6 +1723,10 @@ model_ptr<Array> PartitionSubsetLayer::newStringArray(std::span<std::string cons
     return array;
 }
 
+/**
+ * Reuse one empty array for absent fields, values and errors. Callers must treat
+ * it as immutable because appending would change every record sharing its address.
+ */
 model_ptr<Array> PartitionSubsetLayer::sharedEmptyArray()
 {
     if (!sharedEmptyArrayAddress_) {
@@ -1674,6 +1773,8 @@ model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
     auto relationEntries = newArray(1);
     auto groupEntries = newArray(1);
 
+    if (!simfil::ModelNodeAddress::checkIndex(channels_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(channels_.size());
     channels_.emplace_back(TileSubsetChannel::Data{
         channelIdNode->addr(),
@@ -1700,16 +1801,20 @@ model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
 model_ptr<FeatureEntry> PartitionSubsetLayer::newFeatureEntry(
     model_ptr<FeatureId> const& featureId,
     model_ptr<GeometryCollection> const& geometry,
-    std::span<simfil::ModelNode::Ptr const> values)
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
 {
     validateOwnedNode(featureId, "feature entry id");
     validateOwnedNode(geometry, "feature entry geometry");
     auto valueArray = newValueArray(values);
+    if (!simfil::ModelNodeAddress::checkIndex(featureEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(featureEntries_.size());
     featureEntries_.emplace_back(FeatureEntry::Data{
         featureId->addr(),
         geometry->addr(),
         valueArray->addr(),
+        newValueErrors(valueErrors, values.size())->addr(),
     });
     return FeatureEntry(
         &featureEntries_.back(),
@@ -1734,7 +1839,9 @@ model_ptr<AttributeValidityEntry> PartitionSubsetLayer::newAttributeValidityEntr
     AttributeValidityEntry::TransitionEnd transitionFromConnectedEnd,
     model_ptr<FeatureId> const& transitionToFeatureId,
     AttributeValidityEntry::TransitionEnd transitionToConnectedEnd,
-    uint32_t transitionPivotIndex)
+    uint32_t transitionPivotIndex,
+    std::span<ProjectedValueError const> hostValueErrors,
+    std::span<ProjectedValueError const> valueErrors)
 {
     validateOwnedNode(featureId, "attribute-validity feature id");
     validateOwnedNode(geometry, "attribute-validity geometry");
@@ -1784,6 +1891,8 @@ model_ptr<AttributeValidityEntry> PartitionSubsetLayer::newAttributeValidityEntr
         transitionPivotIndex =
             AttributeValidityEntry::InvalidTransitionPivotIndex;
     }
+
+    // Transition metadata is validated before installing ordinary projections.
     auto hostValueArray = newValueArray(hostValues);
     auto valueArray = newValueArray(values);
     simfil::ModelNodeAddress layerAddress;
@@ -1791,12 +1900,16 @@ model_ptr<AttributeValidityEntry> PartitionSubsetLayer::newAttributeValidityEntr
     if (attributeLayer) layerAddress = newValue(*attributeLayer)->addr();
     if (attributeName) nameAddress = newValue(*attributeName)->addr();
 
+    if (!simfil::ModelNodeAddress::checkIndex(attributeValidityEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(attributeValidityEntries_.size());
     attributeValidityEntries_.emplace_back(AttributeValidityEntry::Data{
         featureId->addr(),
         geometry->addr(),
         hostValueArray->addr(),
         valueArray->addr(),
+        newValueErrors(hostValueErrors, hostValues.size())->addr(),
+        newValueErrors(valueErrors, values.size())->addr(),
         layerAddress,
         nameAddress,
         transitionFromAddress,
@@ -1826,7 +1939,8 @@ model_ptr<RelationEntry> PartitionSubsetLayer::newRelationEntry(
     model_ptr<FeatureEntry> const& target,
     model_ptr<GeometryCollection> const& sourceGeometry,
     model_ptr<GeometryCollection> const& targetGeometry,
-    std::span<simfil::ModelNode::Ptr const> values)
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
 {
     if (relationId.empty()) {
         raise("A relation entry requires a stable relationId.");
@@ -1840,6 +1954,8 @@ model_ptr<RelationEntry> PartitionSubsetLayer::newRelationEntry(
     auto provenanceNode = newValue(provenance);
     auto valueArray = newValueArray(values);
 
+    if (!simfil::ModelNodeAddress::checkIndex(relationEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(relationEntries_.size());
     relationEntries_.emplace_back(RelationEntry::Data{
         relationIdNode->addr(),
@@ -1850,6 +1966,7 @@ model_ptr<RelationEntry> PartitionSubsetLayer::newRelationEntry(
         sourceGeometry->addr(),
         targetGeometry->addr(),
         valueArray->addr(),
+        newValueErrors(valueErrors, values.size())->addr(),
         direction,
         twoway,
     });
@@ -1865,7 +1982,8 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
     model_ptr<FeatureId> const& representativeFeatureId,
     model_ptr<GeometryCollection> const& geometry,
     std::span<simfil::ModelNode::Ptr const> values,
-    std::span<model_ptr<FeatureId> const> memberFeatureIds)
+    std::span<model_ptr<FeatureId> const> memberFeatureIds,
+    std::span<ProjectedValueError const> valueErrors)
 {
     validateOwnedNode(groupKey, "group key");
     validateOwnedNode(representativeFeatureId, "group representative feature id");
@@ -1878,23 +1996,26 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
     for (auto const& member : sortedMembers) {
         validateOwnedNode(member, "group member feature id");
     }
+    // Order member references by JSON value while retaining repeated IDs.
+    // Stable sorting preserves input order for equal values.
     std::stable_sort(
         sortedMembers.begin(),
         sortedMembers.end(),
-        [](auto const& left, auto const& right) {
-            return left->toString() < right->toString();
-        });
+        [](auto const& left, auto const& right) { return left->toJson() < right->toJson(); });
     auto members = newArray(std::max<size_t>(1, sortedMembers.size()), true);
     for (auto const& member : sortedMembers) {
         members->append(member);
     }
 
+    if (!simfil::ModelNodeAddress::checkIndex(groupEntries_.size()))
+        raise<std::length_error>("Model node index exceeds its 24-bit representation");
     auto const index = static_cast<uint32_t>(groupEntries_.size());
     groupEntries_.emplace_back(GroupEntry::Data{
         groupKey->addr(),
         representativeFeatureId->addr(),
         geometry->addr(),
         valueArray->addr(),
+        newValueErrors(valueErrors, values.size())->addr(),
         members->addr(),
     });
     return GroupEntry(
@@ -1904,53 +2025,11 @@ model_ptr<GroupEntry> PartitionSubsetLayer::newGroupEntry(
         mpKey_);
 }
 
-model_ptr<FeatureId> PartitionSubsetLayer::newFeatureId(
-    std::string_view const& typeId,
-    KeyValueViewPairs const& featureIdParts,
-    std::optional<std::string_view> externalMapId)
-{
-    if (!layerInfo_->validFeatureId(typeId, featureIdParts, false)) {
-        raiseFmt(
-            "Could not find a matching ID composition of type {} for subset result.",
-            typeId);
-    }
-    auto typeIdString = strings()->emplace(typeId);
-    if (!typeIdString) {
-        raise(typeIdString.error().message);
-    }
-    auto const compositionIndex =
-        *layerInfo_->matchingFeatureIdCompositionIndex(
-            typeId,
-            featureIdParts,
-            false);
-    auto const& composition =
-        layerInfo_->getTypeInfo(typeId)->uniqueIdCompositions_[compositionIndex];
-
-    simfil::StringId externalMapIdString = simfil::StringPool::Empty;
-    if (externalMapId && *externalMapId != mapId()) {
-        auto storedMapId = strings()->emplace(*externalMapId);
-        if (!storedMapId) {
-            raise(storedMapId.error().message);
-        }
-        externalMapIdString = *storedMapId;
-    }
-    auto const address = appendFeatureId(FeatureId::Data{
-        false,
-        compositionIndex,
-        *typeIdString,
-        idPartValuesToArrayIndex(*this, composition, featureIdParts),
-        externalMapIdString,
-    });
-    return FeatureId(
-        featureIds_.at(address.index()),
-        shared_from_this(),
-        address,
-        mpKey_);
-}
-
 model_ptr<GeometryCollection>
 PartitionSubsetLayer::newGeometryCollection(size_t initialCapacity, bool fixedSize)
 {
+    if (!arrayMemberStorage().check_capacity(initialCapacity, fixedSize))
+        raise<std::length_error>("Geometry collection capacity exceeds model storage representation");
     auto index = arrayMemberStorage().new_array(initialCapacity, fixedSize);
     return GeometryCollection(
         shared_from_this(),
@@ -1962,6 +2041,11 @@ model_ptr<Geometry>
 PartitionSubsetLayer::newGeometry(GeomType geomType, size_t initialCapacity, bool fixedSize)
 {
     initialCapacity = std::max<size_t>(1, initialCapacity);
+    auto const capacity = geomType == GeomType::AABB ? 2 :
+        geomType == GeomType::GltfNodeIndex ? 3 : initialCapacity;
+    if (!vertexBufferStorage().check_capacity(
+            capacity, fixedSize || geomType == GeomType::AABB || geomType == GeomType::GltfNodeIndex))
+        raise<std::length_error>("Geometry capacity exceeds model storage representation");
     auto makeGeometry = [this](uint8_t column, simfil::ArrayIndex index) {
         return Geometry(
             shared_from_this(),
@@ -2038,6 +2122,10 @@ PartitionSubsetLayer::newSourceDataReferenceCollection(std::span<QualifiedSource
         mpKey_);
 }
 
+/**
+ * Refresh derived statistics, then append header, metadata, typed columns and the
+ * model pool in reader order. A later failure does not retract bytes already written.
+ */
 tl::expected<void, simfil::Error> PartitionSubsetLayer::write(std::ostream& outputStream)
 {
     updateEntryStatistics();
@@ -2257,6 +2345,8 @@ void PartitionSubsetLayer::validateOwnedNode(
 
 void PartitionSubsetLayer::updateEntryStatistics()
 {
+    // Terminal counts follow channel scope. Supporting feature rows in relation
+    // channels still contribute to Features, but not to the terminal Total.
     setInfo("Filter/Channels#count", channels_.size());
     size_t terminalEntries = 0;
     for (size_t index = 0; index < size(); ++index) {
@@ -2274,6 +2364,8 @@ void PartitionSubsetLayer::updateEntryStatistics()
 tl::expected<void, simfil::Error>
 PartitionSubsetLayer::resolve(simfil::ModelNode const& node, ResolveFn const& callback) const
 {
+    // Addresses are model-local: never resolve a foreign handle against this
+    // subset's columns, even when its column/index pair happens to exist here.
     if (auto owner = node.owningModel(); owner && owner.get() != this) {
         return owner->resolve(node, callback);
     }

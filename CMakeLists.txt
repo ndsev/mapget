@@ -7,7 +7,7 @@ project(mapget LANGUAGES CXX C)
 # Allow version to be set from command line for CI/CD
 # For local development, use the default version
 if(NOT DEFINED MAPGET_VERSION)
-  set(MAPGET_VERSION 2026.4.3)
+  set(MAPGET_VERSION 2026.5.0)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -34,6 +34,7 @@ endif()
 option(MAPGET_WITH_WHEEL "Enable mapget Python wheel (output to WHEEL_DEPLOY_DIRECTORY).")
 option(MAPGET_WITH_SERVICE "Enable mapget-service library. Requires threads.")
 option(MAPGET_WITH_HTTPLIB "Enable mapget-http-datasource and mapget-http-service libraries.")
+option(MAPGET_WITH_MCP "Build the optional MCP server, tools and browser-action relay." ON)
 
 if (MAPGET_ENABLE_TESTING)
   # Enable testing before adding CPM dependencies so stale/third-party CTest
@@ -114,8 +115,16 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
+  include(cmake/McpHelp.cmake)
+  if (MAPGET_WITH_MCP)
+    add_mcp_doc_folder(COMPONENT mapget DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+    add_mcp_doc_folder(COMPONENT simfil DIRECTORY "${simfil_SOURCE_DIR}/docs")
+  endif()
   add_subdirectory(libs/http-datasource)
   add_subdirectory(libs/http-service)
+  if (MAPGET_WITH_MCP)
+    add_dependencies(mapget-http-service mapget-mcp-docs)
+  endif()
   add_subdirectory(apps/mapget)
 endif()
 

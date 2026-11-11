@@ -4,18 +4,25 @@ add_library(mapget-http-service STATIC
   include/mapget/http-service/http-service.h
   include/mapget/http-service/http-client.h
   include/mapget/http-service/cli.h
+  include/mapget/http-service/mcp-config.h
+  include/mapget/http-service/proxy-auth.h
 
   src/http-service.cpp
   src/http-service-impl.h
   src/http-service-impl.cpp
   src/attachment-handler.cpp
+  src/bounded-json.h
+  src/bounded-json.cpp
+  src/proxy-auth.cpp
   src/cache-reset-handler.cpp
   src/config-handler.cpp
   src/http-client.cpp
   src/location-handler.cpp
+  src/mcp-config.cpp
   src/locate-handler.cpp
   src/object-discovery-handler.cpp
   src/sources-handler.cpp
+  src/schema-handler.cpp
   src/status-handler.cpp
   src/status-page.h
   src/status-page.cpp
@@ -32,6 +39,23 @@ add_library(mapget-http-service STATIC
   src/tiles-ws-status.h
   src/tiles-ws-status.cpp
   src/cli.cpp)
+
+target_compile_definitions(mapget-http-service PUBLIC MAPGET_WITH_MCP=$<BOOL:${MAPGET_WITH_MCP}>)
+if(MAPGET_WITH_MCP)
+  set_source_files_properties(src/mcp-server.cpp PROPERTIES COMPILE_DEFINITIONS
+    "MAPGET_MCP_VERSION=\"${MAPGET_VERSION}\"")
+  target_sources(mapget-http-service PRIVATE
+    src/mcp-action-catalog.cpp
+    src/mcp-auth.cpp
+    src/mcp-help.cpp
+    src/mcp-mapget-tools.cpp
+    src/mcp-mapget-call.cpp
+    src/mcp-mapget-query.cpp
+    src/mcp-mapget-extraction.cpp
+    src/mcp-mapget-catalog.cpp
+    src/mcp-server.cpp
+    src/mcp-viewer-relay.cpp)
+endif()
 
 target_include_directories(mapget-http-service
   PUBLIC
@@ -51,6 +75,9 @@ target_link_libraries(mapget-http-service
     gridsource
     geojsonsource
   PRIVATE
+    SQLite::SQLite3
+    ${CMAKE_DL_LIBS}
+    jwt-cpp::jwt-cpp
     picosha2
     zlibstatic)
 

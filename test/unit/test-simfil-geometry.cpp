@@ -1,7 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "mapget/model/point.h"
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/point.h"
+#include "mapget/model/sourcedatareference.h"
 #include "mapget/model/stringpool.h"
 #include "simfil/model/nodes.h"
 #include "simfil/simfil.h"
@@ -125,4 +126,34 @@ TEST_CASE("Linestring Intersection", "[simfil.geometry]")
 
     // Intersection outsides the start/end points
     REQUIRE_QUERY("linestring(point(0,0), point(1,1)) intersects linestring(point(2,0), point(2,1))", ValueType::Bool, false);
+}
+
+TEST_CASE(
+    "Geometry subscript bounds do not escape query callbacks",
+    "[simfil.geometry][simfil.subscript]")
+{
+    auto tile = makeLayer();
+    auto feature = tile->newFeature("Way", {{"wayId", 43}});
+    auto geometry = feature->geom()->newGeometry(GeomType::Points, 1);
+    geometry->setName("position");
+    geometry->append({11., 48., 0.});
+    QualifiedSourceDataReference reference{
+        .address_ = SourceDataAddress::fromBitPosition(4, 8),
+        .layerId_ = tile->strings()->emplace("RawLayer").value(),
+        .qualifier_ = tile->strings()->emplace("Line3D").value()};
+    geometry->setSourceDataReferences(tile->newSourceDataReferenceCollection({&reference, 1}));
+
+    // Numeric object access selects _sourceData, not a coordinate array. Its custom
+    // collection throws for invalid indices; a user expression must never abort.
+    for (auto const* query :
+         {"geometry[0][2]", "geometry[0][-1]", "geometry[0][9223372036854775807]", "geometry[99]"})
+    {
+        INFO(query);
+        auto result = feature->evaluate(query);
+        REQUIRE(result);
+        CHECK(result->type == ValueType::Null);
+    }
+    auto valid = feature->evaluate("geometry[0][0].qualifier");
+    REQUIRE(valid);
+    CHECK(valid->toString() == "Line3D");
 }

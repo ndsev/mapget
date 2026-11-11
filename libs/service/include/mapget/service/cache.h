@@ -26,7 +26,9 @@ class Cache : public TileLayerStream::StringPoolCache, public std::enable_shared
     friend class DataSource;
 
 public:
-    struct LookupResult {
+    /** A usable decoded layer, or a miss with the expired layer's deadline when known. */
+    struct LookupResult
+    {
         PartitionLayer::Ptr tile;
         std::optional<std::chrono::system_clock::time_point> expiredAt;
     };
@@ -42,7 +44,12 @@ public:
      */
     void putTileLayer(PartitionLayer::Ptr const& l);
 
-    /** Used by DataSource to retrieve a cached PartitionLayer. */
+    /**
+     * Retrieve a cached PartitionLayer for a DataSource, decoding it with the
+     * supplied datasource metadata and cached string pool.
+     * Missing, unreadable and expired blobs return an empty tile; only expiry
+     * sets expiredAt so the service can notify the datasource before reloading.
+     */
     LookupResult getTileLayer(MapPartitionKey const& tileKey, DataSourceInfo const& dataSource);
 
     /**
@@ -53,7 +60,9 @@ public:
      */
     void invalidateMap(std::string_view mapId);
 
-    /** Override for CachedStringPoolCache::getStringPool() */
+    /** Override TileLayerStream::StringPoolCache::getStringPool() to reuse the source
+     * dictionary in memory, loading its persisted blob on first access.
+     */
     std::shared_ptr<StringPool> getStringPool(std::string_view const&) override;
 
     // You need to implement these methods:
@@ -67,7 +76,11 @@ public:
     /** Abstract: Remove one PartitionLayer blob if present. */
     virtual void eraseTileLayerBlob(MapPartitionKey const& k) = 0;
 
-    /** Abstract: Iterate through all cached tile layer blobs. */
+    /**
+     * Visit the stored blobs while the implementation may hold its cache lock.
+     * The visitor must not re-enter this cache or retain references to the blob.
+     * Collect keys first and mutate afterward, as invalidateMap() does.
+     */
     virtual void forEachTileLayerBlob(const TileBlobVisitor& cb) const = 0;
 
     /** Abstract: Retrieve a string-pool blob for a sourceStringPoolId. */
@@ -86,9 +99,10 @@ public:
      */
     virtual nlohmann::json getStatistics() const;
 
-
 protected:
-    // Used by DataSource::cachedStringPoolOffset()
+    /** Used by DataSource::cachedStringPoolOffset(): return the highest persisted
+     * dictionary ID, or zero when no dictionary was written yet.
+     */
     simfil::StringId cachedStringPoolOffset(std::string const& stringPoolId);
 
     // Mutex for stringPoolOffsets_

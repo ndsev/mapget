@@ -1,5 +1,8 @@
 #include "http-service-impl.h"
 
+#if MAPGET_WITH_MCP
+#include "mcp-server.h"
+#endif
 #include "tiles-ws-controller.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -25,6 +28,11 @@ HttpService::HttpService(Cache::Ptr cache, const HttpServiceConfig& config)
 
 HttpService::~HttpService()
 {
+#if MAPGET_WITH_MCP
+    // Complete MCP callers while HTTP connections still exist, then tear down Drogon.
+    if (impl_->mcp_)
+        impl_->mcp_->stop();
+#endif
     // Stop Drogon before destroying the executor used by websocket sessions.
     stop();
 }
@@ -36,7 +44,26 @@ bool HttpService::enqueueInteractiveControlTask(std::function<void()> task)
 
 void HttpService::setup(drogon::HttpAppFramework& app)
 {
-    detail::registerTilesWebSocketController(app, *this);
+    detail::registerTilesWebSocketController(app, *this, impl_->mcp_, impl_->config_.proxyAuth);
+#if MAPGET_WITH_MCP
+    if (impl_->mcp_) {
+        impl_->mcp_->setup(app);
+    }
+    else {
+        app.registerHandler(
+            "/mcp/info",
+            [](drogon::HttpRequestPtr const&,
+               std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+            {
+                auto response = drogon::HttpResponse::newHttpResponse();
+                response->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+                response->setBody(R"({"enabled":false})");
+                response->addHeader("Cache-Control", "no-store");
+                callback(response);
+            },
+            {drogon::Get});
+    }
+#endif
 
     app.registerHandler(
         "/tiles",
@@ -61,6 +88,23 @@ void HttpService::setup(drogon::HttpAppFramework& app)
             std::function<void(const drogon::HttpResponsePtr&)>&& callback)
         { impl_->handleAttachmentRequest(req, std::move(callback)); },
         {drogon::Get});
+
+    app.registerHandler(
+        "/schema",
+        [this](
+            drogon::HttpRequestPtr const& req,
+            std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+        { impl_->handleSchemaRequest(req, std::move(callback)); },
+        {drogon::Get});
+
+    for (auto const* path : {"/schemas", "/schema/inspect"})
+        app.registerHandler(
+            path,
+            [this](
+                drogon::HttpRequestPtr const& req,
+                std::function<void(drogon::HttpResponsePtr const&)>&& callback)
+            { impl_->handleSchemaInspectionRequest(req, std::move(callback)); },
+            {drogon::Get});
 
     app.registerHandler(
         "/sources",

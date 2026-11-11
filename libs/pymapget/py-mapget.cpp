@@ -8,12 +8,16 @@ namespace py = pybind11;
 using namespace py::literals;
 using namespace std::string_literals;
 
+// Binding headers share helpers and the PackedTileId caster; preserve dependency order.
+// clang-format off
 #include "binding/py-tileid.h"
 #include "binding/py-model.h"
+#include "binding/py-schema.h"
 #include "binding/py-layer.h"
 #include "binding/py-datasource.h"
 #include "binding/py-service.h"
 #include "binding/py-client.h"
+// clang-format on
 
 #include "mapget/http-service/cli.h"
 
@@ -24,6 +28,7 @@ PYBIND11_MODULE(pymapget, m)
     bindTileId(m);
     bindPartitionId(m);
     bindModel(m);
+    mapget::bindSchema(m);
     bindTileLayer(m);
     bindDataSourceServer(m);
     bindHttpService(m);
@@ -35,11 +40,10 @@ PYBIND11_MODULE(pymapget, m)
     m.attr("TileSourceDataLayer") = m.attr("PartitionSourceDataLayer");
     m.attr("MapTileKey") = m.attr("MapPartitionKey");
 
-    // Note: We only expose the first two parameters of runFromCommandLine.
-    // The third parameter (additionalCommandLineSetupFun) is an advanced C++
-    // extension point for applications embedding mapget to add custom CLI11
-    // commands. It's not exposed to Python as it would require CLI11 Python
-    // bindings and has no practical use case for Python API users.
+    // Only the first two parameters of runFromCommandLine are exposed.
+    // The third, additionalCommandLineSetupFun, lets C++ applications embedding
+    // mapget add custom CLI11 commands. Exposing it to Python would require
+    // bindings for the CLI11 types, which this module does not provide.
     m.def("run",
         [](const std::vector<std::string>& args, bool requireSubcommand) {
             return mapget::runFromCommandLine(args, requireSubcommand);

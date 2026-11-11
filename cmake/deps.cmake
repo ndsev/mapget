@@ -30,7 +30,7 @@ else()
     CPMAddPackage(
         NAME ndsmath
         GITHUB_REPOSITORY ndsev/ndslive-math
-        GIT_TAG 009bba06356dfd01f98c1570a003e31180788811
+        GIT_TAG v1.1.1
         GIT_SHALLOW FALSE
         SOURCE_SUBDIR cpp
         OPTIONS
@@ -59,6 +59,8 @@ CPMAddPackage(
 CPMAddPackage("gh:fraillt/bitsery@5.2.4")
 CPMAddPackage("gh:nlohmann/json@3.11.3")
 CPMAddPackage("gh:pboettch/json-schema-validator#2.3.0")
+# Exact schema identities are also needed by model-only/WASM consumers.
+CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 CPMAddPackage(
     URI "gh:TartanLlama/expected@1.1.0"
     OPTIONS
@@ -86,7 +88,7 @@ else()
     CPMAddPackage(
         NAME simfil
         GITHUB_REPOSITORY Klebert-Engineering/simfil
-        GIT_TAG 75ea669404608194b7d2b33036515153db78493f
+        GIT_TAG v1.2.0
         GIT_SHALLOW FALSE
         OPTIONS
             "SIMFIL_WITH_MODEL_JSON ON"
@@ -119,6 +121,20 @@ if (MAPGET_WITH_WHEEL OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 
     set (OPENSSL_VERSION openssl-3.5.2)
     CPMAddPackage("gh:klebert-engineering/openssl-cmake@1.0.0")
+    # Before OpenSSL's first build, FindOpenSSL cannot read its generated version header.
+    # jwt-cpp's minimum-version check needs a numeric version, not our Git tag selector.
+    set(_mapget_openssl_revision "${OPENSSL_VERSION}")
+    string(REGEX REPLACE "^openssl-" "" OPENSSL_VERSION "${OPENSSL_VERSION}")
+    CPMAddPackage(
+        NAME jwt-cpp
+        GITHUB_REPOSITORY Thalhammer/jwt-cpp
+        GIT_TAG v0.7.2
+        OPTIONS
+            "JWT_BUILD_EXAMPLES OFF"
+            "JWT_BUILD_TESTS OFF"
+            "JWT_DISABLE_PICOJSON ON")
+    set(OPENSSL_VERSION "${_mapget_openssl_revision}")
+    unset(_mapget_openssl_revision)
     CPMAddPackage(
         URI "gh:madler/zlib@1.3.1"
         OPTIONS
@@ -181,6 +197,10 @@ endif()
             "-DSOURCE_DIR=<SOURCE_DIR>"
             "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/drogon-async-close.patch"
             -P "${CMAKE_CURRENT_LIST_DIR}/apply-dependency-patch.cmake"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DSOURCE_DIR=<SOURCE_DIR>"
+            "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/drogon-websocket-fragments.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/apply-dependency-patch.cmake"
         OPTIONS
             "BUILD_CTL OFF"
             "BUILD_EXAMPLES OFF"
@@ -208,7 +228,6 @@ endif()
             "YAML_CPP_BUILD_TOOLS OFF"
             "YAML_CPP_BUILD_CONTRIB OFF")
     CPMAddPackage("gh:CLIUtils/CLI11@2.5.0")
-    CPMAddPackage("gh:okdshin/PicoSHA2@1.0.1")
 
 endif ()
 

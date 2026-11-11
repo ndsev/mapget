@@ -7,6 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include <cctype>
+#include <unordered_set>
 #include <nlohmann/json-schema.hpp>
 #include <fmt/format.h>
 
@@ -18,6 +19,46 @@ namespace mapget
 {
 namespace {
 
+/** Encode YAML structure without lossy scalar conversion or map presentation order. */
+nlohmann::json configStructure(YAML::Node const& node)
+{
+    // Quoting changes the non-specific tag (! versus ?), not yaml-cpp's scalar
+    // value. Explicit application/type tags remain part of constructor input.
+    auto tag = node.Tag();
+    if (tag == "!" || tag == "?") {
+        tag.clear();
+    }
+    auto result = nlohmann::json::array({static_cast<int>(node.Type()), std::move(tag)});
+    if (node.IsScalar()) {
+        result.push_back(node.Scalar());
+    }
+    else if (node.IsSequence()) {
+        for (auto const& child : node) {
+            result.push_back(configStructure(child));
+        }
+    }
+    else if (node.IsMap()) {
+        auto fields = nlohmann::json::array();
+        for (auto const& field : node) {
+            fields.push_back(nlohmann::json::array(
+                {configStructure(field.first), configStructure(field.second)}));
+        }
+        auto sorted = fields;
+        std::sort(
+            sorted.begin(),
+            sorted.end(),
+            [](auto const& a, auto const& b) { return a[0] < b[0]; });
+        // Duplicate YAML keys make order observable to readers. Only normalize
+        // ordinary mappings with distinct keys; keep ambiguous input conservative.
+        auto duplicate = std::adjacent_find(
+            sorted.begin(),
+            sorted.end(),
+            [](auto const& a, auto const& b) { return a[0] == b[0]; });
+        result.push_back(duplicate == sorted.end() ? std::move(sorted) : std::move(fields));
+    }
+    return result;
+}
+
 nlohmann::json ttlSchema()
 {
     return {
@@ -27,8 +68,26 @@ nlohmann::json ttlSchema()
         {"description",
          "Fallback lifetime in seconds for successful nonempty tiles/objects. "
          "0 = infinite; omitted = mapget.serve.ttl. Explicit payload TTLs win. "
-         "Errors and empty source layers instead use mapget.serve.error-tile-ttl "
-         "and mapget.serve.empty-tile-ttl."}};
+         "Errors and empty source layers instead use error-tile-ttl "
+         "and empty-tile-ttl (per-source overrides or mapget.serve defaults)."}};
+}
+
+/** Shared source options, independent of any provider's constructor schema. */
+nlohmann::json retryTtlSchema(std::string const& kind)
+{
+    return {
+        {"type", "integer"},
+        {"minimum", 0},
+        {"maximum",
+         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+             .count()},
+        {"description",
+         "Maximum " + kind +
+             " tile lifetime in seconds. Omitted = inherit "
+             "mapget.serve." +
+             kind +
+             "-tile-ttl; 0 disables expiry-based retries, overriding "
+             "the producer TTL. Positive values preserve shorter producer lifetimes."}};
 }
 
 nlohmann::json authHeaderSchema()
@@ -37,6 +96,17 @@ nlohmann::json authHeaderSchema()
         {"type", "object"},
         {"title", "Authorization headers"},
         {"description", "Map of header names to regular expressions. At least one must match for access."},
+        {"additionalProperties", {{"type", "string"}}}
+    };
+}
+
+nlohmann::json authClaimsSchema()
+{
+    return {
+        {"type", "object"},
+        {"title", "Required identity claims"},
+        {"description", "JSON-pointer keys with exact string or array-member requirements. All must match, in addition to auth-header."},
+        {"propertyNames", {{"pattern", "^(/([^~]|~[01])*)+$"}}},
         {"additionalProperties", {{"type", "string"}}}
     };
 }
@@ -102,8 +172,9 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
 
 /**
  * Build a display-only name for a catalog row that has no authoritative
- * DataSourceInfo yet. A configured map ID wins; otherwise non-secret
- * top-level scalar values are concatenated in YAML order.
+ * DataSourceInfo yet. A configured map ID wins; otherwise top-level scalars
+ * not matched by isSecretConfigKey are concatenated in YAML order. That key
+ * heuristic does not establish that the resulting display name is secret-free.
  */
 [[nodiscard]] std::string dataSourceDisplayName(
     YAML::Node const& descriptor,
@@ -141,28 +212,64 @@ void reportInitStatus(DataSourceInitContext& initContext, std::string message)
 [[nodiscard]] std::unordered_map<std::string, std::regex> parseAuthHeaderAlternatives(YAML::Node const& descriptor)
 {
     std::unordered_map<std::string, std::regex> result;
-    for (auto authOption : descriptor["auth-header"]) {
+    auto const options = descriptor["auth-header"];
+    if (!options)
+        return result;
+    if (!options.IsMap())
+        throw std::invalid_argument("auth-header must be a map of header names to regular expressions.");
+    for (auto authOption : options) {
         auto key = authOption.first.as<std::string>();
         auto value = authOption.second.as<std::string>();
-        std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        result.emplace(std::move(key), std::regex(value));
+        if (!addAuthHeaderRegexMatchOption(result, key, std::regex(value)))
+            throw std::invalid_argument("auth-header names must be unique ignoring case.");
+    }
+    return result;
+}
+
+AuthClaimRequirements parseAuthClaims(YAML::Node const& descriptor)
+{
+    AuthClaimRequirements result;
+    auto const claims = descriptor["auth-claims"];
+    if (!claims)
+        return result;
+    if (!claims.IsMap())
+        throw std::invalid_argument("auth-claims must be a map of JSON pointers to strings.");
+    for (auto const& entry : claims) {
+        if (!entry.first.IsScalar() || !entry.second.IsScalar())
+            throw std::invalid_argument("auth-claims requires JSON-pointer keys and string values.");
+        auto pointer = nlohmann::json::json_pointer(entry.first.as<std::string>());
+        if (pointer.empty() || !result.emplace(std::move(pointer), entry.second.as<std::string>()).second)
+            throw std::invalid_argument("auth-claims requires unique nonempty JSON pointers.");
     }
     return result;
 }
 
 void applyGenericDataSourceOptions(DataSource& dataSource, YAML::Node const& descriptor)
 {
-    if (auto ttlNode = descriptor["ttl"]) {
-        auto ttlSeconds = ttlNode.as<int64_t>();
-        if (ttlSeconds < 0) {
-            throw std::runtime_error("`ttl` must be non-negative.");
+    auto readTtl = [&](char const* name)
+    {
+        auto seconds = descriptor[name].as<int64_t>();
+        auto maxSeconds =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                .count();
+        if (seconds < 0 || seconds > maxSeconds) {
+            throw std::runtime_error(
+                std::string(name) + " must be non-negative and fit a millisecond duration.");
         }
-        dataSource.setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::seconds(ttlSeconds)));
-    }
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::seconds(seconds));
+    };
+    if (descriptor["ttl"])
+        dataSource.setTtl(readTtl("ttl"));
+    if (descriptor["error-tile-ttl"])
+        dataSource.setErrorTileTtl(readTtl("error-tile-ttl"));
+    if (descriptor["empty-tile-ttl"])
+        dataSource.setEmptyTileTtl(readTtl("empty-tile-ttl"));
 
     for (auto const& [key, value] : parseAuthHeaderAlternatives(descriptor)) {
         dataSource.requireAuthHeaderRegexMatchOption(key, value);
+    }
+    for (auto const& [pointer, value] : parseAuthClaims(descriptor)) {
+        dataSource.requireAuthClaim(pointer.to_string(), value);
     }
 }
 
@@ -185,6 +292,15 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     std::function<void(std::vector<YAML::Node> const&)> const& successCallback,
     std::function<void(std::string const&)> const& errorCallback)
 {
+    if (!successCallback) return nullptr;
+    return subscribeWithReload(
+        [successCallback](auto const& nodes, bool) { successCallback(nodes); }, errorCallback);
+}
+
+std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::subscribeWithReload(
+    std::function<void(std::vector<YAML::Node> const&, bool)> const& successCallback,
+    std::function<void(std::string const&)> const& errorCallback)
+{
     if (!successCallback) {
         log().warn("Refusing to register config subscription with NULL callback.");
         return nullptr;
@@ -194,12 +310,13 @@ std::unique_ptr<DataSourceConfigService::Subscription> DataSourceConfigService::
     auto sub = std::make_unique<Subscription>(nextSubscriptionId_++);
     log().debug("Registering config subscription with ID: {}", sub->id_);
     subscriptions_[sub->id_] = {successCallback, errorCallback};
-    // Optionally, trigger the callback with the current configuration immediately
-    if (!currentConfig_.empty()) {
+    // Replay accepted state and its current rejection, including an accepted empty catalog.
+    if (hasAcceptedConfig_) {
         log().debug("Triggering immediate callback for subscription {} with {} config nodes", 
                     sub->id_, currentConfig_.size());
-        successCallback(currentConfig_);
+        successCallback(currentConfig_, false);
     }
+    if (lastConfigError_ && errorCallback) errorCallback(*lastConfigError_);
     return sub;
 }
 
@@ -216,22 +333,25 @@ void DataSourceConfigService::loadConfig(std::string const& path, bool startWatc
         auto configMutationLock = lockConfigMutation();
         configFilePath_ = path;
 
-        // Force reload by clearing checksum.
-        lastConfigSHA256_.clear();
-
-        // Notify subscribers immediately to allow dependent apps to proceed
-        // This is needed as there otherwise apps would have to wait manually
-        // for the callback to be called before they can continue.
-        loadConfig();
+        // Reconcile synchronously before starting the polling thread so subscribers
+        // can enqueue initial construction without waiting for the first poll.
+        reloadConfig(true);
     }
 
     if (startWatchThread)
         startConfigFileWatchThread();
 }
 
-void DataSourceConfigService::loadConfig()
+std::string DataSourceConfigService::configContentFingerprint(std::string const& content) const
+{
+    return picosha2::hash256_hex_string(
+        nlohmann::json::array({configFilePath_, content, schemaRevision_}).dump());
+}
+
+void DataSourceConfigService::reloadConfig(bool retryFailedSources)
 {
     auto configMutationLock = lockConfigMutation();
+    std::lock_guard memberAccessLock(memberAccessMutex_);
     std::optional<std::string> error;
 
     log().trace("loadConfig() called, configFilePath: {}", configFilePath_);
@@ -239,29 +359,38 @@ void DataSourceConfigService::loadConfig()
     try {
         std::ifstream file(configFilePath_);
         if (!file) {
+            // A read failure must not suppress recovery when the same bytes reappear.
+            lastConfigSHA256_.clear();
             log().trace("Config file does not exist or cannot be opened: {}", configFilePath_);
             throw YAML::Exception(YAML::Mark::null_mark(), "The file does not exist.");
         }
 
-        // Add current file name to input buffer to force a reload when file has been moved.
         std::stringstream buffer;
-        buffer << file.rdbuf() << configFilePath_;
-
-        std::string sha256;
-        picosha2::hash256_hex_string(buffer.str(), sha256);
+        buffer << file.rdbuf();
+        if (file.bad()) {
+            lastConfigSHA256_.clear();
+            throw YAML::Exception(YAML::Mark::null_mark(), "Could not read the configuration file.");
+        }
+        auto content = buffer.str();
+        auto sha256 = configContentFingerprint(content);
 
         log().trace("Config file SHA256: {}, last SHA256: {}", sha256, lastConfigSHA256_);
 
-        if (sha256 == lastConfigSHA256_)
+        if (!retryFailedSources && sha256 == lastConfigSHA256_)
         {
             log().trace("Config file unchanged. No need to reload.");
             return;
         }
 
-        YAML::Node config = YAML::LoadFile(configFilePath_);
+        lastConfigSHA256_ = std::move(sha256);
+        YAML::Node config = YAML::Load(content);
         {
-            std::lock_guard memberAccessLock(memberAccessMutex_);
             validateDataSourceConfig(config);
+            auto sharedConfig = YAML::Clone(config);
+            sharedConfig.remove("sources");
+            picosha2::hash256_hex_string(
+                nlohmann::json::array({configFilePath_, configStructure(sharedConfig)}).dump(),
+                dataSourceContextFingerprint_);
             currentConfig_.clear();
             dataSourceConfigStats_ = {};
             if (auto sourcesNode = config["sources"]) {
@@ -281,11 +410,12 @@ void DataSourceConfigService::loadConfig()
             else {
                 log().debug(fmt::format("The config file {} does not have a sources node.", configFilePath_));
             }
-            lastConfigSHA256_ = sha256;
+            hasAcceptedConfig_ = true;
+            lastConfigError_.reset();
             log().debug("Notifying {} subscribers", subscriptions_.size());
             for (const auto& [subId, subCb] : subscriptions_) {
                 log().debug("Calling subscriber {}", subId);
-                subCb.success_(currentConfig_);
+                subCb.success_(currentConfig_, retryFailedSources);
             }
         }
     }
@@ -297,8 +427,15 @@ void DataSourceConfigService::loadConfig()
     {
         error = fmt::format("Failed to parse YAML config {}: {}", configFilePath_, yamlError.what());
     }
+    catch (const std::exception& configError)
+    {
+        // Semantic validators (for example regexes and JSON pointers) use their
+        // own exception types. A rejected file must not terminate the watcher.
+        error = fmt::format("Failed to load YAML config {}: {}", configFilePath_, configError.what());
+    }
 
-    if (error) {
+    if (error && error != lastConfigError_) {
+        lastConfigError_ = error;
         log().error(*error);
         for (const auto& [subId, subCb] : subscriptions_) {
             if (subCb.error_)
@@ -341,7 +478,8 @@ DataSource::Ptr DataSourceConfigService::makeDataSource(YAML::Node const& descri
         }
 
         if (!constructor) {
-            auto message = fmt::format("No constructor is registered for datasource type: {}", type);
+            auto message = fmt::format(
+                "Datasource type '{}' is not supported by this build. Automatic retries are disabled.", type);
             log().error("{}", message);
             reportInitStatus(initContext, std::move(message));
             return nullptr;
@@ -400,17 +538,24 @@ DataSourceDescriptor DataSourceConfigService::describeDataSource(YAML::Node cons
         result.addOn = false;
     }
 
-    try {
-        result.authHeaderAlternatives = parseAuthHeaderAlternatives(descriptor);
-    }
-    catch (std::exception const& e) {
-        log().warn(
-            "Could not parse auth-header options for datasource config index {}: {}",
-            configIndex,
-            e.what());
-    }
+    // Invalid gates must not publish an unrestricted initializing/failed catalog entry.
+    result.authHeaderAlternatives = parseAuthHeaderAlternatives(descriptor);
+    result.requiredClaims = parseAuthClaims(descriptor);
 
     return result;
+}
+
+std::string DataSourceConfigService::dataSourceConfigFingerprint(YAML::Node const& descriptor) const
+{
+    std::lock_guard memberAccessLock(memberAccessMutex_);
+    std::string fingerprint;
+    auto type = scalarString(descriptor, "type").value_or("");
+    auto registration = constructors_.find(type);
+    picosha2::hash256_hex_string(
+        nlohmann::json::array({dataSourceContextFingerprint_, configStructure(descriptor),
+            registration == constructors_.end() ? uint64_t{0} : registration->second.revision_}).dump(),
+        fingerprint);
+    return fingerprint;
 }
 
 void DataSourceConfigService::registerDataSourceType(
@@ -440,7 +585,7 @@ void DataSourceConfigService::registerDataSourceType(
         return;
     }
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    constructors_[typeName] = {std::move(constructor), std::move(schema)};
+    constructors_[typeName] = {std::move(constructor), std::move(schema), ++schemaRevision_};
     schema_.reset();
     validator_.reset();
     log().info("Registered data source type {}.", typeName);
@@ -516,8 +661,8 @@ nlohmann::json parseStructuredDocument(
             return nlohmann::json::parse(trimmed);
         }
         catch (const std::exception&) {
-            // Fall back to YAML parsing below. YAML is a superset of JSON,
-            // so this keeps error handling consistent for malformed input.
+            // A leading brace/bracket can also start YAML flow syntax. Try the
+            // YAML parser after JSON rejects it; conversion uses YAML scalar coercion.
         }
     }
 
@@ -550,6 +695,7 @@ YAML::Node jsonToYaml(
 {
     YAML::Node node;
     if (json.is_object()) {
+        node = YAML::Node(YAML::NodeType::Map);
         for (auto it = json.begin(); it != json.end(); ++it) {
             if (isSecretConfigKey(it.key()) && it.value().is_string())
             {
@@ -564,6 +710,8 @@ YAML::Node jsonToYaml(
         }
     }
     else if (json.is_array()) {
+        // Empty containers must remain containers (not YAML null), e.g. sources: [].
+        node = YAML::Node(YAML::NodeType::Sequence);
         for (const auto& item : json) {
             node.push_back(jsonToYaml(item, maskedSecretMap));
         }
@@ -635,8 +783,11 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
             properties["enabled"] = enabledSchema();
         if (!properties.contains("ttl"))
             properties["ttl"] = ttlSchema();
+        properties["error-tile-ttl"] = retryTtlSchema("error");
+        properties["empty-tile-ttl"] = retryTtlSchema("empty");
         if (!properties.contains("auth-header"))
             properties["auth-header"] = authHeaderSchema();
+        properties["auth-claims"] = authClaimsSchema();
 
         auto& required = schema["required"];
         if (!required.is_array())
@@ -647,28 +798,33 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
         oneOf.push_back(schema);
     }
 
-    nlohmann::json typeProperty = {{"type", "string"}};
-    if (!typeEnums.empty()) {
-        typeProperty["enum"] = typeEnums;
-    }
+    nlohmann::json typeProperty = {{"type", "string"}, {"minLength", 1}};
 
     nlohmann::json sourcesItems = {
         {"type", "object"},
-        {"properties", {
-            {"type", typeProperty},
-            {"sourceId", {
-                {"type", "string"},
-                {"minLength", 1},
-            }},
-            {"enabled", enabledSchema()},
-            {"ttl", ttlSchema()},
-            {"auth-header", authHeaderSchema()}
-        }},
+        {"properties",
+         {{"type", typeProperty},
+          {"mapId", {{"type", "string"}}},
+          {"addOn", {{"type", "boolean"}}},
+          {"sourceId",
+           {
+               {"type", "string"},
+               {"minLength", 1},
+           }},
+          {"enabled", enabledSchema()},
+          {"ttl", ttlSchema()},
+          {"error-tile-ttl", retryTtlSchema("error")},
+          {"empty-tile-ttl", retryTtlSchema("empty")},
+          {"auth-header", authHeaderSchema()},
+          {"auth-claims", authClaimsSchema()}}},
         {"required", nlohmann::json::array({"type"})},
-        {"additionalProperties", true}
-    };
+        {"additionalProperties", true}};
 
     if (!oneOf.empty()) {
+        // Only unavailable types use the generic descriptor contract. Known types
+        // must still satisfy their registered (possibly closed) schema. Keep this
+        // branch without a type enum so editors offer only registered types.
+        oneOf.push_back({{"properties", {{"type", {{"not", {{"enum", typeEnums}}}}}}}});
         sourcesItems["oneOf"] = oneOf;
     }
 
@@ -698,6 +854,7 @@ void DataSourceConfigService::setDataSourceConfigSchemaPatch(nlohmann::json sche
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
     schemaPatch_ = schemaPatch;
+    ++schemaRevision_;
     schema_.reset();
     validator_.reset();
 }
@@ -838,8 +995,7 @@ void DataSourceConfigService::acknowledgePublicConfigWrite(
     std::string const& completeFileContents)
 {
     std::lock_guard memberAccessLock(memberAccessMutex_);
-    auto watchedContent = completeFileContents + configFilePath_;
-    picosha2::hash256_hex_string(watchedContent, lastConfigSHA256_);
+    lastConfigSHA256_ = configContentFingerprint(completeFileContents);
 }
 
 std::unique_lock<std::recursive_mutex> DataSourceConfigService::lockConfigMutation() const
@@ -857,10 +1013,29 @@ void DataSourceConfigService::validateDataSourceConfig(nlohmann::json json) cons
             return;
     }
     auto _ = validator_->validate(json);
+    for (auto const& source : json.at("sources")) {
+        auto const descriptor = jsonToYaml(source);
+        (void)parseAuthHeaderAlternatives(descriptor);
+        (void)parseAuthClaims(descriptor);
+    }
 }
 
 void DataSourceConfigService::validateDataSourceConfig(YAML::Node yaml) const
 {
+    // YAML-to-JSON conversion would otherwise discard duplicate gate keys.
+    for (auto const& source : yaml["sources"]) {
+        std::unordered_set<std::string> gates;
+        if (source.IsMap()) {
+            for (auto const& field : source) {
+                if (!field.first.IsScalar()) continue;
+                auto key = field.first.Scalar();
+                if ((key == "auth-header" || key == "auth-claims") && !gates.insert(key).second)
+                    throw std::invalid_argument("Datasource authorization gate keys must be unique.");
+            }
+        }
+        (void)parseAuthHeaderAlternatives(source);
+        (void)parseAuthClaims(source);
+    }
     nlohmann::json filtered = nlohmann::json::object();
     for (auto const& key : topLevelDataSourceConfigKeys()) {
         if (auto n = yaml[key])
@@ -938,7 +1113,7 @@ void DataSourceConfigService::startConfigFileWatchThread()
                     // Reload by content hash, not only by timestamp. Fast rewrites can
                     // otherwise be missed if the file system timestamp granularity is
                     // coarse or the watch thread starts after the rewrite has landed.
-                    loadConfig();
+                    reloadConfig();
                 }
 
                 lastModTime = currentModTime;
@@ -975,6 +1150,12 @@ void DataSourceConfigService::reset() {
     constructors_.clear();
     currentConfig_.clear();
     configFilePath_.clear();
+    dataSourceContextFingerprint_.clear();
+    lastConfigSHA256_.clear();
+    lastConfigError_.reset();
+    hasAcceptedConfig_ = false;
+    schemaRevision_ = 0;
+    schemaPatch_.reset();
     schema_.reset();
     validator_.reset();
     publicConfigSectionSerializers_.clear();

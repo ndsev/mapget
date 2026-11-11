@@ -85,7 +85,7 @@ protected:
 };
 
 /**
- * Zero-overhead array view over the inserted points owned by one sequence.
+ * Array view over one sequence's inserted points, sharing the existing point column.
  */
 class AttrPointArray final : public simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>
 {
@@ -166,6 +166,8 @@ public:
     /**
      * Append an inserted point in strictly increasing logical-index order.
      * Appending is only possible until another sequence starts using storage.
+     * Indices refer to the resulting merged sequence: with shape points A/B,
+     * inserting X at index 1 produces A/X/B. Endpoints remain shape points.
      */
     model_ptr<AttrPoint> appendAttrPoint(
         uint32_t index,

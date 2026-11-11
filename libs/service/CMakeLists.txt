@@ -2,6 +2,7 @@ project(mapget-service CXX)
 
 set(MAPGET_SERVICE_SOURCES
   include/mapget/service/service.h
+  include/mapget/service/authorization.h
   include/mapget/service/cache.h
   include/mapget/service/datasource.h
   include/mapget/service/memcache.h
@@ -12,6 +13,7 @@ set(MAPGET_SERVICE_SOURCES
   include/mapget/service/detail/allocator-memory.h
 
   src/allocator-memory.cpp
+  src/authorization.cpp
   src/object-discovery.cpp
   src/service-discovery.cpp
   src/service.cpp
@@ -19,6 +21,8 @@ set(MAPGET_SERVICE_SOURCES
   src/service-datasources.cpp
   src/service-filter.h
   src/service-filter.cpp
+  src/service-incoming.h
+  src/service-incoming.cpp
   src/service-impl.h
   src/service-locate.h
   src/service-locate.cpp
@@ -26,6 +30,7 @@ set(MAPGET_SERVICE_SOURCES
   src/service-memory.cpp
   src/service-scheduler.h
   src/service-scheduler.cpp
+  src/service-schemas.cpp
   src/service-statistics.cpp
   src/service-tiles.h
   src/service-tiles.cpp

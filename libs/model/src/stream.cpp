@@ -22,8 +22,10 @@ TileLayerStream::Reader::Reader(
     LayerInfoResolveFun layerInfoProvider,
     std::function<void(PartitionLayer::Ptr)> onParsedLayer,
     std::shared_ptr<StringPoolCache> stringPoolProvider,
-    std::function<void(MessageType, std::string_view)> onControlMessage)
+    std::function<void(MessageType, std::string_view)> onControlMessage,
+    SchemaResolveFun schemas)
     : layerInfoProvider_(std::move(layerInfoProvider)),
+      schemas_(std::move(schemas)),
       stringPoolProvider_(
           stringPoolProvider ? std::move(stringPoolProvider) :
                                std::make_shared<TileLayerStream::StringPoolCache>()),
@@ -41,8 +43,8 @@ void TileLayerStream::Reader::read(const std::string_view& bytes)
     while (continueReading()) {}
 
     if (readOffset_ == buffer_.size()) {
-        // Fully consumed buffers are reset eagerly so long-running streams do
-        // not retain capacity proportional to peak message size.
+        // Reset the consumed range while retaining capacity for later frames.
+        // clear() does not release the vector's allocated storage.
         buffer_.clear();
         readOffset_ = 0;
     }
@@ -93,7 +95,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
 
         // Calculate duration.
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start);
@@ -105,7 +108,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::PartitionSourceDataLayer) {
@@ -113,7 +117,8 @@ bool TileLayerStream::Reader::continueReading()
             payload,
             layerInfoProvider_,
             [this](auto&& stringPoolId)
-            { return stringPoolProvider_->getStringPool(stringPoolId); });
+            { return stringPoolProvider_->getStringPool(stringPoolId); },
+            schemas_);
         onParsedLayer_(layer);
     }
     else if (nextValueType_ == MessageType::StringPool)
@@ -127,12 +132,14 @@ bool TileLayerStream::Reader::continueReading()
             raise(result.error().message);
         }
     }
-    else if (onControlMessage_
-             && (nextValueType_ == MessageType::Status
-                 || nextValueType_ == MessageType::LoadStateChange
-                 || nextValueType_ == MessageType::RequestContext
-                 || nextValueType_ == MessageType::SourceCatalogChange
-                 || nextValueType_ == MessageType::EndOfStream))
+    else if (
+        onControlMessage_ &&
+        (nextValueType_ == MessageType::Status || nextValueType_ == MessageType::LoadStateChange ||
+         nextValueType_ == MessageType::RequestContext ||
+         nextValueType_ == MessageType::SourceCatalogChange ||
+         nextValueType_ == MessageType::ActionControl ||
+         nextValueType_ == MessageType::IncomingRelations ||
+         nextValueType_ == MessageType::EndOfStream))
     {
         onControlMessage_(
             nextValueType_,
@@ -264,16 +271,13 @@ void TileLayerStream::Writer::write(PartitionLayer::Ptr const& tileLayer)
 
 void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::MessageType msgType)
 {
-    // TODO refactor the preparation of tile layer & field dicts storage format
-    // such that the encoding logic is not split over multiple functions.
+    // TODO: Refactor preparation of tile-layer and string-dictionary storage formats
+    // so the encoding logic is not split over multiple functions.
 
-    // Calculate actual header size
-    // Protocol version: ~10 bytes (depending on version object size)
-    // Message type: 1 byte  
-    // Content length: 4 bytes
-    // Bitsery overhead: ~5 bytes
+    // Reserve headroom for the fixed 11-byte wire header (6 version, 1 type,
+    // 4 payload length). This estimate affects allocation only, not encoding.
     constexpr size_t estimatedHeaderSize = 20;
-    
+
     // Build the complete message efficiently
     std::string message;
     message.reserve(estimatedHeaderSize + bytes.size());
@@ -292,8 +296,8 @@ void TileLayerStream::Writer::sendMessage(std::string&& bytes, TileLayerStream::
     // Append the framed payload bytes after the header to produce one contiguous
     // message for the caller's transport layer.
     message.append(std::move(bytes));
-    
-    // Send with move semantics
+
+    // The callback owns the complete frame and may enqueue it for transport.
     onMessage_(std::move(message), msgType);
 }
 
@@ -305,6 +309,11 @@ void TileLayerStream::Writer::sendStatus(std::string statusJson)
 void TileLayerStream::Writer::sendEndOfStream()
 {
     sendMessage("", MessageType::EndOfStream);
+}
+
+void TileLayerStream::Writer::sendIncomingRelations(IncomingRelationCollection const& collection)
+{
+    sendMessage(collection.toJson().dump(), MessageType::IncomingRelations);
 }
 
 std::shared_ptr<StringPool> TileLayerStream::StringPoolCache::getStringPool(const std::string_view& stringPoolId)
@@ -338,4 +347,11 @@ TileLayerStream::StringPoolOffsetMap TileLayerStream::StringPoolCache::stringPoo
     return result;
 }
 
+void TileLayerStream::StringPoolCache::retainStringPools(std::set<std::string> const& stringPoolIds)
+{
+    std::unique_lock lock(stringPoolCacheMutex_);
+    std::erase_if(
+        stringPoolPerStringPoolId_,
+        [&](auto const& entry) { return !stringPoolIds.contains(entry.first); });
+}
 }

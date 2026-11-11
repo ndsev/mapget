@@ -1,6 +1,7 @@
 #pragma once
 
 #include "geometry.h"
+#include "simfil/overlay.h"
 #include "sourcedatareference.h"
 #include "validity.h"
 
@@ -10,9 +11,9 @@ namespace mapget
 class Geometry;
 
 /**
- * Represents a feature attribute which belongs to an
- * AttributeLayer, and may have reference several
- * `Validity` objects in addition to other arbitrary object fields.
+ * Represents a named feature attribute which belongs to an AttributeLayer.
+ * It may reference several Validity objects and carry source-data references
+ * in addition to arbitrary producer-defined payload fields.
  */
 class Attribute : public simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>
 {
@@ -20,7 +21,8 @@ class Attribute : public simfil::ProceduralObject<2, Attribute, PartitionFeature
 
 public:
     /**
-     * Attribute validity accessors.
+     * validity() creates storage on demand; validityOrNull() inspects without
+     * allocation. Supplied validities must belong to the same model pool.
      */
     [[nodiscard]] model_ptr<MultiValidity> validity();
     [[nodiscard]] model_ptr<MultiValidity> validityOrNull() const;
@@ -30,6 +32,17 @@ public:
      * Read-only attribute name accessor.
      */
     [[nodiscard]] std::string_view name() const;
+
+    /**
+     * Build the common filter/extraction context without mutating the attribute or string pool.
+     * Zero explicit validities produce one fallback context, with $hasValidity=false.
+     */
+    [[nodiscard]] model_ptr<simfil::OverlayNode> queryContext(
+        model_ptr<Feature> const& feature,
+        std::string_view layerName,
+        uint32_t attributeIndex,
+        uint32_t validityIndex,
+        uint32_t validityCount) const;
 
     /**
      * Iterate over the attribute's extra fields. The passed lambda must return
@@ -61,10 +74,12 @@ public:
         : simfil::ProceduralObject<2, Attribute, PartitionFeatureLayer>(key)
     {
     }
-    Attribute(Data* data,
-              simfil::ModelConstPtr l,
-              simfil::ModelNodeAddress a,
-              simfil::detail::mp_key key);
+    Attribute(
+        Data* data,
+        simfil::ModelConstPtr l,
+        simfil::ModelNodeAddress a,
+        simfil::detail::mp_key key);
+
     Attribute() = delete;
 
     /**

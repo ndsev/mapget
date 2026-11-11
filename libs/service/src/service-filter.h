@@ -26,7 +26,7 @@ public:
     static bool start(
         Service::Impl& service,
         FeatureLayerFilterTilesRequest::Ptr const& request,
-        std::optional<AuthHeaders> const& clientHeaders);
+        std::optional<ClientAuthorization> const& clientAuthorization);
 
     /** Prune removed outputs while retaining shared source and relation work. */
     void retainOutputs(std::set<PartitionId> const& retainedPartitionIds);
@@ -121,9 +121,13 @@ private:
             : outputIndex_(outputIndex), layer_(std::move(layer)), layerBytes_(layerBytes)
         {
         }
+
         ReadyOutput(ReadyOutput&&) = default;
+
         ReadyOutput& operator=(ReadyOutput&&) = default;
+
         ReadyOutput(ReadyOutput const&) = delete;
+
         ReadyOutput& operator=(ReadyOutput const&) = delete;
 
         /** Merge one issue, saturating duplicate occurrence counts. */
@@ -177,9 +181,13 @@ private:
     struct RelationReadyOutput
     {
         explicit RelationReadyOutput(ReadyOutput ready) : ready_(std::move(ready)) {}
+
         RelationReadyOutput(RelationReadyOutput&&) = default;
+
         RelationReadyOutput& operator=(RelationReadyOutput&&) = default;
+
         RelationReadyOutput(RelationReadyOutput const&) = delete;
+
         RelationReadyOutput& operator=(RelationReadyOutput const&) = delete;
 
         ReadyOutput ready_;
@@ -206,9 +214,8 @@ private:
     Service::Impl* impl = nullptr;
     FeatureLayerFilterTilesRequest::Ptr request;
     SimfilExpressionCache expressionCache;
-    std::shared_ptr<DataSourceInfo const> sourceInfo;
-    DataSource::Ptr sourceDataSource;
-    std::optional<AuthHeaders> clientHeaders;
+    RegisteredDataSource::Ptr registration;
+    std::optional<ClientAuthorization> clientAuthorization;
     bool hasPointGroups = false;
     bool hasStoredRelations = false;
     int outputLevel = 0;
@@ -242,6 +249,7 @@ private:
     bool sourceChildDetached = false;
     bool terminal = false;
     std::shared_ptr<FilterMemoryTracker> memory;
+
     /** Recompute a conservative lower bound for request orchestration containers. */
     [[nodiscard]] uint64_t orchestrationBytesLocked() const;
 
@@ -352,7 +360,9 @@ private:
     /** Finish groups/relations and emit one immutable subset layer. */
     tl::expected<std::optional<size_t>, simfil::Error> finalizeOutput(ReadyOutput ready);
 
-    /** Finalize source-complete outputs in stable output order. */
+    /** Finalize the supplied ready batch in its existing order. Separate source
+     * callback batches may emit out of output-index order.
+     */
     bool emitCompletedOutputs(std::vector<ReadyOutput> ready);
 
     /** Evaluate and commit one source while maintaining memory gauges. */

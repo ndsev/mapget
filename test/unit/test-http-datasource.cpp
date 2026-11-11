@@ -20,11 +20,19 @@
 #include <thread>
 #include <tuple>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+// Drogon uses Winsock 2; prevent windows.h from importing legacy winsock.h first.
+#include <winsock2.h>
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
 #endif
 
+#include <drogon/HttpAppFramework.h>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/WebSocketClient.h>
@@ -175,7 +183,7 @@ public:
         ++fillCounts_[tile->tileId()];
         started_.insert(tile->tileId());
         stateChanged_.notify_all();
-        stateChanged_.wait(lock, [this] { return released_; });
+        stateChanged_.wait(lock, [this, &tile] { return released_ || releasedTiles_.contains(tile->tileId()); });
     }
 
     /** Reject unsupported source-data requests. */
@@ -208,6 +216,16 @@ public:
         return found == fillCounts_.end() ? 0 : found->second;
     }
 
+    /** Release selected fills while keeping other requests in flight. */
+    void release(std::set<PartitionId> const& tileIds)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            releasedTiles_.insert(tileIds.begin(), tileIds.end());
+        }
+        stateChanged_.notify_all();
+    }
+
     /** Release every currently blocked datasource call. */
     void releaseAll()
     {
@@ -224,6 +242,7 @@ private:
     std::condition_variable stateChanged_;
     std::map<PartitionId, size_t> fillCounts_;
     std::set<PartitionId> started_;
+    std::set<PartitionId> releasedTiles_;
     bool released_ = false;
 };
 
@@ -415,8 +434,8 @@ public:
                 break;
             }
 
-            const auto clientId = clientId_.load(std::memory_order_relaxed);
-            if (clientId > 0) {
+            const auto id = clientId();
+            if (!id.empty()) {
                 // The WS status can arrive before the long-poll payload has
                 // been drained. After allDone, wait for one empty payload poll
                 // so tile-count assertions do not race the binary stream.
@@ -425,7 +444,7 @@ public:
                 const auto [result, resp] = pullClient_.get(fmt::format(
                     "{}?clientId={}&waitMs={}&maxBytes={}",
                     pullPath_,
-                    clientId,
+                    id,
                     waitMs,
                     64 * 1024 * 1024));
 
@@ -470,10 +489,10 @@ public:
             cv_.wait_for(
                 lock,
                 std::chrono::milliseconds(std::min<int64_t>(remainingMs, 50)),
-                [this] {
-                    return !error_.empty()
-                        || clientId_.load(std::memory_order_relaxed) > 0
-                        || (lastStatus_.has_value() && lastStatus_->value("allDone", false));
+                [this]
+                {
+                    return !error_.empty() || !clientId_.empty() ||
+                        (lastStatus_.has_value() && lastStatus_->value("allDone", false));
                 });
         }
 
@@ -485,6 +504,7 @@ public:
     {
         std::lock_guard lock(mutex_);
         lastStatus_.reset();
+        statusHistory_.clear();
         error_.clear();
     }
 
@@ -500,8 +520,8 @@ public:
             if (receivedTileCount() >= expected || !error().empty()) {
                 return receivedTileCount() >= expected;
             }
-            auto const clientId = clientId_.load(std::memory_order_relaxed);
-            if (clientId <= 0) {
+            auto const id = clientId();
+            if (id.empty()) {
                 std::unique_lock lock(mutex_);
                 cv_.wait_for(lock, std::chrono::milliseconds(20));
                 continue;
@@ -512,7 +532,7 @@ public:
             auto const [result, resp] = pullClient_.get(fmt::format(
                 "{}?clientId={}&waitMs={}&maxBytes={}",
                 pullPath_,
-                clientId,
+                id,
                 waitMs,
                 64 * 1024 * 1024));
             if (result != drogon::ReqResult::Ok || !resp) {
@@ -548,16 +568,48 @@ public:
             [this] { return !error_.empty() || lastStatus_.has_value(); });
     }
 
+    /** Observe every status frame, including an obsolete frame following completion. */
+    std::vector<nlohmann::json> waitForStatuses(size_t count, std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        cv_.wait_for(lock, timeout, [&] { return !error_.empty() || statusHistory_.size() >= count; });
+        return statusHistory_;
+    }
+
     std::optional<nlohmann::json> lastStatus() const
     {
         std::lock_guard lock(mutex_);
         return lastStatus_;
     }
 
+    std::optional<nlohmann::json> waitForActionControl(std::chrono::seconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        cv_.wait_for(
+            lock,
+            timeout,
+            [this] { return !error_.empty() || lastActionControl_.has_value(); });
+        return lastActionControl_;
+    }
+
     std::string error() const
     {
         std::lock_guard lock(mutex_);
         return error_;
+    }
+
+    /** Copy the opaque connection identifier without racing websocket callbacks. */
+    std::string clientId() const
+    {
+        std::lock_guard lock(mutex_);
+        return clientId_;
+    }
+
+    /** Wait for identity negotiation without issuing a tile request. */
+    bool waitForClientId(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(mutex_);
+        return cv_.wait_for(lock, timeout, [this] { return !clientId_.empty(); });
     }
 
     int receivedTileCount() const { return receivedTileCount_.load(std::memory_order_relaxed); }
@@ -582,7 +634,9 @@ private:
             return;
         }
 
-        if (type == TileLayerStream::MessageType::Status) {
+        if (type == TileLayerStream::MessageType::Status ||
+            type == TileLayerStream::MessageType::ActionControl)
+        {
             auto payload = std::string_view{
                 msg.data() + static_cast<std::ptrdiff_t>(headerBytes),
                 payloadSize};
@@ -590,7 +644,12 @@ private:
                 auto parsed = nlohmann::json::parse(payload);
                 {
                     std::lock_guard lock(mutex_);
-                    lastStatus_ = std::move(parsed);
+                    if (type == TileLayerStream::MessageType::Status) {
+                        statusHistory_.push_back(parsed);
+                        lastStatus_ = std::move(parsed);
+                    }
+                    else
+                        lastActionControl_ = std::move(parsed);
                 }
                 cv_.notify_all();
             }
@@ -606,9 +665,15 @@ private:
                 payloadSize};
             try {
                 auto parsed = nlohmann::json::parse(payload);
-                if (parsed.contains("clientId") && parsed["clientId"].is_number_integer()) {
-                    clientId_.store(parsed["clientId"].get<int64_t>(), std::memory_order_relaxed);
+                if (parsed.contains("clientId") && parsed["clientId"].is_string()) {
+                    {
+                        std::lock_guard lock(mutex_);
+                        clientId_ = parsed["clientId"].get<std::string>();
+                    }
                     cv_.notify_all();
+                }
+                else {
+                    setError("Request-context must carry a UUID string clientId");
                 }
             }
             catch (const std::exception& e) {
@@ -638,10 +703,12 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
+    std::vector<nlohmann::json> statusHistory_;
+    std::optional<nlohmann::json> lastActionControl_;
     std::string error_;
     std::mutex readerMutex_;
     std::atomic_int receivedTileCount_{0};
-    std::atomic_int64_t clientId_{0};
+    std::string clientId_;
     std::unique_ptr<trantor::EventLoopThread> loopThread_;
     drogon::WebSocketClientPtr client_;
     SyncHttpClient pullClient_;
@@ -768,6 +835,174 @@ nlohmann::json testDataSourceInfoJson()
 }
 
 }  // namespace
+
+TEST_CASE(
+    "Interactive session IDs are opaque connection-scoped UUIDs",
+    "[HttpDataSource][interactive-session]")
+{
+    auto& service = mapget::test::httpService();
+    SyncHttpClient http("127.0.0.1", service.port());
+    std::regex const
+        uuidV4("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$");
+
+    for (auto const& path : {"/interactive/payload", "/tiles/next"}) {
+        for (auto const& invalid :
+             {"",
+              "1",
+              "-1",
+              "1tail",
+              "00000000-0000-0000-0000-000000000000",
+              "00000000-0000-4000-7000-000000000000",
+              "A0000000-0000-4000-8000-000000000000"})
+        {
+            auto [result, response] =
+                http.get(fmt::format("{}?clientId={}&waitMs=0", path, invalid));
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            REQUIRE(response->statusCode() == drogon::k400BadRequest);
+            REQUIRE(response->getHeader("Cache-Control") == "no-store");
+        }
+        auto [result, response] = http.get(
+            fmt::format("{}?clientId=00000000-0000-4000-8000-000000000000&waitMs=0", path));
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(response != nullptr);
+        REQUIRE(response->statusCode() == drogon::k410Gone);
+        REQUIRE(response->getHeader("Cache-Control") == "no-store");
+    }
+
+    std::set<std::string> ids;
+    for (auto const& path : {"/interactive", "/tiles"}) {
+        WsTilesClient client(service.port(), nullptr);
+        REQUIRE(client.connect(false, path));
+        REQUIRE(client.waitForClientId(std::chrono::seconds(5)));
+        auto const id = client.clientId();
+        REQUIRE(std::regex_match(id, uuidV4));
+        REQUIRE(ids.insert(id).second);
+        client.send(R"({"requests":[]})");
+        REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+        REQUIRE(client.error().empty());
+        REQUIRE(client.clientId() == id);
+
+        // Updates stay on one identity; a new connection must get a fresh one.
+        client.resetStatus();
+        client.send(R"({"requests":[]})");
+        REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+        REQUIRE(client.clientId() == id);
+        for (auto const& pullPath : {"/interactive/payload", "/tiles/next"}) {
+            auto [result, response] =
+                http.get(fmt::format("{}?clientId={}&waitMs=0", pullPath, id));
+            REQUIRE(result == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            REQUIRE(response->statusCode() == drogon::k204NoContent);
+            REQUIRE(response->getHeader("Cache-Control") == "no-store");
+        }
+        auto [result, status] = http.get("/status-data");
+        REQUIRE(result == drogon::ReqResult::Ok);
+        REQUIRE(status != nullptr);
+        REQUIRE(status->body().find(id) == std::string_view::npos);
+        client.stop();
+
+        // Close is asynchronous: wait for registry removal, not an arbitrary sleep.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        bool removed = false;
+        do {
+            auto [pullResult, response] =
+                http.get(fmt::format("/interactive/payload?clientId={}&waitMs=0", id));
+            REQUIRE(pullResult == drogon::ReqResult::Ok);
+            REQUIRE(response != nullptr);
+            removed = response->statusCode() == drogon::k410Gone;
+            if (!removed) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        } while (!removed && std::chrono::steady_clock::now() < deadline);
+        REQUIRE(removed);
+    }
+}
+
+TEST_CASE("Interactive aggregate status is sampled when sent", "[HttpDataSource][interactive-status]")
+{
+    auto& service = test::httpService();
+    auto source = std::make_shared<BlockingInteractiveDataSource>("StatusFreshnessMap");
+    service.add(source);
+    auto releaseFills = [&service, &source](BlockingInteractiveDataSource* value) {
+        try {
+            value->releaseAll();
+            service.remove(source);
+        }
+        catch (...) {
+            // Preserve assertion failures; normal-path removal is checked below.
+        }
+    };
+    std::unique_ptr<BlockingInteractiveDataSource, decltype(releaseFills)> releaseOnExit(source.get(), releaseFills);
+    WsTilesClient client(service.port(), source->info().getLayer("BlockingLayer"));
+    REQUIRE(client.connect(true));
+
+    auto sendRequest = [&](uint64_t id, std::initializer_list<int32_t> tileIds) {
+        client.send(nlohmann::json{
+            {"requestId", id},
+            {"requests", {{{"mapId", "StatusFreshnessMap"}, {"layerId", "BlockingLayer"},
+                           {"tileIds", tileIds}, {"priorityTileIds", tileIds}}}}}.dump());
+    };
+    auto const tileA = TileId::fromValue(kHttpTileIdValue);
+    auto const tileB = TileId::fromValue(kSecondHttpTileIdValue);
+    auto const tileC = TileId::fromValue(kThirdHttpTileIdValue);
+    sendRequest(101, {kHttpTileIdValue, kSecondHttpTileIdValue});
+    REQUIRE(source->waitForStarted({tileA, tileB}, std::chrono::seconds(5)));
+    REQUIRE(client.waitForStatus(std::chrono::seconds(5)));
+    client.resetStatus();
+    sendRequest(102, {kSecondHttpTileIdValue, kThirdHttpTileIdValue});
+    REQUIRE(source->waitForStarted({tileC}, std::chrono::seconds(5)));
+    REQUIRE(client.waitForStatus(std::chrono::seconds(5)));
+    REQUIRE(client.error().empty());
+    auto const openStatus = client.lastStatus();
+    REQUIRE(openStatus.has_value());
+    REQUIRE(openStatus->at("requestId") == 102);
+    REQUIRE_FALSE(openStatus->at("allDone").get<bool>());
+    client.resetStatus();
+
+    // Hold the send loop, not the source workers. Destruction of releaseLoop
+    // also unblocks wait() on assertion unwind, before client teardown.
+    std::promise<void> releaseLoop;
+    auto entered = std::make_shared<std::promise<void>>();
+    auto enteredFuture = entered->get_future();
+    drogon::app().getLoop()->queueInLoop(
+        [entered, release = releaseLoop.get_future().share()] {
+            entered->set_value();
+            release.wait();
+        });
+    REQUIRE(enteredFuture.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    auto waitForWorkers = [&](size_t count) {
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            // Unlike in-flight-tile-jobs, running includes completion callbacks.
+            auto stats = service.getStatistics(false, false);
+            if (stats["workers"]["running"] == count && stats["queued-service-tasks"] == 0)
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    };
+    source->release({tileA, tileB});
+    REQUIRE(waitForWorkers(1));
+    source->releaseAll();
+    REQUIRE(waitForWorkers(0));
+    releaseLoop.set_value();
+
+    // Both callbacks completed before any queued status could be sent. This
+    // tests send-time freshness, not the separate producer enqueue inversion.
+    auto statuses = client.waitForStatuses(2, std::chrono::seconds(5));
+    REQUIRE(client.error().empty());
+    REQUIRE(statuses.size() >= 2);
+    for (auto const& status : statuses) {
+        INFO(status.dump());
+        CHECK(status.at("requestId") == 102);
+        CHECK(status.at("allDone").get<bool>());
+    }
+    REQUIRE(client.waitForDone(std::chrono::seconds(5)));
+    CHECK(client.receivedTileCount() == 2);
+    client.stop();
+    service.remove(source);
+}
 
 TEST_CASE("HttpDataSource", "[HttpDataSource]")
 {
@@ -1225,9 +1460,8 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                     parsed["channels"][0]["featureEntries"]
                         .size() == 1);
                 REQUIRE(
-                    parsed["channels"][0]["featureEntries"][0]
-                          ["values"] ==
-                    nlohmann::json::array({"Way"}));
+                    parsed["channels"][0]["featureEntries"][0]["values"] ==
+                    nlohmann::json::array({nlohmann::json::array({"Way"})}));
             }
             REQUIRE(sawResultLayer);
 
@@ -1482,6 +1716,16 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
                 REQUIRE(wsClient.connect(true));
 
                 auto conn = requireConnected(wsClient);
+
+                // MCP is off in this fixture, including builds where it is not compiled.
+                // Reject browser relay registration without breaking ordinary tile delivery.
+                conn->send(
+                    R"({"type":"mapget.actions.register"})",
+                    drogon::WebSocketMessageType::Text);
+                auto action = wsClient.waitForActionControl(std::chrono::seconds(5));
+                REQUIRE(action.has_value());
+                REQUIRE(action->at("error").at("code") == "not_available");
+                REQUIRE(conn->connected());
 
                 // Ping/Pong connection-health traffic is transport control,
                 // not an invalid tile request.
@@ -2132,12 +2376,23 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
         std::string readOnlyPrefix;
         fs::path tempDir;
 
-        /** Removes process-global test mounts and their temporary files. */
-        ~MountGuard()
+        /** Explicit cleanup reports failures to the test on its normal exit path. */
+        void cleanup()
         {
             removeStaticMount(writablePrefix);
             removeStaticMount(readOnlyPrefix);
             fs::remove_all(tempDir);
+        }
+
+        /** Best-effort cleanup during unwinding must preserve the original test failure. */
+        ~MountGuard()
+        {
+            try {
+                cleanup();
+            }
+            catch (...) {
+                // Normal-path cleanup is checked explicitly below.
+            }
         }
     } guard{writablePrefix, readOnlyPrefix, tempDir};
     REQUIRE(ensureStaticMount(readOnlyPrefix, tempDir));
@@ -2169,6 +2424,29 @@ TEST_CASE("Runtime static mounts can opt into writes", "[StaticMount]")
 
     std::ifstream unchangedFile(readOnlyFile);
     REQUIRE(std::string(std::istreambuf_iterator<char>(unchangedFile), {}) == "unchanged");
+
+    updatedFile.close();
+    unchangedFile.close();
+
+    // Force a real cleanup failure without changing permissions: a sharing
+    // violation on Windows, and an overlong filename on POSIX. Windows can treat
+    // malformed paths as "not found", which would not exercise the catch path.
+    {
+#ifdef _WIN32
+        auto failurePath = tempDir / "cleanup-locked.tmp";
+        auto handle = CreateFileW(
+            failurePath.c_str(), GENERIC_READ, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(handle != INVALID_HANDLE_VALUE);
+        auto closeHandle = [](void* value) { CloseHandle(value); };
+        std::unique_ptr<void, decltype(closeHandle)> lockedFile(handle, closeHandle);
+#else
+        auto failurePath = tempDir / std::string(4096, 'x');
+#endif
+        MountGuard failing{writablePrefix, readOnlyPrefix, failurePath};
+        CHECK_THROWS_AS(failing.cleanup(), fs::filesystem_error);
+    }
+    guard.cleanup();
 }
 
 TEST_CASE("Startup root static mounts serve nested files", "[StaticMount]")

@@ -88,6 +88,8 @@ struct FeatureLayerStoredRelationOptions
     std::optional<std::string> relationNamePattern_;
     bool recursive_ = false;
     bool mergeTwoway_ = false;
+    /** Incoming inspection is a bounded same-partition service operation. */
+    bool incoming_ = false;
 
     bool operator==(FeatureLayerStoredRelationOptions const&) const = default;
 };
@@ -98,6 +100,8 @@ struct FeatureLayerFilterChannel
     static constexpr uint32_t AllGeometryTypes = 0xffffffffu;
 
     std::string channelId_;
+    /** Prepared searches bind to this exact artifact; stale plans fail before tile I/O. */
+    std::optional<std::string> schemaId_;
     std::optional<std::string> featureFilter_;
     std::optional<std::string> entryFilter_;
     FeatureLayerFilterScope scope_ = FeatureLayerFilterScope::Feature;
@@ -117,6 +121,10 @@ struct FeatureLayerFilterChannel
 
     /** Nullopt selects all geometry names; a value selects that exact name. */
     std::optional<std::string> geometryName_;
+
+    /** Explicit visualization-only point-cloud sampling. Zero requests exact delivery.
+     * The quota applies independently to each feature's matching point geometries. */
+    std::optional<uint32_t> pointCloudMaxPoints_;
 
     /** Present only for the feature-only point-grid grouping channel. */
     std::optional<FeatureLayerPointGridGroup> group_;
@@ -244,12 +252,21 @@ struct FeatureLayerFilterRequest
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
 
     /**
+     * Identify channels whose membership is not provably false after binding constants.
+     * Unknown/invalid predicates remain active for normal evaluation and diagnostics.
+     * The mask retains channel order and does not change the serialized request.
+     */
+    [[nodiscard]] std::vector<bool> activeChannels() const;
+
+    /**
      * Scan one source tile in source-major order.
      *
      * Set `materializeOutput` for requested output tiles. Halo-only scans
      * evaluate coordinated operators without allocating a subset layer.
      * A service-owned expression cache shares immutable compilation across
      * source tiles; standalone callers may omit it for one-operation caching.
+     * Cancellation is cooperative: a stopped scan can return partial candidates.
+     * The caller must discard cancelled work before publishing or committing it.
      */
     [[nodiscard]] tl::expected<FeatureLayerFilterSourceResult, simfil::Error> filterSource(
         PartitionFeatureLayer const& sourceLayer,
@@ -261,6 +278,8 @@ struct FeatureLayerFilterRequest
     /**
      * Materialize completed point-grid groups into an output created by filterSource().
      * Reusing the source-pass expression cache avoids recompiling projections.
+     * Entries are appended incrementally. Cancellation leaves prior appends intact;
+     * the caller must discard the cancelled output rather than publish it.
      */
     [[nodiscard]] tl::expected<FeatureLayerPointGroupCompletion, simfil::Error> completePointGroups(
         PartitionSubsetLayer& outputLayer,
@@ -275,6 +294,8 @@ struct FeatureLayerFilterRequest
      * Exact-root traversal retains origin-output ownership; the first explicit
      * root owns a pair when both endpoints are roots.
      * Reusing the request cache shares compilation across endpoint tiles.
+     * Cancellation stops at traversal checkpoints without rolling back prior appends;
+     * the caller must discard the cancelled output rather than publish it.
      */
     [[nodiscard]] tl::expected<FeatureLayerRelationCompletion, simfil::Error> completeRelations(
         PartitionSubsetLayer& outputLayer,

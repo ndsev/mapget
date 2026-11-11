@@ -1,0 +1,206 @@
+Backport WebSocket continuation draining from Drogon PR #2320:
+https://github.com/drogonframework/drogon/commit/26e7c6913ce148d0ca42c42ccd446ed9a47d765b
+
+Also backport parser control/data state separation and continuation validation
+from PR #2659, without its unrelated framework changes or UTF-8 helper dependency:
+https://github.com/drogonframework/drogon/commit/33f7b0ebd6247a2478b95ac9f370803a3a55cf8c
+
+A complete non-final fragment must not strand already-buffered continuations.
+Ping/pong frames between fragments must not consume or change the data message.
+Retain the upstream copyright and license in the patched source. Remove this
+patch when upgrading to a release containing both fixes.
+
+--- a/lib/src/WebSocketConnectionImpl.cc
++++ b/lib/src/WebSocketConnectionImpl.cc
+@@ -17,6 +17,7 @@
+ #include <json/value.h>
+ #include <json/writer.h>
+ #include <thread>
++#include <limits>
+ 
+ using namespace drogon;
+ 
+@@ -268,37 +269,44 @@
+ {
+     // According to the rfc6455
+     gotAll_ = false;
+-    if (buffer->readableBytes() >= 2)
++    while (buffer->readableBytes() >= 2)
+     {
+         unsigned char opcode = (*buffer)[0] & 0x0f;
+         bool isControlFrame = false;
++        WebSocketMessageType frameType = WebSocketMessageType::Unknown;
+         switch (opcode)
+         {
+             case 0:
+-                // continuation frame
++                LOG_TRACE << "continuation frame";
+                 break;
+             case 1:
+-                type_ = WebSocketMessageType::Text;
++                frameType = WebSocketMessageType::Text;
+                 break;
+             case 2:
+-                type_ = WebSocketMessageType::Binary;
++                frameType = WebSocketMessageType::Binary;
+                 break;
+             case 8:
+-                type_ = WebSocketMessageType::Close;
++                frameType = WebSocketMessageType::Close;
+                 isControlFrame = true;
+                 break;
+             case 9:
+-                type_ = WebSocketMessageType::Ping;
++                frameType = WebSocketMessageType::Ping;
+                 isControlFrame = true;
+                 break;
+             case 10:
+-                type_ = WebSocketMessageType::Pong;
++                frameType = WebSocketMessageType::Pong;
+                 isControlFrame = true;
+                 break;
+             default:
+                 LOG_ERROR << "Unknown frame type";
+                 return false;
+                 break;
++        }
++
++        if (!isControlFrame && ((opcode == 0) != fragmented_))
++        {
++            LOG_ERROR << "Bad frame: invalid continuation sequence";
++            return false;
+         }
+ 
+         bool isFin = (((*buffer)[0] & 0x80) == 0x80);
+@@ -327,8 +335,13 @@
+         {
+             indexFirstMask = 10;
+         }
+-        if (indexFirstMask > 2 && buffer->readableBytes() >= indexFirstMask)
+-        {
++        if (indexFirstMask > 2)
++        {
++            if (buffer->readableBytes() < indexFirstMask)
++            {
++                // Not enough data yet, wait for more.
++                return true;
++            }
+             if (isControlFrame)
+             {
+                 // rfc6455-5.5
+@@ -344,14 +357,17 @@
+             }
+             else if (indexFirstMask == 10)
+             {
+-                length = (unsigned char)(*buffer)[2];
+-                length = (length << 8) + (unsigned char)(*buffer)[3];
+-                length = (length << 8) + (unsigned char)(*buffer)[4];
+-                length = (length << 8) + (unsigned char)(*buffer)[5];
+-                length = (length << 8) + (unsigned char)(*buffer)[6];
+-                length = (length << 8) + (unsigned char)(*buffer)[7];
+-                length = (length << 8) + (unsigned char)(*buffer)[8];
+-                length = (length << 8) + (unsigned char)(*buffer)[9];
++                length = 0;
++                for (int i = 2; i <= 9; ++i)
++                {
++                    if (length > ((std::numeric_limits<size_t>::max)() >> 8))
++                    {
++                        LOG_ERROR
++                            << "Payload length too large to handle safely";
++                        return false;
++                    }
++                    length = (length << 8) + (unsigned char)(*buffer)[i];
++                }
+             }
+             else
+             {
+@@ -359,6 +375,7 @@
+                 return false;
+             }
+         }
++        auto &payload = isControlFrame ? completedMessage_ : message_;
+         if (isMasked != 0)
+         {
+             // The message is sent by the client, check the length
+@@ -374,15 +391,17 @@
+                 auto masks = buffer->peek() + indexFirstMask;
+                 auto indexFirstDataByte = indexFirstMask + 4;
+                 auto rawData = buffer->peek() + indexFirstDataByte;
+-                auto oldLen = message_.length();
+-                message_.resize(oldLen + length);
++                auto oldLen = payload.length();
++                payload.resize(oldLen + length);
+                 for (size_t i = 0; i < length; ++i)
+                 {
+-                    message_[oldLen + i] = (rawData[i] ^ masks[i % 4]);
++                    payload[oldLen + i] = (rawData[i] ^ masks[i % 4]);
+                 }
+-                if (isFin)
+-                    gotAll_ = true;
+                 buffer->retrieve(indexFirstMask + 4 + length);
++            }
++            else
++            {
++                // Not enough data yet, wait for more.
+                 return true;
+             }
+         }
+@@ -391,12 +410,32 @@
+             if (buffer->readableBytes() >= (indexFirstMask + length))
+             {
+                 auto rawData = buffer->peek() + indexFirstMask;
+-                message_.append(rawData, length);
+-                if (isFin)
+-                    gotAll_ = true;
++                payload.append(rawData, length);
+                 buffer->retrieve(indexFirstMask + length);
++            }
++            else
++            {
++                // Not enough data yet, wait for more.
+                 return true;
+             }
++        }
++        if (isControlFrame)
++        {
++            completedType_ = frameType;
++            gotAll_ = true;
++            return true;
++        }
++        if (opcode != 0)
++        {
++            type_ = frameType;
++        }
++        fragmented_ = !isFin;
++        if (isFin)
++        {
++            completedMessage_.swap(message_);
++            completedType_ = type_;
++            gotAll_ = true;
++            return true;
+         }
+     }
+     return true;
+--- a/lib/src/WebSocketConnectionImpl.h
++++ b/lib/src/WebSocketConnectionImpl.h
+@@ -36,14 +36,17 @@
+         assert(message.empty());
+         if (!gotAll_)
+             return false;
+-        message.swap(message_);
+-        type = type_;
++        message.swap(completedMessage_);
++        type = completedType_;
+         return true;
+     }
+ 
+   private:
+     std::string message_;
+-    WebSocketMessageType type_;
++    WebSocketMessageType type_{WebSocketMessageType::Unknown};
++    bool fragmented_{false};
++    std::string completedMessage_;
++    WebSocketMessageType completedType_{WebSocketMessageType::Unknown};
+     bool gotAll_{false};
+ };
+ 

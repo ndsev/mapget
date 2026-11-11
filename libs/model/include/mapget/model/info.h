@@ -1,37 +1,67 @@
 #pragma once
 
+#include "featureidentity.h"
 #include "partitionid.h"
 
+#include <functional>
+#include <map>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <set>
+#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
-#include <memory>
-#include <optional>
 #include <unordered_map>
-#include <nlohmann/json.hpp>
-#include "sfl/small_vector.hpp"
 #include <variant>
-#include "tileid.h"
+#include <vector>
 #include "memory.h"
+#include "sfl/small_vector.hpp"
+#include "tileid.h"
+
+namespace simfil
+{
+template <typename>
+struct model_ptr;
+}
 
 namespace mapget
 {
 
-class LayerSchema;
+/** Enum to represent the possible layer types */
+enum class LayerType { Features, Heightmap, OrthoImage, GLTF, SourceData };
+NLOHMANN_JSON_SERIALIZE_ENUM(
+    LayerType,
+    {
+        {LayerType::Features, "Features"},
+        {LayerType::Heightmap, "Heightmap"},
+        {LayerType::OrthoImage, "OrthoImage"},
+        {LayerType::GLTF, "GLTF"},
+        {LayerType::SourceData, "SourceData"},
+    })
 
-/**
- * The KeyValue(View)Pairs type is a vector of pairs, where each pair
- * consists of a string_view key and a variant value that can be
- * either an int64_t or a string_view. It is used as the interface-
- * type for feature id parts. By using sfl::small_vector instead of
- * std::vector, it is kept on the stack.
- */
-using KeyValueViewPairs =
-    sfl::small_vector<std::pair<std::string_view, std::variant<int64_t, std::string_view>>, 16>;
-using KeyValuePairs =
-    sfl::small_vector<std::pair<std::string, std::variant<int64_t, std::string>>, 16>;
-using KeyValuePairVec =
-    std::vector<std::pair<std::string, std::variant<int64_t, std::string>>>;
+class LayerSchema;
+class MapSchema;
+
+/** Resolve an exact installed schema artifact; model metadata parsing never performs I/O. */
+using SchemaResolveFun = std::function<std::shared_ptr<MapSchema const>(std::string_view)>;
+
+/** Source-format identity, independent of mapget's projected schema and transport versions. */
+struct MapFormat
+{
+    /** Source-format family, e.g. nds.live; empty means unspecified legacy metadata. */
+    std::string name_;
+
+    /** Exact opaque base-format version; may be unspecified for modular formats. */
+    std::string version_;
+
+    /** Direct module/FTX pairs; one name may occur at several versions in a composed format. */
+    std::set<std::pair<std::string, std::string>> subsystems_;
+
+    bool operator==(MapFormat const&) const = default;
+    [[nodiscard]] static MapFormat fromJson(nlohmann::json const& json);
+    [[nodiscard]] nlohmann::json toJson() const;
+};
 
 /**
  * @brief Transforms a URI or path into a string by replacing special characters.
@@ -52,7 +82,7 @@ using KeyValuePairVec =
  */
 std::string mapNameFromUri(const std::string& uri);
 
-/** Generate a UUID which may be used as the node id. */
+/** Generate a random 16-digit hexadecimal string for an ad-hoc dictionary namespace. */
 std::string generateNodeHexUuid();
 
 /**
@@ -89,10 +119,14 @@ void validateIdentifierName(
     std::string_view extraReserved = {},
     std::string_view allowedReserved = {});
 
-/** Convert KeyValuePairs to KeyValuePairsView. */
+/** Convert owned ID parts to KeyValueViewPairs by borrowing keys and string values.
+ * The source container and strings must remain alive.
+ */
 KeyValueViewPairs castToKeyValueView(KeyValuePairs const& kvp);
 
-/** Convert KeyValuePairs to KeyValuePairsView. */
+/** Convert owned ID parts to KeyValueViewPairs by borrowing keys and string values.
+ * The source container and strings must remain alive.
+ */
 KeyValueViewPairs castToKeyValueView(KeyValuePairVec const& kvp);
 
 /** Convert KeyValueViewPairs to KeyValuePairs. */
@@ -111,6 +145,7 @@ struct Version {
     uint16_t minor_ = 0;
     uint16_t patch_ = 0;
 
+    /** Require equal major/minor values; patch differences remain compatible. */
     [[nodiscard]] bool isCompatible(Version const& other) const;
     [[nodiscard]] std::string toString() const;
 
@@ -128,136 +163,6 @@ struct Version {
     static Version fromJson(const nlohmann::json& j);
 
     /** Serialize Version to JSON. */
-    [[nodiscard]] nlohmann::json toJson() const;
-};
-
-/** Enum to represent the possible data types */
-enum class IdPartDataType {I32, U32, I64, U64, UUID128, STR};
-NLOHMANN_JSON_SERIALIZE_ENUM(
-    IdPartDataType,
-    {
-        {IdPartDataType::I32, "I32"},
-        {IdPartDataType::U32, "U32"},
-        {IdPartDataType::I64, "I64"},
-        {IdPartDataType::U64, "U64"},
-        {IdPartDataType::UUID128, "UUID128"},
-        {IdPartDataType::STR, "STR"},
-    })
-
-/** Enum to represent the possible layer types */
-enum class LayerType {Features, Heightmap, OrthoImage, GLTF, SourceData};
-NLOHMANN_JSON_SERIALIZE_ENUM(
-    LayerType,
-    {
-        {LayerType::Features, "Features"},
-        {LayerType::Heightmap, "Heightmap"},
-        {LayerType::OrthoImage, "OrthoImage"},
-        {LayerType::GLTF, "GLTF"},
-        {LayerType::SourceData, "SourceData"},
-    })
-
-/** Structure to represent a part of a feature id composition. */
-struct IdPart
-{
-    /** Label/identifier for this ID part.
-     * Unique under all ID parts of a feature. */
-    std::string idPartLabel_;
-
-    /** Description of the identifier. */
-    std::string description_;
-
-    /** Data type of the identifier. */
-    IdPartDataType datatype_;
-
-    /** Is the identifier synthetic or part of a map specification? */
-    bool isSynthetic_ = false;
-
-    /** Is the identifier optional in feature queries? */
-    bool isOptional_ = false;
-
-    /** Create IdPart from JSON. */
-    static IdPart fromJson(const nlohmann::json& j);
-
-    /** Serialize IdPart to JSON. */
-    [[nodiscard]] nlohmann::json toJson() const;
-
-    /**
-     * Check whether the given value satisfies the constraints of this
-     * IdPart specification. The value will be converted to an integer if provided
-     * as a string, but not vice versa. Returns true and the correct converted value
-     * written into val if the validation succeeds, false otherwise.
-     */
-    bool validate(std::variant<int64_t, std::string_view>& val, std::string* error = nullptr) const;
-    bool validate(std::variant<int64_t, std::string>& val, std::string* error = nullptr) const;
-
-    /**
-     * Check that starting from a given index, the parts of an id composition
-     * match the featureIdParts segment from start for the given length.
-     */
-    static bool idPartsMatchComposition(
-        std::vector<IdPart> const& candidateComposition,
-        uint32_t compositionMatchStartIdx,
-        KeyValueViewPairs const& featureIdParts,
-        size_t matchLength,
-        bool requireCompositionEnd,
-        std::string* error = nullptr);
-
-    /**
-     * Return the composition index directly after the matched ID part sequence.
-     * Optional parts may be skipped while matching.
-     */
-    static std::optional<uint32_t> compositionMatchEndIndex(
-        std::vector<IdPart> const& candidateComposition,
-        uint32_t compositionMatchStartIdx,
-        KeyValueViewPairs const& featureIdParts,
-        size_t matchLength,
-        std::string* error = nullptr);
-};
-
-/** Structure to represent the feature type info */
-struct FeatureTypeInfo
-{
-    /** Name of the feature type */
-    std::string name_;
-
-    /**
-     * List of allowed unique id compositions (each id composition is a list of id parts)
-     * A single id composition must never have more than 16 parts.
-     * The first unique id composition in the list is the primary, which must be
-     * used by all features. Secondary compositions may only be used by references/relations.
-     */
-    std::vector<std::vector<IdPart>> uniqueIdCompositions_;
-
-    /**
-     * Deserializes a FeatureTypeInfo object from JSON.
-     *
-     * The JSON is expected to have the following structure:
-     *
-     * {
-     *   "name": <string>,                  // Mandatory: The name of the feature type.
-     *   "uniqueIdCompositions": [          // Mandatory: A list of unique ID compositions.
-     *     [                                // A list of UniqueIdPart objects, each having the following structure:
-     *       {
-     *         "partId": <string>,          // Mandatory: The ID of the unique ID part.
-     *         "description": <string>,     // Optional: The description of the unique ID part.
-     *         "datatype": <IdPartDataType>,// Optional: The data type of the unique ID part, must be one of the enum values from IdPartDataType. Defaults to I64.
-     *         TODO why "datatype"  and not "dataType" to match other fields?
-     *         "isSynthetic": <bool>,       // Optional: A flag indicating if the unique ID part is synthetic. Defaults to false.
-     *         "isOptional": <bool>         // Optional: A flag indicating if the unique ID part is optional. Defaults to false.
-     *       },
-     *       ...
-     *     ],
-     *     ...
-     *   ]
-     * }
-     *
-     * @param j The JSON to deserialize.
-     * @return The deserialized FeatureTypeInfo object.
-     * @throws std::runtime_error if any mandatory field is missing.
-     */
-    static FeatureTypeInfo fromJson(const nlohmann::json& j);
-
-    /** Serialize FeatureTypeInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
 };
 
@@ -291,10 +196,10 @@ struct Coverage
      * {
      *   "min": <int32_t>,                 // Mandatory: The signed packed minimum tile ID.
      *   "max": <int32_t>,                 // Mandatory: The signed packed maximum tile ID.
-     *   "filled": [<bool>...]             // Optional: A list of boolean values indicating filled tiles. Defaults to an empty list.
+     *   "filled": [<bool>...]             // Optional: Flags for filled tiles; default is empty.
      * }
      *
-     * Alternatively, an single integer is interpreted as a Coverage
+     * Alternatively, a single integer is interpreted as a Coverage
      * where min=max, and `filled` is empty.
      *
      * @param j The JSON to deserialize.
@@ -318,11 +223,8 @@ struct LayerInfo
     /** Type of the layer */
     LayerType type_ = LayerType::Features;
 
-    /** List of feature types, only relevant if this is a Feature-layer. */
-    std::vector<FeatureTypeInfo> featureTypes_;
-
-    /** Utility function to get some feature type info by name. */
-    FeatureTypeInfo const* getTypeInfo(std::string_view const& sv, bool throwIfMissing=true) const;
+    /** Borrow a map-wide identity; this does not imply that this layer produces it. */
+    FeatureIdentity getTypeInfo(std::string_view const& sv, bool throwIfMissing = true) const;
 
     /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
     void validateIdentifiers() const;
@@ -345,20 +247,24 @@ struct LayerInfo
     /** Version of the map layer. */
     Version version_;
 
-    /** Typed feature-model schema describing one emitted feature object for this layer. */
-    std::shared_ptr<LayerSchema const> featureModelSchema_;
-
     /** Addressing of payloads; discovery tiles are independent of object identity. */
     PartitionKind partitionKind_ = PartitionKind::Tile;
+
     /** Required level in 0..15 for object discovery, not object resolution; absent on tile layers. */
     std::optional<int> tileAssociationLevel_;
+
+    /** Optional presentation default; saved user visibility always takes precedence. */
+    std::optional<bool> defaultVisible_;
 
     /**
      * Return the typed feature-model schema for this layer.
      * SchemaIds are assigned during schema construction and are independent of
      * datasource-owned StringPool state.
      */
-    [[nodiscard]] std::shared_ptr<LayerSchema const> layerSchema() const;
+    [[nodiscard]] simfil::model_ptr<LayerSchema> layerSchema() const;
+
+    /** Keep this layer's immutable schema alive independently of datasource replacement. */
+    [[nodiscard]] std::shared_ptr<MapSchema const> schemaOwner() const;
 
     /**
      * Return the index of the first unique ID composition that matches this feature ID.
@@ -386,14 +292,31 @@ struct LayerInfo
         KeyValueViewPairs const& featureIdParts,
         bool validateForNewFeature) const;
 
-    /** Create LayerInfo from JSON. */
-    static std::shared_ptr<LayerInfo> fromJson(const nlohmann::json& j, std::string const& layerId="");
+    /** Import one legacy layer into a shared builder, or finalize a standalone open/typed graph.
+     * With schemaBuilder, the returned runtime metadata remains unbound until its
+     * DataSourceInfo installs the finalized owner with setMapSchema().
+     * Canonical catalogs should be parsed through DataSourceInfo with their exact schema resolver.
+     */
+    static std::shared_ptr<LayerInfo> fromJson(
+        const nlohmann::json& j,
+        std::string const& layerId = "",
+        std::shared_ptr<MapSchema> const& schemaBuilder = {});
 
     /** Serialize LayerInfo to JSON. */
     [[nodiscard]] nlohmann::json toJson() const;
 
-    /** Report retained layer metadata and compiled schema capacity. */
+    /** Report layer-owned metadata; the shared schema is accounted once by its owner. */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
+
+private:
+    friend struct DataSourceInfo;
+
+    /** Parse runtime fields without constructing a separate schema for each layer. */
+    static std::shared_ptr<LayerInfo>
+    fromJsonMetadata(nlohmann::json const& json, std::string const& layerId);
+
+    /** Shared owner, never a second per-layer feature/schema registry. */
+    std::shared_ptr<MapSchema const> schemaOwner_;
 };
 
 /**
@@ -401,7 +324,7 @@ struct LayerInfo
  */
 struct DataSourceInfo
 {
-    /** Unique identifier of the node */
+    /** Dictionary namespace: offsets from one string pool are meaningful only under this ID. */
     std::string stringPoolId_;
 
     /** Unique identifier of the map */
@@ -422,61 +345,97 @@ struct DataSourceInfo
     /** Used mapget protocol version */
     Version protocolVersion_;
 
-    /** Get the layer, or a runtime error, if no such layer exists. */
-    [[nodiscard]] std::shared_ptr<LayerInfo> getLayer(std::string const& layerId, bool throwIfMissing=true) const;
+    /** Descriptive source-format tuple; not a schema-cache key. */
+    MapFormat mapFormat_;
+
+    /** Exact immutable projected contract advertised on the wire. */
+    std::string schemaId_;
+
+    /** Required before native use; omitted from catalog JSON and shared by metadata snapshots. */
+    std::shared_ptr<MapSchema const> mapSchema_;
+
+    /**
+     * Bind a finalized artifact after validating copies of all layer metadata.
+     * Failure leaves existing bindings intact; this does not synchronize concurrent callers.
+     */
+    void setMapSchema(std::shared_ptr<MapSchema const> schema);
+
+    /** Reject incomplete or mismatched bindings before publishing a usable datasource. */
+    void validateSchema() const;
+
+    /** Get a layer; missing entries throw unless throwIfMissing is false, which returns null. */
+    [[nodiscard]] std::shared_ptr<LayerInfo>
+    getLayer(std::string const& layerId, bool throwIfMissing = true) const;
 
     /** Validate raw metadata identifiers that cannot be safely auto-escaped. */
     void validateIdentifiers() const;
 
     /**
-     * Deserializes a DataSourceInfo object from JSON.
+     * Deserialize a DataSourceInfo catalog record or legacy inline schema input.
+     * The canonical form identifies a map, its layers and an exact schema artifact.
+     * This expanded example also shows optional runtime and layer metadata:
      *
-     * The JSON is expected to have the following structure:
-     *
+     * @code{.json}
      * {
-     *   "mapId": <string>,                   // Mandatory: A unique identifier for the map.
-     *   "layers": {                          // Mandatory: A dictionary mapping layer names to LayerInfo objects.
-     *     <layerId>: {
-     *       "type": <LayerType>,             // Optional: The type of the layer. Defaults to "Features".
-     *       "featureTypes": [<FeatureTypeInfo>...], // Mandatory: A list of feature type information.
-     *       "zoomLevels": [<int>...],        // Optional: A list of zoom levels. Defaults to empty list.
-     *       "coverage": [<Coverage>...],     // Optional: A list of coverage objects. Defaults to empty list.
-     *       "canRead": <bool>,               // Optional: Whether the layer can be read. Defaults to true.
-     *       "canWrite": <bool>,              // Optional: Whether the layer can be written. Defaults to false.
-     *       "version": {                     // Optional: The version of the layer.
-     *         "major": <int>,                // Mandatory: The major version number.
-     *         "minor": <int>,                // Mandatory: The minor version number.
-     *         "patch": <int>                 // Mandatory: The patch version number.
-     *       },
-     *       "featureModelSchema": <object>    // Optional: JSON Schema for one emitted feature object.
-     *     },
-     *     ...
+     *   "mapId": "roads",
+     *   "layers": {
+     *     "geometry": {
+     *       "type": "Features",
+     *       "partitionKind": "tile",
+     *       "zoomLevels": [13],
+     *       "coverage": [],
+     *       "canRead": true,
+     *       "canWrite": false,
+     *       "version": {"major": 1, "minor": 0, "patch": 0}
+     *     }
      *   },
-     *   "maxParallelJobs": <int>,            // Optional: The maximum number of parallel jobs allowed. Defaults to 8.
-     *   "extraJsonAttachment": <JSON object>,// Optional: Any extra JSON data attached. Defaults to an empty object.
-     *   "protocolVersion": {                 // Optional: The version of the protocol. Defaults to the current protocol version.
-     *     "major": <int>,                    // Mandatory: The major version number.
-     *     "minor": <int>,                    // Mandatory: The minor version number.
-     *     "patch": <int>                     // Mandatory: The patch version number.
+     *   "mapFormat": {
+     *     "name": "ExampleFormat",
+     *     "version": "1.0",
+     *     "subsystems": [{"name": "geometry", "version": "1.0"}]
      *   },
-     *   "stringPoolId": <string>,                  // Optional: A UUID for the node. If not provided, a random UUID will be generated.
-     *                                        // Note: Only provide this if you have a good reason.
-     *   "addOn": <bool>                      // Optional: Declare the datasource as add-on.
+     *   "schemaId": "<identity advertised by MapSchema::schemaId()>",
+     *   "maxParallelJobs": 8,
+     *   "extraJsonAttachment": {},
+     *   "addOn": false
      * }
+     * @endcode
      *
-     * Each LayerType, FeatureTypeInfo, and Coverage object has its own specific JSON structure,
-     * as defined by the corresponding class's fromJson() method.
+     * mapId and layers are required. Layer defaults are type=Features,
+     * partitionKind=tile, empty zoomLevels/coverage, canRead=true and canWrite=false.
+     * version is optional; when supplied, its major, minor and patch fields are required.
+     * Object-backed layers can also supply tileAssociationLevel for spatial discovery.
+     *
+     * maxParallelJobs defaults to 8, addOn to false and extraJsonAttachment to an
+     * empty object. Optional protocolVersion uses the same major/minor/patch shape
+     * and defaults to the current protocol. Optional stringPoolId identifies the
+     * producer dictionary; omission generates a namespace, so normally let it default.
+     *
+     * mapFormat describes the source format; schemaId identifies the projected schema
+     * artifact. The subsystems array contains name/version pairs, allowing one subsystem
+     * at several versions. The format must agree with the referenced MapSchema artifact.
+     *
+     * Canonical catalog metadata references one MapSchema; it never embeds per-layer
+     * featureTypes or featureModelSchema. With a resolver, that exact artifact is installed
+     * before return. Without one, schema-referencing metadata is an unbound discovery record:
+     * setMapSchema() must succeed before native use or datasource publication.
+     *
+     * Legacy input without schemaId may supply per-layer featureTypes (identity definitions)
+     * and featureModelSchema (JSON Schema). These are imported into one shared finalized
+     * MapSchema. Mixing legacy definitions with a schemaId is rejected. A feature-types-only
+     * layer retains its identity contract and has open property domains.
      *
      * @param j The JSON to deserialize.
      * @return The deserialized DataSourceInfo object.
      * @throws std::runtime_error if any mandatory field is missing.
      */
-    static DataSourceInfo fromJson(const nlohmann::json& j);
+    static DataSourceInfo fromJson(const nlohmann::json& j, SchemaResolveFun const& schemas = {});
 
-    /** Serialize DataSourceInfo to JSON. */
+    /** Serialize lightweight catalog metadata, referring to rather than copying the schema. */
     [[nodiscard]] nlohmann::json toJson() const;
 
-    /** Report retained datasource metadata, layer metadata, and schema capacity. */
+    /** Report source-owned metadata; shared MapSchema allocations must be counted separately once.
+     */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 };
 

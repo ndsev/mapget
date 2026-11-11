@@ -45,7 +45,7 @@ struct CacheReportResult
     std::string body;
 };
 
-/** Traverse the cache once and package the resulting point-in-time report. */
+/** Collect cache diagnostics in one run; subsystem samples are not one atomic snapshot. */
 [[nodiscard]] CacheReportResult generateCacheReport(Service& service)
 {
     auto const started = std::chrono::steady_clock::now();
@@ -94,10 +94,16 @@ void HttpService::Impl::handleStatusDataRequest(
     const drogon::HttpRequestPtr& /*req*/,
     std::function<void(const drogon::HttpResponsePtr&)>&& callback) const
 {
+    callback(jsonResponse(statusSnapshot().dump()));
+}
+
+nlohmann::json HttpService::Impl::statusSnapshot() const
+{
     auto serviceMemory = self_.getMemoryStatistics();
     auto cache = self_.cache()->getStatistics();
     auto websocket = detail::tilesWebSocketMetricsSnapshot();
     auto httpStreams = detail::tilesHttpMetricsSnapshot();
+    auto const schemaBytes = schemaResponses_->allocatedCapacity();
 
     uint64_t cacheBytes = 0;
     if (auto memory = cache.find("memory"); memory != cache.end() && memory->is_object()) {
@@ -111,7 +117,7 @@ void HttpService::Impl::handleStatusDataRequest(
     }
     auto const transportBytes =
         websocket.value("pending-controller-allocated-bytes", uint64_t{0}) +
-        httpStreams.value("pending-capacity-bytes", uint64_t{0});
+        httpStreams.value("pending-capacity-bytes", uint64_t{0}) + schemaBytes;
     auto const knownBytes =
         serviceMemory.value("known-current-bytes", uint64_t{0}) +
         cacheBytes + transportBytes;
@@ -120,6 +126,12 @@ void HttpService::Impl::handleStatusDataRequest(
     serviceMemory["transport"] = {
         {"interactive", websocket},
         {"rest-streams", httpStreams},
+        {"schema-artifacts", {
+            {"measurement", "std-string-capacity"},
+            {"allocated-bytes", schemaBytes},
+            {"retained-cache-capacity-bytes", schemaResponses_->retainedCapacity()},
+            {"max-artifact-bytes", detail::SchemaResponseCache::MaxArtifactBytes},
+        }},
         {"current-bytes", transportBytes},
     };
     serviceMemory["allocator-trim"] = memoryTrimStatistics();
@@ -157,7 +169,7 @@ void HttpService::Impl::handleStatusDataRequest(
     }
     serviceMemory["reconciliation"] = std::move(reconciliation);
 
-    const auto payload = nlohmann::json::object({
+    return nlohmann::json::object({
         {"timestampMs", timestampMs()},
         {"service", self_.getStatistics(false, false)},
         {"cache", std::move(cache)},
@@ -165,7 +177,6 @@ void HttpService::Impl::handleStatusDataRequest(
         {"tilesHttp", std::move(httpStreams)},
         {"memory", std::move(serviceMemory)},
     });
-    callback(jsonResponse(payload.dump()));
 }
 
 void HttpService::Impl::handleStatusCacheReportRequest(
@@ -205,7 +216,7 @@ void HttpService::Impl::runStatusCacheReportLoop()
         }
 
         // Keep the callback list in place while traversing so callers arriving
-        // during this run receive the same point-in-time result.
+        // during this run receive the same collected result.
         lock.unlock();
         auto result = generateCacheReport(self_);
         lock.lock();

@@ -10,6 +10,7 @@
 #include <queue>
 
 #include "mapget/http-service/http-client.h"
+#include "py-schema.h"
 
 namespace py = pybind11;
 
@@ -224,18 +225,21 @@ void bindHttpClient(py::module_& m)
             py::init(
                 [](std::optional<std::string> namePattern,
                    bool recursive,
-                   bool mergeTwoway)
+                   bool mergeTwoway, bool incoming)
                 {
                     return FeatureLayerStoredRelationOptions{
                         .relationNamePattern_ =
                             std::move(namePattern),
                         .recursive_ = recursive,
                         .mergeTwoway_ = mergeTwoway,
+                        .incoming_ = incoming,
                     };
                 }),
             py::arg("name_pattern") = py::none(),
             py::arg("recursive") = false,
-            py::arg("merge_twoway") = false);
+            py::arg("merge_twoway") = false,
+            py::arg("incoming") = false,
+            "Select outgoing traversal by default; incoming is reserved for Client.incoming_relations.");
 
     py::class_<FeatureLayerFilterRoot>(m, "FilterRoot")
         .def(
@@ -364,11 +368,12 @@ void bindHttpClient(py::module_& m)
                 tiles: PackedTileId or PartitionId values to load.
                 on_feature_result: The callback function to be called when a result feature tile is available.
                 You can also iterate over this Request object instead of providing the callback.
-                on_sourcedata_result: The callback function to be callend when a result source-data tile
-                is available. You can also iterate over this Request object instead of porviding the callback.
+                on_sourcedata_result: The callback invoked when a source-data tile is available.
+                You can also iterate over this Request object to consume buffered results.
                 source_id: Optional catalog source assertion.
 
-            Note: The provided tile ids are processed in the given order.
+            Results are buffered in arrival order; concurrent source work may complete
+            in a different order from the supplied tile IDs.
         )pbdoc")
         .def(
             "__iter__",
@@ -393,14 +398,14 @@ void bindHttpClient(py::module_& m)
             "wait",
             &PyRequest::wait,
             R"pbdoc(
-            Wait for the request to be done.
+            Wait for a terminal request status.
 
-            This function blocks until all results have been processed.
+            This does not consume results retained for iteration.
         )pbdoc",
             py::call_guard<py::gil_scoped_release>());
 
     py::class_<PyFilterRequest, std::shared_ptr<PyFilterRequest>>(m, "FilterRequest", R"pbdoc(
-        Client request for server-side filter evaluation evaluation.
+        Client request for server-side filter evaluation.
 
         FilterRequest posts a simplified REST /filter request. Results are
         PartitionSubsetLayer objects and can be consumed with a callback or by
@@ -501,9 +506,56 @@ void bindHttpClient(py::module_& m)
         Synchronous HTTP client for a running mapget service.
 
         The client fetches `/sources` once during construction, keeps the
-        resulting layer metadata for request decoding, and can submit tile and
-        server-side filter requests.
+        resulting layer metadata and exact immutable schemas for request decoding,
+        and can submit tile and server-side filter requests. Schema hydration completes
+        before a usable source or tile is exposed; raw catalog references are not
+        sufficient to decode schema-bound payloads.
     )pbdoc")
+        .def(
+            "incoming_relations",
+            [](HttpClient& client,
+               std::string map,
+               std::string layer,
+               py::object partitionValue,
+               std::string featureId)
+            {
+                auto partition = partitionIdFromPython(partitionValue);
+                FeatureLayerFilterRequest filter;
+                FeatureLayerFilterChannel channel;
+                channel.channelId_ = "incoming";
+                channel.scope_ = FeatureLayerFilterScope::Relation;
+                channel.relation_ = FeatureLayerStoredRelationOptions{};
+                channel.relation_->incoming_ = true;
+                filter.channels_.push_back(channel);
+                auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+                    map,
+                    layer,
+                    std::vector<PartitionId>{partition},
+                    filter);
+                FeatureLayerFilterRoot root;
+                root.partitionId_ = partition;
+                root.canonicalFeatureId_ = featureId;
+                request->exactRoots_.push_back(root);
+                std::vector<PartitionFeatureLayer::Ptr> snapshots;
+                std::optional<IncomingRelationCollection> collection;
+                request->onFeatureSnapshot([&](auto const& value) { snapshots.push_back(value); });
+                request->onIncomingRelations([&](auto const& value) { collection = value; });
+                {
+                    py::gil_scoped_release release;
+                    client.filter(request);
+                }
+                if (request->getStatus() != RequestStatus::Success || !collection)
+                    throw std::runtime_error("Incoming inspection failed or is unsupported");
+                return std::make_unique<FeatureInspectionView>(
+                    std::move(*collection),
+                    std::move(snapshots));
+            },
+            py::arg("map_id"),
+            py::arg("layer_id"),
+            py::arg("partition"),
+            py::arg("feature_id"),
+            "Load incoming context for an exact feature in the same partition. Conventional "
+            "relations are excluded.")
         .def(
             "discover_objects",
             &HttpClient::discoverObjects,
@@ -516,14 +568,16 @@ void bindHttpClient(py::module_& m)
             R"pbdoc(
                 Connect to a running mapget HTTP service.
 
-                The constructor immediately calls `/sources` and caches the
-                ready datasource metadata for the lifetime of this object.
+                The constructor immediately calls `/sources`, resolves each ready
+                source's exact schema with the same authorization, and retains the
+                complete metadata for this object's lifetime. Failed schema resolution
+                raises rather than publishing an unusable source.
 
                 Args:
                     host: Hostname or IP address of the mapget HTTP service.
                     port: TCP port of the mapget HTTP service.
                     headers: Optional HTTP headers sent with `/sources`,
-                        `/tiles`, and `/filter` requests. Use this for auth.
+                        `/schema`, `/tiles`, and `/filter` requests. Use this for auth.
                     enable_compression: Request gzip responses unless the
                         headers already contain an `Accept-Encoding` override.
             )pbdoc",
@@ -532,39 +586,72 @@ void bindHttpClient(py::module_& m)
             py::arg("headers") = AuthHeaders{},
             py::arg("enable_compression") = true)
         .def(
-            "sources",
-            [](HttpClient& self)
+            "get_schema",
+            [](HttpClient& self, std::string const& sourceId, std::string const& expectedId)
             {
-                auto jsonArray = nlohmann::json::array();
-                for (auto const& dsInfo : self.sources())
-                    jsonArray.push_back(dsInfo.toJson());
-                return json_to_py_value(jsonArray);
+                MapSchema::ConstPtr schema;
+                {
+                    py::gil_scoped_release release;
+                    schema = self.getSchema(sourceId, expectedId);
+                }
+                return schema;
             },
+            py::arg("source_id"),
+            py::arg("expected_schema_id"),
             R"pbdoc(
-                Get the sources as they were retrieved when the Client was instantiated.
+                Fetch or reuse the exact schema for an authorized catalog sourceId.
+
+                Use sourceId and schemaId from source discovery, never a mapId inferred
+                from a display name. Authorization and expected identity are checked
+                even on cache hits. Transport, authorization and identity failures raise.
+                The returned read-only MapSchema keeps its graph alive after this client
+                is destroyed. Use write() for binary bytes or layer() for native views.
+            )pbdoc")
+        .def(
+            "sources",
+            [](HttpClient& self) { return json_to_py_value(self.sourceCatalog()); },
+            R"pbdoc(
+                Return detached canonical metadata dictionaries from client initialization.
+                Inline legacy schema/type fields are not re-emitted. Schema owners are
+                installed internally before this method returns; use get_schema with the
+                sourceId/schemaId from these dictionaries to inspect one explicitly.
             )pbdoc")
         .def(
             "request",
             [](HttpClient& self, std::shared_ptr<PyRequest> request)
             {
-                self.request(request);
+                // Python datasource callbacks may need the GIL while this client waits for I/O.
+                {
+                    py::gil_scoped_release release;
+                    self.request(request);
+                }
                 return std::move(request);
             },
             R"pbdoc(
-                Post a Request for a number of tiles from a particular map layer.
-                Returns the request object which was put in.
+                Fetch one layer request and buffer the complete HTTP response before returning.
+                Releases the GIL during I/O. Returns the supplied request with its final
+                status; iterate it to consume received layers, including any received
+                before a later decoding failure.
             )pbdoc",
             py::arg("request"))
         .def(
             "filter",
             [](HttpClient& self, std::shared_ptr<PyFilterRequest> request)
             {
-                self.filter(request);
+                for (auto const& channel : request->filter_.channels_)
+                    if (channel.relation_ && channel.relation_->incoming_)
+                        throw py::value_error("Use Client.incoming_relations to receive typed incoming inspection results");
+                {
+                    py::gil_scoped_release release;
+                    self.filter(request);
+                }
                 return std::move(request);
             },
             R"pbdoc(
-                Post a FilterRequest to the REST /filter endpoint.
-                Returns the request object which was put in.
+                Run a buffered REST /filter request, releasing the GIL during I/O.
+                Returns the supplied request with its final status; received subsets
+                may remain available when a later part of the response fails. Use
+                incoming_relations() for typed incoming inspection results.
             )pbdoc",
             py::arg("request"));
 }

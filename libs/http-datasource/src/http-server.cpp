@@ -428,6 +428,12 @@ void HttpServer::waitForSignal()
     activeHttpServer = nullptr;
 }
 
+std::optional<std::filesystem::path> HttpServer::fileSystemMountRoot(std::string const& pathFromTo)
+{
+    auto mount = parseMountPoint(pathFromTo);
+    return mount ? std::optional(mount->fsRoot) : std::nullopt;
+}
+
 bool HttpServer::mountFileSystem(std::string const& pathFromTo)
 {
     auto mount = parseMountPoint(pathFromTo);

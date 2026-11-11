@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <mutex>
@@ -17,9 +18,12 @@
 #include <vector>
 
 #include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/featureid.h"
 #include "mapget/service/memcache.h"
 #include "mapget/service/service.h"
 #include "../../libs/http-service/src/tiles-request-json.h"
+
+
 
 using namespace mapget;
 
@@ -202,6 +206,7 @@ public:
         else {
             tile->setTtl(errorTtl_);
             tile->setError("synthetic recoverable tile error");
+            tile->setErrorCode(503);
         }
     }
 
@@ -398,11 +403,16 @@ public:
         : FilterDataSource("CanonicalLocatePool")
     {}
 
+    /** This provider accepts complete declared identities, not arbitrary lookup keys. */
     std::vector<LocateCandidate> locate(
         LocateRequest const& request) override
     {
         requestedTypeId_ = request.typeId_;
         requestedFeatureId_ = request.featureId_;
+        ParsedFeatureId parsed;
+        if (!normalizeFeatureIdParts(
+                request.typeId_, request.featureId_, *info().getLayer("Road"), parsed))
+            return {};
         return {LocateCandidate(
             MapPartitionKey{LayerType::Features, "FilterMap", "Road", firstTile()},
             formatFeatureIdString(request.typeId_, request.featureId_))};
@@ -410,6 +420,39 @@ public:
 
     std::string requestedTypeId_;
     KeyValuePairs requestedFeatureId_;
+};
+
+/** Resolve partial/provider-specific keys without pretending they are complete feature IDs. */
+class PartialLocateDataSource : public FilterDataSource
+{
+public:
+    std::vector<LocateRequest> queries;
+    std::function<void()> onLocate;
+
+    /** Give replacements distinct namespaces while retaining the same map contract. */
+    explicit PartialLocateDataSource(std::string pool = "PartialLocatePool")
+        : FilterDataSource(std::move(pool))
+    {}
+
+    /** Plan one canonical result; deliberately leave layer/partition filtering to the service. */
+    std::vector<LocateCandidate> locate(LocateRequest const& request) override
+    {
+        queries.push_back(request);
+        if (onLocate)
+            onLocate();
+        if (request.typeId_ != "Road")
+            return {};
+        auto roadId = request.getIntIdPart("roadId");
+        if (!roadId)
+            roadId = request.getIntIdPart("externalRoadId");
+        if (!roadId)
+            roadId = request.getIntIdPart("backendRoadId");
+        if (!roadId)
+            return {};
+        return {LocateCandidate(
+            MapPartitionKey{LayerType::Features, "FilterMap", "Road", firstTile()},
+            fmt::format("Road.{}.{}", firstTile().value(), *roadId))};
+    }
 };
 
 class AttachmentFilterDataSource : public FilterDataSource
@@ -634,14 +677,11 @@ public:
         feature->addGeometry(geometry);
         feature->addRelation(
             "connected",
-            "Road",
-            {
-                {
-                    "tileId",
-                    static_cast<int64_t>(
-                        otherTile.value())},
-                {"externalRoadId", otherRoadId},
-            });
+            tile->newFeatureId(
+                "Road",
+                {{"tileId", static_cast<int64_t>(otherTile.value())},
+                 {"externalRoadId", otherRoadId}},
+                relationTargetMap_));
     }
 
     void fill(PartitionSourceDataLayer::Ptr const&) override
@@ -654,8 +694,17 @@ public:
         LocateRequest const& request) override
     {
         ++locateCalls_;
+        if (onLocate_) {
+            onLocate_();
+        }
         return locateResponse(request);
     }
+
+    /** Replace the registration while a delivered source tile resolves its relation. */
+    std::function<void()> onLocate_;
+
+    /** Emit an unresolved foreign reference instead of the usual same-map target. */
+    std::optional<std::string> relationTargetMap_;
 
     size_t locateCalls() const
     {
@@ -941,23 +990,38 @@ TEST_CASE(
         });
 
     REQUIRE(service.request(request));
-    REQUIRE(dataSource->waitForSecondCompletion(2s));
-
     bool secondEmittedBeforeFirstCompleted = false;
-    {
-        std::unique_lock lock(resultMutex);
-        secondEmittedBeforeFirstCompleted =
-            resultChanged.wait_for(lock, 2s, [&] {
-                return !resultOrder.empty();
-            }) &&
-            resultOrder.front() == secondTile();
+    try {
+        REQUIRE(dataSource->waitForSecondCompletion(2s));
+        {
+            std::unique_lock lock(resultMutex);
+            secondEmittedBeforeFirstCompleted =
+                resultChanged.wait_for(lock, 2s, [&] { return !resultOrder.empty(); }) &&
+                resultOrder.front() == secondTile();
+        }
+        // Sampling uses try_lock and may initially return the unsampled zero gauge.
+        // Retry while the first source remains blocked, rather than require one lucky poll.
+        nlohmann::json activeMemory;
+        for (size_t attempt = 0; attempt < 200; ++attempt) {
+            activeMemory = service.getMemoryStatistics();
+            auto const& filters = activeMemory["active-filters"];
+            if (filters.size() == 1 &&
+                filters[0]["orchestration"]["current-bytes"].get<uint64_t>() > 0)
+                break;
+            std::this_thread::sleep_for(5ms);
+        }
+        REQUIRE(activeMemory["active-filters"].size() == 1);
+        auto const& filterMemory = activeMemory["active-filters"][0];
+        REQUIRE(filterMemory["filter-id"] == "style:roads");
+        REQUIRE(filterMemory["orchestration"]["current-bytes"].get<uint64_t>() > 0);
+        REQUIRE(filterMemory["output-subset-models"]["peak-bytes"].get<uint64_t>() > 0);
     }
-    auto const activeMemory = service.getMemoryStatistics();
-    REQUIRE(activeMemory["active-filters"].size() == 1);
-    auto const& filterMemory = activeMemory["active-filters"][0];
-    REQUIRE(filterMemory["filter-id"] == "style:roads");
-    REQUIRE(filterMemory["orchestration"]["current-bytes"].get<uint64_t>() > 0);
-    REQUIRE(filterMemory["output-subset-models"]["peak-bytes"].get<uint64_t>() > 0);
+    catch (...) {
+        // Fatal test assertions must not leave a blocked worker for Service's destructor.
+        dataSource->releaseFirst();
+        request->wait();
+        throw;
+    }
     dataSource->releaseFirst();
     request->wait();
 
@@ -1277,9 +1341,15 @@ TEST_CASE(
         },
         std::vector<PartitionId>{easternTile});
 
+    // Independent output tiles may complete on different service workers.
+    std::mutex resultsMutex;
     std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(resultsMutex);
+            results.push_back(std::move(layer));
+        });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1320,8 +1390,8 @@ TEST_CASE(
     REQUIRE(westernResult->timestamp() == expectedTimestamp);
     REQUIRE(westernResult->ttl() == std::chrono::milliseconds{1250});
     REQUIRE(easternResult->timestamp() == expectedTimestamp);
-    // Empty halo sources are capped below their explicit ten-second lifetime.
-    REQUIRE(easternResult->ttl() == Service::DEFAULT_EMPTY_TILE_TTL);
+    // A producer's shorter lifetime still bounds empty halo dependencies.
+    REQUIRE(easternResult->ttl() == std::chrono::seconds{10});
     REQUIRE(
         westernResult->at(0)->groupEntryCount() ==
         0);
@@ -1338,9 +1408,58 @@ TEST_CASE(
     REQUIRE(group);
     REQUIRE(
         group->values()->toJson() ==
-        nlohmann::json::array({2}));
+        nlohmann::json::array({nlohmann::json::array({2})}));
     REQUIRE(
         group->memberFeatureIds()->size() == 2);
+}
+
+TEST_CASE("Disabled point groups do not load a halo", "[feature-layer-filter][Service][filter-activity]")
+{
+    auto const tile = TileId::fromTileXY(10, 4, 4);
+    auto const [longitude, latitude] = tile.centerWgs84();
+    nlohmann::json ordinaryEntries;
+    for (bool enabled : {false, true, false}) {
+        Service service(std::make_shared<MemCache>(32), false);
+        auto dataSource = std::make_shared<PointGroupDataSource>(
+            tile, tile.eastNeighbour(), Point{longitude, latitude, 0},
+            Point{longitude + 1, latitude, 0});
+        service.add(dataSource);
+        FeatureLayerFilterRequest filter;
+        filter.bindings_ = {{"enabled", enabled}};
+        filter.channels_ = {
+            FeatureLayerFilterChannel{.channelId_ = "points", .featureFields_ = {"roadId"}},
+            FeatureLayerFilterChannel{
+                .channelId_ = "groups", .featureFilter_ = "any(enabled)",
+                .entryFields_ = {"count($features.*)"},
+                .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                .group_ = FeatureLayerPointGridGroup{
+                    .origin_ = {longitude - 0.5, latitude - 0.5, -0.5}, .cellSize_ = {1, 1, 1}},
+            },
+        };
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        PartitionSubsetLayer::Ptr result;
+        request->onFilterResult([&](auto layer) { result = std::move(layer); });
+        REQUIRE(service.request(request));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        CHECK(dataSource->requestedTiles().size() == (enabled ? 9 : 1));
+        CHECK(result->dependencies().size() == (enabled ? 9 : 1));
+        CHECK(result->at(1)->groupEntryCount() == (enabled ? 2 : 0));
+        auto entries = result->at(0)->toJson();
+        if (ordinaryEntries.is_null()) {
+            ordinaryEntries = entries;
+        }
+        CHECK(entries == ordinaryEntries);
+
+        // Disabling a group must not hide malformed request declarations.
+        filter.channels_[1].group_->cellSize_.x = tile.wgs84Size().first * 2;
+        auto invalid = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap", "Road", std::vector<PartitionId>{tile}, filter);
+        CHECK_FALSE(service.request(invalid));
+        CHECK(invalid->getStatus() == RequestStatus::Aborted);
+    }
 }
 
 TEST_CASE(
@@ -1533,9 +1652,14 @@ TEST_CASE(
         root(westernTile, 1),
     };
 
+    std::mutex resultsMutex;
     std::vector<PartitionSubsetLayer::Ptr> results;
     request->onFilterResult(
-        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+        [&](PartitionSubsetLayer::Ptr layer)
+        {
+            std::lock_guard lock(resultsMutex);
+            results.push_back(std::move(layer));
+        });
     REQUIRE(service.request(request));
     request->wait();
     REQUIRE(
@@ -1557,6 +1681,122 @@ TEST_CASE(
     }
     REQUIRE(westernRelations == 0);
     REQUIRE(easternRelations == 1);
+}
+
+TEST_CASE(
+    "Filter success waits for relation result callbacks",
+    "[feature-layer-filter][Service][relation][concurrency]")
+{
+    using namespace std::chrono_literals;
+    std::string_view const action = GENERATE("retain", "cancel", "throw", "throw nonstandard");
+    CAPTURE(action);
+
+    auto const westernTile = TileId::fromTileXY(10, 5, 4);
+    auto const easternTile = westernTile.eastNeighbour();
+    auto const emptyTile = westernTile.westNeighbour();
+    std::mutex doneMutex;
+    std::condition_variable doneChanged;
+    bool done = false;
+    std::atomic_bool callbackReturned = false;
+    bool callbackReturnedAtSuccess = false;
+    bool callbackReturnedAfterWait = false;
+    size_t resultCount = 0;
+    size_t resultCountAtSuccess = 0;
+    RequestStatus statusDuringCallback = RequestStatus::Aborted;
+    RequestStatus finalStatus = RequestStatus::Open;
+    bool accepted = false;
+    bool finished = false;
+
+    {
+        // One worker finishes both source evaluations before delivering the
+        // dynamically requested relation target. Source-evaluation accounting
+        // therefore cannot mask premature completion in the result callback.
+        Service service(std::make_shared<MemCache>(32), false, 0ms, 1);
+        service.add(std::make_shared<RelationDataSource>(westernTile, easternTile));
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "FilterMap",
+            "Road",
+            std::vector<PartitionId>{emptyTile, westernTile},
+            FeatureLayerFilterRequest{
+                .filterId_ = "relation-result-completion",
+                .generation_ = 1,
+                .channels_ = {FeatureLayerFilterChannel{
+                    .channelId_ = "connected",
+                    .featureFilter_ = "typeId == 'Road'",
+                    .scope_ = FeatureLayerFilterScope::Relation,
+                    .featureTypes_ = {"Road"},
+                    .geometryName_ = "relation",
+                    .relation_ =
+                        FeatureLayerStoredRelationOptions{
+                            .relationNamePattern_ = "connected",
+                        },
+                }},
+            });
+        request->onFilterResult(
+            [&, weakRequest = std::weak_ptr(request)](PartitionSubsetLayer::Ptr layer)
+            {
+                ++resultCount;
+                if (layer->tileId() != westernTile) {
+                    return;
+                }
+                auto current = weakRequest.lock();
+                // Pruning the already-delivered empty output re-enters the
+                // completion check deterministically, without another worker
+                // or sleeps. Success must still wait for this callback.
+                service.retainOutputs(current, {westernTile});
+                statusDuringCallback = current->getStatus();
+                if (action == "cancel") {
+                    service.abort(current);
+                }
+                else if (action == "throw") {
+                    throw std::runtime_error("synthetic result callback failure");
+                }
+                else if (action == "throw nonstandard") {
+                    throw 42;
+                }
+                callbackReturned = true;
+            });
+        request->onDone_ = [&](RequestStatus status)
+        {
+            std::lock_guard lock(doneMutex);
+            if (status == RequestStatus::Success) {
+                callbackReturnedAtSuccess = callbackReturned;
+                resultCountAtSuccess = resultCount;
+            }
+            done = true;
+            doneChanged.notify_all();
+        };
+
+        accepted = service.request(request);
+        {
+            std::unique_lock lock(doneMutex);
+            finished = doneChanged.wait_for(lock, 5s, [&] { return done; });
+        }
+        if (!finished) {
+            // A missing terminal notification must fail instead of hanging
+            // the test or leaving a worker referencing destroyed captures.
+            service.abort(request);
+        }
+        request->wait();
+        finalStatus = request->getStatus();
+        callbackReturnedAfterWait = callbackReturned;
+    }
+
+    // Service destruction joins callbacks even for cancellation and failures,
+    // whose terminal notification intentionally need not wait for delivery.
+    REQUIRE(accepted);
+    REQUIRE(finished);
+    REQUIRE(statusDuringCallback == RequestStatus::Open);
+    REQUIRE(resultCount == 2);
+    if (action == "retain") {
+        REQUIRE(finalStatus == RequestStatus::Success);
+        REQUIRE(callbackReturnedAtSuccess);
+        REQUIRE(callbackReturnedAfterWait);
+        REQUIRE(resultCountAtSuccess == 2);
+    }
+    else {
+        REQUIRE(finalStatus == RequestStatus::Aborted);
+    }
 }
 
 TEST_CASE(
@@ -1632,6 +1872,56 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Foreign relation targets produce inspectable issues without aborting the filter",
+    "[feature-layer-filter][Service][relation][foreign-feature-id]")
+{
+    auto const westernTile = TileId::fromTileXY(10, 5, 4);
+    auto const easternTile = westernTile.eastNeighbour();
+    Service service(std::make_shared<MemCache>(32), false);
+    auto dataSource = std::make_shared<RelationDataSource>(westernTile, easternTile);
+    dataSource->relationTargetMap_ = "MissingMap";
+    service.add(dataSource);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{westernTile},
+        FeatureLayerFilterRequest{
+            .filterId_ = "foreign-relation-target",
+            .generation_ = 1,
+            .channels_ = {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "connected",
+                    .featureFilter_ = "typeId == 'Road'",
+                    .scope_ = FeatureLayerFilterScope::Relation,
+                    .featureTypes_ = {"Road"},
+                    .geometryName_ = "relation",
+                    .relation_ = FeatureLayerStoredRelationOptions{
+                        .relationNamePattern_ = "connected",
+                    },
+                },
+            },
+        });
+    std::vector<PartitionSubsetLayer::Ptr> results;
+    request->onFilterResult(
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+    REQUIRE(service.request(request));
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(results.size() == 1);
+    REQUIRE(results.front()->at(0)->relationEntryCount() == 0);
+    REQUIRE(results.front()->issues().size() == 1);
+    auto const& issue = results.front()->issues().front();
+    REQUIRE(issue.channelId_ == "connected");
+    REQUIRE(issue.message_.find("Cross-map relation target") != std::string::npos);
+    REQUIRE(issue.message_.find("\"mapId\":\"MissingMap\"") != std::string::npos);
+    REQUIRE(issue.message_.find("\"externalRoadId\":2") != std::string::npos);
+    REQUIRE(dataSource->locateCalls() == 0);
+    REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{westernTile});
+}
+
+TEST_CASE(
     "Service resolves canonical locate ids through layer compositions",
     "[Service][locate]")
 {
@@ -1686,6 +1976,165 @@ TEST_CASE(
         responses.front().tileKey_ ==
         MapPartitionKey{LayerType::Features, "FilterMap", "Road", firstTile()});
     REQUIRE(dataSource->requestedTiles() == std::vector<PartitionId>{firstTile()});
+}
+
+TEST_CASE(
+    "Service resolves named foreign references through the target datasource",
+    "[Service][locate][foreign-feature-id]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<CanonicalLocateDataSource>();
+    service.add(source);
+    auto reference = nlohmann::json{
+        {"mapId", "FilterMap"},
+        {"typeId", "Road"},
+        {"id", {{"roadId", "42"}, {"tileId", firstTile().value()}}}};
+
+    SECTION("Target composition orders and validates parts before datasource dispatch")
+    {
+        auto responses = service.locate(LocateRequest(reference));
+        REQUIRE(responses.size() == 1);
+        CHECK(
+            source->requestedFeatureId_ ==
+            KeyValuePairs{{"tileId", int64_t{firstTile().value()}}, {"roadId", int64_t{42}}});
+        CHECK(
+            responses.front().resolvedCanonicalFeatureId_ ==
+            fmt::format("Road.{}.42", firstTile().value()));
+    }
+    SECTION("Unknown target map leaves the reference unresolved")
+    {
+        reference["mapId"] = "Missing";
+        CHECK(service.locate(LocateRequest(reference)).empty());
+        CHECK(source->requestedTiles().empty());
+    }
+    SECTION("Unknown named lookup parts are left to the datasource to reject")
+    {
+        reference["id"]["unknown"] = 1;
+        CHECK(service.locate(LocateRequest(reference)).empty());
+        CHECK(source->requestedTypeId_ == "Road");
+        CHECK(source->requestedFeatureId_ == LocateRequest(reference).featureId_);
+        CHECK(source->requestedTiles().empty());
+    }
+    SECTION("Named and canonical inputs are mutually exclusive")
+    {
+        reference["featureId"] = "Road.1.42";
+        CHECK_THROWS(LocateRequest(reference));
+    }
+}
+
+TEST_CASE(
+    "Service delegates partial and provider-specific locate keys without inventing ID parts",
+    "[Service][locate][partial-id]")
+{
+    auto const key = GENERATE("roadId", "externalRoadId", "backendRoadId");
+    auto const named = GENERATE(true, false);
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    service.add(source);
+    auto input = nlohmann::json{{"mapId", "FilterMap"}, {"typeId", "Road"}};
+    if (named)
+        input["id"] = {{key, 42}};
+    else
+        input["featureId"] = nlohmann::json::array({key, 42});
+    auto request = LocateRequest(input);
+    auto results = service.locate(request);
+    REQUIRE(source->queries.size() == 1);
+    CHECK(source->queries.front().featureId_ == request.featureId_);
+    CHECK_FALSE(source->queries.front().layerId_);
+    REQUIRE(results.size() == 1);
+    CHECK(results.front().featureId_ == KeyValuePairs{
+        {"tileId", int64_t{firstTile().value()}}, {"roadId", int64_t{42}}});
+    CHECK(source->requestedTiles() == std::vector<PartitionId>{firstTile()});
+}
+
+TEST_CASE(
+    "Partial locate preserves explicit layer and partition constraints",
+    "[Service][locate][partial-id]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    service.add(source);
+    LocateRequest request{"FilterMap", "Road", {{"roadId", int64_t{42}}}};
+    request.layerId_ = "Road";
+    request.partition_ = firstTile();
+    auto matches = true;
+    SECTION("Matching context") {}
+    SECTION("Different layer") { request.layerId_ = "Other"; matches = false; }
+    SECTION("Different tile") { request.partition_ = secondTile(); matches = false; }
+    SECTION("Different partition kind") { request.partition_ = PartitionId::object(1); matches = false; }
+    auto results = service.locate(request);
+    REQUIRE(source->queries.size() == 1);
+    CHECK(source->queries.front().layerId_ == request.layerId_);
+    CHECK(source->queries.front().partition_ == request.partition_);
+    CHECK(results.size() == (matches ? 1 : 0));
+    CHECK(source->requestedTiles().size() == (matches ? 1 : 0));
+}
+
+TEST_CASE(
+    "Repeated locate completion releases stack state after the final callback",
+    "[Service][locate][partial-id]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    service.add(source);
+    LocateRequest request{"FilterMap", "Road", {{"roadId", int64_t{42}}}};
+    request.layerId_ = "Road";
+    request.partition_ = firstTile();
+    // Exercise both the first worker delivery and warm-cache completion; each
+    // synchronous locate destroys its execution state as soon as it returns.
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        REQUIRE(service.locate(request).size() == 1);
+    }
+    CHECK(source->queries.size() == 100);
+}
+
+TEST_CASE(
+    "Complete secondary locate IDs still use schema ordering while malformed canonical IDs fail",
+    "[Service][locate][partial-id]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    service.add(source);
+    SECTION("Complete secondary composition")
+    {
+        LocateRequest request{"FilterMap", "Road", {
+            {"externalRoadId", int64_t{42}}, {"tileId", int64_t{firstTile().value()}}}};
+        auto results = service.locate(request);
+        REQUIRE(results.size() == 1);
+        REQUIRE(source->queries.size() == 1);
+        CHECK(source->queries.front().featureId_ == KeyValuePairs{
+            {"tileId", int64_t{firstTile().value()}}, {"externalRoadId", int64_t{42}}});
+        CHECK(source->queries.front().layerId_ == "Road");
+    }
+    SECTION("Incomplete canonical string is not a provider-specific key")
+    {
+        CHECK(service.locate(LocateRequest(nlohmann::json{
+            {"mapId", "FilterMap"}, {"featureId", "Road.42"}})).empty());
+        CHECK(source->queries.empty());
+        CHECK(source->requestedTiles().empty());
+    }
+}
+
+TEST_CASE(
+    "Partial locate candidates retain the original datasource registration",
+    "[Service][locate][partial-id][source-lifecycle]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<PartialLocateDataSource>();
+    auto replacement = std::make_shared<PartialLocateDataSource>("ReplacementLocatePool");
+    service.add(source);
+    source->onLocate = [&]
+    {
+        service.remove(source);
+        service.add(replacement);
+    };
+    auto results = service.locate(LocateRequest{
+        "FilterMap", "Road", {{"roadId", int64_t{42}}}});
+    CHECK(results.empty());
+    CHECK(source->queries.size() == 1);
+    CHECK(source->requestedTiles().empty());
+    CHECK(replacement->queries.empty());
+    CHECK(replacement->requestedTiles().empty());
 }
 
 TEST_CASE(
@@ -1756,6 +2205,166 @@ TEST_CASE(
     REQUIRE(
         addOnOnly->getStatus() ==
         RequestStatus::NoDataSource);
+}
+
+TEST_CASE(
+    "Tile admission rejects an entire bundle after same-schema authorization changes",
+    "[Service][authorization][source-lifecycle]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<FilterDataSource>();
+    auto addOn = std::make_shared<FilterDataSource>("GatedAdmissionAddOn", true);
+    addOn->requireAuthHeaderRegexMatchOption("authorization", std::regex("allowed"));
+    REQUIRE(source->info().schemaId_ == addOn->info().schemaId_);
+    service.add(source);
+
+    auto first = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{firstTile()});
+    auto second = std::make_shared<
+        LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{secondTile()});
+    auto empty =
+        std::make_shared<LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{});
+    size_t emptyCompletions = 0;
+    empty->onDone_ = [&](RequestStatus status)
+    {
+        REQUIRE(status == RequestStatus::Success);
+        ++emptyCompletions;
+        // Both nonempty members are authorized, but neither is admitted yet.
+        service.add(addOn);
+    };
+    std::atomic_size_t results = 0;
+    first->onFeatureLayer([&](PartitionFeatureLayer::Ptr) { ++results; });
+    second->onFeatureLayer([&](PartitionFeatureLayer::Ptr) { ++results; });
+
+    auto const accepted =
+        service.request(std::vector<LayerTilesRequest::Ptr>{first, second, empty}, AuthHeaders{});
+    first->wait();
+    second->wait();
+    CHECK_FALSE(accepted);
+    CHECK(first->getStatus() == RequestStatus::Aborted);
+    CHECK(second->getStatus() == RequestStatus::Aborted);
+    CHECK(emptyCompletions == 1);
+    CHECK(results == 0);
+    CHECK(source->requestedTiles().empty());
+    CHECK(addOn->requestedTiles().empty());
+}
+
+TEST_CASE(
+    "Filter admission retains its generation across the initial status callback",
+    "[feature-layer-filter][Service][source-lifecycle]")
+{
+    auto const replacePrimary = GENERATE(false, true);
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<FilterDataSource>();
+    auto replacement =
+        std::make_shared<FilterDataSource>("FilterAdmissionReplacement", !replacePrimary);
+    REQUIRE(source->info().schemaId_ == replacement->info().schemaId_);
+    service.add(source);
+
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile()},
+        filterDefinition());
+    bool replaced = false;
+    request->onStatus(
+        [&](nlohmann::json const& status)
+        {
+            if (status.at("state") == "Open" && !replaced) {
+                replaced = true;
+                if (replacePrimary) {
+                    service.remove(source);
+                }
+                service.add(replacement);
+            }
+        });
+    std::atomic_size_t results = 0;
+    request->onFilterResult([&](PartitionSubsetLayer::Ptr) { ++results; });
+
+    auto const accepted = service.request(request, AuthHeaders{});
+    request->wait();
+    CHECK(replaced);
+    CHECK_FALSE(accepted);
+    CHECK(request->getStatus() == RequestStatus::Aborted);
+    CHECK(results == 0);
+    CHECK(source->requestedTiles().empty());
+    CHECK(replacement->requestedTiles().empty());
+}
+
+TEST_CASE(
+    "Relation descendants cannot load from a replacement datasource generation",
+    "[feature-layer-filter][Service][source-lifecycle][relations]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<RelationDataSource>(firstTile(), secondTile());
+    auto replacement = std::make_shared<FilterDataSource>("RelationAdmissionReplacement");
+    service.add(source);
+    source->onLocate_ = [&]
+    {
+        // The source job has delivered its tile and left the scheduler. Its
+        // still-running filter callback must not admit a new-generation target.
+        service.remove(source);
+        service.add(replacement);
+    };
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile()},
+        FeatureLayerFilterRequest{
+            .filterId_ = "generation-pinned-relation",
+            .generation_ = 1,
+            .channels_ =
+                {
+                    FeatureLayerFilterChannel{
+                        .channelId_ = "connected",
+                        .scope_ = FeatureLayerFilterScope::Relation,
+                        .featureTypes_ = {"Road"},
+                        .geometryName_ = "relation",
+                        .relation_ =
+                            FeatureLayerStoredRelationOptions{
+                                .relationNamePattern_ = "connected",
+                            },
+                    },
+                },
+        });
+    std::vector<PartitionSubsetLayer::Ptr> results;
+    request->onFilterResult(
+        [&](PartitionSubsetLayer::Ptr layer) { results.push_back(std::move(layer)); });
+
+    REQUIRE(service.request(request, AuthHeaders{}));
+    request->wait();
+    REQUIRE(source->locateCalls() == 1);
+    CHECK(source->requestedTiles() == std::vector<PartitionId>{firstTile()});
+    CHECK(replacement->requestedTiles().empty());
+    REQUIRE(results.size() == 1);
+    CHECK(std::ranges::any_of(
+        results.front()->issues(),
+        [](FilterIssue const& issue) {
+            return issue.message_.find("Could not load relation target tile") != std::string::npos;
+        }));
+}
+
+TEST_CASE(
+    "Locate candidates cannot load from a recomposed datasource generation",
+    "[Service][locate][source-lifecycle]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<RelationDataSource>(firstTile(), secondTile());
+    auto addOn = std::make_shared<FilterDataSource>("LocateAdmissionAddOn", true);
+    service.add(source);
+    source->onLocate_ = [&]
+    {
+        service.add(addOn);
+    };
+
+    auto results = service.locate(LocateRequest{
+        "FilterMap",
+        "Road",
+        {{"tileId", static_cast<int64_t>(secondTile().value())}, {"externalRoadId", int64_t{2}}}});
+    CHECK(results.empty());
+    CHECK(source->locateCalls() == 1);
+    CHECK(source->requestedTiles().empty());
+    CHECK(addOn->requestedTiles().empty());
 }
 
 TEST_CASE(
@@ -1926,15 +2535,46 @@ TEST_CASE(
     auto source = std::make_shared<ErrorReportingFilterDataSource>();
     service.add(source);
 
+    auto definition = filterDefinition();
+    std::optional<std::string> relationFilter;
+    SECTION("Feature and attribute styles") {}
+    SECTION("Relation styles")
+    {
+        relationFilter = "true";
+    }
+    SECTION("Inactive relation styles")
+    {
+        relationFilter = "false";
+    }
+    if (relationFilter) {
+        // Keep the relation after the ordinary channels: a failed source must
+        // preserve both channel identity and position throughout finalization.
+        definition.channels_.push_back(FeatureLayerFilterChannel{
+            .channelId_ = "relations",
+            .entryFilter_ = *relationFilter,
+            .scope_ = FeatureLayerFilterScope::Relation,
+            .relation_ = FeatureLayerStoredRelationOptions{},
+        });
+    }
+
     auto requestOutputs = [&]
     {
         auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
             "FilterMap",
             "Road",
             std::vector<TileId>{firstTile(), secondTile()},
-            filterDefinition());
+            definition);
         std::mutex mutex;
         std::map<PartitionId, TileSubsetLayer::Ptr> results;
+        std::vector<std::string> requestErrors;
+        request->onStatus(
+            [&](nlohmann::json const& status)
+            {
+                if (status.contains("error")) {
+                    std::lock_guard lock(mutex);
+                    requestErrors.push_back(status.at("error").get<std::string>());
+                }
+            });
         request->onFilterResult(
             [&](TileSubsetLayer::Ptr layer)
             {
@@ -1944,17 +2584,21 @@ TEST_CASE(
         REQUIRE(service.request(request));
         request->wait();
         REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(requestErrors.empty());
         REQUIRE(results.size() == 2);
         return results;
     };
     auto results = requestOutputs();
     auto bad = results.at(firstTile());
     REQUIRE(bad->error() == "synthetic recoverable tile error");
+    REQUIRE(bad->errorCode() == 503);
+    REQUIRE(bad->size() == definition.channels_.size());
     REQUIRE(bad->ttl() == std::chrono::seconds(5));
     REQUIRE(bad->toServiceJson()["ttl"] == 5000);
     REQUIRE(bad->toServiceJson()["error"]["message"] == *bad->error());
     REQUIRE_FALSE(results.at(secondTile())->error());
     REQUIRE(results.at(secondTile())->localSourceFeatureCount() == 1);
+    REQUIRE(results.at(secondTile())->at(0)->featureEntryCount() == 1);
 
     // Inspection restrictions preserve the same failed value and expiry.
     auto inspection = std::make_shared<
@@ -1984,6 +2628,81 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "An errored point-group output retains healthy halo contributions",
+    "[feature-layer-filter][Service][point-group][failure][TTL]")
+{
+    auto const western = TileId::fromTileXY(10, 4, 4);
+    auto const eastern = western.eastNeighbour();
+    auto const boundary = western.northEastWgs84().first;
+    auto const latitude = western.centerWgs84().second;
+    auto source = std::make_shared<PointGroupDataSource>(
+        western,
+        eastern,
+        Point{boundary - 0.25, latitude, 0},
+        Point{boundary + 0.25, latitude, 0});
+    auto cache = std::make_shared<MemCache>(64);
+    Service service(cache, false);
+    service.add(source);
+
+    // The grid cell belongs to the eastern output. Its own source fails, but
+    // the western halo still contributes a valid point to that same cell.
+    auto info = source->info();
+    auto failed = std::make_shared<PartitionFeatureLayer>(
+        eastern,
+        info.stringPoolId_,
+        info.mapId_,
+        info.getLayer("Road"),
+        cache->getStringPool(info.stringPoolId_));
+    failed->setError("output source unavailable");
+    failed->setErrorCode(503);
+    failed->setTtl(std::chrono::seconds{5});
+    cache->putTileLayer(failed);
+
+    FeatureLayerFilterRequest definition{
+        .filterId_ = "failed-group-output",
+        .channels_ =
+            {
+                FeatureLayerFilterChannel{
+                    .channelId_ = "merged",
+                    .entryFields_ = {"count($features.*)"},
+                    .geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points),
+                    .geometryName_ = "merge",
+                    .group_ =
+                        FeatureLayerPointGridGroup{
+                            .origin_ = {boundary - 1.0, latitude - 1.0, -5.0},
+                            .cellSize_ = {2.0, 2.0, 10.0},
+                        },
+                },
+            },
+    };
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{eastern},
+        definition);
+    PartitionSubsetLayer::Ptr output;
+    request->onFilterResult([&](PartitionSubsetLayer::Ptr layer) { output = std::move(layer); });
+    REQUIRE(service.request(request));
+    request->wait();
+
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(output);
+    CHECK(output->error() == failed->error());
+    CHECK(output->errorCode() == failed->errorCode());
+    CHECK(output->timestamp() == failed->timestamp());
+    CHECK(output->ttl() == failed->ttl());
+    REQUIRE(output->size() == 1);
+    REQUIRE(output->at(0)->groupEntryCount() == 1);
+    output->at(0)->forEachGroupEntry(
+        [&](model_ptr<GroupEntry> const& group)
+        {
+            CHECK(group->memberFeatureIds()->size() == 1);
+            CHECK(group->values()->toJson() == nlohmann::json::array({nlohmann::json::array({1})}));
+            return true;
+        });
+}
+
+TEST_CASE(
     "Service bounds error lifetimes while preserving shorter producer TTLs",
     "[feature-layer-filter][Service][failure][TTL]")
 {
@@ -2005,12 +2724,16 @@ TEST_CASE(
     REQUIRE(tile->ttl() == (ttlMs > 0 ? std::min(*ttl, errorTtl) : errorTtl));
 }
 
-TEST_CASE("Service rejects nonpositive error tile TTLs", "[Service][failure][TTL]")
+TEST_CASE("Service rejects negative error tile TTLs", "[Service][failure][TTL]")
 {
-    auto const errorTtl = std::chrono::milliseconds(GENERATE(0, -1));
     REQUIRE_THROWS_WITH(
-        Service(std::make_shared<MemCache>(), false, std::chrono::milliseconds{0}, 1, errorTtl),
-        "Error tile TTL must be greater than zero.");
+        Service(
+            std::make_shared<MemCache>(),
+            false,
+            std::chrono::milliseconds{0},
+            1,
+            std::chrono::milliseconds{-1}),
+        "Error tile TTL must not be negative.");
 }
 
 TEST_CASE(
@@ -2442,4 +3165,45 @@ TEST_CASE("Filter outputs preserve warnings even when no features match", "[feat
         REQUIRE(output->at(i)->entryCount() == 0);
     REQUIRE(output->warnings() == std::vector<std::string>{"duplicate Road.42"});
     REQUIRE(output->toJson()["warnings"] == output->warnings());
+}
+
+TEST_CASE("Point-cloud channel quotas survive canonical filter JSON", "[pointcloud][filter]")
+{
+    for (uint32_t quota : {0U, 262144U, 1048576U, 9'000'000U, 14'000'000U, 50'000'000U,
+                           std::numeric_limits<uint32_t>::max()}) {
+        nlohmann::json input = {
+            {"filterId", "cloud"}, {"generation", 1},
+            {"channels", {{{"channelId", "points"}, {"scope", "feature"},
+                           {"geometryTypes", uint32_t{1} << static_cast<uint8_t>(mapget::GeomType::Points)},
+                           {"pointCloudMaxPoints", quota}}}}
+        };
+        auto request = mapget::detail::parseRestFilterEnvelopeJson(input);
+        REQUIRE(request.channels_.at(0).pointCloudMaxPoints_ == quota);
+        REQUIRE(mapget::detail::filterRequestToJson(request)["channels"][0]["pointCloudMaxPoints"] == quota);
+        for (auto invalid : {nlohmann::json(-1), nlohmann::json(1.5),
+                             nlohmann::json(uint64_t{1} << 32U)}) {
+            input["channels"][0]["pointCloudMaxPoints"] = invalid;
+            REQUIRE_THROWS(mapget::detail::parseRestFilterEnvelopeJson(input));
+        }
+    }
+}
+
+TEST_CASE(
+    "Prepared search rejects a stale schema before requesting tiles",
+    "[feature-layer-filter][Service][search-preparation]")
+{
+    Service service(std::make_shared<MemCache>(8), false);
+    auto source = std::make_shared<FilterDataSource>();
+    service.add(source);
+    auto definition = filterDefinition();
+    for (auto& channel : definition.channels_)
+        channel.schemaId_ = "mapget-schema:stale";
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap",
+        "Road",
+        std::vector<PartitionId>{firstTile()},
+        definition);
+    CHECK_FALSE(service.request(request));
+    CHECK(request->isDone());
+    CHECK(source->requestedTiles().empty());
 }

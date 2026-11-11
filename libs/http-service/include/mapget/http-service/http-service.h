@@ -1,6 +1,8 @@
 #pragma once
 
 #include "mapget/detail/http-server.h"
+#include "mapget/http-service/mcp-config.h"
+#include "mapget/http-service/proxy-auth.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/service.h"
@@ -26,25 +28,41 @@ namespace mapget
  */
 struct HttpServiceConfig
 {
+    /** Subscribe to configuration changes and reconcile datasource workers when enabled. */
     bool watchConfig = false;
+
     /** Successful nonempty payload fallback, after tile/datasource TTLs; zero means no expiry. */
     std::chrono::milliseconds defaultTtl{0};
-    /** Positive upper bound for failed tile lifetimes; does not affect successful tiles. */
+
+    /** Failed-payload lifetime cap; zero disables expiry, source overrides take precedence. */
     std::chrono::milliseconds errorTileTtl = Service::DEFAULT_ERROR_TILE_TTL;
-    /** Positive upper bound for successful empty source tile/object lifetimes. */
+
+    /** Successful-empty source lifetime cap; zero disables expiry, source overrides win. */
     std::chrono::milliseconds emptyTileTtl = Service::DEFAULT_EMPTY_TILE_TTL;
+
     /** Maximum number of jobs executing across the homogeneous service worker pool. */
     size_t workerCount = Service::defaultWorkerCount();
+
     /** Enable POST /cache/reset. Disabled by default. */
     bool cacheResetEnabled = false;
+
     /** Global caller gate for cache reset; required whenever the endpoint is enabled. */
     AuthHeaderRegexMap cacheResetAuthHeaderAlternatives;
+
     /** Enable the /location endpoint and initialize the configured lookup backend. */
     bool locationLookupEnabled = true;
+
     /** Optional SQLite database path for /location; defaults beside the mapget binary module. */
     std::optional<std::filesystem::path> locationDatabasePath;
+
     /** Server-side cap for accepted /location limit values. */
     uint32_t locationResultMaxLimit = 50;
+
+    /** Explicit, restart-scoped MCP opt-in and trust settings; disabled by default. */
+    McpConfig mcp;
+
+    /** Verified datasource claims from an explicitly trusted authenticating reverse proxy. */
+    ProxyAuthentication proxyAuth;
 
     /**
      * Period between glibc allocator trims which return unused heap pages to the OS.
@@ -60,6 +78,11 @@ struct HttpServiceConfig
 #endif
 };
 
+/**
+ * HTTP/WebSocket boundary around Service: registers public routes and owns the
+ * request executors, transport sessions and optional MCP endpoint. Construction
+ * initializes service state; inherited go() starts the listener.
+ */
 class HttpService : public HttpServer, public Service
 {
 public:

@@ -83,9 +83,9 @@ jobs:
       - name: Run sccache-cache
         if: env.USE_SCCACHE == 'true'
         uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Install libuuid
+      - name: Install native build dependencies
         run: |
-          yum -y install libuuid-devel
+          yum -y install libuuid-devel java-17-openjdk-headless git-lfs
       - name: Configure
         run: |
           python3 -m venv venv && . ./venv/bin/activate
@@ -125,6 +125,17 @@ jobs:
           name: mapget-py${{ matrix.python-version }}-ubuntu-latest-${{ matrix.arch }}
           path: build/bin/wheel/*.whl
 
+      # The published standalone wheel keeps MCP enabled. Reuse its native
+      # dependency build afterward to test product embedders that omit MCP.
+      - name: Test MCP-free embedding build
+        if: matrix.python-version == '3.14'
+        run: |
+          . ./venv/bin/activate
+          cmake -S . -B build -DMAPGET_WITH_MCP=OFF -DMAPGET_WITH_WHEEL=OFF
+          cmake --build build --target mapget test.mapget
+          build/bin/test.mapget '[mcp-build],[HttpDataSource],[DataSourceConfig]'
+          ctest --test-dir build -R '^test-mcp-build-cli$' --output-on-failure --no-tests=error
+
   build-manylinux-aarch64:
     needs: [determine-version]
     if: |
@@ -157,7 +168,7 @@ jobs:
             "$MANYLINUX_IMAGE" \
             bash -lc '
               set -euo pipefail
-              yum -y install libuuid-devel
+              yum -y install libuuid-devel java-17-openjdk-headless git-lfs
               python3 -m venv venv && . ./venv/bin/activate
               pip install -U setuptools wheel pip
               rm -rf build
@@ -187,11 +198,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022]
+        os: [macos-15, windows-2022]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         exclude:
           # Python 3.10 doesn't have ARM64 builds for macOS
-          - os: macos-14
+          - os: macos-15
             python-version: "3.10"
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -207,6 +218,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           architecture: x64
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - run: python -m pip install setuptools wheel ninja
       - name: Build (macOS)
         if: startsWith(matrix.os, 'macos')

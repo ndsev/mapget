@@ -15,7 +15,9 @@ public:
     {
     }
 
-    /** Publish exactly one result; no datasource work runs on the HTTP event loop. */
+    /** Publish a result; callers must complete each slot exactly once.
+     * Datasource discovery itself runs on service workers, off the HTTP event loop.
+     */
     void complete(size_t index, ObjectDiscoveryRequest const& request, ObjectDiscoveryResult result)
     {
         auto item = result.toJson();
@@ -29,6 +31,7 @@ public:
         if (--remaining_ != 0)
             return;
         auto body = nlohmann::json{{"responses", std::move(results_)}}.dump();
+        // Response delivery can re-enter other service code; release the result lock first.
         lock.unlock();
         auto response = drogon::HttpResponse::newHttpResponse();
         response->setContentTypeCode(drogon::CT_APPLICATION_JSON);
@@ -74,8 +77,9 @@ void HttpService::Impl::handleObjectDiscoveryRequest(
         }
         if (work.empty())
             throw std::invalid_argument("Discovery requires at least one tile.");
+        // Validate the whole batch before any asynchronous request can publish a result.
         auto batch = std::make_shared<ObjectDiscoveryBatch>(work.size(), callback);
-        auto headers = detail::authHeadersFromRequest(req);
+        auto headers = config_.proxyAuth.authorization(req);
         for (size_t index = 0; index < work.size(); ++index) {
             auto request = work[index];
             self_.discoverObjects(

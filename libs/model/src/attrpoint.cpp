@@ -28,7 +28,7 @@ valueNode(simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer> const& ow
         owner.model().shared_from_this());
 }
 
-/** Visit every array item in ascending order. */
+/** Visit present array items in ascending order, stopping when the callback returns false. */
 bool iterateArray(
     simfil::ModelNode const& array,
     simfil::ModelNode::IterCallback const& callback)
@@ -95,7 +95,10 @@ uint32_t lowerBoundAttrPoint(
     return first;
 }
 
-/** Visit an inclusive logical range by merging shape and inserted-point storage once. */
+/**
+ * Visit a validated inclusive logical range by merging shape and inserted-point storage once.
+ * Inserted points must be sorted by logical index; points before start shift the shape index.
+ */
 template <typename Callback>
 bool forEachSequencePoint(
     AttrPointSequence const& sequence,

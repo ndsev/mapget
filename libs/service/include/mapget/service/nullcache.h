@@ -6,8 +6,8 @@ namespace mapget
 {
 
 /**
- * A no-op cache implementation that doesn't store anything.
- * All requests result in cache misses.
+ * Disables serialized tile storage, so every tile lookup misses. The base
+ * Cache still retains source dictionaries used while datasources build tiles.
  */
 class NullCache : public Cache
 {

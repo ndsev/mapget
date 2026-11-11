@@ -11,6 +11,7 @@
 #include "mapget/model/featureid.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/json-compare.h"
+#include "mapget/model/mapschema.h"
 #include "nlohmann/json.hpp"
 #include "simfil/byte-array.h"
 
@@ -282,17 +283,22 @@ TEST_CASE("PartitionFeatureLayer strict GeoJSON import roundtrips mapget JSON", 
     auto originalJson = tile->toJson();
     REQUIRE(originalJson["features"][0]["id"] == "Road.77.DE%2EBY%25.7");
     REQUIRE(originalJson["features"][0]["geometry"]["type"] == "GeometryCollection");
-    REQUIRE(originalJson["features"][0]["relations"][0]["target"] == nlohmann::json{
-        {"id", "Road.77.DE%2EBY%25.9"},
-        {"mapId", "ValidationMap"},
-    });
+    REQUIRE(
+        originalJson["features"][0]["relations"][0]["target"] ==
+        nlohmann::json{
+            {"typeId", "Road"},
+            {"id", {{"tileId", 77}, {"regionId", "DE.BY%"}, {"roadId", 9}}},
+            {"mapId", "ValidationMap"},
+        });
     REQUIRE(
         originalJson["features"][0]["properties"]["relationRefs"]["primary"] ==
         nlohmann::json{{"$mapgetRelation", 0}});
     REQUIRE(
-        originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]["featureId"] ==
+        originalJson["features"][0]["properties"]["layer"]["restrictions"]["clearance"]["validity"]
+                    ["featureId"] ==
         nlohmann::json{
-            {"id", "Road.77.DE%2EBY%25.11"},
+            {"typeId", "Road"},
+            {"id", {{"tileId", 77}, {"regionId", "DE.BY%"}, {"roadId", 11}}},
             {"mapId", "ValidationMap"},
         });
 
@@ -355,6 +361,54 @@ TEST_CASE(
     REQUIRE(
         output["features"][0]["properties"]["layer"]["restrictions"]["turn"]["validity"]["direction"] ==
         "POSITIVE");
+}
+
+TEST_CASE(
+    "PartitionFeatureLayer GeoJSON import infers the sole produced feature type",
+    "[GeoJsonImport]")
+{
+    auto layerInfo = LayerInfo::fromJson(R"json(
+    {
+      "layerId": "RoadLayer",
+      "type": "Features",
+      "featureTypes": [
+        {
+          "name": "Road",
+          "uniqueIdCompositions": [[
+            {"partId": "roadId", "datatype": "U32", "isSynthetic": true}
+          ]]
+        },
+        {
+          "name": "Target",
+          "uniqueIdCompositions": [[{"partId": "targetId", "datatype": "U32"}]]
+        }
+      ],
+      "featureModelSchema": {
+        "type": "object",
+        "x-mapget": {"metaType": "Feature", "featureType": "Road"}
+      }
+    })json"_json);
+    REQUIRE(layerInfo->schemaOwner()->featureIdentities().size() == 2);
+    REQUIRE(layerInfo->layerSchema()->featureTypes() == std::vector<std::string>{"Road"});
+    REQUIRE_FALSE(layerInfo->layerSchema()->producesFeatureType("Target"));
+
+    auto tile = makeTile(131073, layerInfo, "ProducedTypeImportNode");
+    auto input = R"json(
+    {
+      "type": "FeatureCollection",
+      "features": [{
+        "type": "Feature",
+        "geometry": null,
+        "relations": [{"name": "target", "target": "Target.7"}]
+      }]
+    })json"_json;
+    REQUIRE_NOTHROW(tile->fromJson(input, GeoJsonImportOptions{.strict_ = false}));
+
+    auto output = tile->toJson();
+    REQUIRE(output["features"].size() == 1);
+    REQUIRE(output["features"][0]["typeId"] == "Road");
+    REQUIRE(output["features"][0]["id"] == "Road.0");
+    REQUIRE(output["features"][0]["relations"][0]["target"] == "Target.7");
 }
 
 TEST_CASE(

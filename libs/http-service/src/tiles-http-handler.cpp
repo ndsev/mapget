@@ -108,9 +108,10 @@ public:
     ~GzipCompressor() { deflateEnd(&strm_); }
 
     GzipCompressor(GzipCompressor const&) = delete;
+
     GzipCompressor(GzipCompressor&&) = delete;
 
-    /** Compress the next response bytes, preserving stream state across calls. */
+    /** Compress the next response bytes, preserving stream state; size must fit zlib's uInt. */
     std::string compress(const char* data, size_t size, int flush_mode = Z_NO_FLUSH)
     {
         std::string result;
@@ -272,7 +273,9 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
         requests_.push_back(std::move(request));
     }
 
-    /** Interpret the Accept header or responseType override and choose the stream payload format. */
+    /** Choose the stream payload format from Accept or a responseType override.
+     * Accept must be one exact MIME value; lists and quality weights are not parsed.
+     */
     [[nodiscard]] bool setResponseType(
         std::string_view acceptHeader,
         std::optional<std::string> responseType,
@@ -377,6 +380,23 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             } else {
                 auto dumped = result->toServiceJson().dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore);
                 appendOutgoingUnlocked(dumped);
+                appendOutgoingUnlocked("\n");
+            }
+        }
+        scheduleDrain();
+    }
+
+    /** Serialize the typed incoming association manifest after its feature snapshots. */
+    void addIncomingRelations(IncomingRelationCollection const& collection)
+    {
+        {
+            std::unique_lock lock(mutex_);
+            if (!waitForPendingCapacityUnlocked(lock))
+                return;
+            if (responseType_ == binaryMimeType) {
+                writer_->sendIncomingRelations(collection);
+            } else {
+                appendOutgoingUnlocked(collection.toJson().dump());
                 appendOutgoingUnlocked("\n");
             }
         }
@@ -586,7 +606,7 @@ void HttpService::Impl::handleTilesLikeRequest(
 
     const std::string accept = req->getHeader("accept");
     const std::string acceptEncoding = req->getHeader("accept-encoding");
-    auto clientHeaders = detail::authHeadersFromRequest(req);
+    auto clientAuthorization = config_.proxyAuth.authorization(req);
 
     nlohmann::json j;
     try {
@@ -615,6 +635,10 @@ void HttpService::Impl::handleTilesLikeRequest(
         std::optional<FeatureLayerFilterRequest> filterTemplate;
         if (endpoint == TilesStreamEndpoint::Filter) {
             filterTemplate = detail::parseRestFilterEnvelopeJson(j);
+            if (std::ranges::any_of(filterTemplate->channels_, [](auto const& channel) {
+                    return channel.relation_ && channel.relation_->incoming_;
+                }) && requestsIt->size() != 1)
+                throw std::runtime_error("Incoming inspection requires exactly one layer request per envelope");
         } else if (detail::containsFilterFields(j)) {
             throw std::runtime_error("Filter fields are not supported by POST /tiles; use POST /filter");
         }
@@ -690,6 +714,8 @@ void HttpService::Impl::handleTilesLikeRequest(
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
     for (auto& request : state->filterRequests_) {
+        request->onFeatureSnapshot([state](auto const& layer) { state->addResult(layer); });
+        request->onIncomingRelations([state](auto const& collection) { state->addIncomingRelations(collection); });
         request->onFilterResult(
             [state](PartitionSubsetLayer::Ptr layer) { state->addResult(std::move(layer)); });
         request->onStatus([state](nlohmann::json const& status) {
@@ -698,9 +724,9 @@ void HttpService::Impl::handleTilesLikeRequest(
         request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
     }
 
-    const auto tileRequestsAccepted = self_.request(state->requests_, clientHeaders);
+    const auto tileRequestsAccepted = self_.request(state->requests_, clientAuthorization);
     const auto filterRequestsAccepted =
-        tileRequestsAccepted ? self_.request(state->filterRequests_, clientHeaders) : state->filterRequests_.empty();
+        tileRequestsAccepted ? self_.request(state->filterRequests_, clientAuthorization) : state->filterRequests_.empty();
     const auto canProcess = tileRequestsAccepted && filterRequestsAccepted;
     if (!canProcess) {
         for (auto const& r : state->requests_) {

@@ -31,9 +31,7 @@ model_ptr<AttrPointSequenceReference> attrPointSequenceReference(
 }
 
 /** Visit every field in a small fixed-size procedural object. */
-bool iterateObject(
-    simfil::ModelNode const& object,
-    simfil::ModelNode::IterCallback const& callback)
+bool iterateObject(simfil::ModelNode const& object, simfil::ModelNode::IterCallback const& callback)
 {
     for (uint32_t index = 0; index < object.size(); ++index) {
         auto value = object.at(static_cast<int64_t>(index));
@@ -73,8 +71,8 @@ model_ptr<AttrPointSequence> AttrPointIndex::sequence() const
     if (validity->geometryDescriptionType() != Validity::AttrPointIndexValidity) {
         raise("AttrPointIndex view does not reference an AttrPointIndex validity.");
     }
-    return model().resolve<AttrPointSequence>(
-        validity->data_->geomDescr_.attrPointIndex_.sequence_);
+    return model()
+        .resolve<AttrPointSequence>(validity->data_->geomDescr_.attrPointIndex_.sequence_);
 }
 
 uint32_t AttrPointIndex::index() const
@@ -89,9 +87,10 @@ uint32_t AttrPointIndex::index() const
 nlohmann::json AttrPointIndex::toJson() const
 {
     return nlohmann::json::object({
-        {"sequence", nlohmann::json::object({
-            {"$mapgetAttrPointSequence", sequence()->addr().index()},
-        })},
+        {"sequence",
+         nlohmann::json::object({
+             {"$mapgetAttrPointSequence", sequence()->addr().index()},
+         })},
         {"index", index()},
     });
 }
@@ -152,8 +151,8 @@ model_ptr<AttrPointSequence> AttrPointIndexRange::sequence() const
     if (validity->geometryDescriptionType() != Validity::AttrPointIndexRangeValidity) {
         raise("AttrPointIndexRange view does not reference an AttrPointIndexRange validity.");
     }
-    return model().resolve<AttrPointSequence>(
-        validity->data_->geomDescr_.attrPointIndexRange_.sequence_);
+    return model()
+        .resolve<AttrPointSequence>(validity->data_->geomDescr_.attrPointIndexRange_.sequence_);
 }
 
 uint32_t AttrPointIndexRange::start() const
@@ -177,9 +176,10 @@ uint32_t AttrPointIndexRange::end() const
 nlohmann::json AttrPointIndexRange::toJson() const
 {
     return nlohmann::json::object({
-        {"sequence", nlohmann::json::object({
-            {"$mapgetAttrPointSequence", sequence()->addr().index()},
-        })},
+        {"sequence",
+         nlohmann::json::object({
+             {"$mapgetAttrPointSequence", sequence()->addr().index()},
+         })},
         {"start", start()},
         {"end", end()},
     });
@@ -256,14 +256,13 @@ int64_t encodeSimpleValidityOwner(simfil::ArrayIndex members, uint32_t elementIn
     }
 
     return static_cast<int64_t>(
-        SimpleValidityOwnerTag |
-        (static_cast<uint64_t>(members) << 32U) |
+        SimpleValidityOwnerTag | (static_cast<uint64_t>(members) << 32U) |
         static_cast<uint64_t>(elementIndex));
 }
 
 /** Decode the owning validity-collection slot for a compact simple validity. */
-std::optional<std::pair<simfil::ArrayIndex, uint32_t>> decodeSimpleValidityOwner(
-    simfil::ScalarValueType const& runtimeData)
+std::optional<std::pair<simfil::ArrayIndex, uint32_t>>
+decodeSimpleValidityOwner(simfil::ScalarValueType const& runtimeData)
 {
     auto const* encodedOwner = std::get_if<int64_t>(&runtimeData);
     if (!encodedOwner) {
@@ -281,13 +280,11 @@ std::optional<std::pair<simfil::ArrayIndex, uint32_t>> decodeSimpleValidityOwner
 }
 
 /** Pack both transition endpoint flags into the compact stored bitfield. */
-uint8_t packTransitionEnds(
-    Validity::TransitionEnd fromConnectedEnd,
-    Validity::TransitionEnd toConnectedEnd)
+uint8_t
+packTransitionEnds(Validity::TransitionEnd fromConnectedEnd, Validity::TransitionEnd toConnectedEnd)
 {
     return static_cast<uint8_t>(
-        static_cast<uint8_t>(fromConnectedEnd) |
-        (static_cast<uint8_t>(toConnectedEnd) << 1U));
+        static_cast<uint8_t>(fromConnectedEnd) | (static_cast<uint8_t>(toConnectedEnd) << 1U));
 }
 
 /** Decode the source endpoint from the stored transition bitfield. */
@@ -312,20 +309,21 @@ model_ptr<Geometry> resolveLineGeometry(
     }
     model_ptr<Geometry> firstLine;
     model_ptr<Geometry> matchingLine;
-    geometryCollection->forEachGeometry([&](model_ptr<Geometry> const& geometry)
-    {
-        if (geometry->geomType() != GeomType::Line) {
+    geometryCollection->forEachGeometry(
+        [&](model_ptr<Geometry> const& geometry)
+        {
+            if (geometry->geomType() != GeomType::Line) {
+                return true;
+            }
+            if (!firstLine) {
+                firstLine = geometry;
+            }
+            if (geometry->name() == referencedName) {
+                matchingLine = geometry;
+                return false;
+            }
             return true;
-        }
-        if (!firstLine) {
-            firstLine = geometry;
-        }
-        if (geometry->name() == referencedName) {
-            matchingLine = geometry;
-            return false;
-        }
-        return true;
-    });
+        });
     // Unnamed validities prefer an unnamed line but retain the historical
     // fallback to the first line when a feature only has named geometry.
     return matchingLine ? matchingLine : (!referencedName ? firstLine : model_ptr<Geometry>{});
@@ -368,18 +366,17 @@ std::optional<TransitionSegment> resolveTransitionSegment(
     result.innerToOuter_.push_back(geometry->pointAt(innerIndex));
 
     double accumulatedMeters = 0.0;
-    auto appendCandidate = [&](Point const& candidate) {
+    auto appendCandidate = [&](Point const& candidate)
+    {
         auto const& previous = result.innerToOuter_.back();
         auto const segmentMeters = previous.geographicDistanceTo(candidate);
         if (segmentMeters <= 1.0e-6) {
             return false;
         }
-        auto const remainingMeters =
-            kTransitionLegLengthMeters - accumulatedMeters;
+        auto const remainingMeters = kTransitionLegLengthMeters - accumulatedMeters;
         if (segmentMeters >= remainingMeters) {
             result.innerToOuter_.push_back(Point{
-                previous + (candidate - previous) *
-                    (remainingMeters / segmentMeters)});
+                previous + (candidate - previous) * (remainingMeters / segmentMeters)});
             accumulatedMeters = kTransitionLegLengthMeters;
             return true;
         }
@@ -394,7 +391,8 @@ std::optional<TransitionSegment> resolveTransitionSegment(
                 break;
             }
         }
-    } else {
+    }
+    else {
         for (auto pointIndex = innerIndex + 1U; pointIndex < numPoints; ++pointIndex) {
             if (appendCandidate(geometry->pointAt(pointIndex))) {
                 break;
@@ -402,41 +400,41 @@ std::optional<TransitionSegment> resolveTransitionSegment(
         }
     }
 
-    if (accumulatedMeters + 1.0e-6 < kTransitionLegLengthMeters &&
-        result.innerToOuter_.size() >= 2)
+    if (accumulatedMeters + 1.0e-6 < kTransitionLegLengthMeters && result.innerToOuter_.size() >= 2)
     {
-        // Preserve the complete short road, then extend its outer endpoint
-        // tangent by precisely the missing distance. This keeps the real
-        // source shape while guaranteeing a readable ten-metre semantic leg.
+        // Preserve the complete short road, then extend its outer endpoint tangent
+        // by the missing distance to keep a readable ten-metre semantic leg.
+        // Linear lon/lat interpolation makes this approximate, not an exact
+        // geodesic extension.
         auto const& previous = result.innerToOuter_[result.innerToOuter_.size() - 2];
         auto const& outer = result.innerToOuter_.back();
         auto const tangentMeters = previous.geographicDistanceTo(outer);
         if (tangentMeters > 1.0e-6) {
             result.innerToOuter_.push_back(Point{
-                outer + (outer - previous) *
-                    ((kTransitionLegLengthMeters - accumulatedMeters) /
-                     tangentMeters)});
+                outer +
+                (outer - previous) *
+                    ((kTransitionLegLengthMeters - accumulatedMeters) / tangentMeters)});
         }
     }
-    return result.innerToOuter_.size() >= 2
-        ? std::optional<TransitionSegment>{std::move(result)}
-        : std::nullopt;
+    return result.innerToOuter_.size() >= 2 ?
+        std::optional<TransitionSegment>{std::move(result)} :
+        std::nullopt;
 }
 
 /** Apply direction semantics to a resolved geometry after the shape has been computed. */
-SelfContainedGeometry applyDirectionToGeometry(
-    SelfContainedGeometry geometry,
-    Validity::Direction direction)
+SelfContainedGeometry
+applyDirectionToGeometry(SelfContainedGeometry geometry, Validity::Direction direction)
 {
     if (direction == Validity::Negative && geometry.points_.size() > 1) {
         if (geometry.geomType_ == GeomType::Polygon && geometry.polygonRingStarts_.size() > 1) {
             // Keep hole metadata meaningful: direction may reverse traversal,
             // but it must not flatten the outer/hole ring partition.
-            for (size_t ringIndex = 0; ringIndex < geometry.polygonRingStarts_.size(); ++ringIndex) {
+            for (size_t ringIndex = 0; ringIndex < geometry.polygonRingStarts_.size(); ++ringIndex)
+            {
                 auto const ringStart = geometry.polygonRingStarts_[ringIndex];
-                auto const ringEnd = ringIndex + 1U < geometry.polygonRingStarts_.size()
-                    ? geometry.polygonRingStarts_[ringIndex + 1U]
-                    : static_cast<uint32_t>(geometry.points_.size());
+                auto const ringEnd = ringIndex + 1U < geometry.polygonRingStarts_.size() ?
+                    geometry.polygonRingStarts_[ringIndex + 1U] :
+                    static_cast<uint32_t>(geometry.points_.size());
                 if (ringStart >= ringEnd || ringEnd > geometry.points_.size()) {
                     return geometry;
                 }
@@ -464,7 +462,7 @@ GeomType geomTypeForOffsetValidity(
     return points.size() > 1 ? GeomType::Line : GeomType::Points;
 }
 
-}
+}  // namespace
 
 void Validity::ensureMaterialized()
 {
@@ -535,8 +533,7 @@ Validity::Validity(
     if (direction != Empty) {
         fields_.emplace_back(
             StringPool::DirectionStr,
-            [](Validity const& self)
-            {
+            [](Validity const& self) {
                 return model_ptr<simfil::ValueNode>::make(
                     directionToString(self.direction()),
                     self.model_);
@@ -566,8 +563,7 @@ Validity::Validity(
     if (data_->direction_)
         fields_.emplace_back(
             StringPool::DirectionStr,
-            [](Validity const& self)
-            {
+            [](Validity const& self) {
                 return model_ptr<simfil::ValueNode>::make(
                     directionToString(self.direction()),
                     self.model_);
@@ -577,9 +573,7 @@ Validity::Validity(
         fields_.emplace_back(
             StringPool::GeometryNameStr,
             [referencedGeometryName](Validity const& self)
-            {
-                return model_ptr<simfil::ValueNode>::make(*referencedGeometryName, self.model_);
-            });
+            { return model_ptr<simfil::ValueNode>::make(*referencedGeometryName, self.model_); });
     }
 
     if (data_->geomDescrType_ == SimpleGeometry) {
@@ -588,10 +582,7 @@ Validity::Validity(
         fields_.emplace_back(
             StringPool::GeometryStr,
             [](Validity const& self)
-            {
-                return self.model().resolve(
-                    self.data_->geomDescr_.simpleGeometry_);
-            });
+            { return self.model().resolve(self.data_->geomDescr_.simpleGeometry_); });
         return;
     }
 
@@ -608,13 +599,7 @@ Validity::Validity(
             });
         fields_.emplace_back(
             StringPool::FromStr,
-            [](Validity const& self)
-            {
-                auto fromFeatureId = self.transitionFromFeatureId();
-                return model_ptr<simfil::ValueNode>::make(
-                    fromFeatureId ? fromFeatureId->toString() : std::string{},
-                    self.model_);
-            });
+            [](Validity const& self) { return ModelNode::Ptr(self.transitionFromFeatureId()); });
         fields_.emplace_back(
             StringPool::FromConnectedEndStr,
             [](Validity const& self)
@@ -625,13 +610,7 @@ Validity::Validity(
             });
         fields_.emplace_back(
             StringPool::ToStr,
-            [](Validity const& self)
-            {
-                auto toFeatureId = self.transitionToFeatureId();
-                return model_ptr<simfil::ValueNode>::make(
-                    toFeatureId ? toFeatureId->toString() : std::string{},
-                    self.model_);
-            });
+            [](Validity const& self) { return ModelNode::Ptr(self.transitionToFeatureId()); });
         fields_.emplace_back(
             StringPool::ToConnectedEndStr,
             [](Validity const& self)
@@ -712,10 +691,7 @@ Validity::Validity(
     if (data_->featureAddress_) {
         fields_.emplace_back(
             StringPool::FeatureIdStr,
-            [](Validity const& self)
-            {
-                return self.featureId();
-            });
+            [](Validity const& self) { return self.featureId(); });
     }
 }
 
@@ -763,14 +739,16 @@ std::optional<std::string_view> Validity::geometryName() const
     return model().decodeGeometryName(data_->referencedGeometryName_);
 }
 
-void Validity::setOffsetPoint(Point pos) {
+void Validity::setOffsetPoint(Point pos)
+{
     ensureMaterialized();
     data_->geomDescrType_ = OffsetPointValidity;
     data_->geomOffsetType_ = GeoPosOffset;
     data_->geomDescr_.point_ = pos;
 }
 
-void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double pos) {
+void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double pos)
+{
     ensureMaterialized();
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetPointValidity;
@@ -789,14 +767,16 @@ std::optional<Point> Validity::offsetPoint() const
     return data_->geomDescr_.point_;
 }
 
-void Validity::setOffsetRange(Point start, Point end) {
+void Validity::setOffsetRange(Point start, Point end)
+{
     ensureMaterialized();
     data_->geomDescrType_ = OffsetRangeValidity;
     data_->geomOffsetType_ = GeoPosOffset;
     data_->geomDescr_.range_ = {start, end};
 }
 
-void Validity::setOffsetRange(Validity::GeometryOffsetType offsetType, double start, double end) {
+void Validity::setOffsetRange(Validity::GeometryOffsetType offsetType, double start, double end)
+{
     ensureMaterialized();
     assert(offsetType != InvalidOffsetType && offsetType != GeoPosOffset);
     data_->geomDescrType_ = OffsetRangeValidity;
@@ -815,9 +795,7 @@ std::optional<std::pair<Point, Point>> Validity::offsetRange() const
     return std::pair<Point, Point>{data_->geomDescr_.range_.first, data_->geomDescr_.range_.second};
 }
 
-void Validity::setAttrPointIndex(
-    model_ptr<AttrPointSequence> const& sequence,
-    uint32_t index)
+void Validity::setAttrPointIndex(model_ptr<AttrPointSequence> const& sequence, uint32_t index)
 {
     ensureMaterialized();
     if (!sequence || sequence->owningModel().get() != &model()) {
@@ -866,10 +844,7 @@ void Validity::setAttrPointIndexRange(
             sequence->positionCount());
     }
     if (start > end) {
-        raiseFmt(
-            "AttrPointIndexRange start {} exceeds end {}.",
-            start,
-            end);
+        raiseFmt("AttrPointIndexRange start {} exceeds end {}.", start, end);
     }
     data_->geomDescrType_ = AttrPointIndexRangeValidity;
     data_->geomOffsetType_ = InvalidOffsetType;
@@ -892,7 +867,8 @@ model_ptr<AttrPointIndexRange> Validity::attrPointIndexRange() const
         addr().index()});
 }
 
-void Validity::setSimpleGeometry(model_ptr<Geometry> geom) {
+void Validity::setSimpleGeometry(model_ptr<Geometry> geom)
+{
     ensureMaterialized();
     if (geom) {
         data_->geomDescrType_ = SimpleGeometry;
@@ -1067,7 +1043,9 @@ SelfContainedGeometry Validity::computeGeometry(
             if (error) {
                 *error = fmt::format(
                     "Transition source geometry is unavailable for feature {}.",
-                    fromFeatureId->toString());
+                    fromFeatureId->externalMapId() ?
+                        fromFeatureId->toJson().dump() :
+                        fromFeatureId->toString());
             }
             return {};
         }
@@ -1075,7 +1053,9 @@ SelfContainedGeometry Validity::computeGeometry(
             if (error) {
                 *error = fmt::format(
                     "Transition target geometry is unavailable for feature {}.",
-                    toFeatureId->toString());
+                    toFeatureId->externalMapId() ?
+                        toFeatureId->toJson().dump() :
+                        toFeatureId->toString());
             }
             return {};
         }
@@ -1101,9 +1081,7 @@ SelfContainedGeometry Validity::computeGeometry(
         }
 
         std::vector<Point> points;
-        points.reserve(
-            fromSegment->innerToOuter_.size() +
-            toSegment->innerToOuter_.size() + 1);
+        points.reserve(fromSegment->innerToOuter_.size() + toSegment->innerToOuter_.size() + 1);
         // Preserve the exact incoming road slice in traversal order.
         points.insert(
             points.end(),
@@ -1118,21 +1096,24 @@ SelfContainedGeometry Validity::computeGeometry(
         Point pivot;
         bool appendedHostMidpoint = false;
         if (geometryCollection) {
-            geometryCollection->forEachGeometry([&](auto&& geom) {
-                if (geom->geomType() != GeomType::Points || geom->numPoints() == 0) {
-                    return true;
-                }
-                pivot = geom->pointAt(0);
-                appendedHostMidpoint = true;
-                return false;
-            });
+            geometryCollection->forEachGeometry(
+                [&](auto&& geom)
+                {
+                    if (geom->geomType() != GeomType::Points || geom->numPoints() == 0) {
+                        return true;
+                    }
+                    pivot = geom->pointAt(0);
+                    appendedHostMidpoint = true;
+                    return false;
+                });
         }
         if (!appendedHostMidpoint) {
             auto const& fromInner = fromSegment->innerToOuter_.front();
             auto const& toInner = toSegment->innerToOuter_.front();
             if (pointsCoincide(fromInner, toInner)) {
                 pivot = fromInner;
-            } else {
+            }
+            else {
                 pivot = Point{
                     (fromInner.x + toInner.x) * 0.5,
                     (fromInner.y + toInner.y) * 0.5,
@@ -1144,20 +1125,24 @@ SelfContainedGeometry Validity::computeGeometry(
             *transitionPivotIndex = static_cast<uint32_t>(points.size());
         }
         points.push_back(pivot);
-        points.insert(
-            points.end(),
-            toSegment->innerToOuter_.begin(),
-            toSegment->innerToOuter_.end());
+        points
+            .insert(points.end(), toSegment->innerToOuter_.begin(), toSegment->innerToOuter_.end());
         return {points, {}, points.size() > 1 ? GeomType::Line : GeomType::Points};
     }
 
     // If this validity references some feature directly,
     // use the geometry collection of that feature.
     if (auto featureIdNode = featureId()) {
+        if (featureIdNode->mapId() != model().mapId()) {
+            if (error)
+                *error = "Foreign validity geometry requires target-map resolution.";
+            return {};
+        }
         auto feature = model().find(featureIdNode->typeId(), featureIdNode->keyValuePairs());
         if (feature) {
             geometryCollection = feature->geomOrNull();
-        } else {
+        }
+        else {
             log().warn("Could not find feature by its ID {}", featureIdNode->toString());
         }
     }
@@ -1176,20 +1161,20 @@ SelfContainedGeometry Validity::computeGeometry(
                 *error = fmt::format(
                     "Failed to find line geometry named '{}' for validity.",
                     *referencedName);
-            } else {
+            }
+            else {
                 *error = "Failed to find a line geometry for validity.";
             }
         }
         return {};
     }
 
-    // No geometry description from the attribute - just return the whole
-    // geometry from the collection.
+    // Without an offset restriction, copy the selected line in full.
     if (geometryDescriptionType() == NoGeometry) {
         return applyDirectionToGeometry(geometry->toSelfContained(), direction());
     }
 
-    // Now we have OffsetPointValidity or OffsetRangeValidity
+    // Now resolve OffsetPointValidity or OffsetRangeValidity against the selected line.
     auto offsetType = geometryOffsetType();
     if (offsetType == InvalidOffsetType) {
         if (error) {
@@ -1212,7 +1197,9 @@ SelfContainedGeometry Validity::computeGeometry(
     // Handle GeoPosOffset (a range of the geometry line, bound by two positions).
     if (offsetType == GeoPosOffset) {
         auto points = geometry->pointsFromPositionBound(startPoint, endPoint);
-        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
+        return applyDirectionToGeometry(
+            {points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)},
+            direction());
     }
 
     // Handle BufferOffset (a range of the geometry bound by two indices).
@@ -1220,7 +1207,8 @@ SelfContainedGeometry Validity::computeGeometry(
         auto startPointIndex = static_cast<uint32_t>(startPoint.x);
         if (startPointIndex >= geometry->numPoints()) {
             if (error) {
-                *error = fmt::format("Validity::computeGeometry: Start point index {} is out-of-bounds.",
+                *error = fmt::format(
+                    "Validity::computeGeometry: Start point index {} is out-of-bounds.",
                     startPointIndex);
             }
             return {};
@@ -1229,7 +1217,8 @@ SelfContainedGeometry Validity::computeGeometry(
         auto endPointIndex = endPoint ? static_cast<uint32_t>(endPoint->x) : startPointIndex;
         if (endPointIndex >= geometry->numPoints()) {
             if (error) {
-                *error = fmt::format("Validity::computeGeometry: End point index {} is out-of-bounds.",
+                *error = fmt::format(
+                    "Validity::computeGeometry: End point index {} is out-of-bounds.",
                     startPointIndex);
             }
             return {};
@@ -1245,11 +1234,13 @@ SelfContainedGeometry Validity::computeGeometry(
         for (auto pointIndex = startPointIndex; pointIndex <= endPointIndex; ++pointIndex) {
             points.emplace_back(geometry->pointAt(pointIndex));
         }
-        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
+        return applyDirectionToGeometry(
+            {points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)},
+            direction());
     }
 
-    // Handle RelativeLengthOffset (a percentage range of the geometry).
-    //  - we convert the percentages to length values, and then fall through to MetricLengthOffset.
+    // Relative offsets are fractions of the whole line (0.1 means 10%). Convert
+    // them to metres so both forms share the same clipping/interpolation path.
     if (offsetType == RelativeLengthOffset) {
         auto lineLength = geometry->length();
         startPoint.x *= lineLength;
@@ -1260,12 +1251,18 @@ SelfContainedGeometry Validity::computeGeometry(
 
     // Handle MetricLengthOffset (a length range of the geometry in meters).
     if (offsetType == MetricLengthOffset || offsetType == RelativeLengthOffset) {
-        auto points = geometry->pointsFromLengthBound(startPoint.x, endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
-        return applyDirectionToGeometry({points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)}, direction());
+        auto points = geometry->pointsFromLengthBound(
+            startPoint.x,
+            endPoint ? std::optional<double>(endPoint->x) : std::optional<double>());
+        return applyDirectionToGeometry(
+            {points, {}, geomTypeForOffsetValidity(geometryDescriptionType(), points)},
+            direction());
     }
 
     if (error) {
-        *error = fmt::format("Validity::computeGeometry: Unexpected invalid offsetType {}", static_cast<uint32_t>(offsetType));
+        *error = fmt::format(
+            "Validity::computeGeometry: Unexpected invalid offsetType {}",
+            static_cast<uint32_t>(offsetType));
     }
     return {};
 }
@@ -1275,8 +1272,7 @@ PartitionFeatureLayer& MultiValidity::featureLayer()
     return static_cast<PartitionFeatureLayer&>(model());
 }
 
-model_ptr<Validity>
-MultiValidity::newPoint(
+model_ptr<Validity> MultiValidity::newPoint(
     Point pos,
     std::optional<std::string_view> geometryName,
     Validity::Direction direction)
@@ -1463,9 +1459,8 @@ model_ptr<Validity> MultiValidity::newDirection(Validity::Direction direction)
         PartitionFeatureLayer::ColumnId::SimpleValidity,
         static_cast<uint32_t>(direction)};
     appendInternal(model_ptr<simfil::ModelNode>::make(model_, simpleAddr));
-    return featureLayer().resolve<Validity>(
-        simpleAddr,
-        encodeSimpleValidityOwner(members_, elementIndex));
+    return featureLayer()
+        .resolve<Validity>(simpleAddr, encodeSimpleValidityOwner(members_, elementIndex));
 }
 
 ModelNode::Ptr MultiValidity::at(int64_t i) const
@@ -1519,10 +1514,7 @@ model_ptr<MultiValidity> resolveInternal(
     if (dynamic_cast<PartitionFeatureLayer const*>(&model) == nullptr) {
         raise("Validity collections are only supported by PartitionFeatureLayer.");
     }
-    return MultiValidity(
-        model.shared_from_this(),
-        node.addr(),
-        model.mpKey_);
+    return MultiValidity(model.shared_from_this(), node.addr(), model.mpKey_);
 }
 
-}
+}  // namespace mapget

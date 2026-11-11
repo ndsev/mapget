@@ -7,6 +7,7 @@ add_library(mapget-http-datasource STATIC
 
   src/datasource-server.cpp
   src/datasource-client.cpp
+  src/schema-response.cpp
   src/http-server.cpp)
 
 target_include_directories(mapget-http-datasource

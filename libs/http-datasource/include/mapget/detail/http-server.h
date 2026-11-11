@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 // Forward declare Drogon app type to avoid including drogon headers in public headers.
@@ -21,7 +22,8 @@ enum class StaticMountAccess
 
 /**
  * Base class for HTTP servers. It allows derived classes to set up
- * their own endpoints via the setup() function.
+ * their own endpoints via setup(). Drogon has one process-global application:
+ * only one server may run at a time and a stopped instance cannot be restarted.
  */
 class HttpServer
 {
@@ -36,11 +38,13 @@ public:
      * An exception will be thrown if this instance is already running,
      * or if the server fails to launch within waitMs.
      *
-     * @param interface Network interface to bind to.
+     * @param interfaceAddr Network interface to bind to.
      * @param port Port which the HTTP server shall bind to.
-     *  With port=0, a random free port will be chosen. On startup,
-     *  a message will be written to stdout:
-     *  "====== Running on port <port> ======"
+     *  With port=0, the OS chooses an available port. On startup,
+     *  the chosen port is available from port(). The message
+     *  "====== Running on port <port> ======" goes to the logger unless the
+     *  derived server enables printPortToStdOut(). RemoteDataSourceProcess reads
+     *  this message from stdout to connect to its child server.
      * @param waitMs Number of milliseconds to wait for the server to start up.
      */
     void go(std::string const& interfaceAddr = "0.0.0.0",
@@ -53,7 +57,7 @@ public:
     [[nodiscard]] bool isRunning();
 
     /**
-     * Stop the server.
+     * Request shutdown and join the server thread, unless called from that thread.
      */
     void stop();
 
@@ -63,15 +67,20 @@ public:
     [[nodiscard]] uint16_t port() const;
 
     /**
-     * Wait until SIGINT or SIGTERM is received, then shuts down the server.
+     * Install process signal handlers and wait until shutdown or SIGINT/SIGTERM.
+     * Receiving either signal stops the active server.
      */
     void waitForSignal();
 
     /**
      * Add a filesystem mount point in the format `<url-path-prefix>:<filesystem-path>`.
-     * Returns true if successful, false otherwise.
+     * Call before go(), which snapshots these startup mounts. Returns false for
+     * an invalid or nonexistent directory. Use ensureStaticMount() after startup.
      */
     bool mountFileSystem(std::string const& pathFromTo);
+
+    /** Resolve the directory of a valid `[url-prefix:]path` mount, using the mounting rules. */
+    static std::optional<std::filesystem::path> fileSystemMountRoot(std::string const& pathFromTo);
 
 protected:
     /**

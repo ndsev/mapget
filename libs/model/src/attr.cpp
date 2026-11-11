@@ -5,6 +5,30 @@
 namespace mapget
 {
 
+model_ptr<simfil::OverlayNode> Attribute::queryContext(
+    model_ptr<Feature> const& feature,
+    std::string_view layerName,
+    uint32_t attributeIndex,
+    uint32_t validityIndex,
+    uint32_t validityCount) const
+{
+    if (!feature || &feature->model() != &model())
+        throw std::invalid_argument(
+            "Attribute query context requires a feature from the same layer.");
+    auto result = model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*this));
+    result->set(StringPool::OverlayNameStr, simfil::Value::make(std::string(name())));
+    result->set(StringPool::OverlayFeatureStr, simfil::Value::field(*feature));
+    result->set(StringPool::OverlayLayerStr, simfil::Value::make(std::string(layerName)));
+    result->set(StringPool::OverlayAttributeIndexStr, simfil::Value::make(int64_t(attributeIndex)));
+    result->set(StringPool::OverlayValidityIndexStr, simfil::Value::make(int64_t(validityIndex)));
+    // An attribute without explicit validity still has one whole-feature evaluation context.
+    result->set(
+        StringPool::OverlayValidityCountStr,
+        simfil::Value::make(int64_t(std::max(1u, validityCount))));
+    result->set(StringPool::OverlayHasValidityStr, simfil::Value::make(validityCount != 0));
+    return result;
+}
+
 namespace
 {
 simfil::ModelNode::Ptr exposedValidityNode(

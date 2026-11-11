@@ -1,6 +1,7 @@
 #pragma once
 
 #include "http-service.h"
+#include "mapget/http-datasource/detail/schema-response.h"
 #include "mapget/location/location.h"
 
 #include <drogon/HttpRequest.h>
@@ -24,17 +25,10 @@ namespace mapget
 namespace detail
 {
 
+class McpServer;
+
 /** Snapshot REST stream pending-buffer ownership and high-water marks. */
 [[nodiscard]] nlohmann::json tilesHttpMetricsSnapshot();
-
-[[nodiscard]] inline AuthHeaders authHeadersFromRequest(const drogon::HttpRequestPtr& req)
-{
-    AuthHeaders headers;
-    for (auto const& [k, v] : req->headers()) {
-        headers.emplace(k, v);
-    }
-    return headers;
-}
 
 }  // namespace detail
 
@@ -42,8 +36,16 @@ struct HttpService::Impl
 {
     HttpService& self_;
     HttpServiceConfig config_;
+
+    /** Agent transport/authentication has its own bounded control loop, not service workers. */
+    std::shared_ptr<detail::McpServer> mcp_;
+
     /** Lookup backend used by GET /location when location search is enabled. */
-    std::unique_ptr<SqliteLocationLookup> locationLookup_;
+    std::shared_ptr<SqliteLocationLookup> locationLookup_;
+
+    /** Shared with tasks that may outlive the HTTP implementation; no per-request body copies. */
+    std::shared_ptr<detail::SchemaResponseCache> schemaResponses_ =
+        std::make_shared<detail::SchemaResponseCache>();
 
     /** Interruptible wait state for the allocator-maintenance worker. */
     std::mutex memoryTrimMutex_;
@@ -51,7 +53,7 @@ struct HttpService::Impl
     bool stopMemoryTrim_ = false;
     std::thread memoryTrimThread_;
 
-    /** Lock-free diagnostics published after each periodic trim attempt. */
+    /** Atomic diagnostics published after each periodic trim attempt. */
     std::atomic<uint64_t> memoryTrimAttempts_{0};
     std::atomic<uint64_t> memoryTrimSuccesses_{0};
     std::atomic<uint64_t> memoryTrimLastDurationMicros_{0};
@@ -105,6 +107,16 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Serve an exact source-bound schema on the bounded service worker pool. */
+    void handleSchemaRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
+
+    /** Authorized inventory or one lazy domain, shared with MCP's native schema adapter. */
+    void handleSchemaInspectionRequest(
+        drogon::HttpRequestPtr const& req,
+        std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
+
     /** Serve the self-contained operational status dashboard. */
     void handleStatusRequest(
         const drogon::HttpRequestPtr& req,
@@ -115,15 +127,34 @@ struct HttpService::Impl
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
 
+    /** Collect lightweight metrics shared by HTTP and privileged MCP diagnostics, without cache
+     * scans. */
+    nlohmann::json statusSnapshot() const;
+
+    /** Read only the masked datasource model and its optimistic concurrency revision. */
+    nlohmann::json datasourceConfiguration() const;
+
+    /** Persist validated datasource changes, preserving secrets and unrelated host configuration.
+     */
+    nlohmann::json updateDatasourceConfiguration(
+        nlohmann::json const& model,
+        std::string const& expectedRevision = {}) const;
+
     /** Generate one detailed cache report outside Drogon's event loop. */
     void handleStatusCacheReportRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
-    /** Coalesce report callers and serialize expensive cache traversal. */
+    /**
+     * Coalesce report callers and serialize expensive cache traversal.
+     * Shutdown discards outstanding callbacks after HTTP teardown has begun.
+     */
     void runStatusCacheReportLoop();
 
-    /** Queue one control task unless HTTP service shutdown has begun. */
+    /**
+     * Queue a nonempty control task unless shutdown has begun. Acceptance does
+     * not guarantee execution: shutdown discards tasks that have not started.
+     */
     [[nodiscard]] bool enqueueInteractiveControlTask(std::function<void()> task);
 
     /** Execute interactive reconciliation without occupying Drogon's I/O loop. */
@@ -134,6 +165,7 @@ struct HttpService::Impl
         drogon::HttpRequestPtr const& req,
         std::function<void(drogon::HttpResponsePtr const&)>&& callback) const;
 
+    /** Resolve locate requests synchronously; preserve one response list per input request. */
     void handleLocateRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
@@ -142,8 +174,6 @@ struct HttpService::Impl
     void handleLocationRequest(
         const drogon::HttpRequestPtr& req,
         std::function<void(const drogon::HttpResponsePtr&)>&& callback) const;
-
-    static drogon::HttpResponsePtr openConfigFile(std::ifstream& configFile);
 
     void handleGetConfigRequest(
         const drogon::HttpRequestPtr& req,

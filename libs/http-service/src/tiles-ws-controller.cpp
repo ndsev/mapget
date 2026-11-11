@@ -1,5 +1,9 @@
 #include "tiles-ws-controller.h"
+#include "bounded-json.h"
 
+#if MAPGET_WITH_MCP
+#include "mcp-server.h"
+#endif
 #include "tiles-ws-session.h"
 
 #include "mapget/log.h"
@@ -29,16 +33,34 @@ class TilesWebSocketController final : public drogon::WebSocketController<TilesW
 {
 public:
     /** Build the websocket controller bound to one shared HttpService instance. */
-    explicit TilesWebSocketController(HttpService& service) : service_(service) {}
+    explicit TilesWebSocketController(HttpService& service, std::weak_ptr<McpServer> mcp, ProxyAuthentication proxyAuth)
+        : service_(service), mcp_(std::move(mcp)), proxyAuth_(std::move(proxyAuth))
+    {
+    }
 
     /** Create and attach one `TilesWsSession` per accepted websocket connection. */
     void handleNewConnection(const drogon::HttpRequestPtr& req, const drogon::WebSocketConnectionPtr& conn) override
     {
         tilesWsRecordConnectionOpened();
-        auto session = tilesWsCreateSession(service_, conn, tilesWsAuthHeadersFromRequest(req));
-        tilesWsRegisterForMetrics(session);
-        tilesWsRegisterSession(session);
-        conn->setContext(std::move(session));
+        try {
+            auto session = tilesWsCreateSession(service_, conn, proxyAuth_.authorization(req));
+            tilesWsRegisterForMetrics(session);
+            conn->setContext(session);
+            tilesWsRegisterSession(session);
+#if MAPGET_WITH_MCP
+            if (auto mcp = mcp_.lock()) {
+                mcp->attach(tilesWsSessionClientId(session), req, conn);
+            }
+#endif
+        }
+        catch (std::exception const& e) {
+            // In particular, failed secure UUID generation must not escape Drogon's callback.
+            conn->clearContext();
+            log().error("Cannot create interactive session: {}", e.what());
+            conn->shutdown(
+                drogon::CloseCode::kUnexpectedCondition,
+                "Interactive session unavailable");
+        }
     }
 
     /**
@@ -54,11 +76,9 @@ public:
         try {
             auto session = conn->getContext<TilesWsSession>();
             if (!session) {
-                // Recover from unexpected Drogon context loss by creating a fresh session.
-                session = tilesWsCreateSession(service_, conn, AuthHeaders{});
-                tilesWsRegisterForMetrics(session);
-                tilesWsRegisterSession(session);
-                conn->setContext(session);
+                // Handshake identity is irreplaceable: never recover with empty auth headers.
+                conn->shutdown(drogon::CloseCode::kViolation, "Interactive session unavailable");
+                return;
             }
 
             // Drogon delivers WebSocket control frames to the controller.
@@ -86,7 +106,7 @@ public:
 
             nlohmann::json j;
             try {
-                j = nlohmann::json::parse(message);
+                j = parseBoundedJson(message, 10 * 1024 * 1024);
             }
             catch (const std::exception& e) {
                 const auto payload = nlohmann::json::object({
@@ -98,6 +118,31 @@ public:
                 conn->send(
                     tilesWsEncodeStreamMessage(TileLayerStream::MessageType::Status, payload),
                     drogon::WebSocketMessageType::Binary);
+                return;
+            }
+
+            // Reserve the entire action namespace before touching tile offsets or request IDs.
+            // Malformed/unsupported action controls must never become replacement tile requests.
+            if (j.is_object() && j.contains("type") && j["type"].is_string() &&
+                j["type"].get_ref<std::string const&>().starts_with("mapget.actions."))
+            {
+#if MAPGET_WITH_MCP
+                if (auto mcp = mcp_.lock()) {
+                    mcp->receive(
+                        tilesWsSessionClientId(session),
+                        std::move(j),
+                        message.size(),
+                        conn);
+                }
+                else
+#endif
+                {
+                    conn->send(
+                        tilesWsEncodeStreamMessage(
+                            TileLayerStream::MessageType::ActionControl,
+                            R"({"type":"mapget.actions.error","version":1,"operation":"register","error":{"code":"not_available","message":"MCP is disabled."}})"),
+                        drogon::WebSocketMessageType::Binary);
+                }
                 return;
             }
 
@@ -130,6 +175,10 @@ public:
     {
         tilesWsRecordConnectionClosed();
         if (auto session = conn->getContext<TilesWsSession>()) {
+#if MAPGET_WITH_MCP
+            if (auto mcp = mcp_.lock())
+                mcp->disconnect(tilesWsSessionClientId(session));
+#endif
             tilesWsUnregisterSession(tilesWsSessionClientId(session));
             tilesWsCancel(session, "WebSocket connection closed.");
         }
@@ -144,14 +193,20 @@ public:
 
 private:
     HttpService& service_;
+    std::weak_ptr<McpServer> mcp_;
+    ProxyAuthentication proxyAuth_;
 };
 
 }  // namespace
 
 /** Register the websocket controller plus HTTP fallback pull endpoint. */
-void registerTilesWebSocketController(drogon::HttpAppFramework& app, HttpService& service)
+void registerTilesWebSocketController(
+    drogon::HttpAppFramework& app,
+    HttpService& service,
+    std::weak_ptr<McpServer> mcp,
+    ProxyAuthentication proxyAuth)
 {
-    app.registerController(std::make_shared<TilesWebSocketController>(service));
+    app.registerController(std::make_shared<TilesWebSocketController>(service, std::move(mcp), std::move(proxyAuth)));
     auto registerPayloadEndpoint = [&app](std::string const& path) {
         app.registerHandler(
             path,

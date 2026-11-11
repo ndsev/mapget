@@ -81,21 +81,21 @@ void Service::remove(const DataSource::Ptr& dataSource)
 
 bool Service::request(
     std::vector<LayerTilesRequest::Ptr> const& requests,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    return impl_->requestTiles(requests, clientHeaders);
+    return impl_->requestTiles(requests, clientAuthorization);
 }
 
 bool Service::request(
     FeatureLayerFilterTilesRequest::Ptr const& request,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    return impl_->requestFilter(request, clientHeaders);
+    return impl_->requestFilter(request, clientAuthorization);
 }
 
 AttachmentResult Service::attachment(
     AttachmentRequest const& request,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     std::mutex resultMutex;
     std::condition_variable resultAvailable;
@@ -110,7 +110,7 @@ AttachmentResult Service::attachment(
             }
             resultAvailable.notify_one();
         },
-        clientHeaders);
+        clientAuthorization);
     std::unique_lock lock(resultMutex);
     resultAvailable.wait(lock, [&] { return completed.has_value(); });
     auto result = std::move(*completed);
@@ -120,25 +120,26 @@ AttachmentResult Service::attachment(
 void Service::requestAttachment(
     AttachmentRequest request,
     std::function<void(AttachmentResult)> callback,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    impl_->requestAttachment(std::move(request), std::move(callback), clientHeaders);
+    impl_->requestAttachment(std::move(request), std::move(callback), clientAuthorization);
 }
 
 bool Service::request(
     std::vector<FeatureLayerFilterTilesRequest::Ptr> const& requests,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     bool allAccepted = true;
     for (auto const& request : requests) {
-        allAccepted = this->request(request, clientHeaders) && allAccepted;
+        allAccepted = this->request(request, clientAuthorization) && allAccepted;
     }
     return allAccepted;
 }
 
-std::vector<LocateResponse> Service::locate(LocateRequest const& request)
+std::vector<LocateResponse> Service::locate(
+    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization)
 {
-    return impl_->locate(request);
+    return impl_->locate(request, authorization);
 }
 
 void Service::abort(const LayerTilesRequest::Ptr& r)
@@ -207,16 +208,39 @@ void Service::notifyWorkAvailable()
     impl_->scheduler_.notifyWorkAvailable();
 }
 
-std::vector<DataSourceInfo> Service::info(std::optional<AuthHeaders> const& clientHeaders)
+bool Service::scheduleTask(std::function<void(bool)> task)
 {
-    return impl_->getDataSourceInfos(clientHeaders);
+    return impl_->scheduler_.enqueueTask(std::move(task));
+}
+
+std::vector<DataSourceInfo> Service::info(std::optional<ClientAuthorization> const& clientAuthorization)
+{
+    return impl_->getDataSourceInfos(clientAuthorization);
+}
+
+std::shared_ptr<MapSchema const> Service::getSchema(
+    std::string_view sourceId,
+    std::string_view schemaId,
+    std::optional<ClientAuthorization> const& clientAuthorization) const
+{
+    return impl_->dataSources_.getSchema(sourceId, schemaId, clientAuthorization);
+}
+
+nlohmann::json Service::schemaInventory(
+    std::optional<ClientAuthorization> const& clientAuthorization,
+    std::function<bool(MapSchema const&)> const& include,
+    std::function<void()> const& checkpoint,
+    std::function<bool(std::string_view sourceId, std::string_view mapId)> const& includeSource)
+    const
+{
+    return impl_->dataSources_.schemaInventory(clientAuthorization, include, checkpoint, includeSource);
 }
 
 DataSourceCatalogSnapshot
-Service::sourceCatalog(std::optional<AuthHeaders> const& clientHeaders, bool waitUntilReloadDone)
+Service::sourceCatalog(std::optional<ClientAuthorization> const& clientAuthorization, bool waitUntilReloadDone)
     const
 {
-    return impl_->getSourceCatalog(clientHeaders, waitUntilReloadDone);
+    return impl_->getSourceCatalog(clientAuthorization, waitUntilReloadDone);
 }
 
 uint64_t Service::sourceCatalogRevision() const
@@ -226,9 +250,9 @@ uint64_t Service::sourceCatalogRevision() const
 
 bool Service::isSourceCatalogChangeVisible(
     DataSourceCatalogChange const& change,
-    std::optional<AuthHeaders> const& clientHeaders) const
+    std::optional<ClientAuthorization> const& clientAuthorization) const
 {
-    return impl_->isSourceCatalogChangeVisible(change, clientHeaders);
+    return impl_->isSourceCatalogChangeVisible(change, clientAuthorization);
 }
 
 Service::DataSourceCatalogSubscription
@@ -247,25 +271,25 @@ Cache::Ptr Service::cache()
 RequestStatus Service::hasLayerAndCanAccess(
     std::string const& mapId,
     std::string const& layerId,
-    std::optional<AuthHeaders> const& clientHeaders) const
+    std::optional<ClientAuthorization> const& clientAuthorization) const
 {
-    return resolveLayerRequest(mapId, layerId, clientHeaders).status_;
+    return resolveLayerRequest(mapId, layerId, clientAuthorization).status_;
 }
 
 LayerRequestContext Service::resolveLayerRequest(
     std::string const& mapId,
     std::string const& layerId,
-    std::optional<AuthHeaders> const& clientHeaders,
+    std::optional<ClientAuthorization> const& clientAuthorization,
     std::optional<std::string> const& sourceId) const
 {
-    return impl_->resolveLayerRequest(mapId, layerId, clientHeaders, sourceId);
+    return impl_->resolveLayerRequest(mapId, layerId, clientAuthorization, sourceId);
 }
 
 bool Service::resetMapCache(
     std::string const& mapId,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    return impl_->resetMapCache(mapId, clientHeaders);
+    return impl_->resetMapCache(mapId, clientAuthorization);
 }
 
 }  // namespace mapget

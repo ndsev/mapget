@@ -25,7 +25,9 @@ namespace mapget
 {
 
 /**
- * DataSource which connects to a running DataSourceServer.
+ * DataSource which connects to a running DataSourceServer. Initialization fetches
+ * compact /info metadata and resolves /schema before publishing usable metadata.
+ * Immutable decoded schemas are shared by exact validated content identity.
  */
 class RemoteDataSource : public DataSource
 {
@@ -33,14 +35,17 @@ public:
     /**
      * Construct from joint host:port string.
      */
-    static std::shared_ptr<RemoteDataSource> fromHostPort(std::string const& hostPort);
+    static std::shared_ptr<RemoteDataSource> fromHostPort(
+        std::string const& hostPort, TileCancellationCheck const& isCancelled = {});
 
     /**
      * Construct a DataSource with the host and port of
      * a running DataSourceServer. Throws if the connection
-     * fails for any reason.
+     * fails for any reason. Cancellation is checked around initialization I/O
+     * and shared schema waits; it never cancels another source's schema build.
      */
-    RemoteDataSource(std::string const& host, uint16_t port);
+    RemoteDataSource(
+        std::string const& host, uint16_t port, TileCancellationCheck const& isCancelled = {});
     ~RemoteDataSource();
 
     // DataSource method overrides
@@ -55,6 +60,7 @@ public:
         TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+
     /** Forward spatial discovery without fetching object payloads. */
     ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(
@@ -67,11 +73,14 @@ private:
     // DataSourceInfo is fetched in the constructor
     DataSourceInfo info_;
 
-    // Error string, written in get() and set in fill().
+    // Failed request description set by get() and copied into the fallback tile by fill().
     std::string error_;
 
-    // Multiple http clients allow parallel GET requests
-    std::unique_ptr<trantor::EventLoopThread> httpClientLoop_;
+    // Clients share one event loop and allow parallel GET requests. A schema
+    // download can be shared by several RemoteDataSource initializers. If one
+    // initializer is cancelled, the download retains this loop until the other
+    // waiters have received the result, even if that initializer is destroyed.
+    std::shared_ptr<trantor::EventLoopThread> httpClientLoop_;
     std::vector<std::shared_ptr<drogon::HttpClient>> httpClients_;
     std::atomic_uint64_t nextClient_{0};
 };
@@ -87,7 +96,8 @@ class RemoteDataSourceProcess : public DataSource
 public:
     /**
      * Construct a remote data source with a command-line command.
-     * Throws if the connection fails for any reason or times out after 10 seconds.
+     * Release builds throw if initialization is not ready within 10 seconds.
+     * Debug builds wait indefinitely to allow the child process to be debugged.
      */
     RemoteDataSourceProcess(std::string const& commandLine);
 
@@ -108,6 +118,7 @@ public:
         TileCancellationCheck const& isCancelled = {}) override;
     std::vector<LocateCandidate> locate(
         mapget::LocateRequest const& req) override;
+
     /** Forward spatial discovery without fetching object payloads. */
     ObjectDiscoveryResult discoverObjects(ObjectDiscoveryRequest const& request) override;
     std::optional<AttachmentResponse> attachment(

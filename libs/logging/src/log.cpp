@@ -45,7 +45,8 @@ spdlog::logger& mapget::log()
 
         // File logger on demand, otherwise console logger.
         if (!logFile.empty()) {
-            std::cout << "Logging mapget events to: " << logFile << std::endl;
+            // Keep stdout available for machine-readable and binary command output.
+            std::cerr << "Logging mapget events to: " << logFile << std::endl;
             if (!logFileMaxSize.empty()) {
                 try {
                     logFileMaxSizeInt = std::stoull(logFileMaxSize);
@@ -55,7 +56,7 @@ spdlog::logger& mapget::log()
                               << ENVVAR_LOG_FILE_MAXSIZE << " ." << std::endl;
                 }
             }
-            std::cout << "Maximum logfile size: " << logFileMaxSizeInt << " bytes" << std::endl;
+            std::cerr << "Maximum logfile size: " << logFileMaxSizeInt << " bytes" << std::endl;
             logInstance = spdlog::rotating_logger_mt(LOG_MARKER, logFile, logFileMaxSizeInt, 2);
         }
         else

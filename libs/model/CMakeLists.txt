@@ -11,6 +11,9 @@ add_library(mapget-model STATIC
   include/mapget/model/geojson-import.h
   include/mapget/model/json-compare.h
   include/mapget/model/layerschema.h
+  include/mapget/model/mapschema.h
+  include/mapget/model/featureidentity.h
+  include/mapget/model/featureschema.h
   include/mapget/model/info.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
@@ -20,7 +23,10 @@ add_library(mapget-model STATIC
   include/mapget/model/featureid.h
   include/mapget/model/stream.h
   include/mapget/model/relation.h
+  include/mapget/model/incoming-relations.h
   include/mapget/model/point.h
+  include/mapget/model/pointcloud-sampler.h
+    include/mapget/model/pointcloud-geometry.h
   include/mapget/model/pointnode.h
   include/mapget/model/geometry-data.h
   include/mapget/model/geometry.h
@@ -43,9 +49,18 @@ add_library(mapget-model STATIC
   src/featurelayer.cpp
   src/subsetlayer.cpp
   src/featurelayer-filter.cpp
+  src/incoming-relations.cpp
   src/geojson-import.cpp
   src/json-compare.cpp
   src/layerschema.cpp
+  src/layerschema-search.cpp
+  src/mapschema.cpp
+  src/mapschema-descriptor.cpp
+  src/mapschema-query.cpp
+  src/mapschema-json.cpp
+  src/mapschema-metadata.cpp
+  src/mapschema-native.cpp
+  src/featureidentity.cpp
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
@@ -82,6 +97,8 @@ target_link_libraries(mapget-model
     tl::expected
     nlohmann_json::nlohmann_json
     nlohmann_json_schema_validator)
+
+target_link_libraries(mapget-model PRIVATE picosha2)
 
 if (MSVC)
   target_compile_definitions(mapget-model

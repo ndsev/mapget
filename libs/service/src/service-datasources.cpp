@@ -32,12 +32,13 @@ bool isDataSourceDescriptorEnabled(YAML::Node const& descriptor)
 /** Apply descriptor-only auth rules before a datasource instance exists. */
 bool isDescriptorAuthorized(
     DataSourceDescriptor const& descriptor,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
-    if (!clientHeaders) {
+    if (!clientAuthorization) {
         return true;
     }
-    return authHeadersMatch(descriptor.authHeaderAlternatives, *clientHeaders);
+    return authHeadersMatch(descriptor.authHeaderAlternatives, clientAuthorization->headers) &&
+        clientAuthorization->matches(descriptor.requiredClaims);
 }
 
 /** Drop non-finite progress and clamp reported percentages to the wire range. */
@@ -68,28 +69,27 @@ DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEnt
 namespace mapget::detail
 {
 
+bool RegisteredDataSource::authorized(std::optional<ClientAuthorization> const& headers) const
+{
+    if (!headers)
+        return true;
+    if (!dataSource->isDataSourceAuthorized(*headers))
+        return false;
+    return std::ranges::all_of(
+        addOns,
+        [&](auto const& addon) { return addon->dataSource->isDataSourceAuthorized(*headers); });
+}
+
 std::shared_ptr<LayerInfo> cloneLayerInfo(LayerInfo const& info)
 {
-    auto result = std::make_shared<LayerInfo>();
-    result->layerId_ = info.layerId_;
-    result->type_ = info.type_;
-    result->featureTypes_ = info.featureTypes_;
-    result->zoomLevels_ = info.zoomLevels_;
-    result->coverage_ = info.coverage_;
-    result->canRead_ = info.canRead_;
-    result->canWrite_ = info.canWrite_;
-    result->version_ = info.version_;
-    result->partitionKind_ = info.partitionKind_;
-    result->tileAssociationLevel_ = info.tileAssociationLevel_;
-    result->featureModelSchema_ = info.featureModelSchema_ ?
-        info.featureModelSchema_->detachedCopy() :
-        nullptr;
-    return result;
+    // Availability/routing belongs to the source snapshot; finalized schema storage is shared.
+    return std::make_shared<LayerInfo>(info);
 }
 
 DataSourceInfo cloneDataSourceInfo(DataSourceInfo const& info)
 {
     info.validateIdentifiers();
+    info.validateSchema();
 
     auto result = info;
     if (result.protocolVersion_ == Version{}) {
@@ -159,12 +159,17 @@ DataSourceRegistry::add(DataSource::Ptr dataSource, std::optional<std::string> s
 
     auto registered = std::make_shared<RegisteredDataSource>(RegisteredDataSource{
         .dataSource = std::move(dataSource),
-        .info = std::move(info),
+        .info = info,
+        .nativeInfo = std::move(info),
         .sourceId = std::move(effectiveSourceId),
     });
     registered->metadataMemory = registered->info->memoryUsage().total();
-    sources_.push_back(registered);
-    return registered;
+    auto next = sources_;
+    next.push_back(registered);
+    compose(next);  // Failure leaves the published registry and all running generations untouched.
+    sources_ = std::move(next);
+    rememberSchemas();
+    return sources_.back();
 }
 
 RegisteredDataSource::Ptr DataSourceRegistry::remove(DataSource::Ptr const& dataSource)
@@ -177,7 +182,11 @@ RegisteredDataSource::Ptr DataSourceRegistry::remove(DataSource::Ptr const& data
         return {};
     }
     auto removed = *found;
-    sources_.erase(found);
+    auto next = sources_;
+    std::erase(next, removed);
+    compose(next);
+    sources_ = std::move(next);
+    rememberSchemas();
     return removed;
 }
 
@@ -221,13 +230,13 @@ std::vector<RegisteredDataSource::Ptr> DataSourceRegistry::addOnSources() const
 }
 
 std::vector<DataSourceInfo>
-DataSourceRegistry::infos(std::optional<AuthHeaders> const& clientHeaders) const
+DataSourceRegistry::infos(std::optional<ClientAuthorization> const& clientAuthorization) const
 {
     auto sources = snapshot();
     std::vector<DataSourceInfo> result;
     result.reserve(sources.size());
     for (auto const& source : sources) {
-        if (!clientHeaders || source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
+        if (source->authorized(clientAuthorization)) {
             result.push_back(cloneDataSourceInfo(*source->info));
         }
     }
@@ -269,13 +278,14 @@ Service::Impl::Impl(
     if (!useDataSourceConfig) {
         return;
     }
-    configSubscription_ = DataSourceConfigService::get().subscribe(
-        [this](auto&& configNodes) { applyDataSourceConfig(configNodes); },
+    configSubscription_ = DataSourceConfigService::get().subscribeWithReload(
+        [this](auto&& configNodes, bool retryFailed) { applyDataSourceConfig(configNodes, retryFailed); },
         [this](std::string const& error)
         {
             DataSourceCatalogChange change;
             {
                 std::unique_lock lock(catalogMutex_);
+                if (sourceConfigStatus_ == "error" && sourceConfigStatusMessage_ == error) return;
                 sourceConfigStatus_ = "error";
                 sourceConfigStatusMessage_ = error;
                 change = markSourceCatalogChangedLocked("config-error");
@@ -413,27 +423,31 @@ void Service::Impl::releaseConstructionSlot()
     constructionSlotCv_.notify_all();
 }
 
-bool Service::Impl::isCurrentCatalogGeneration(uint64_t generation) const
+bool Service::Impl::isCurrentConstruction(uint64_t generation) const
 {
     std::shared_lock lock(catalogMutex_);
-    return generation == sourceCatalogGeneration_ && !shuttingDown_.load(std::memory_order_relaxed);
+    return constructionRows_.contains(generation) && !shuttingDown_.load(std::memory_order_relaxed);
+}
+
+DataSourceCatalogEntry* Service::Impl::constructionEntryLocked(uint64_t generation)
+{
+    auto row = constructionRows_.find(generation);
+    if (row == constructionRows_.end() || shuttingDown_) return nullptr;
+    auto entry = std::ranges::find_if(sourceCatalog_, [&](auto const& candidate) {
+        return candidate.descriptor.configIndex == row->second;
+    });
+    return entry == sourceCatalog_.end() ? nullptr : &*entry;
 }
 
 void Service::Impl::updateCatalogStatusMessage(
     uint64_t generation,
-    uint32_t configIndex,
     std::string message)
 {
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end() || entry->statusMessage == message) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry || entry->statusMessage == message) {
             return;
         }
         entry->statusMessage = std::move(message);
@@ -444,20 +458,14 @@ void Service::Impl::updateCatalogStatusMessage(
 
 void Service::Impl::updateCatalogProgress(
     uint64_t generation,
-    uint32_t configIndex,
     std::optional<float> progress)
 {
     progress = normalizeProgressPercentage(progress);
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end() || entry->progress == progress) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry || entry->progress == progress) {
             return;
         }
         entry->progress = progress;
@@ -468,20 +476,14 @@ void Service::Impl::updateCatalogProgress(
 
 void Service::Impl::markCatalogConstructionFailed(
     uint64_t generation,
-    uint32_t configIndex,
     std::string message,
     bool retrying)
 {
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end()) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry) {
             return;
         }
         if (entry->status != DataSourceCatalogStatus::Failed)
@@ -497,38 +499,37 @@ void Service::Impl::markCatalogConstructionFailed(
 
 bool Service::Impl::markCatalogConstructionReady(
     uint64_t generation,
-    uint32_t configIndex,
     DataSource::Ptr const& dataSource,
     std::optional<std::string> sourceId)
 {
     std::optional<DataSourceCatalogChange> change;
+    std::function<void()> complete;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry) {
             return false;
         }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end()) {
-            return false;
-        }
-        // Registration and the Ready transition share the catalog lock. A
-        // superseding reload can therefore never leave a late source visible
-        // in the ready registry without a matching current-generation row.
+        // Retain every registration in the current catalog generation so a
+        // superseding reload can withdraw it, including during add-on invalidation.
         auto source = dataSources_.add(dataSource, std::move(sourceId));
-        scheduler_.registerDataSource(source);
+        complete = synchronizeDataSourcesLocked();
+        entry->dataSource = source->dataSource;
+        entry->info = source->info;
+        dataSourcesFromConfig_.push_back(source->dataSource);
         if (entry->status == DataSourceCatalogStatus::Failed)
             --dataSourceConstructionFailed_;
         entry->status = DataSourceCatalogStatus::Ready;
         entry->retrying = false;
         entry->statusMessage.clear();
         entry->progress.reset();
-        entry->dataSource = source->dataSource;
-        entry->info = source->info;
-        dataSourcesFromConfig_.push_back(source->dataSource);
-        change = markSourceCatalogChangedLocked("status", &*entry);
+        // A contribution can change another row's artifact and authorization as well.
+        // Such changes require a coherent catalog refresh, not a status-only delta.
+        change = source->info->isAddOn_ || !source->addOns.empty() ?
+            markSourceCatalogChangedLocked("schema") :
+            markSourceCatalogChangedLocked("status", &*entry);
     }
+    complete();
     notifySourceCatalogChanged(*change);
     return true;
 }
@@ -543,6 +544,7 @@ void Service::Impl::launchDataSourceConstruction(
     auto const configIndex = descriptor.configIndex;
     auto sourceId = descriptor.sourceId;
     dataSourceConstructionThreads_.push_back(ConstructionThread{
+        .generation = generation,
         .thread = std::thread(
             [this,
              generation,
@@ -564,7 +566,7 @@ void Service::Impl::launchDataSourceConstruction(
                     size_t retryAttempt = 0;
                     while (!stopRequested->load(std::memory_order_acquire)) {
                         slotAcquired = acquireConstructionSlot(stopRequested);
-                        if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
+                        if (!slotAcquired || !isCurrentConstruction(generation)) {
                             finish();
                             return;
                         }
@@ -572,26 +574,26 @@ void Service::Impl::launchDataSourceConstruction(
                         std::string lastStatusMessage;
                         DataSourceInitContext context{
                             .setStatusMessage =
-                                [this, generation, configIndex, &lastStatusMessage](std::string message)
+                                [this, generation, &lastStatusMessage](std::string message)
                             {
                                 lastStatusMessage = message;
-                                updateCatalogStatusMessage(generation, configIndex, std::move(message));
+                                updateCatalogStatusMessage(generation, std::move(message));
                             },
                             .setProgress =
-                                [this, generation, configIndex](std::optional<float> progress)
-                            { updateCatalogProgress(generation, configIndex, progress); },
+                                [this, generation](std::optional<float> progress)
+                            { updateCatalogProgress(generation, progress); },
                             .isCancelled =
                                 [this, generation, stopRequested]
                             {
                                 return stopRequested->load(std::memory_order_acquire) ||
-                                    !isCurrentCatalogGeneration(generation);
+                                    !isCurrentConstruction(generation);
                             },
                         };
                         context.retryAttempt = retryAttempt;
                         auto dataSource =
                             DataSourceConfigService::get().makeDataSource(configNode, context);
                         if (!dataSource) {
-                            if (isCurrentCatalogGeneration(generation)) {
+                            if (isCurrentConstruction(generation)) {
                                 if (lastStatusMessage.empty()) {
                                     lastStatusMessage = fmt::format(
                                         "Failed to make datasource at index {}.",
@@ -599,7 +601,6 @@ void Service::Impl::launchDataSourceConstruction(
                                 }
                                 markCatalogConstructionFailed(
                                     generation,
-                                    configIndex,
                                     context.retryAfter && context.retryAfter->count() > 0 ?
                                     fmt::format("{} Retrying in {} ms.", lastStatusMessage, context.retryAfter->count()) :
                                     lastStatusMessage,
@@ -617,24 +618,22 @@ void Service::Impl::launchDataSourceConstruction(
                             if (retryAttempt != std::numeric_limits<size_t>::max()) ++retryAttempt;
                             continue;
                         }
-                        if (!isCurrentCatalogGeneration(generation)) {
+                        if (!isCurrentConstruction(generation)) {
                             finish();
                             return;
                         }
 
                         markCatalogConstructionReady(
                             generation,
-                            configIndex,
                             dataSource,
                             std::move(sourceId));
                         break;
                     }
                 }
                 catch (std::exception const& error) {
-                    if (isCurrentCatalogGeneration(generation)) {
+                    if (isCurrentConstruction(generation)) {
                         markCatalogConstructionFailed(
                             generation,
-                            configIndex,
                             fmt::format(
                                 "Exception while making datasource at index {}: {}",
                                 configIndex,
@@ -642,10 +641,9 @@ void Service::Impl::launchDataSourceConstruction(
                     }
                 }
                 catch (...) {
-                    if (isCurrentCatalogGeneration(generation)) {
+                    if (isCurrentConstruction(generation)) {
                         markCatalogConstructionFailed(
                             generation,
-                            configIndex,
                             fmt::format(
                                 "Unknown exception while making datasource at index {}.",
                                 configIndex));
@@ -658,22 +656,31 @@ void Service::Impl::launchDataSourceConstruction(
     });
 }
 
-void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configNodes)
+void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configNodes, bool retryFailedSources)
 {
+    // Compute config-owned hashes before taking the catalog lock, preserving
+    // the config -> catalog lock order used by subscription callbacks.
+    std::vector<std::string> fingerprints;
+    fingerprints.reserve(configNodes.size());
+    for (auto const& node : configNodes) {
+        fingerprints.push_back(DataSourceConfigService::get().dataSourceConfigFingerprint(node));
+    }
     std::vector<DataSource::Ptr> previousDataSources;
     std::vector<std::pair<YAML::Node, DataSourceDescriptor>> constructionInputs;
-    uint64_t generation = 0;
     DataSourceCatalogChange change;
     {
         std::unique_lock lock(catalogMutex_);
         pruneCompletedConstructionThreadsLocked();
-        requestStopForConstructionThreadsLocked();
         previousDataSources.swap(dataSourcesFromConfig_);
         dataSourceConstructionFailed_ = 0;
+        auto previousCatalog = std::move(sourceCatalog_);
         sourceCatalog_.clear();
+        sourceCatalog_.reserve(configNodes.size());
         sourceConfigStatus_ = "ok";
         sourceConfigStatusMessage_.clear();
-        generation = ++sourceCatalogGeneration_;
+        auto previousIds = std::move(dataSourceConstructionIds_);
+        dataSourceConstructionIds_.assign(configNodes.size(), 0);
+        constructionRows_.clear();
 
         auto index = uint32_t{0};
         for (auto const& configNode : configNodes) {
@@ -682,6 +689,38 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
                 continue;
             }
             auto descriptor = DataSourceConfigService::get().describeDataSource(configNode, index);
+            auto previous = std::ranges::find_if(
+                previousCatalog,
+                [&](auto const& entry)
+                {
+                    auto const oldIndex = entry.descriptor.configIndex;
+                    return (entry.status == DataSourceCatalogStatus::Ready || !retryFailedSources) &&
+                        oldIndex < previousIds.size() && previousIds[oldIndex] != 0 &&
+                        entry.descriptor.sourceId == descriptor.sourceId &&
+                        oldIndex < dataSourceConfigFingerprints_.size() &&
+                        dataSourceConfigFingerprints_[oldIndex] == fingerprints[index];
+                });
+            if (previous != previousCatalog.end()) {
+                // Retain the actual registration, not just its namespace ID:
+                // cached tiles, dictionary contents and in-flight work belong to it.
+                auto id = previousIds[previous->descriptor.configIndex];
+                previousIds[previous->descriptor.configIndex] = 0;
+                dataSourceConstructionIds_[index] = id;
+                constructionRows_[id] = index;
+                if (previous->dataSource) {
+                    std::erase(previousDataSources, previous->dataSource);
+                    dataSourcesFromConfig_.push_back(previous->dataSource);
+                }
+                if (previous->status == DataSourceCatalogStatus::Failed)
+                    ++dataSourceConstructionFailed_;
+                previous->descriptor = std::move(descriptor);
+                sourceCatalog_.push_back(std::move(*previous));
+                ++index;
+                continue;
+            }
+            auto id = ++nextConstructionId_;
+            dataSourceConstructionIds_[index] = id;
+            constructionRows_[id] = index;
             sourceCatalog_.push_back(DataSourceCatalogEntry{
                 .descriptor = descriptor,
                 .status = DataSourceCatalogStatus::Initializing,
@@ -690,18 +729,31 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
             constructionInputs.emplace_back(configNode, std::move(descriptor));
             ++index;
         }
+        for (auto& construction : dataSourceConstructionThreads_) {
+            if (!constructionRows_.contains(construction.generation))
+                construction.stopRequested->store(true, std::memory_order_release);
+        }
+        constructionSlotCv_.notify_all();
+        dataSourceConfigFingerprints_ = std::move(fingerprints);
         change = markSourceCatalogChangedLocked("reload");
     }
 
-    log().info("Config changed. Removing previous datasources.");
+    log().info(
+        "Config changed. Removing {} datasources and initializing {}.",
+        previousDataSources.size(),
+        constructionInputs.size());
     for (auto const& dataSource : previousDataSources) {
         removeDataSource(dataSource, false);
     }
+    // Silent withdrawals still advance the snapshot fence. Publish the revision
+    // after the last removal, not the pre-withdrawal revision captured above.
+    change.revision = getSourceCatalogRevision();
     notifySourceCatalogChanged(change);
 
     std::unique_lock lock(catalogMutex_);
     for (auto& [configNode, descriptor] : constructionInputs) {
-        launchDataSourceConstruction(generation, std::move(configNode), std::move(descriptor));
+        auto id = dataSourceConstructionIds_[descriptor.configIndex];
+        launchDataSourceConstruction(id, std::move(configNode), std::move(descriptor));
     }
 }
 
@@ -711,19 +763,19 @@ detail::RegisteredDataSource::Ptr Service::Impl::addDataSource(
     std::optional<std::string> sourceId)
 {
     detail::RegisteredDataSource::Ptr registered;
-    std::optional<DataSourceCatalogChange> change;
+    DataSourceCatalogChange change;
+    std::function<void()> complete;
     {
         // Catalog snapshots acquire this lock before reading the ready-source
         // registry, keeping the returned revision and source list atomic.
         std::unique_lock lock(catalogMutex_);
         registered = dataSources_.add(dataSource, std::move(sourceId));
-        scheduler_.registerDataSource(registered);
-        if (publishCatalogChange) {
-            change = markSourceCatalogChangedLocked("added");
-        }
+        complete = synchronizeDataSourcesLocked();
+        change = markSourceCatalogChangedLocked("added");
     }
-    if (change) {
-        notifySourceCatalogChanged(*change);
+    complete();
+    if (publishCatalogChange) {
+        notifySourceCatalogChanged(change);
     }
     return registered;
 }
@@ -731,7 +783,8 @@ detail::RegisteredDataSource::Ptr Service::Impl::addDataSource(
 void Service::Impl::removeDataSource(DataSource::Ptr const& dataSource, bool publishCatalogChange)
 {
     detail::RegisteredDataSource::Ptr registered;
-    std::optional<DataSourceCatalogChange> change;
+    DataSourceCatalogChange change;
+    std::function<void()> complete;
     {
         // Preserve the catalog -> registry -> scheduler lock order used by
         // registration and snapshot assembly.
@@ -740,25 +793,38 @@ void Service::Impl::removeDataSource(DataSource::Ptr const& dataSource, bool pub
         if (!registered) {
             return;
         }
-        scheduler_.unregisterDataSource(registered);
-        if (publishCatalogChange) {
-            change = markSourceCatalogChangedLocked("removed");
-        }
+        complete = synchronizeDataSourcesLocked();
+        // Suppressing a separate notification must not suppress the fence used
+        // by schema responses which may be encoding an earlier registry snapshot.
+        change = markSourceCatalogChangedLocked("removed");
     }
-    scheduler_.invalidateMap(registered->info->mapId_);
-    if (change) {
-        notifySourceCatalogChanged(*change);
+    complete();
+    if (publishCatalogChange) {
+        notifySourceCatalogChanged(change);
     }
+}
+
+std::function<void()> Service::Impl::synchronizeDataSourcesLocked()
+{
+    auto sources = dataSources_.snapshot();
+    for (auto& entry : sourceCatalog_) {
+        auto current = std::ranges::find_if(
+            sources,
+            [&](auto const& source) { return source->dataSource == entry.dataSource; });
+        if (current != sources.end())
+            entry.info = (*current)->info;
+    }
+    return scheduler_.synchronizeDataSources(sources);
 }
 
 std::vector<DataSourceInfo>
-Service::Impl::getDataSourceInfos(std::optional<AuthHeaders> const& clientHeaders) const
+Service::Impl::getDataSourceInfos(std::optional<ClientAuthorization> const& clientAuthorization) const
 {
-    return dataSources_.infos(clientHeaders);
+    return dataSources_.infos(clientAuthorization);
 }
 
 DataSourceCatalogSnapshot Service::Impl::getSourceCatalog(
-    std::optional<AuthHeaders> const& clientHeaders,
+    std::optional<ClientAuthorization> const& clientAuthorization,
     bool waitUntilReloadDone) const
 {
     DataSourceCatalogSnapshot snapshot;
@@ -769,12 +835,18 @@ DataSourceCatalogSnapshot Service::Impl::getSourceCatalog(
     snapshot.revision = sourceCatalogRevision_;
     snapshot.configStatus = sourceConfigStatus_;
     snapshot.configStatusMessage = sourceConfigStatusMessage_;
+    auto sources = dataSources_.snapshot();
     if (!sourceCatalog_.empty()) {
         snapshot.sources.reserve(sourceCatalog_.size());
         for (auto const& entry : sourceCatalog_) {
-            auto const authorized = entry.dataSource ?
-                (!clientHeaders || entry.dataSource->isDataSourceAuthorized(*clientHeaders)) :
-                isDescriptorAuthorized(entry.descriptor, clientHeaders);
+            auto registered = std::ranges::find_if(
+                sources,
+                [&](auto const& source) { return source->dataSource == entry.dataSource; });
+            auto const authorized = registered != sources.end() ?
+                (*registered)->authorized(clientAuthorization) :
+                entry.dataSource ?
+                (!clientAuthorization || entry.dataSource->isDataSourceAuthorized(*clientAuthorization)) :
+                isDescriptorAuthorized(entry.descriptor, clientAuthorization);
             if (authorized) {
                 snapshot.sources.push_back(entry);
             }
@@ -784,12 +856,11 @@ DataSourceCatalogSnapshot Service::Impl::getSourceCatalog(
     // Runtime-only catalogs use the ready registry as their source list. Keep
     // the catalog lock while taking that snapshot so its revision describes
     // exactly the returned rows.
-    auto sources = dataSources_.snapshot();
     snapshot.sources.reserve(sources.size());
     auto configIndex = uint32_t{0};
     for (auto const& source : sources) {
         auto const currentIndex = configIndex++;
-        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
+        if (!source->authorized(clientAuthorization)) {
             continue;
         }
         snapshot.sources.push_back(DataSourceCatalogEntry{
@@ -818,16 +889,19 @@ uint64_t Service::Impl::getSourceCatalogRevision() const
 
 bool Service::Impl::isSourceCatalogChangeVisible(
     DataSourceCatalogChange const& change,
-    std::optional<AuthHeaders> const& clientHeaders) const
+    std::optional<ClientAuthorization> const& clientAuthorization) const
 {
     if (!change.sourceUpdate) {
         return true;
     }
     auto const& source = *change.sourceUpdate;
     if (source.dataSource) {
-        return !clientHeaders || source.dataSource->isDataSourceAuthorized(*clientHeaders);
+        for (auto const& registered : dataSources_.snapshot())
+            if (registered->dataSource == source.dataSource)
+                return registered->authorized(clientAuthorization);
+        return !clientAuthorization || source.dataSource->isDataSourceAuthorized(*clientAuthorization);
     }
-    return isDescriptorAuthorized(source.descriptor, clientHeaders);
+    return isDescriptorAuthorized(source.descriptor, clientAuthorization);
 }
 
 uint64_t Service::Impl::addSourceCatalogCallback(Service::DataSourceCatalogCallback callback)
@@ -853,20 +927,25 @@ void Service::Impl::removeSourceCatalogCallback(uint64_t id)
 LayerRequestContext Service::Impl::resolveLayerRequest(
     std::string const& mapId,
     std::string const& layerId,
-    std::optional<AuthHeaders> const& clientHeaders,
-    std::optional<std::string> const& sourceId) const
+    std::optional<ClientAuthorization> const& clientAuthorization,
+    std::optional<std::string> const& sourceId,
+    detail::RegisteredDataSource::Ptr* selected) const
 {
+    if (selected)
+        selected->reset();
     LayerRequestContext result;
     auto const matches = dataSources_.matchingPrimarySources(mapId, layerId, sourceId);
     auto unauthorized = false;
     auto foundAuthorized = false;
     for (auto const& source : matches) {
-        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
+        if (!source->authorized(clientAuthorization)) {
             unauthorized = true;
             continue;
         }
         auto const type = source->info->layers_.at(layerId)->type_;
         if (!foundAuthorized) {
+            if (selected)
+                *selected = source;
             result.status_ = RequestStatus::Success;
             result.layerType_ = type;
             result.partitionKind_ = source->info->layers_.at(layerId)->partitionKind_;
@@ -916,13 +995,13 @@ LayerRequestContext Service::Impl::resolveLayerRequest(
 
 bool Service::Impl::resetMapCache(
     std::string const& mapId,
-    std::optional<AuthHeaders> const& clientHeaders)
+    std::optional<ClientAuthorization> const& clientAuthorization)
 {
     for (auto const& source : dataSources_.snapshot()) {
         if (source->info->isAddOn_ || source->info->mapId_ != mapId) {
             continue;
         }
-        if (clientHeaders && !source->dataSource->isDataSourceAuthorized(*clientHeaders)) {
+        if (!source->authorized(clientAuthorization)) {
             continue;
         }
         scheduler_.invalidateMap(mapId);

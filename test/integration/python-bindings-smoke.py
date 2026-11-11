@@ -31,19 +31,33 @@ def _post_json(url: str, body: dict):
 
 
 def main() -> int:
+    assert hasattr(mapget, "FeatureInspectionView")
+    assert hasattr(mapget.Client, "incoming_relations")
+    incoming = mapget.IncomingRelationCollection.from_json(json.dumps({
+        "type": "mapget.incoming.relations", "version": 2,
+        "target": "Features:Map:WayLayer:65536", "featureId": "Way.1",
+        "complete": True, "status": "complete", "scope": ["Features:Map:WayLayer:65536"],
+        "issues": [], "snapshots": ["Features:Map:WayLayer:65536"], "relations": []
+    }))
+    assert incoming.complete and incoming.feature_id == "Way.1"
+    assert incoming.status == mapget.IncomingRelationStatus.COMPLETE
+    assert [str(key) for key in incoming.scope] == ["Features:Map:WayLayer:65536"]
+    assert incoming.to_dict()["relations"] == []
     assert hasattr(mapget, "FilterRequest")
     assert hasattr(mapget, "FilterChannel")
     assert hasattr(mapget, "TileSubsetLayer")
     assert mapget.TileId is PackedTileId
     assert mapget.PackedTileId is PackedTileId
     for keyword, label in (("error_tile_ttl_ms", "Error"), ("empty_tile_ttl_ms", "Empty")):
-        for invalid_ttl in (0, -1):
+        for invalid_ttl in (-1,):
             try:
                 mapget.Service(worker_count=1, **{keyword: invalid_ttl})
             except RuntimeError as error:
-                assert f"{label} tile TTL must be greater than zero" in str(error)
+                assert f"{label} tile TTL must not be negative" in str(error)
             else:
-                raise AssertionError(f"Service accepted a nonpositive {keyword}")
+                raise AssertionError(f"Service accepted a negative {keyword}")
+    no_retry_service = mapget.Service(worker_count=1, error_tile_ttl_ms=0, empty_tile_ttl_ms=0)
+    del no_retry_service
     parsed_key = mapget.MapTileKey("Features:Map:WayLayer:65536")
     assert isinstance(parsed_key.tile_id, PackedTileId)
     assert parsed_key.tile_id.value == 65536
@@ -62,6 +76,7 @@ def main() -> int:
     point = mapget.Point
     cache_expired_calls: list[tuple[str, int]] = []
     requested_tiles: list[int] = []
+    retained_incoming_rows: list[dict] = []
 
     def fill_feature_tile(tile: mapget.TileFeatureLayer) -> None:
         assert tile.warnings() == []
@@ -161,8 +176,34 @@ def main() -> int:
         indexed_attr.add_field("value", True)
 
         target = tile.new_feature_id("Way", [("wayId", 2)])
+        foreign = tile.new_feature_id("ForeignRoad", [("key", 9223372036854775807),
+                                                      ("text", "001")], "OtherMap")
+        assert foreign.type_id() == "ForeignRoad"
+        assert foreign.map_id() == "OtherMap"
+        assert foreign.to_dict() == {"mapId": "OtherMap", "typeId": "ForeignRoad",
+                                     "id": {"key": 9223372036854775807, "text": "001"}}
+        assert dict(foreign.key_value_pairs()) == {"key": 9223372036854775807, "text": "001"}
+        try:
+            foreign.to_string()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Foreign references must not invent a canonical string")
         relation = feature.add_relation("next", target)
         relation.source_validity().new_complete()
+
+        tile.new_feature("Way", [("wayId", 2)])
+        key = "Features:Map:WayLayer:65536"
+        collection = mapget.IncomingRelationCollection.from_json(json.dumps({
+            "type": "mapget.incoming.relations", "version": 2,
+            "target": key, "featureId": "Way.2", "complete": True, "issues": [],
+            "status": "complete", "scope": [key],
+            "snapshots": [key], "relations": [{"source": key, "featureId": "Way.1",
+                "relationIndex": 0, "name": "next", "targetFeatureId": "Way.2"}]
+        }))
+        view = mapget.FeatureInspectionView(collection, [tile])
+        assert view.collection().complete
+        retained_incoming_rows.extend(view.incoming())
 
         source_refs = tile.new_source_data_references(
             [("RawLayer", "primary", mapget.SourceDataAddress(10, 20))]
@@ -176,6 +217,8 @@ def main() -> int:
         compound.set_source_data_address(mapget.SourceDataAddress(1, 8))
         compound.add_field("answer", 42)
         tile.add_root(compound)
+        assert len(tile.find_source_data(mapget.SourceDataAddress(1, 8))) == 1
+        assert tile.find_source_data(mapget.SourceDataAddress(2, 1)) == []
 
     def locate(request: mapget.LocateRequest) -> list[mapget.LocateCandidate]:
         tile_key = mapget.MapTileKey(
@@ -245,6 +288,7 @@ def main() -> int:
         base_url = f"http://127.0.0.1:{datasource.port()}"
 
         feature_tile = _get_json(f"{base_url}/tile?layer=WayLayer&tileId=65536&responseType=json")
+        assert feature_tile["schemaId"] == datasource.map_schema.schema_id
         assert feature_tile["warnings"] == ["nonfatal duplicate fixture"]
         assert "error" not in feature_tile
         assert requested_tiles == [65536]
@@ -270,6 +314,10 @@ def main() -> int:
             == "attribute-point-sequence"
         )
         assert feature["_sourceData"][0]["qualifier"] == "primary"
+        assert len(retained_incoming_rows) == 1
+        assert retained_incoming_rows[0]["ordinal"] == 0
+        assert retained_incoming_rows[0]["relation"].name() == "next"
+        assert retained_incoming_rows[0]["source"].id().to_string() == "Way.1"
 
         discovery = _post_json(f"{base_url}/objects/discover", {
             "layerId": "ObjectRoad", "tileId": PackedTileId.from_tile_xy(0, 0, 13).value})
@@ -277,6 +325,7 @@ def main() -> int:
         assert discovery["ttlMs"] == 5000
         encoded_partition = urllib.parse.quote(partition.to_json())
         object_tile = _get_json(f"{base_url}/tile?layer=ObjectRoad&partition={encoded_partition}&responseType=json")
+        assert object_tile["schemaId"] == datasource.map_schema.schema_id
         assert object_tile["partition"] == {"kind": "object", "id": str(object_id)}
         assert object_tile["features"][0]["id"] == f"Road.{object_id}.1"
 
@@ -284,9 +333,10 @@ def main() -> int:
         assert source_tile.pop("timestamp") > 0
         assert source_tile == {
             "type": "SourceData", "mapId": "Map", "mapgetLayerId": "RawLayer",
+            "schemaId": datasource.map_schema.schema_id,
             "partition": {"kind": "tile", "id": 65536},
             "data": [{"answer": 42}], "warnings": ["partial source diagnostics"],
-        }
+        }, source_tile
 
         locate_response = _post_json(
             f"{base_url}/locate",

@@ -1,3 +1,4 @@
+#include "mapget/model/mapschema.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/detail/allocator-memory.h"
 #include "service-impl.h"
@@ -126,6 +127,7 @@ Service::Impl::statistics(bool includeCachedFeatureTreeBytes, bool includeTileSi
              {"running", schedulerStats.runningJobs}}},
         {"queued-tile-work-items", schedulerStats.queuedTileWorkItems},
         {"queued-discovery-jobs", schedulerStats.queuedDiscoveryJobs},
+        {"queued-service-tasks", schedulerStats.queuedTasks},
         {"in-flight-tile-jobs", schedulerStats.inFlightTileJobs},
         {"datasource-config",
          nlohmann::json{
@@ -293,6 +295,7 @@ nlohmann::json Service::Impl::memoryStatistics()
     };
     std::vector<DataSourceMemoryCandidate> dataSourceCandidates;
     auto const registeredSources = dataSources_.snapshot();
+    metadata.merge("schemas", dataSources_.schemaMemoryUsage());
     for (auto const& source : registeredSources) {
         metadata.add("canonical-snapshots", source->metadataMemory);
         metadata.add(
@@ -351,6 +354,15 @@ nlohmann::json Service::Impl::memoryStatistics()
         catalog.add("config-status-message", stringMemoryUsage(sourceConfigStatusMessage_));
         catalog.add("construction-threads", vectorMemoryUsage(dataSourceConstructionThreads_));
         catalog.add("config-datasource-handles", vectorMemoryUsage(dataSourcesFromConfig_));
+        catalog.add("config-fingerprints", vectorMemoryUsage(dataSourceConfigFingerprints_));
+        catalog.add("construction-identities", vectorMemoryUsage(dataSourceConstructionIds_));
+        catalog.add("construction-rows", {
+            constructionRows_.size() * sizeof(decltype(constructionRows_)::value_type),
+            constructionRows_.size() * (sizeof(decltype(constructionRows_)::value_type) + sizeof(void*)) +
+                constructionRows_.bucket_count() * sizeof(void*)});
+        for (auto const& fingerprint : dataSourceConfigFingerprints_) {
+            catalog.add("config-fingerprints", stringMemoryUsage(fingerprint));
+        }
         auto const addOnCount = std::ranges::count_if(
             registeredSources,
             [](auto const& source) { return source->info->isAddOn_; });
