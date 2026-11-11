@@ -7,10 +7,13 @@
 #include <drogon/HttpRequest.h>
 #include <drogon/HttpResponse.h>
 
+#include <chrono>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -20,6 +23,18 @@ using namespace nlohmann;
 
 namespace
 {
+
+/** Allow the startup fixture to emit its own fragmented readiness announcement. */
+class TestDataSourceServer final : public DataSourceServer
+{
+public:
+    TestDataSourceServer(DataSourceInfo const& info, bool fragmentedStartup)
+        : DataSourceServer(info)
+    {
+        if (fragmentedStartup)
+            printPortToStdOut(false);
+    }
+};
 
 /** Isolated protocol peer with malformed catalogs and controllable schema-response delivery. */
 class SchemaHttpPeer final : public HttpServer
@@ -200,7 +215,8 @@ int main(int argc, char** argv)
     }
     )"_json);
 
-    DataSourceServer ds(info);
+    auto fragmentedStartup = argc == 2 && std::string_view(argv[1]) == "--fragmented-startup";
+    TestDataSourceServer ds(info, fragmentedStartup);
     ds.onTileFeatureRequest(
         [&](const auto& tile)
         {
@@ -282,6 +298,17 @@ int main(int argc, char** argv)
         });
 
     ds.go("127.0.0.1");
+    if (fragmentedStartup) {
+        // Pipe reads need not preserve the writes forming a readiness announcement.
+        auto banner = "====== Running on port " + std::to_string(ds.port()) + " ======\n";
+        for (char character : banner) {
+            std::cout << character << std::flush;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        // Also bound the lifetime when testing a parent that misses the announcement.
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        return 0;
+    }
     ds.waitForSignal();
     return 0;
 }

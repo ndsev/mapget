@@ -810,6 +810,19 @@ TEST_CASE("Remote datasource initialization resolves schema before exposing meta
     }
 }
 
+TEST_CASE(
+    "Remote datasource startup accepts a fragmented port announcement",
+    "[HttpSchema][HttpDataSource]")
+{
+    test::httpService();
+    RemoteDataSourceProcess
+        remote(std::string("\"") + MAPGET_TEST_DATASOURCE_SERVER_EXE + "\" --fragmented-startup");
+    auto info = remote.info();
+    REQUIRE(info.mapSchema_);
+    REQUIRE_NOTHROW(info.validateSchema());
+    REQUIRE(info.getLayer("WayLayer")->layerSchema());
+}
+
 TEST_CASE("HTTP clients reject ambiguous source metadata unless a source is selected", "[HttpSchema]")
 {
     test::httpService();

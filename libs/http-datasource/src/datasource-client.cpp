@@ -356,24 +356,30 @@ RemoteDataSourceProcess::RemoteDataSourceProcess(std::string const& commandLine)
         std::cerr << output << std::endl;
     };
 
-    auto stdoutCallback = [this](const char* bytes, size_t n)
+    auto stdoutCallback = [this, pendingOutput = std::string{}](const char* bytes, size_t n) mutable
     {
         auto output = std::string(bytes, n);
         // Trim trailing newline/whitespace.
         output.erase(output.find_last_not_of(" \n\r\t")+1);
         if (!remoteSource_) {
-            // Extract port number from the message "Running on port <port>".
-            std::regex port_regex(R"(Running on port (\d+))");
+            // Pipe reads may split both the announcement and its port number. Require
+            // the trailing whitespace before connecting, not just the first port digit.
+            pendingOutput.append(bytes, n);
+            static const std::regex port_regex(R"(Running on port (\d+)\s)");
             std::smatch matches;
-            if (std::regex_search(output, matches, port_regex)) {
+            if (std::regex_search(pendingOutput, matches, port_regex)) {
                 if (matches.size() > 1) {
                     std::lock_guard<std::mutex> lock(mutex_);
                     uint16_t port = std::stoi(matches.str(1));
                     remoteSource_ = std::make_unique<RemoteDataSource>("127.0.0.1", port);
                     cv_.notify_all();
                 }
+                pendingOutput.clear();
                 return;
             }
+            // Only a possible announcement suffix is needed, not the child's entire log.
+            if (pendingOutput.size() > 128)
+                pendingOutput.erase(0, pendingOutput.size() - 128);
         }
 
         log().debug("datasource stdout: {}", output);
