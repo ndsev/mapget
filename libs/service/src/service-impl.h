@@ -27,7 +27,10 @@ struct Service::Impl
     std::vector<std::string> dataSourceConfigFingerprints_;
     size_t dataSourceConstructionFailed_ = 0;
     std::vector<DataSourceCatalogEntry> sourceCatalog_;
-    uint64_t sourceCatalogGeneration_ = 0;
+    /** Stable task identities survive unrelated watched edits and row reordering. */
+    std::vector<uint64_t> dataSourceConstructionIds_;
+    std::unordered_map<uint64_t, uint32_t> constructionRows_;
+    uint64_t nextConstructionId_ = 0;
     uint64_t sourceCatalogRevision_ = 0;
     std::string sourceConfigStatus_ = "ok";
     std::string sourceConfigStatusMessage_;
@@ -36,6 +39,7 @@ struct Service::Impl
     /** Joinable config-construction task with explicit portable cancellation. */
     struct ConstructionThread
     {
+        uint64_t generation;
         /** Joinable constructor task retained until completion or shutdown. */
         std::thread thread;
 
@@ -152,23 +156,25 @@ struct Service::Impl
     void releaseConstructionSlot();
 
     /** Reject late constructor results after reload or shutdown. */
-    [[nodiscard]] bool isCurrentCatalogGeneration(uint64_t generation) const;
+    [[nodiscard]] bool isCurrentConstruction(uint64_t generation) const;
+
+    /** Resolve a retained task to its current YAML row; caller holds catalogMutex_. */
+    DataSourceCatalogEntry* constructionEntryLocked(uint64_t generation);
 
     /** Publish a constructor status-message delta for the current generation. */
-    void updateCatalogStatusMessage(uint64_t generation, uint32_t configIndex, std::string message);
+    void updateCatalogStatusMessage(uint64_t generation, std::string message);
 
     /** Publish normalized optional constructor progress for the current generation. */
     void
-    updateCatalogProgress(uint64_t generation, uint32_t configIndex, std::optional<float> progress);
+    updateCatalogProgress(uint64_t generation, std::optional<float> progress);
 
     /** Mark one current-generation catalog row failed and preserve diagnostics. */
     void
-    markCatalogConstructionFailed(uint64_t generation, uint32_t configIndex, std::string message, bool retrying = false);
+    markCatalogConstructionFailed(uint64_t generation, std::string message, bool retrying = false);
 
     /** Atomically register a constructed source and attach it to its current catalog row. */
     bool markCatalogConstructionReady(
         uint64_t generation,
-        uint32_t configIndex,
         DataSource::Ptr const& dataSource,
         std::optional<std::string> sourceId);
 
@@ -178,8 +184,8 @@ struct Service::Impl
         YAML::Node configNode,
         DataSourceDescriptor descriptor);
 
-    /** Retain unchanged ready sources and replace other config-backed rows in YAML order. */
-    void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes);
+    /** Reconcile unchanged source lifetimes; explicit loads may retry failed entries. */
+    void applyDataSourceConfig(std::vector<YAML::Node> const& dataSourceConfigNodes, bool retryFailedSources);
 
     /** Return detached authorized metadata for the legacy Service::info API. */
     [[nodiscard]] std::vector<DataSourceInfo>

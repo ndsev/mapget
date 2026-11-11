@@ -355,6 +355,11 @@ nlohmann::json Service::Impl::memoryStatistics()
         catalog.add("construction-threads", vectorMemoryUsage(dataSourceConstructionThreads_));
         catalog.add("config-datasource-handles", vectorMemoryUsage(dataSourcesFromConfig_));
         catalog.add("config-fingerprints", vectorMemoryUsage(dataSourceConfigFingerprints_));
+        catalog.add("construction-identities", vectorMemoryUsage(dataSourceConstructionIds_));
+        catalog.add("construction-rows", {
+            constructionRows_.size() * sizeof(decltype(constructionRows_)::value_type),
+            constructionRows_.size() * (sizeof(decltype(constructionRows_)::value_type) + sizeof(void*)) +
+                constructionRows_.bucket_count() * sizeof(void*)});
         for (auto const& fingerprint : dataSourceConfigFingerprints_) {
             catalog.add("config-fingerprints", stringMemoryUsage(fingerprint));
         }

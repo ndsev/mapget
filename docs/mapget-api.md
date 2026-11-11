@@ -211,7 +211,7 @@ reset dictionary-dependent data when a source's actual `stringPoolId` changes.
 Catalog entries include:
 
 - `status`: `initializing`, `ready`, or `failed`;
-- `statusMessage` and optional `progress`;
+- `statusMessage`, optional `progress`, and `retrying` (initialization recovery);
 - `configIndex` and configured datasource `type`.
 
 Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
@@ -219,6 +219,14 @@ Responses carry `X-Mapget-Sources-Revision` and an `ETag` of
 source IDs, so a changed identity cannot reuse a broader catalog at the same
 revision. Responses are `Cache-Control: private, no-cache`; `If-None-Match` may
 produce `304 Not Modified` only for the same visible catalog.
+
+Both 200 and 304 responses include `X-Mapget-Sources-Config-Status` (`ok` or
+`error`). A rejected configuration leaves the last accepted catalog available;
+`X-Mapget-Sources-Config-Message` carries an ASCII, single-line explanation capped
+at 1024 bytes. The detailed server log retains the original message. Unchanged
+invalid input does not keep advancing the catalog revision. Restoring valid
+input clears this status. An unavailable datasource type is instead a terminal
+failed row in an otherwise accepted configuration, with `retrying: false`.
 
 ## `GET /schema`
 

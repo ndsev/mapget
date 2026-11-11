@@ -278,13 +278,14 @@ Service::Impl::Impl(
     if (!useDataSourceConfig) {
         return;
     }
-    configSubscription_ = DataSourceConfigService::get().subscribe(
-        [this](auto&& configNodes) { applyDataSourceConfig(configNodes); },
+    configSubscription_ = DataSourceConfigService::get().subscribeWithReload(
+        [this](auto&& configNodes, bool retryFailed) { applyDataSourceConfig(configNodes, retryFailed); },
         [this](std::string const& error)
         {
             DataSourceCatalogChange change;
             {
                 std::unique_lock lock(catalogMutex_);
+                if (sourceConfigStatus_ == "error" && sourceConfigStatusMessage_ == error) return;
                 sourceConfigStatus_ = "error";
                 sourceConfigStatusMessage_ = error;
                 change = markSourceCatalogChangedLocked("config-error");
@@ -422,27 +423,31 @@ void Service::Impl::releaseConstructionSlot()
     constructionSlotCv_.notify_all();
 }
 
-bool Service::Impl::isCurrentCatalogGeneration(uint64_t generation) const
+bool Service::Impl::isCurrentConstruction(uint64_t generation) const
 {
     std::shared_lock lock(catalogMutex_);
-    return generation == sourceCatalogGeneration_ && !shuttingDown_.load(std::memory_order_relaxed);
+    return constructionRows_.contains(generation) && !shuttingDown_.load(std::memory_order_relaxed);
+}
+
+DataSourceCatalogEntry* Service::Impl::constructionEntryLocked(uint64_t generation)
+{
+    auto row = constructionRows_.find(generation);
+    if (row == constructionRows_.end() || shuttingDown_) return nullptr;
+    auto entry = std::ranges::find_if(sourceCatalog_, [&](auto const& candidate) {
+        return candidate.descriptor.configIndex == row->second;
+    });
+    return entry == sourceCatalog_.end() ? nullptr : &*entry;
 }
 
 void Service::Impl::updateCatalogStatusMessage(
     uint64_t generation,
-    uint32_t configIndex,
     std::string message)
 {
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end() || entry->statusMessage == message) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry || entry->statusMessage == message) {
             return;
         }
         entry->statusMessage = std::move(message);
@@ -453,20 +458,14 @@ void Service::Impl::updateCatalogStatusMessage(
 
 void Service::Impl::updateCatalogProgress(
     uint64_t generation,
-    uint32_t configIndex,
     std::optional<float> progress)
 {
     progress = normalizeProgressPercentage(progress);
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end() || entry->progress == progress) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry || entry->progress == progress) {
             return;
         }
         entry->progress = progress;
@@ -477,20 +476,14 @@ void Service::Impl::updateCatalogProgress(
 
 void Service::Impl::markCatalogConstructionFailed(
     uint64_t generation,
-    uint32_t configIndex,
     std::string message,
     bool retrying)
 {
     std::optional<DataSourceCatalogChange> change;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end()) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry) {
             return;
         }
         if (entry->status != DataSourceCatalogStatus::Failed)
@@ -506,7 +499,6 @@ void Service::Impl::markCatalogConstructionFailed(
 
 bool Service::Impl::markCatalogConstructionReady(
     uint64_t generation,
-    uint32_t configIndex,
     DataSource::Ptr const& dataSource,
     std::optional<std::string> sourceId)
 {
@@ -514,13 +506,8 @@ bool Service::Impl::markCatalogConstructionReady(
     std::function<void()> complete;
     {
         std::unique_lock lock(catalogMutex_);
-        if (generation != sourceCatalogGeneration_) {
-            return false;
-        }
-        auto entry = std::ranges::find_if(
-            sourceCatalog_,
-            [&](auto const& candidate) { return candidate.descriptor.configIndex == configIndex; });
-        if (entry == sourceCatalog_.end()) {
+        auto entry = constructionEntryLocked(generation);
+        if (!entry) {
             return false;
         }
         // Retain every registration in the current catalog generation so a
@@ -557,6 +544,7 @@ void Service::Impl::launchDataSourceConstruction(
     auto const configIndex = descriptor.configIndex;
     auto sourceId = descriptor.sourceId;
     dataSourceConstructionThreads_.push_back(ConstructionThread{
+        .generation = generation,
         .thread = std::thread(
             [this,
              generation,
@@ -578,7 +566,7 @@ void Service::Impl::launchDataSourceConstruction(
                     size_t retryAttempt = 0;
                     while (!stopRequested->load(std::memory_order_acquire)) {
                         slotAcquired = acquireConstructionSlot(stopRequested);
-                        if (!slotAcquired || !isCurrentCatalogGeneration(generation)) {
+                        if (!slotAcquired || !isCurrentConstruction(generation)) {
                             finish();
                             return;
                         }
@@ -586,26 +574,26 @@ void Service::Impl::launchDataSourceConstruction(
                         std::string lastStatusMessage;
                         DataSourceInitContext context{
                             .setStatusMessage =
-                                [this, generation, configIndex, &lastStatusMessage](std::string message)
+                                [this, generation, &lastStatusMessage](std::string message)
                             {
                                 lastStatusMessage = message;
-                                updateCatalogStatusMessage(generation, configIndex, std::move(message));
+                                updateCatalogStatusMessage(generation, std::move(message));
                             },
                             .setProgress =
-                                [this, generation, configIndex](std::optional<float> progress)
-                            { updateCatalogProgress(generation, configIndex, progress); },
+                                [this, generation](std::optional<float> progress)
+                            { updateCatalogProgress(generation, progress); },
                             .isCancelled =
                                 [this, generation, stopRequested]
                             {
                                 return stopRequested->load(std::memory_order_acquire) ||
-                                    !isCurrentCatalogGeneration(generation);
+                                    !isCurrentConstruction(generation);
                             },
                         };
                         context.retryAttempt = retryAttempt;
                         auto dataSource =
                             DataSourceConfigService::get().makeDataSource(configNode, context);
                         if (!dataSource) {
-                            if (isCurrentCatalogGeneration(generation)) {
+                            if (isCurrentConstruction(generation)) {
                                 if (lastStatusMessage.empty()) {
                                     lastStatusMessage = fmt::format(
                                         "Failed to make datasource at index {}.",
@@ -613,7 +601,6 @@ void Service::Impl::launchDataSourceConstruction(
                                 }
                                 markCatalogConstructionFailed(
                                     generation,
-                                    configIndex,
                                     context.retryAfter && context.retryAfter->count() > 0 ?
                                     fmt::format("{} Retrying in {} ms.", lastStatusMessage, context.retryAfter->count()) :
                                     lastStatusMessage,
@@ -631,24 +618,22 @@ void Service::Impl::launchDataSourceConstruction(
                             if (retryAttempt != std::numeric_limits<size_t>::max()) ++retryAttempt;
                             continue;
                         }
-                        if (!isCurrentCatalogGeneration(generation)) {
+                        if (!isCurrentConstruction(generation)) {
                             finish();
                             return;
                         }
 
                         markCatalogConstructionReady(
                             generation,
-                            configIndex,
                             dataSource,
                             std::move(sourceId));
                         break;
                     }
                 }
                 catch (std::exception const& error) {
-                    if (isCurrentCatalogGeneration(generation)) {
+                    if (isCurrentConstruction(generation)) {
                         markCatalogConstructionFailed(
                             generation,
-                            configIndex,
                             fmt::format(
                                 "Exception while making datasource at index {}: {}",
                                 configIndex,
@@ -656,10 +641,9 @@ void Service::Impl::launchDataSourceConstruction(
                     }
                 }
                 catch (...) {
-                    if (isCurrentCatalogGeneration(generation)) {
+                    if (isCurrentConstruction(generation)) {
                         markCatalogConstructionFailed(
                             generation,
-                            configIndex,
                             fmt::format(
                                 "Unknown exception while making datasource at index {}.",
                                 configIndex));
@@ -672,7 +656,7 @@ void Service::Impl::launchDataSourceConstruction(
     });
 }
 
-void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configNodes)
+void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configNodes, bool retryFailedSources)
 {
     // Compute config-owned hashes before taking the catalog lock, preserving
     // the config -> catalog lock order used by subscription callbacks.
@@ -683,12 +667,10 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
     }
     std::vector<DataSource::Ptr> previousDataSources;
     std::vector<std::pair<YAML::Node, DataSourceDescriptor>> constructionInputs;
-    uint64_t generation = 0;
     DataSourceCatalogChange change;
     {
         std::unique_lock lock(catalogMutex_);
         pruneCompletedConstructionThreadsLocked();
-        requestStopForConstructionThreadsLocked();
         previousDataSources.swap(dataSourcesFromConfig_);
         dataSourceConstructionFailed_ = 0;
         auto previousCatalog = std::move(sourceCatalog_);
@@ -696,7 +678,9 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
         sourceCatalog_.reserve(configNodes.size());
         sourceConfigStatus_ = "ok";
         sourceConfigStatusMessage_.clear();
-        generation = ++sourceCatalogGeneration_;
+        auto previousIds = std::move(dataSourceConstructionIds_);
+        dataSourceConstructionIds_.assign(configNodes.size(), 0);
+        constructionRows_.clear();
 
         auto index = uint32_t{0};
         for (auto const& configNode : configNodes) {
@@ -710,7 +694,8 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
                 [&](auto const& entry)
                 {
                     auto const oldIndex = entry.descriptor.configIndex;
-                    return entry.status == DataSourceCatalogStatus::Ready && entry.dataSource &&
+                    return (entry.status == DataSourceCatalogStatus::Ready || !retryFailedSources) &&
+                        oldIndex < previousIds.size() && previousIds[oldIndex] != 0 &&
                         entry.descriptor.sourceId == descriptor.sourceId &&
                         oldIndex < dataSourceConfigFingerprints_.size() &&
                         dataSourceConfigFingerprints_[oldIndex] == fingerprints[index];
@@ -718,13 +703,24 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
             if (previous != previousCatalog.end()) {
                 // Retain the actual registration, not just its namespace ID:
                 // cached tiles, dictionary contents and in-flight work belong to it.
-                std::erase(previousDataSources, previous->dataSource);
-                dataSourcesFromConfig_.push_back(previous->dataSource);
+                auto id = previousIds[previous->descriptor.configIndex];
+                previousIds[previous->descriptor.configIndex] = 0;
+                dataSourceConstructionIds_[index] = id;
+                constructionRows_[id] = index;
+                if (previous->dataSource) {
+                    std::erase(previousDataSources, previous->dataSource);
+                    dataSourcesFromConfig_.push_back(previous->dataSource);
+                }
+                if (previous->status == DataSourceCatalogStatus::Failed)
+                    ++dataSourceConstructionFailed_;
                 previous->descriptor = std::move(descriptor);
                 sourceCatalog_.push_back(std::move(*previous));
                 ++index;
                 continue;
             }
+            auto id = ++nextConstructionId_;
+            dataSourceConstructionIds_[index] = id;
+            constructionRows_[id] = index;
             sourceCatalog_.push_back(DataSourceCatalogEntry{
                 .descriptor = descriptor,
                 .status = DataSourceCatalogStatus::Initializing,
@@ -733,6 +729,11 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
             constructionInputs.emplace_back(configNode, std::move(descriptor));
             ++index;
         }
+        for (auto& construction : dataSourceConstructionThreads_) {
+            if (!constructionRows_.contains(construction.generation))
+                construction.stopRequested->store(true, std::memory_order_release);
+        }
+        constructionSlotCv_.notify_all();
         dataSourceConfigFingerprints_ = std::move(fingerprints);
         change = markSourceCatalogChangedLocked("reload");
     }
@@ -751,7 +752,8 @@ void Service::Impl::applyDataSourceConfig(std::vector<YAML::Node> const& configN
 
     std::unique_lock lock(catalogMutex_);
     for (auto& [configNode, descriptor] : constructionInputs) {
-        launchDataSourceConstruction(generation, std::move(configNode), std::move(descriptor));
+        auto id = dataSourceConstructionIds_[descriptor.configIndex];
+        launchDataSourceConstruction(id, std::move(configNode), std::move(descriptor));
     }
 }
 

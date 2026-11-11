@@ -137,17 +137,22 @@ public:
 
     /**
      * Subscribes to configuration changes.
-     * If the current descriptor list is nonempty, invoke the callback synchronously
-     * before returning. Later callbacks run on the loading/watcher thread and
+     * Replay accepted descriptors (including an empty list) and any active error
+     * synchronously before returning. Later callbacks run on the loading/watcher thread and
      * must stay short; enqueue datasource construction elsewhere. Success callbacks
-     * hold the recursive member lock; error callbacks run after that lock is released.
-     * Unchanged file contents do not trigger notification.
+     * hold the recursive member lock, as do error callbacks.
+     * Unchanged watched content does not trigger notification; explicit loads may.
      * @param successCallback Function to call with the current (new) set of service config nodes.
      * @param errorCallback Function to call when applying the config failed.
      * @return Unique pointer to a Subscription object.
      */
     std::unique_ptr<Subscription> subscribe(
         std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> const& successCallback,
+        std::function<void(std::string const& error)> const& errorCallback={});
+
+    /** Subscribe with reload intent: explicit loads retry failed sources; watched edits reconcile them. */
+    std::unique_ptr<Subscription> subscribeWithReload(
+        std::function<void(std::vector<YAML::Node> const&, bool retryFailedSources)> const& successCallback,
         std::function<void(std::string const& error)> const& errorCallback={});
 
     /**
@@ -182,8 +187,8 @@ public:
     [[nodiscard]] DataSourceDescriptor describeDataSource(YAML::Node const& descriptor, uint32_t configIndex) const;
 
     /**
-     * Identify constructor inputs for ready-instance reuse, including the config
-     * path and all shared settings outside `sources`. Ignores YAML map order and
+     * Identify constructor inputs for lifecycle reuse, including type registration,
+     * config path and shared settings outside `sources`. Ignores YAML map order and
      * presentation, but preserves scalar spelling, sequence order and explicit tags.
      * The opaque hash must not be used as a public datasource or string-pool ID.
      */
@@ -291,13 +296,19 @@ private:
     /**
      * Uses @see configFilePath_ to load the configuration.
      */
-    void loadConfig();
+    void reloadConfig(bool retryFailedSources = false);
 
     // Path to the configuration file.
     std::string configFilePath_;
 
-    // Last config loaded.
+    // Last observed content/path/schema hash, including rejected configurations.
     std::string lastConfigSHA256_;
+    std::optional<std::string> lastConfigError_;
+    bool hasAcceptedConfig_ = false;
+    uint64_t schemaRevision_ = 0;
+
+    /** Caller holds memberAccessMutex_; hash exactly the bytes that will be parsed. */
+    [[nodiscard]] std::string configContentFingerprint(std::string const& content) const;
 
     /** Hash of the last accepted config path and non-source settings. */
     std::string dataSourceContextFingerprint_;
@@ -305,7 +316,7 @@ private:
     // Map of subscription IDs to their respective callback functions.
     // Note: This MUST be an ORDERED map, because the subscription call order is important.
     struct SubscriptionCallbacks {
-        std::function<void(std::vector<YAML::Node> const& serviceConfigNodes)> success_;
+        std::function<void(std::vector<YAML::Node> const&, bool retryFailedSources)> success_;
         std::function<void(std::string const& error)> error_;
     };
     std::map<uint32_t, SubscriptionCallbacks> subscriptions_;
@@ -313,6 +324,7 @@ private:
     struct DataSourceRegistration {
         DataSourceConstructor constructor_;
         nlohmann::json schema_;
+        uint64_t revision_;
     };
 
     // Map of data source type names to their respective constructor functions.

@@ -877,7 +877,25 @@ upload another snapshot.
 
 ## Datasource initialization recovery
 
-Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Config replacement and shutdown cancel pending waits and reject obsolete construction results. Failed-source statistics count current rows, not attempts.
+`DataSourceConfigService::subscribeWithReload` distinguishes explicit reloads
+(`retryFailedSources=true`) from watched reconciliation. The latter retains
+matching source identities and effective fingerprints in every lifecycle state,
+including a failed constructor's retry attempt and deadline. Explicit reloads
+retain only matching ready instances and retry failed ones. Constructor IDs are
+independent of catalog indexes; a retained worker resolves its current row before
+publishing progress or completion. Removal, changed inputs and shutdown cancel
+obsolete workers. Default source IDs remain index-dependent; top-level shared
+context participates in fingerprints.
+
+Configuration observation caches the attempted path/content/schema fingerprint,
+including invalid input. Accepted state remains separate, so restoring prior
+valid bytes recovers. Schema/type registration invalidates observation; each
+type's registration revision also participates in its source fingerprint.
+Unavailable types pass generic validation and fail once in the factory, while
+registered types keep strict schemas. Authorization mappings are validated
+before reconciliation, including duplicate-key and regular-expression checks.
+
+Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Removal, changed effective inputs, explicit forced reload and shutdown cancel affected pending waits and reject obsolete construction results; unrelated watched changes preserve them. Failed-source statistics count current rows, not attempts.
 
 The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime error tiles instead use ordinary TTL metadata, capped by `mapget.serve.error-tile-ttl` (default five seconds). The cache and filtered subsets preserve that lifetime; a failed source or dependency is represented in its dependent outputs rather than aborting a whole viewport. Query-definition errors remain request failures. Successful empty source layers use `mapget.serve.empty-tile-ttl` (default one hour); this is applied before add-on composition and filtering so empty dependencies retain their configured lifetime even when the final result is nonempty. Both runtime policies allow per-source overrides and explicit zero to disable expiry-based retries, overriding a positive producer TTL. Omission inherits the global setting; positive values cap producer lifetimes. Zero does not pin entries against eviction, reset or source replacement. Browser reconnection and datasource constructor backoff do not govern tile freshness.
 

@@ -82,6 +82,27 @@ Every datasource entry accepts these generic fields in addition to type-specific
 
 Disabled entries are counted separately in service diagnostics and are not treated as construction failures.
 
+### Unavailable datasource types and reloads
+
+A nonempty `type` that this build has not registered is allowed in the file.
+An enabled entry becomes one terminal failed catalog row; it does not prevent
+supported sources from starting and receives no automatic retry. A disabled
+unavailable entry is skipped. Registered types still undergo their full schema
+validation, and generic fields and authorization rules remain validated even
+for unavailable types. Check spelling or install a build providing the type;
+disable or remove entries that this deployment should not use.
+
+The file watcher reports unchanged invalid content once, keeps the last accepted
+catalog, and clears the error when valid content is restored, including the exact
+previous file. Changing the file path or available schema triggers revalidation.
+Automatic reloads retain a source's instance or pending initialization/retry
+when both its `sourceId` and effective configuration fingerprint match. Default identities depend on their index, so reordering can restart a source.
+For types whose registered schema admits `sourceId`, an explicit identity also
+allows reuse across reordering. Shared top-level context changes can also invalidate fingerprints.
+An explicit forced reload retries failed entries, while retaining unchanged ready
+instances. Changing an affected source or restarting the service starts a new
+initialization lifetime.
+
 <!-- mcp:
 title: "Datasource header access restrictions"
 keywords: ["datasource permissions", "auth-header", "access denied", "source visibility", "proxy"]

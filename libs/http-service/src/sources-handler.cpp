@@ -18,6 +18,20 @@ namespace mapget
 namespace
 {
 
+/** Diagnostic headers must remain bounded single-line values, including validator errors. */
+std::string configMessageHeader(std::string_view message)
+{
+    constexpr size_t maxBytes = 1024;
+    std::string result;
+    result.reserve(std::min(message.size(), maxBytes));
+    for (unsigned char c : message) {
+        if (result.size() == maxBytes) break;
+        // ASCII is safe across HTTP implementations; detailed diagnostics stay server-side.
+        result.push_back(c < 0x20 || c == 0x7f ? ' ' : c < 0x80 ? static_cast<char>(c) : '?');
+    }
+    return result;
+}
+
 std::string_view catalogStatusToString(DataSourceCatalogStatus status)
 {
     switch (status) {
@@ -97,7 +111,7 @@ void HttpService::Impl::handleSourcesRequest(
         resp->addHeader("X-Mapget-Sources-Revision", std::to_string(catalog.revision));
         resp->addHeader("X-Mapget-Sources-Config-Status", catalog.configStatus);
         if (!catalog.configStatusMessage.empty()) {
-            resp->addHeader("X-Mapget-Sources-Config-Message", catalog.configStatusMessage);
+            resp->addHeader("X-Mapget-Sources-Config-Message", configMessageHeader(catalog.configStatusMessage));
         }
         callback(resp);
         return;
@@ -148,7 +162,7 @@ void HttpService::Impl::handleSourcesRequest(
     resp->addHeader("X-Mapget-Sources-Revision", std::to_string(catalog.revision));
     resp->addHeader("X-Mapget-Sources-Config-Status", catalog.configStatus);
     if (!catalog.configStatusMessage.empty()) {
-        resp->addHeader("X-Mapget-Sources-Config-Message", catalog.configStatusMessage);
+        resp->addHeader("X-Mapget-Sources-Config-Message", configMessageHeader(catalog.configStatusMessage));
     }
     resp->setBody(sourcesInfo.dump());
     callback(resp);

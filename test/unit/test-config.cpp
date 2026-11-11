@@ -297,6 +297,7 @@ public:
     /** Join all callbacks before destroying their captured state or temporary inputs. */
     ~ConfigReloadTest()
     {
+        DataSourceConfigService::get().end();
         service.reset();
         DataSourceConfigService::get().reset();
     }
@@ -304,12 +305,18 @@ public:
     /** Publish exactly these bytes, optionally changing the config file path. */
     void load(std::string_view yaml, std::string const& filename = "config.yaml")
     {
+        DataSourceConfigService::get().loadConfig(write(yaml, filename), false);
+    }
+
+    /** Edit without forcing a reload, exercising the real content watcher. */
+    std::string write(std::string_view yaml, std::string const& filename = "config.yaml")
+    {
         auto path = directory_.path() / filename;
         {
             std::ofstream file(path);
             file << yaml;
         }
-        DataSourceConfigService::get().loadConfig(path.string(), false);
+        return path.string();
     }
 
     /** Wait with a bounded test timeout for ready or failed rows. */
@@ -354,6 +361,126 @@ public:
 private:
     test::TemporaryDirectory directory_;
 };
+
+TEST_CASE("Unavailable types remain terminal while supported sources initialize", "[DataSourceConfig][retry]")
+{
+    ConfigReloadTest test;
+    auto& configs = DataSourceConfigService::get();
+    auto path = test.write(R"(sources:
+  - {type: Reload, sourceId: healthy, mapId: Healthy}
+  - {type: ClassicFolder, sourceId: unavailable, folder: /missing/classic}
+  - {type: OtherUnavailableType, enabled: false}
+)");
+    configs.loadConfig(path);
+    auto first = test.settled();
+    REQUIRE(first.configStatus == "ok");
+    REQUIRE(first.sources.size() == 2);
+    CHECK(first.sources[0].status == DataSourceCatalogStatus::Ready);
+    CHECK(first.sources[1].status == DataSourceCatalogStatus::Failed);
+    CHECK_FALSE(first.sources[1].retrying);
+    CHECK(first.sources[1].statusMessage.find("not supported by this build") != std::string::npos);
+    std::this_thread::sleep_for(std::chrono::milliseconds(650));
+    CHECK(test.service->sourceCatalogRevision() == first.revision);
+
+    std::atomic_int unavailableTransitions{0};
+    auto changes = test.service->subscribeToSourceCatalogChanges([&](auto const& change) {
+        if (change.sourceUpdate && change.sourceUpdate->descriptor.sourceId == "unavailable")
+            ++unavailableTransitions;
+    });
+    test.write(R"(sources:
+  - {type: ClassicFolder, sourceId: unavailable, folder: /missing/classic}
+  - {type: Reload, sourceId: healthy, mapId: Healthy}
+  - {type: Reload, sourceId: added, mapId: Added}
+)");
+    waitForCondition([&] { return test.service->sourceCatalog().sources.size() == 3; });
+    auto after = test.settled();
+    CHECK(after.sources[0].status == DataSourceCatalogStatus::Failed);
+    CHECK(after.sources[1].dataSource == first.sources[0].dataSource);
+    CHECK(unavailableTransitions == 0);
+    test.requireSuccess(test.request("Healthy"));
+
+    // A capability registration changes the source fingerprint and revives the row.
+    configs.registerDataSourceType("ClassicFolder", [](YAML::Node const&) -> DataSource::Ptr {
+        return std::make_shared<NamedTestDataSource>("NowSupported");
+    });
+    waitForCondition([&] { return test.service->sourceCatalog().sources[0].status == DataSourceCatalogStatus::Ready; });
+    CHECK(test.service->sourceCatalog().sources[1].dataSource == first.sources[0].dataSource);
+}
+
+TEST_CASE("Rejected config is reported once and restoring accepted bytes clears rejection", "[DataSourceConfig][retry]")
+{
+    ConfigReloadTest test;
+    auto& configs = DataSourceConfigService::get();
+    std::string const good = "sources: [{type: Reload, mapId: Healthy}]\n";
+    configs.loadConfig(test.write(good));
+    auto first = test.settled();
+    std::atomic_int errors{0};
+    auto subscription = configs.subscribe([](auto const&) {}, [&](auto const&) { ++errors; });
+    test.write("sources: [{type: Reload, mapId: Healthy, enabled: invalid}]\n");
+    waitForCondition([&] { return test.service->sourceCatalog().configStatus == "error"; });
+    auto rejected = test.service->sourceCatalog();
+    CHECK(rejected.sources[0].dataSource == first.sources[0].dataSource);
+    std::this_thread::sleep_for(std::chrono::milliseconds(650));
+    CHECK(errors == 1);
+    CHECK(test.service->sourceCatalogRevision() == rejected.revision);
+    test.write(good);
+    waitForCondition([&] { return test.service->sourceCatalog().configStatus == "ok"; });
+    CHECK(test.service->sourceCatalog().configStatusMessage.empty());
+    CHECK(test.service->sourceCatalog().sources[0].dataSource == first.sources[0].dataSource);
+}
+
+TEST_CASE("Watched edits preserve pending retry deadlines and constructor identity", "[DataSourceConfig][retry]")
+{
+    // Captured state must outlive the fixture's constructor threads, including on assertion failure.
+    std::atomic_int attempts{0};
+    std::atomic_size_t retryIndex{0};
+    ConfigReloadTest test;
+    auto& configs = DataSourceConfigService::get();
+    configs.registerDataSourceType("Waiting", [&](YAML::Node const&, DataSourceInitContext& context) -> DataSource::Ptr {
+        retryIndex = context.retryAttempt;
+        ++attempts;
+        if (context.retryAttempt) return std::make_shared<NamedTestDataSource>("Recovered");
+        context.retryAfter = std::chrono::milliseconds(1600);
+        context.setStatusMessage("Temporary outage");
+        return {};
+    });
+    configs.loadConfig(test.write("sources: [{type: Waiting, sourceId: waiting}]\n"));
+    auto failed = test.settled();
+    REQUIRE(failed.sources[0].retrying);
+    test.write("sources: [{type: Reload, mapId: Added}, {type: Waiting, sourceId: waiting}]\n");
+    waitForCondition([&] { return test.service->sourceCatalog().sources.size() == 2; });
+    CHECK(attempts == 1);
+    auto during = test.service->sourceCatalog();
+    CHECK(during.sources[1].retrying);
+    CHECK(during.sources[1].descriptor.sourceId == failed.sources[0].descriptor.sourceId);
+    waitForCondition([&] { return test.service->sourceCatalog().sources[1].status == DataSourceCatalogStatus::Ready; });
+    CHECK(attempts == 2);
+    CHECK(retryIndex == 1);
+    CHECK_FALSE(test.service->sourceCatalog().sources[1].retrying);
+}
+
+TEST_CASE("Unavailable type compatibility does not weaken registered schemas or authorization", "[DataSourceConfig][retry]")
+{
+    ConfigReloadTest test;
+    auto& configs = DataSourceConfigService::get();
+    configs.registerDataSourceType("Closed", [](YAML::Node const&) -> DataSource::Ptr { return {}; },
+        {{"properties", {{"uri", {{"type", "string"}}}}}, {"required", {"uri"}}, {"additionalProperties", false}});
+    CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Closed, typo: true}]")));
+    CHECK_NOTHROW(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Unavailable, opaque: {x: 1}}]")));
+    CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Unavailable, enabled: invalid}]")));
+    CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Unavailable, auth-claims: []}]")));
+    CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Unavailable, auth-header: {Authorization: '['}}]")));
+    CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load("sources: [{type: Unavailable, auth-header: {}, auth-header: {}}]")));
+    // Unavailable providers still validate the common TTL overrides, including
+    // explicit zero, without falling through to a registered provider's schema.
+    for (auto const* key : {"error-tile-ttl", "empty-tile-ttl"}) {
+        CAPTURE(key);
+        CHECK_NOTHROW(configs.validateDataSourceConfig(YAML::Load(
+            std::string("sources: [{type: Unavailable, ") + key + ": 0}]")));
+        CHECK_THROWS(configs.validateDataSourceConfig(YAML::Load(
+            std::string("sources: [{type: Unavailable, ") + key + ": -1}]")));
+    }
+}
 
 TEST_CASE(
     "Datasource reuse fingerprints preserve YAML structure",
