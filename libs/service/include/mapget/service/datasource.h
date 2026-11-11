@@ -170,12 +170,29 @@ public:
     /**
      * Set a TTL fallback for successful nonempty tile/object payloads.
      * A value of 0ms means infinite TTL; nullopt inherits the service default.
-     * Explicit payload TTLs win. Error and empty lifetimes use service limits instead.
+     * Explicit payload TTLs win. Errors and empty payloads use their separate retry policy.
      */
     void setTtl(std::optional<std::chrono::milliseconds> ttl);
 
     /** Get the currently configured TTL fallback (if any). */
     [[nodiscard]] std::optional<std::chrono::milliseconds> ttl() const;
+
+    /** Configure before service registration. Omission inherits the service error policy;
+     * zero disables expiry even if the failed payload supplies a positive TTL. Positive
+     * values cap its lifetime without extending a shorter producer TTL. Negatives throw.
+     */
+    void setErrorTileTtl(std::optional<std::chrono::milliseconds> ttl);
+
+    /** Return the source override, distinguishing inherited policy from explicit zero. */
+    [[nodiscard]] std::optional<std::chrono::milliseconds> errorTileTtl() const;
+
+    /** Configure the same policy for successful source payloads without roots.
+     * This does not apply to empty filter results. Set before service registration.
+     */
+    void setEmptyTileTtl(std::optional<std::chrono::milliseconds> ttl);
+
+    /** Return the successful-empty source override, or nullopt to inherit. */
+    [[nodiscard]] std::optional<std::chrono::milliseconds> emptyTileTtl() const;
 
     /** Called when a cached tile was present but expired. Default no-op. */
     virtual void onCacheExpired(
@@ -198,6 +215,10 @@ protected:
 
     /** TTL fallback applied to generated tiles (0 = infinite, unset = use service default). */
     std::optional<std::chrono::milliseconds> ttl_;
+
+    /** Source retry overrides; nullopt inherits, zero disables expiry. */
+    std::optional<std::chrono::milliseconds> errorTileTtl_;
+    std::optional<std::chrono::milliseconds> emptyTileTtl_;
 };
 
 }  // namespace mapget

@@ -359,10 +359,14 @@ cannot switch to it. Queued/in-flight abort callbacks are isolated individually,
 so a throwing consumer cannot strand other requests or suppress catalog updates.
 
 Failed or missing add-on contributions remain warnings on an otherwise usable
-composite, but cap its lifetime at the error-tile TTL (or a shorter contributor
-lifetime). This includes synthetic roots for add-on-only layers: a temporary
-failure must not become a permanently cached empty result. Successful empty
-contributions retain the normal empty-tile lifetime.
+composite, with the contributor's error-tile policy applied before lifetime
+composition. Positive policies cap the lifetime; zero contributes no retry
+deadline. This includes synthetic roots for add-on-only layers. Successful empty
+contributions use their empty-tile policy. Per-source overrides take precedence
+over global settings, including explicit zero. The composed cache entry retains
+the earliest finite dependency expiry: when it expires, all contributors are
+loaded again, even contributors whose own policy is zero. No separate native
+contribution cache is maintained.
 
 The catalog remains in current YAML order and publishes a new revision.
 Unfinished constructors retain the existing generation-based cancellation and
@@ -871,7 +875,7 @@ upload another snapshot.
 
 Config-created datasource constructors can set `DataSourceInitContext::retryAfter` to positive milliseconds before returning null or throwing. The catalog worker releases its construction permit, waits interruptibly, then creates a fresh context for the next attempt. Without a positive hint, construction failure is terminal. A failed row retains its source identity and remains `failed` during retries, so blocking `/sources` calls finish after the first failed attempt. Recovery publishes the ordinary `ready` transition. Config replacement and shutdown cancel pending waits and reject obsolete construction results. Failed-source statistics count current rows, not attempts.
 
-The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime error tiles instead use ordinary TTL metadata, capped by `mapget.serve.error-tile-ttl` (default five seconds). The cache and filtered subsets preserve that lifetime; a failed source or dependency is represented in its dependent outputs rather than aborting a whole viewport. Query-definition errors remain request failures. Successful empty source layers use `mapget.serve.empty-tile-ttl` (default one hour); this is applied before add-on composition and filtering so empty dependencies retain a finite lifetime even when the final result is nonempty. Browser reconnection and datasource constructor backoff do not govern tile freshness.
+The fresh context includes a saturating `retryAttempt` index (zero for the first attempt), allowing producers to calculate backoff without a second retry loop. Catalog snapshots and interactive deltas publish `retrying` throughout eligible waits and attempts, clearing it on readiness or terminal failure. Runtime error tiles instead use ordinary TTL metadata, capped by `mapget.serve.error-tile-ttl` (default five seconds). The cache and filtered subsets preserve that lifetime; a failed source or dependency is represented in its dependent outputs rather than aborting a whole viewport. Query-definition errors remain request failures. Successful empty source layers use `mapget.serve.empty-tile-ttl` (default one hour); this is applied before add-on composition and filtering so empty dependencies retain their configured lifetime even when the final result is nonempty. Both runtime policies allow per-source overrides and explicit zero to disable expiry-based retries, overriding a positive producer TTL. Omission inherits the global setting; positive values cap producer lifetimes. Zero does not pin entries against eviction, reset or source replacement. Browser reconnection and datasource constructor backoff do not govern tile freshness.
 
 Incoming inspection is implemented by `service-incoming.cpp` beside ordinary filter execution.
 It uses request-local bounded state and the existing tile scheduler/cache. Schema metadata

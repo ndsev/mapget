@@ -12,7 +12,7 @@ namespace mapget::detail
 namespace
 {
 
-/** Require a finite retry lifetime without lengthening a producer's shorter TTL. */
+/** Zero disables expiry, even for a positive producer TTL; positive limits only shorten it. */
 void capTileTtl(PartitionLayer& tile, std::chrono::milliseconds limit)
 {
     if (!tile.ttl() || tile.ttl()->count() <= 0 || *tile.ttl() > limit)
@@ -32,9 +32,9 @@ void applySuccessfulTileTtl(
         (type == LayerType::SourceData &&
          static_cast<PartitionSourceDataLayer&>(tile).numRoots() == 0);
     if (empty) {
-        // Missing data must be rechecked even when ordinary successful tiles live
-        // indefinitely. Empty subsets are not source layers and never enter here.
-        capTileTtl(tile, emptyTileTtl);
+        // Empty subsets are not source layers and never enter here. Source overrides
+        // distinguish explicit zero (no retries) from omission (service policy).
+        capTileTtl(tile, dataSource.emptyTileTtl().value_or(emptyTileTtl));
         return;
     }
     if (tile.ttl()) {
@@ -185,9 +185,9 @@ void TileLoadJob::run() noexcept
         }
 
         if (layer->error()) {
-            // Failures expire independently of the successful-tile policy, which
-            // may be infinite. Preserve a shorter positive producer lifetime.
-            capTileTtl(*layer, scheduler_.errorTileTtl_);
+            capTileTtl(
+                *layer,
+                registration_->dataSource->errorTileTtl().value_or(scheduler_.errorTileTtl_));
         }
         else if (nativeInfo) {
             applySuccessfulTileTtl(
@@ -198,17 +198,14 @@ void TileLoadJob::run() noexcept
         }
 
         if (layer->layerInfo()->type_ == LayerType::Features) {
-            auto const complete = loadAddOnTiles(
+            loadAddOnTiles(
                 std::static_pointer_cast<PartitionFeatureLayer>(layer),
                 *registration_,
                 scheduler_.cache_,
                 scheduler_.defaultTtl_,
                 scheduler_.emptyTileTtl_,
+                scheduler_.errorTileTtl_,
                 isCancelled);
-            // Keep usable base/contributor features, but retry incomplete compositions.
-            // In particular, an empty synthetic root has no primary TTL to bound it.
-            if (!complete)
-                capTileTtl(*layer, scheduler_.errorTileTtl_);
         }
 
         // The worker continues with cache publication and every attached
@@ -233,22 +230,30 @@ void TileLoadJob::run() noexcept
     }
 }
 
-bool loadAddOnTiles(
+void loadAddOnTiles(
     PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     Cache::Ptr& cache,
     std::optional<std::chrono::milliseconds> const& defaultTtl,
     std::chrono::milliseconds emptyTileTtl,
+    std::chrono::milliseconds errorTileTtl,
     TileCancellationCheck const& isCancelled)
 {
-    auto complete = true;
     for (auto const& addOn : baseSource.addOns) {
         auto layer = addOn->nativeInfo->getLayer(baseTile->layerInfo()->layerId_, false);
         if (!layer)
             continue;
+        auto const errorTtl = addOn->dataSource->errorTileTtl().value_or(errorTileTtl);
+        // Missing or incompatible contributions have no payload lifetime to merge.
+        // Zero adds no retry deadline; it must not erase other contributors' expiry.
+        auto boundIncomplete = [&]
+        {
+            if (errorTtl.count() > 0)
+                capTileTtl(*baseTile, errorTtl);
+        };
         if (layer->type_ != LayerType::Features) {
             baseTile->addWarning("An advertised add-on provider has an incompatible layer type.");
-            complete = false;
+            boundIncomplete();
             continue;
         }
         if (isCancelled && isCancelled())
@@ -258,7 +263,7 @@ bool loadAddOnTiles(
         if (!loaded) {
             log().warn("Add-on datasource returned null for {}.", baseTile->id().toString());
             baseTile->addWarning("An advertised add-on provider returned no tile.");
-            complete = false;
+            boundIncomplete();
             continue;
         }
         if (loaded->error()) {
@@ -267,14 +272,14 @@ bool loadAddOnTiles(
                 baseTile->id().toString(),
                 *loaded->error());
             baseTile->addWarning(fmt::format("Add-on provider failed: {}", *loaded->error()));
+            capTileTtl(*loaded, errorTtl);
             includeLifetime(*baseTile, *loaded);
-            complete = false;
             continue;
         }
         if (loaded->layerInfo()->type_ != LayerType::Features) {
             log().warn("Add-on tile {} is not a feature layer.", baseTile->id().toString());
             baseTile->addWarning("An advertised add-on provider returned an incompatible layer.");
-            complete = false;
+            boundIncomplete();
             continue;
         }
         auto addOnTile = std::static_pointer_cast<PartitionFeatureLayer>(loaded);
@@ -285,7 +290,7 @@ bool loadAddOnTiles(
                 addOn->sourceId,
                 addOnTile->schemaId(),
                 addOn->nativeInfo->schemaId_));
-            complete = false;
+            boundIncomplete();
             continue;
         }
         // Even an empty add-on may gain features later. Its lifetime must reach
@@ -355,7 +360,6 @@ bool loadAddOnTiles(
             }
         }
     }
-    return complete;
 }
 
 /** Owns one asynchronous attachment request until its source tile is terminal. */

@@ -39,11 +39,15 @@ Cache hits and misses are decided per tile: if a tile for the requested map, lay
 ## Freshness versus retention
 
 `mapget.serve.ttl` (`--ttl`, default `0`, no expiry) and `sources[].ttl`
-control successful nonempty payload freshness. Separate positive caps,
+control successful nonempty payload freshness. Separate policies,
 `mapget.serve.error-tile-ttl` (default `5` seconds) and
 `mapget.serve.empty-tile-ttl` (default `3600` seconds), with matching CLI options,
-prevent errors and missing data from staying cached forever. A shorter explicit
-payload TTL is preserved. See
+bound error and empty lifetimes by default. Matching `sources[].error-tile-ttl`
+and `sources[].empty-tile-ttl` override these globals. Positive policies preserve
+a shorter positive explicit payload TTL; zero overrides even a positive producer
+TTL and disables expiry-based retries. Zero does not prevent eviction or manual
+invalidation. Add-on compositions still reload all contributors when any finite
+contributor expires. See
 [Tile TTL](mapget-config.md#tile-ttl) for precedence, units, validation and reload
 semantics. These limits do not change the cache's byte/count capacity policy or
 add a background refetch loop.

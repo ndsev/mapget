@@ -52,14 +52,17 @@ void bindHttpService(py::module_& m)
                 concurrent calls into that datasource.
 
                 ``error_tile_ttl_ms`` caps failed tile lifetimes (default 5000 ms)
-                and must be positive. Shorter positive tile-specific TTLs win.
+                and must be nonnegative. Zero disables expiry even if a producer
+                supplies a positive TTL; positive caps preserve shorter producer TTLs.
 
                 ``empty_tile_ttl_ms`` similarly caps successful source layers with
-                no roots (default 3600000 ms, positive). Both limits cover tile and
+                no roots (default 3600000 ms, nonnegative). Both policies cover tile and
                 object payloads, override datasource/service TTL defaults, and
                 use ordinary cache expiry. Errors use the error limit even when
                 empty. Empty filter/inspection results inherit source lifetimes;
                 they do not receive this limit unless a source was itself empty.
+                Source configuration can override each policy independently. These
+                policies do not prevent cache eviction or explicit invalidation.
             )pbdoc")
         .def(
             "add_remote_datasource",

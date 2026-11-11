@@ -2613,12 +2613,16 @@ TEST_CASE(
     REQUIRE(tile->ttl() == (ttlMs > 0 ? std::min(*ttl, errorTtl) : errorTtl));
 }
 
-TEST_CASE("Service rejects nonpositive error tile TTLs", "[Service][failure][TTL]")
+TEST_CASE("Service rejects negative error tile TTLs", "[Service][failure][TTL]")
 {
-    auto const errorTtl = std::chrono::milliseconds(GENERATE(0, -1));
     REQUIRE_THROWS_WITH(
-        Service(std::make_shared<MemCache>(), false, std::chrono::milliseconds{0}, 1, errorTtl),
-        "Error tile TTL must be greater than zero.");
+        Service(
+            std::make_shared<MemCache>(),
+            false,
+            std::chrono::milliseconds{0},
+            1,
+            std::chrono::milliseconds{-1}),
+        "Error tile TTL must not be negative.");
 }
 
 TEST_CASE(

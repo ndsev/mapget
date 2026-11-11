@@ -547,11 +547,12 @@ public:
      *  overridden by datasource or tile-specific TTL.
      * @param workerCount Maximum number of source-tile jobs that may load and
      *  process attached consumers concurrently across the whole service.
-     * @param errorTileTtl Positive upper bound for error-tile lifetimes. A shorter
-     *  positive tile-specific TTL takes precedence; successful tiles are unaffected.
-     * @param emptyTileTtl Positive upper bound for successful source layers with no
-     *  roots, including add-ons. Preserves shorter positive tile-specific TTLs;
-     *  does not apply to empty filtered results from nonempty source layers.
+     * @param errorTileTtl Error-payload policy, overridden by DataSource::errorTileTtl().
+     *  Zero disables expiry even when the producer supplies a TTL. Positive values cap
+     *  the lifetime while preserving shorter producer TTLs. Negative values throw.
+     * @param emptyTileTtl Equivalent policy for successful source layers without roots,
+     *  overridden by DataSource::emptyTileTtl(). Empty filter results inherit their
+     *  source lifetimes instead. Neither policy prevents cache eviction or manual reset.
      */
     explicit Service(
         Cache::Ptr cache = std::make_shared<MemCache>(),

@@ -169,6 +169,30 @@ std::optional<std::chrono::milliseconds> DataSource::ttl() const
     return ttl_;
 }
 
+void DataSource::setErrorTileTtl(std::optional<std::chrono::milliseconds> ttl)
+{
+    if (ttl && ttl->count() < 0)
+        throw std::invalid_argument("Error tile TTL must not be negative.");
+    errorTileTtl_ = ttl;
+}
+
+std::optional<std::chrono::milliseconds> DataSource::errorTileTtl() const
+{
+    return errorTileTtl_;
+}
+
+void DataSource::setEmptyTileTtl(std::optional<std::chrono::milliseconds> ttl)
+{
+    if (ttl && ttl->count() < 0)
+        throw std::invalid_argument("Empty tile TTL must not be negative.");
+    emptyTileTtl_ = ttl;
+}
+
+std::optional<std::chrono::milliseconds> DataSource::emptyTileTtl() const
+{
+    return emptyTileTtl_;
+}
+
 std::vector<LocateCandidate> DataSource::locate(
     LocateRequest const&)
 {

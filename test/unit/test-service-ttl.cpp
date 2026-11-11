@@ -121,6 +121,7 @@ public:
     bool empty = true;
     bool failed = false;
     bool addOn = false;
+    std::string mapId = "Tropico";
     std::atomic_int fills = 0;
     std::vector<MapPartitionKey> expiredKeys;
 
@@ -128,8 +129,9 @@ public:
     DataSourceInfo info() override
     {
         auto result = TestTtlDataSource::info();
+        result.mapId_ = mapId;
         result.isAddOn_ = addOn;
-        result.stringPoolId_ = addOn ? "EmptyAddOnPool" : "EmptyTtlPool";
+        result.stringPoolId_ = (addOn ? "EmptyAddOnPool" : "EmptyTtlPool") + mapId;
         auto layer = std::make_shared<LayerInfo>(*result.layers_.at("WayLayer"));
         layer->type_ = layerType;
         layer->partitionKind_ = partitionKind;
@@ -172,6 +174,24 @@ public:
     void onCacheExpired(MapPartitionKey const& key, std::chrono::system_clock::time_point) override
     {
         expiredKeys.push_back(key);
+    }
+
+    /** Fetch through normal service admission, cache and partition serialization paths. */
+    PartitionLayer::Ptr fetch(Service& service)
+    {
+        auto partition = partitionKind == PartitionKind::Object ?
+            PartitionId::object(42) :
+            PartitionId::fromValue(kTtlTileIdValue);
+        auto request =
+            std::make_shared<LayerTilesRequest>(mapId, "WayLayer", std::vector{partition});
+        PartitionLayer::Ptr result;
+        request->onFeatureLayer([&](auto tile) { result = std::move(tile); });
+        request->onSourceDataLayer([&](auto tile) { result = std::move(tile); });
+        REQUIRE(service.request({request}));
+        request->wait();
+        REQUIRE(request->getStatus() == RequestStatus::Success);
+        REQUIRE(result);
+        return result;
     }
 };
 
@@ -820,12 +840,191 @@ TEST_CASE("Empty source contributors limit populated add-on composites", "[Servi
     REQUIRE(tile->ttl() == 3s);
 }
 
-TEST_CASE("Service rejects nonpositive empty tile TTLs", "[Service][TTL]")
+TEST_CASE("Service rejects negative empty tile TTLs", "[Service][TTL]")
 {
-    auto const emptyTtl = std::chrono::milliseconds(GENERATE(0, -1));
     REQUIRE_THROWS_WITH(
-        Service(std::make_shared<MemCache>(), false, 0ms, 1, 5s, emptyTtl),
-        "Empty tile TTL must be greater than zero.");
+        Service(std::make_shared<MemCache>(), false, 0ms, 1, 5s, -1ms),
+        "Empty tile TTL must not be negative.");
+}
+
+TEST_CASE("Retry TTL overrides preserve zero and inherit only when absent", "[Service][TTL]")
+{
+    auto const failed = GENERATE(false, true);
+    auto const global = std::chrono::milliseconds(GENERATE(0, 7000));
+    auto const overrideMs = GENERATE(-1, 0, 2000, 12000);
+    auto const producerMs = GENERATE(-1, 1000, 30000);
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->failed = failed;
+    source->producerTtl = producerMs < 0 ?
+        std::nullopt :
+        std::optional{std::chrono::milliseconds(producerMs)};
+    auto override = overrideMs < 0 ?
+        std::nullopt :
+        std::optional{std::chrono::milliseconds(overrideMs)};
+    source->setErrorTileTtl(failed ? override : std::optional{3ms});
+    source->setEmptyTileTtl(failed ? std::optional{3ms} : override);
+    source->setTtl(1ms);  // Nonempty fallback must never leak into either policy.
+    auto cache = std::make_shared<MemCache>(16);
+    Service service(cache, false, 1ms, 1, global, global);
+    service.add(source);
+
+    auto policy = override.value_or(global);
+    auto expected = policy == 0ms || producerMs <= 0 ?
+        policy :
+        std::min(policy, std::chrono::milliseconds(producerMs));
+    auto first = source->fetch(service);
+    REQUIRE(first->ttl() == expected);
+    REQUIRE(source->fills == 1);
+    // Age the stored wire payload instead of sleeping. A positive producer TTL
+    // cannot reintroduce expiry after an explicit zero policy has been applied.
+    first->setTimestamp(std::chrono::system_clock::now() - 24h);
+    cache->putTileLayer(first);
+    source->failed = false;
+    source->empty = false;
+    source->fetch(service);
+    REQUIRE(source->fills == (expected == 0ms ? 1 : 2));
+    REQUIRE(source->expiredKeys.size() == (expected == 0ms ? 0 : 1));
+}
+
+TEST_CASE(
+    "Non-expiring error and empty partitions remain cached until invalidated",
+    "[Service][TTL]")
+{
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->failed = GENERATE(false, true);
+    source->layerType = GENERATE(LayerType::Features, LayerType::SourceData);
+    source->partitionKind = GENERATE(PartitionKind::Tile, PartitionKind::Object);
+    source->producerTtl = 1ms;
+    auto cache = std::make_shared<MemCache>(16);
+    Service service(cache, false, 1ms, 1, 0ms, 0ms);
+    service.add(source);
+    auto first = source->fetch(service);
+    REQUIRE(first->ttl() == 0ms);
+    first->setTimestamp(std::chrono::system_clock::now() - 24h);
+    cache->putTileLayer(first);
+    source->failed = false;
+    source->empty = false;
+    for (int repeat = 0; repeat < 3; ++repeat)
+        REQUIRE(
+            source->fetch(service)->timestamp() ==
+            std::chrono::time_point_cast<std::chrono::microseconds>(first->timestamp()));
+    REQUIRE(source->fills == 1);
+    REQUIRE(source->expiredKeys.empty());
+
+    REQUIRE(service.resetMapCache(source->mapId));
+    auto fresh = source->fetch(service);
+    REQUIRE_FALSE(fresh->error());
+    REQUIRE(fresh->ttl() == 1ms);  // Healthy nonempty producer freshness is unchanged.
+    REQUIRE(source->fills == 2);
+    REQUIRE(source->expiredKeys.empty());  // Manual invalidation is not expiry.
+}
+
+TEST_CASE("Retry policies are isolated between datasources", "[Service][TTL]")
+{
+    auto cache = std::make_shared<MemCache>(16);
+    Service service(cache, false, 1h, 1, 5s, 1h);
+    auto persistent = std::make_shared<EmptyTtlDataSource>();
+    persistent->failed = GENERATE(false, true);
+    persistent->setErrorTileTtl(0ms);
+    persistent->setEmptyTileTtl(0ms);
+    auto inherited = std::make_shared<EmptyTtlDataSource>();
+    inherited->mapId = "Inherited";
+    inherited->failed = persistent->failed;
+    service.add(persistent);
+    service.add(inherited);
+    for (auto const& source : {persistent, inherited}) {
+        auto first = source->fetch(service);
+        first->setTimestamp(std::chrono::system_clock::now() - 24h);
+        cache->putTileLayer(first);
+        source->fetch(service);
+    }
+    REQUIRE(persistent->fills == 1);
+    REQUIRE(inherited->fills == 2);
+    REQUIRE(persistent->errorTileTtl() == 0ms);
+    REQUIRE_FALSE(inherited->errorTileTtl());
+}
+
+TEST_CASE("Add-on retry policies retain the earliest composite expiry", "[Service][TTL][add-on]")
+{
+    auto base = std::make_shared<EmptyTtlDataSource>();
+    base->empty = false;
+    base->producerTtl = std::chrono::milliseconds(GENERATE(0, 30000));
+    auto addOn = std::make_shared<EmptyTtlDataSource>();
+    addOn->addOn = true;
+    addOn->failed = GENERATE(false, true);
+    addOn->producerTtl = 1s;
+    auto const global = std::chrono::milliseconds(GENERATE(0, 7000));
+    auto const overrideMs = GENERATE(-1, 0, 2000);
+    auto const override = overrideMs < 0 ?
+        std::nullopt :
+        std::optional{std::chrono::milliseconds(overrideMs)};
+    addOn->setErrorTileTtl(override);
+    addOn->setEmptyTileTtl(override);
+    auto cache = std::make_shared<MemCache>(16);
+    Service service(cache, false, 1h, 1, global, global);
+    service.add(base);
+    service.add(addOn);
+
+    auto tile = base->fetch(service);
+    auto const policy = override.value_or(global);
+    REQUIRE(tile->ttl() == (policy == 0ms ? *base->producerTtl : 1s));
+    REQUIRE_FALSE(tile->error());
+    REQUIRE(tile->warnings().empty() == !addOn->failed);
+    REQUIRE(base->fills == 1);
+    REQUIRE(addOn->fills == 1);
+
+    tile->setTimestamp(std::chrono::system_clock::now() - 24h);
+    cache->putTileLayer(tile);
+    base->fetch(service);
+    // Cache entries contain whole compositions, not retained native contributions.
+    // A finite primary lifetime refreshes even a zero-policy add-on with it.
+    auto const loads = tile->ttl() == 0ms ? 1 : 2;
+    REQUIRE(base->fills == loads);
+    REQUIRE(addOn->fills == loads);
+}
+
+TEST_CASE("Filtered error and empty sources do not regain a retry lifetime", "[Service][TTL]")
+{
+    auto source = std::make_shared<EmptyTtlDataSource>();
+    source->failed = GENERATE(false, true);
+    source->producerTtl = 1ms;
+    Service service(std::make_shared<MemCache>(16), false, 1ms, 1, 0ms, 0ms);
+    service.add(source);
+    FeatureLayerFilterRequest filter;
+    filter.filterId_ = "no-retry";
+    filter.channels_ = {FeatureLayerFilterChannel{.channelId_ = "all", .entryFilter_ = "true"}};
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        auto request = std::make_shared<FeatureLayerFilterTilesRequest>(
+            "Tropico",
+            "WayLayer",
+            std::vector{PartitionId::fromValue(kTtlTileIdValue)},
+            filter);
+        PartitionSubsetLayer::Ptr subset;
+        request->onFilterResult([&](auto tile) { subset = std::move(tile); });
+        REQUIRE(service.request(request));
+        request->wait();
+        REQUIRE(subset);
+        REQUIRE((!subset->ttl() || subset->ttl() == 0ms));
+    }
+    REQUIRE(source->fills == 1);
+    REQUIRE(source->expiredKeys.empty());
+}
+
+TEST_CASE(
+    "Datasource retry overrides reject negative values without changing policy",
+    "[Service][TTL]")
+{
+    EmptyTtlDataSource source;
+    source.setErrorTileTtl(0ms);
+    source.setEmptyTileTtl(2s);
+    REQUIRE_THROWS_AS(source.setErrorTileTtl(-1ms), std::invalid_argument);
+    REQUIRE_THROWS_AS(source.setEmptyTileTtl(-1ms), std::invalid_argument);
+    REQUIRE(source.errorTileTtl() == 0ms);
+    REQUIRE(source.emptyTileTtl() == 2s);
+    source.setErrorTileTtl(std::nullopt);
+    source.setEmptyTileTtl(std::nullopt);
+    REQUIRE_FALSE(source.errorTileTtl());
+    REQUIRE_FALSE(source.emptyTileTtl());
 }
 
 TEST_CASE("Service info uses detached datasource metadata snapshots", "[Service][DataSourceInfo]")

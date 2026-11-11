@@ -673,13 +673,14 @@ struct ServeCommand
             ->add_option(
                 "--error-tile-ttl",
                 errorTileTtlSeconds_,
-                "Maximum TTL for failed tiles in seconds (must be positive).")
+                "Maximum TTL for failed tiles in seconds (0 disables expiry-based retries).")
             ->default_val(errorTileTtlSeconds_);
         serveCmd
             ->add_option(
                 "--empty-tile-ttl",
                 emptyTileTtlSeconds_,
-                "Maximum TTL for successful empty source tiles in seconds (must be positive).")
+                "Maximum TTL for successful empty source tiles in seconds (0 disables expiry-based "
+                "retries).")
             ->default_val(emptyTileTtlSeconds_);
         serveCmd
             ->add_option(
@@ -788,19 +789,19 @@ struct ServeCommand
         if (ttlSeconds_ < 0) {
             raise("TTL must not be negative.");
         }
-        if (errorTileTtlSeconds_ <= 0 ||
+        if (errorTileTtlSeconds_ < 0 ||
             errorTileTtlSeconds_ >
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
                     .count())
         {
-            raise("Error tile TTL must be positive and fit a millisecond duration.");
+            raise("Error tile TTL must be non-negative and fit a millisecond duration.");
         }
-        if (emptyTileTtlSeconds_ <= 0 ||
+        if (emptyTileTtlSeconds_ < 0 ||
             emptyTileTtlSeconds_ >
                 std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
                     .count())
         {
-            raise("Empty tile TTL must be positive and fit a millisecond duration.");
+            raise("Empty tile TTL must be non-negative and fit a millisecond duration.");
         }
         if (workerCount_ == 0) {
             raise("Worker count must be greater than zero.");

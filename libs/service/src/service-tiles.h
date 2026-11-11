@@ -37,16 +37,18 @@ private:
  *
  * Add-ons reuse the worker executing the base tile and therefore do not consume
  * independent datasource permits. Missing, errored or incompatible contributions
- * return false after adding warnings, allowing the caller to bound the partial
- * result's lifetime. Exceptions from loading/cloning, including cancellation,
+ * add warnings and apply their source's error lifetime to the partial result.
+ * The earliest finite contributor expiry wins; zero never cancels another
+ * contributor's deadline. Exceptions from loading/cloning, including cancellation,
  * propagate instead and fail the enclosing tile job.
  */
-bool loadAddOnTiles(
+void loadAddOnTiles(
     PartitionFeatureLayer::Ptr const& baseTile,
     RegisteredDataSource const& baseSource,
     Cache::Ptr& cache,
     std::optional<std::chrono::milliseconds> const& defaultTtl,
     std::chrono::milliseconds emptyTileTtl,
+    std::chrono::milliseconds errorTileTtl,
     TileCancellationCheck const& isCancelled = {});
 
 }  // namespace mapget::detail

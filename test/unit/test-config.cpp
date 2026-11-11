@@ -237,7 +237,8 @@ public:
     /** Populate a minimal cacheable feature tile. */
     void fill(PartitionFeatureLayer::Ptr const& tile) override
     {
-        tile->newFeature("Point", {{"id", int64_t{1}}});
+        if (!empty)
+            tile->newFeature("Point", {{"id", int64_t{1}}});
     }
 
     /** Keep a fill in flight until released, while remaining safe on test failure/shutdown. */
@@ -259,6 +260,7 @@ public:
     void fill(PartitionSourceDataLayer::Ptr const&) override {}
 
     std::atomic_size_t fills{0};
+    bool empty = false;
     std::atomic_bool pauseFills{false};
     std::atomic_bool observedCancellation{false};
 
@@ -281,10 +283,12 @@ public:
             "Reload",
             [this](YAML::Node const& node) -> DataSource::Ptr
             {
-                return std::make_shared<ReloadTestDataSource>(
+                auto source = std::make_shared<ReloadTestDataSource>(
                     node["mapId"].as<std::string>(),
                     ++constructions,
                     node["addOn"].as<bool>(false));
+                source->empty = node["empty"].as<bool>(false);
+                return source;
             });
         service = std::make_unique<
             Service>(std::make_shared<MemCache>(16), true, std::chrono::milliseconds{0}, 2);
@@ -530,6 +534,63 @@ sources:
     auto replacement = std::dynamic_pointer_cast<ReloadTestDataSource>(after.sources[1].dataSource);
     REQUIRE(replacement->fills == 1);
     REQUIRE(test.constructions == 3);
+}
+
+TEST_CASE(
+    "Source retry configuration distinguishes inherited, zero and positive policies",
+    "[DataSourceConfig][TTL]")
+{
+    ConfigReloadTest test;
+    test.load(R"(
+sources:
+  - {type: Reload, mapId: Inherited}
+  - {type: Reload, mapId: Static, error-tile-ttl: 0, empty-tile-ttl: 0}
+  - {type: Reload, mapId: Refresh, error-tile-ttl: 2, empty-tile-ttl: 7}
+)");
+    auto sources = test.settled().sources;
+    REQUIRE(sources.size() == 3);
+    REQUIRE_FALSE(sources[0].dataSource->errorTileTtl());
+    REQUIRE_FALSE(sources[0].dataSource->emptyTileTtl());
+    REQUIRE(sources[1].dataSource->errorTileTtl() == std::chrono::seconds{0});
+    REQUIRE(sources[1].dataSource->emptyTileTtl() == std::chrono::seconds{0});
+    REQUIRE(sources[2].dataSource->errorTileTtl() == std::chrono::seconds{2});
+    REQUIRE(sources[2].dataSource->emptyTileTtl() == std::chrono::seconds{7});
+
+    auto& config = DataSourceConfigService::get();
+    auto schema = config.getDataSourceConfigSchema();
+    auto properties = schema["properties"]["sources"]["items"]["properties"];
+    for (auto const* key : {"error-tile-ttl", "empty-tile-ttl"}) {
+        REQUIRE(properties[key]["minimum"] == 0);
+        for (auto const* invalid : {"-1", "9223372036854776", "1.5", "null"}) {
+            CAPTURE(key, invalid);
+            auto node = YAML::Load(
+                std::string("{type: Reload, mapId: Invalid, ") + key + ": " + invalid + "}");
+            REQUIRE_FALSE(config.makeDataSource(node));
+        }
+    }
+}
+
+TEST_CASE(
+    "Reloading source retry policy invalidates a non-expiring empty result",
+    "[DataSourceConfig][config-reload][TTL]")
+{
+    ConfigReloadTest test;
+    test.load("sources: [{type: Reload, mapId: Static, empty: true, empty-tile-ttl: 0}]");
+    auto old = test.settled().sources.front().dataSource;
+    auto original = std::dynamic_pointer_cast<ReloadTestDataSource>(old);
+    test.requireSuccess(test.request("Static"));
+    test.requireSuccess(test.request("Static"));
+    REQUIRE(original->fills == 1);
+
+    // Only the policy changes; it must invalidate retained data just like any
+    // other constructor-affecting source setting, rather than keep its old TTL.
+    test.load("sources: [{type: Reload, mapId: Static, empty: true, empty-tile-ttl: 9}]");
+    auto replacement = test.settled().sources.front().dataSource;
+    REQUIRE(replacement != old);
+    REQUIRE(replacement->emptyTileTtl() == std::chrono::seconds{9});
+    test.requireSuccess(test.request("Static"));
+    REQUIRE(std::dynamic_pointer_cast<ReloadTestDataSource>(replacement)->fills == 1);
+    REQUIRE(original->fills == 1);
 }
 
 TEST_CASE(
@@ -854,7 +915,7 @@ TEST_CASE("Mapget Config", "[MapgetConfig]")
 TEST_CASE("CLI rejects invalid error and empty tile TTLs before startup", "[MapgetConfig][TTL]")
 {
     for (auto const* option : {"--error-tile-ttl", "--empty-tile-ttl"}) {
-        for (auto const* value : {"0", "-1", "9223372036854776"}) {
+        for (auto const* value : {"-1", "9223372036854776"}) {
             CAPTURE(option, value);
             REQUIRE(mapget::runFromCommandLine({"serve", option, value}) == 1);
         }

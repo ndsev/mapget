@@ -67,8 +67,26 @@ nlohmann::json ttlSchema()
         {"description",
          "Fallback lifetime in seconds for successful nonempty tiles/objects. "
          "0 = infinite; omitted = mapget.serve.ttl. Explicit payload TTLs win. "
-         "Errors and empty source layers instead use mapget.serve.error-tile-ttl "
-         "and mapget.serve.empty-tile-ttl."}};
+         "Errors and empty source layers instead use error-tile-ttl "
+         "and empty-tile-ttl (per-source overrides or mapget.serve defaults)."}};
+}
+
+/** Shared source options, independent of any provider's constructor schema. */
+nlohmann::json retryTtlSchema(std::string const& kind)
+{
+    return {
+        {"type", "integer"},
+        {"minimum", 0},
+        {"maximum",
+         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+             .count()},
+        {"description",
+         "Maximum " + kind +
+             " tile lifetime in seconds. Omitted = inherit "
+             "mapget.serve." +
+             kind +
+             "-tile-ttl; 0 disables expiry-based retries, overriding "
+             "the producer TTL. Positive values preserve shorter producer lifetimes."}};
 }
 
 nlohmann::json authHeaderSchema()
@@ -227,14 +245,24 @@ AuthClaimRequirements parseAuthClaims(YAML::Node const& descriptor)
 
 void applyGenericDataSourceOptions(DataSource& dataSource, YAML::Node const& descriptor)
 {
-    if (auto ttlNode = descriptor["ttl"]) {
-        auto ttlSeconds = ttlNode.as<int64_t>();
-        if (ttlSeconds < 0) {
-            throw std::runtime_error("`ttl` must be non-negative.");
+    auto readTtl = [&](char const* name)
+    {
+        auto seconds = descriptor[name].as<int64_t>();
+        auto maxSeconds =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::milliseconds::max())
+                .count();
+        if (seconds < 0 || seconds > maxSeconds) {
+            throw std::runtime_error(
+                std::string(name) + " must be non-negative and fit a millisecond duration.");
         }
-        dataSource.setTtl(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::seconds(ttlSeconds)));
-    }
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::seconds(seconds));
+    };
+    if (descriptor["ttl"])
+        dataSource.setTtl(readTtl("ttl"));
+    if (descriptor["error-tile-ttl"])
+        dataSource.setErrorTileTtl(readTtl("error-tile-ttl"));
+    if (descriptor["empty-tile-ttl"])
+        dataSource.setEmptyTileTtl(readTtl("empty-tile-ttl"));
 
     for (auto const& [key, value] : parseAuthHeaderAlternatives(descriptor)) {
         dataSource.requireAuthHeaderRegexMatchOption(key, value);
@@ -724,6 +752,8 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
             properties["enabled"] = enabledSchema();
         if (!properties.contains("ttl"))
             properties["ttl"] = ttlSchema();
+        properties["error-tile-ttl"] = retryTtlSchema("error");
+        properties["empty-tile-ttl"] = retryTtlSchema("empty");
         if (!properties.contains("auth-header"))
             properties["auth-header"] = authHeaderSchema();
         properties["auth-claims"] = authClaimsSchema();
@@ -744,20 +774,21 @@ nlohmann::json DataSourceConfigService::getDataSourceConfigSchema() const
 
     nlohmann::json sourcesItems = {
         {"type", "object"},
-        {"properties", {
-            {"type", typeProperty},
-            {"sourceId", {
-                {"type", "string"},
-                {"minLength", 1},
-            }},
-            {"enabled", enabledSchema()},
-            {"ttl", ttlSchema()},
-            {"auth-header", authHeaderSchema()},
-            {"auth-claims", authClaimsSchema()}
-        }},
+        {"properties",
+         {{"type", typeProperty},
+          {"sourceId",
+           {
+               {"type", "string"},
+               {"minLength", 1},
+           }},
+          {"enabled", enabledSchema()},
+          {"ttl", ttlSchema()},
+          {"error-tile-ttl", retryTtlSchema("error")},
+          {"empty-tile-ttl", retryTtlSchema("empty")},
+          {"auth-header", authHeaderSchema()},
+          {"auth-claims", authClaimsSchema()}}},
         {"required", nlohmann::json::array({"type"})},
-        {"additionalProperties", true}
-    };
+        {"additionalProperties", true}};
 
     if (!oneOf.empty()) {
         sourcesItems["oneOf"] = oneOf;

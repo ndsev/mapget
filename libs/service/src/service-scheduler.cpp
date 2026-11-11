@@ -28,11 +28,11 @@ ServiceScheduler::ServiceScheduler(
     if (workerCount == 0) {
         raise("Service worker count must be greater than zero.");
     }
-    if (errorTileTtl_.count() <= 0) {
-        raise("Error tile TTL must be greater than zero.");
+    if (errorTileTtl_.count() < 0) {
+        raise("Error tile TTL must not be negative.");
     }
-    if (emptyTileTtl_.count() <= 0) {
-        raise("Empty tile TTL must be greater than zero.");
+    if (emptyTileTtl_.count() < 0) {
+        raise("Empty tile TTL must not be negative.");
     }
 
     workers_.reserve(workerCount);
