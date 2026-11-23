@@ -6,11 +6,8 @@
 #include "simfil/value.h"
 #include "mapget/model/sourcedatareference.h"
 
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
-namespace py = pybind11;
 using namespace py::literals;
 using namespace simfil;
 
@@ -40,9 +37,9 @@ struct BoundModelNode
             if (auto ptr = GetTileFeatureModelLayer(*n)())
                 return *ptr;
             else
-                throw pybind11::type_error("Unexpected model type");
+                throw nanobind::type_error("Unexpected model type");
         }
-        throw pybind11::value_error("Node is NULL");
+        throw nanobind::value_error("Node is NULL");
     }
 
     PartitionFeatureLayer& featureLayer()
@@ -60,9 +57,9 @@ struct BoundModelNode
             if (auto ptr = GetTileFeatureLayer(*n)())
                 return *ptr;
             else
-                throw pybind11::type_error("Unexpected model type");
+                throw nanobind::type_error("Unexpected model type");
         }
-        throw pybind11::value_error("Node is NULL");
+        throw nanobind::value_error("Node is NULL");
     }
 };
 
@@ -76,7 +73,7 @@ struct BoundModelNodeBase : public BoundModelNode
             Concrete subclasses represent objects, arrays, features, attributes,
             geometry, feature ids, subset entries, and other typed nodes.
         )pbdoc")
-            .def_property_readonly(
+            .def_prop_ro(
                 "schema_type",
                 [](BoundModelNode& self)
                 {
@@ -168,7 +165,7 @@ struct BoundModelNodeBase : public BoundModelNode
                         }
                     }
                 }
-                throw py::key_error(std::string(key));
+                throw py::key_error(std::string(key).c_str());
             }, py::arg("key"), "Return an object field by key.")
             .def("__getitem__", [](BoundModelNodeBase& self, int64_t i) {
                 auto sz = (int64_t)self.modelNodePtr_->size();
@@ -226,10 +223,10 @@ using ModelVariant =
 ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
 {
     if (py::isinstance<py::bool_>(pyValue)) {
-        return pyValue.cast<bool>();
+        return py::cast<bool>(pyValue);
     }
     else if (py::isinstance<py::int_>(pyValue)) {
-        auto value = pyValue.cast<int64_t>();
+        auto value = py::cast<int64_t>(pyValue);
         if (value >= INT16_MIN && value <= INT16_MAX) {
             return static_cast<int16_t>(value);
         }
@@ -238,25 +235,25 @@ ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
         }
     }
     else if (py::isinstance<py::float_>(pyValue)) {
-        return pyValue.cast<double>();
+        return py::cast<double>(pyValue);
     }
     else if (py::isinstance<py::str>(pyValue)) {
-        return pyValue.cast<std::string_view>();
+        return py::cast<std::string_view>(pyValue);
     }
     else if (py::isinstance<BoundModelNode>(pyValue)) {
-        return pyValue.cast<BoundModelNode&>().node();
+        return py::cast<BoundModelNode&>(pyValue).node();
     }
     else if (py::isinstance<simfil::Bitmask>(pyValue)) {
-        auto const& value = pyValue.cast<simfil::Bitmask const&>();
+        auto const& value = py::cast<simfil::Bitmask const&>(pyValue);
         return model.newBitmask(value.bits, value.type);
     }
     else if (py::isinstance<py::list>(pyValue)) {
         // Recursively convert Python list to array.
-        auto list = pyValue.cast<py::list>();
+        auto list = py::cast<py::list>(pyValue);
         auto arr = model.newArray(list.size(), true);
 
         for (auto const& item : list) {
-            auto value = pyValueToModel(py::reinterpret_borrow<py::object>(item), model);
+            auto value = pyValueToModel(py::borrow<py::object>(item), model);
             std::visit([&arr](auto&& vv){
                 arr->append(vv);
             }, value);
@@ -266,12 +263,12 @@ ModelVariant pyValueToModel(py::object const& pyValue, simfil::ModelPool& model)
     }
     else if (py::isinstance<py::dict>(pyValue)) {
         // Recursively convert Python dict to object.
-        auto dict = pyValue.cast<py::dict>();
+        auto dict = py::cast<py::dict>(pyValue);
         auto obj = model.newObject(dict.size(), true);
 
         for (auto const& [anyKey, anyValue] : dict) {
-            std::string key = py::str(anyKey);
-            auto vv = pyValueToModel(py::reinterpret_borrow<py::object>(anyValue), model);
+            auto key = py::cast<std::string>(py::str(anyKey));
+            auto vv = pyValueToModel(py::borrow<py::object>(anyValue), model);
             std::visit(
                 [&obj, &key](auto&& value)
                 {
@@ -339,7 +336,7 @@ struct BoundObject : public BoundModelNode
                 "__getitem__",
                 [](BoundObject& self, std::string_view const& key) {
                     auto result = self.modelNodePtr_->get(key);
-                    if (!result) throw py::key_error(std::string(key));
+                    if (!result) throw py::key_error(std::string(key).c_str());
                     BoundModelNodeBase node;
                     node.modelNodePtr_ = *result;
                     return node;
@@ -748,7 +745,7 @@ struct BoundAttributeLayerList : public BoundModelNode
                 self.modelNodePtr_->forEachLayer(
                     [&](std::string_view name, model_ptr<AttributeLayer> const& layer) {
                         // This dictionary keeps the last layer with a repeated layer name.
-                        d[py::str(std::string(name))] = nodeToPython(layer, fl, true);
+                        d[py::cast(std::string(name))] = nodeToPython(layer, fl, true);
                         return true;
                     });
                 return d;
@@ -1428,8 +1425,8 @@ inline void BoundSourceDataReferenceCollection::bind(py::module_& m)
             py::list result;
             self.modelNodePtr_->forEachReference([&result](SourceDataReferenceItem const& item) {
                 py::dict entry;
-                entry["layer_id"] = py::str(std::string(item.layerId()));
-                entry["qualifier"] = py::str(std::string(item.qualifier()));
+                entry["layer_id"] = py::cast(std::string(item.layerId()));
+                entry["qualifier"] = py::cast(std::string(item.qualifier()));
                 entry["address"] = item.address();
                 result.append(entry);
             });
@@ -1439,8 +1436,8 @@ inline void BoundSourceDataReferenceCollection::bind(py::module_& m)
             py::list result;
             self.modelNodePtr_->forEachReference([&result](SourceDataReferenceItem const& item) {
                 py::dict entry;
-                entry["layer_id"] = py::str(std::string(item.layerId()));
-                entry["qualifier"] = py::str(std::string(item.qualifier()));
+                entry["layer_id"] = py::cast(std::string(item.layerId()));
+                entry["qualifier"] = py::cast(std::string(item.qualifier()));
                 entry["address"] = py::int_(item.address().u64());
                 result.append(entry);
             });
@@ -1549,9 +1546,9 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
             if (isMultiMap) {
                 for (auto const& [fieldId, child] : n->fields()) {
                     if (auto key = model.lookupStringId(fieldId)) {
-                        auto pyKey = py::str(std::string(*key));
+                        auto pyKey = py::cast(std::string(*key));
                         if (d.contains(pyKey))
-                            d[pyKey].cast<py::list>().append(nodeToPython(child, model));
+                            py::borrow<py::list>(d[pyKey]).append(nodeToPython(child, model));
                         else
                             d[pyKey] = py::list(py::make_tuple(nodeToPython(child, model)));
                     }
@@ -1562,7 +1559,7 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
         }
         for (auto const& [fieldId, child] : n->fields()) {
             if (auto key = model.lookupStringId(fieldId))
-                d[py::str(std::string(*key))] = nodeToPython(child, model);
+                d[py::cast(std::string(*key))] = nodeToPython(child, model);
         }
         return d;
     }
@@ -1582,13 +1579,13 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
         else if constexpr (std::is_same_v<T, double>)
             return py::float_(val);
         else if constexpr (std::is_same_v<T, std::string>)
-            return py::str(val);
+            return py::cast(val);
         else if constexpr (std::is_same_v<T, std::string_view>)
-            return py::str(std::string(val));
+            return py::cast(std::string(val));
         else if constexpr (std::is_same_v<T, ByteArray>) {
             py::dict d;
             d["_bytes"] = py::bool_(true);
-            d["hex"] = py::str(val.toHex(false));
+            d["hex"] = py::cast(val.toHex(false));
             if (auto decoded = val.decodeBigEndianI64())
                 d["number"] = py::int_(*decoded);
             else
@@ -1604,7 +1601,7 @@ py::object nodeToPython(model_ptr<ModelNode> const& n, simfil::ModelPool& model,
 
 }  // namespace mapget
 
-void bindModel(py::module& m)
+void bindModel(py::module_& m)
 {
     mapget::BoundModelNodeBase::bind(m);
     mapget::BoundObject<>::bind(m);

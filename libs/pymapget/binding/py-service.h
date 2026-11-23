@@ -3,11 +3,8 @@
 #include "mapget/http-datasource/datasource-client.h"
 #include "mapget/http-service/http-service.h"
 
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
-namespace py = pybind11;
 using namespace py::literals;
 
 void bindHttpService(py::module_& m)
@@ -24,7 +21,7 @@ void bindHttpService(py::module_& m)
         started the server thread.
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](size_t workerCount, int64_t errorTileTtlMs, int64_t emptyTileTtlMs)
                 {
                     HttpServiceConfig config;

@@ -4,11 +4,8 @@
 #include "py-schema.h"
 
 #include <chrono>
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
-namespace py = pybind11;
 using namespace py::literals;
 
 namespace
@@ -27,7 +24,7 @@ py::object datasourceJsonToPython(nlohmann::json const& j)
     case nlohmann::json::value_t::number_float:
         return py::float_(j.get<double>());
     case nlohmann::json::value_t::string:
-        return py::str(j.get<std::string>());
+        return py::cast(j.get<std::string>());
     case nlohmann::json::value_t::array: {
         py::list result;
         for (auto const& item : j)
@@ -37,7 +34,7 @@ py::object datasourceJsonToPython(nlohmann::json const& j)
     case nlohmann::json::value_t::object: {
         py::dict result;
         for (auto const& [key, value] : j.items())
-            result[py::str(key)] = datasourceJsonToPython(value);
+            result[py::cast(key)] = datasourceJsonToPython(value);
         return result;
     }
     default:
@@ -62,16 +59,16 @@ void bindDataSourceServer(py::module_& m)
             py::arg("tile_id"),
             py::arg("source_id") = py::none(),
             "Select a discovery tile at the layer's advertised association level.")
-        .def_readwrite("map_id", &ObjectDiscoveryRequest::mapId_, "Map to query.")
-        .def_readwrite(
+        .def_rw("map_id", &ObjectDiscoveryRequest::mapId_, "Map to query.")
+        .def_rw(
             "layer_id",
             &ObjectDiscoveryRequest::layerId_,
             "Object-backed layer to query.")
-        .def_readwrite(
+        .def_rw(
             "tile_id",
             &ObjectDiscoveryRequest::tileId_,
             "Discovery coverage, not an object identity.")
-        .def_readwrite(
+        .def_rw(
             "source_id",
             &ObjectDiscoveryRequest::sourceId_,
             "Optional datasource assertion.");
@@ -92,11 +89,11 @@ void bindDataSourceServer(py::module_& m)
             py::arg("bounds") = py::none(),
             "Construct a reference; bounds are [west,south,east,north], with west>east allowed at "
             "the antimeridian.")
-        .def_readwrite(
+        .def_rw(
             "object_id",
             &ObjectDiscoveryResult::Reference::objectId_,
             "Exact integer in 0..2**64-1.")
-        .def_readwrite(
+        .def_rw(
             "bounds",
             &ObjectDiscoveryResult::Reference::bounds_,
             "Optional WGS84 spatial bounds.");
@@ -105,19 +102,19 @@ void bindDataSourceServer(py::module_& m)
         "ObjectDiscoveryResult",
         "Associations and independent freshness for one discovery tile.")
         .def(py::init<>(), "Construct an empty successful result with the current timestamp.")
-        .def_readwrite(
+        .def_rw(
             "status",
             &ObjectDiscoveryResult::status_,
             "Success, unavailable, or failed.")
-        .def_readwrite(
+        .def_rw(
             "objects",
             &ObjectDiscoveryResult::objects_,
             "Referenced objects; identity deduplicated on serialization.")
-        .def_readwrite(
+        .def_rw(
             "message",
             &ObjectDiscoveryResult::message_,
             "Optional diagnostic explaining availability or failure.")
-        .def_property(
+        .def_prop_rw(
             "ttl_ms",
             [](ObjectDiscoveryResult const& result) { return result.ttl_.count(); },
             [](ObjectDiscoveryResult& result, int64_t ms)
@@ -127,7 +124,7 @@ void bindDataSourceServer(py::module_& m)
                 result.ttl_ = std::chrono::milliseconds(ms);
             },
             "Association freshness in milliseconds; zero means no expiry.")
-        .def_property(
+        .def_prop_rw(
             "timestamp_ms",
             [](ObjectDiscoveryResult const& result)
             {
@@ -182,12 +179,12 @@ void bindDataSourceServer(py::module_& m)
             py::arg("layer_id"),
             py::arg("tile_id"),
             "Construct a map tile key from individual components.")
-        .def_readwrite(
+        .def_rw(
             "layer_type",
             &MapPartitionKey::layer_,
             "Layer category addressed by this key.")
-        .def_readwrite("map_id", &MapPartitionKey::mapId_, "Map identifier addressed by this key.")
-        .def_readwrite(
+        .def_rw("map_id", &MapPartitionKey::mapId_, "Map identifier addressed by this key.")
+        .def_rw(
             "layer_id",
             &MapPartitionKey::layerId_,
             "Layer identifier addressed by this key.")
@@ -198,8 +195,8 @@ void bindDataSourceServer(py::module_& m)
             py::arg("layer_id"),
             py::arg("partition_id"),
             "Construct a fully qualified tile or object key.")
-        .def_readwrite("partition_id", &MapPartitionKey::partitionId_, "Tagged partition identity.")
-        .def_property(
+        .def_rw("partition_id", &MapPartitionKey::partitionId_, "Tagged partition identity.")
+        .def_prop_rw(
             "tile_id",
             [](MapPartitionKey const& key) { return key.partitionId_.tileId(); },
             [](MapPartitionKey& key, TileId id) { key.partitionId_ = id; },
@@ -214,7 +211,7 @@ void bindDataSourceServer(py::module_& m)
         mapget resolves secondary ids against normally loaded complete tiles.
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](std::string mapId, std::string typeId, KeyValuePairVec const& featureIdParts)
                 {
                     return LocateRequest(
@@ -227,26 +224,26 @@ void bindDataSourceServer(py::module_& m)
             py::arg("feature_id_parts"),
             "Construct a locate request for a feature id.")
         .def(
-            py::init(
+            py::new_(
                 [](py::dict const& dict)
                 {
-                    py::module jsonModule = py::module::import("json");
-                    auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                    py::module_ jsonModule = py::module_::import_("json");
+                    auto jsonString = py::cast<std::string>(jsonModule.attr("dumps")(dict));
                     return LocateRequest(nlohmann::json::parse(jsonString));
                 }),
             py::arg("dict"),
             "Construct a locate request from a Python dictionary.")
-        .def_readwrite(
+        .def_rw(
             "map_id",
             &LocateRequest::mapId_,
             "Map in which the feature should be located.")
-        .def_readwrite("layer_id", &LocateRequest::layerId_, "Optional layer restriction.")
-        .def_readwrite(
+        .def_rw("layer_id", &LocateRequest::layerId_, "Optional layer restriction.")
+        .def_rw(
             "partition",
             &LocateRequest::partition_,
             "Optional explicit partition restriction.")
-        .def_readwrite("type_id", &LocateRequest::typeId_, "Feature type id to locate.")
-        .def_property(
+        .def_rw("type_id", &LocateRequest::typeId_, "Feature type id to locate.")
+        .def_prop_rw(
             "feature_id_parts",
             [](LocateRequest const& self)
             {
@@ -297,14 +294,14 @@ void bindDataSourceServer(py::module_& m)
         .def(py::init<LocateRequest const&>(),
             py::arg("request"),
             "Construct a response initialized from a request.")
-        .def(py::init([](py::dict const& dict) {
-                py::module jsonModule = py::module::import("json");
-                auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+        .def(py::new_([](py::dict const& dict) {
+                py::module_ jsonModule = py::module_::import_("json");
+                auto jsonString = py::cast<std::string>(jsonModule.attr("dumps")(dict));
                 return LocateResponse(nlohmann::json::parse(jsonString));
             }),
             py::arg("dict"),
             "Construct a locate response from a Python dictionary.")
-        .def_readwrite("tile_key", &LocateResponse::tileKey_, "Tile key that may contain the located feature.")
+        .def_rw("tile_key", &LocateResponse::tileKey_, "Tile key that may contain the located feature.")
         .def("to_dict", [](LocateResponse const& self) {
                 return datasourceJsonToPython(self.serialize());
             },
@@ -325,20 +322,17 @@ void bindDataSourceServer(py::module_& m)
             py::arg("canonical_feature_id"),
             "Construct an exact-primary-id candidate.")
         .def(
-            py::init(
+            py::new_(
                 [](MapPartitionKey tileKey,
                    std::string typeId,
                    std::string featureFilter,
                    py::dict const& bindings)
                 {
-                    py::module jsonModule =
-                        py::module::import("json");
+                    py::module_ jsonModule =
+                        py::module_::import_("json");
                     auto bindingsJson =
                         nlohmann::json::parse(
-                            jsonModule
-                                .attr("dumps")(
-                                    bindings)
-                                .cast<std::string>());
+                            py::cast<std::string>(jsonModule.attr("dumps")(bindings)));
                     return LocateCandidate(
                         nlohmann::json{
                             {
@@ -374,9 +368,9 @@ void bindDataSourceServer(py::module_& m)
                std::string featureIdExpression,
                py::dict const& bindings)
             {
-                py::module jsonModule = py::module::import("json");
+                py::module_ jsonModule = py::module_::import_("json");
                 auto bindingsJson = nlohmann::json::parse(
-                    jsonModule.attr("dumps")(bindings).cast<std::string>());
+                    py::cast<std::string>(jsonModule.attr("dumps")(bindings)));
                 return LocateCandidate(nlohmann::json{
                     {"tileId", tileKey.toString()},
                     {"selector",
@@ -399,17 +393,17 @@ void bindDataSourceServer(py::module_& m)
             primary feature index instead of scanning the target type.
             )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](py::dict const& dict)
                 {
-                    py::module jsonModule = py::module::import("json");
-                    auto jsonString = jsonModule.attr("dumps")(dict).cast<std::string>();
+                    py::module_ jsonModule = py::module_::import_("json");
+                    auto jsonString = py::cast<std::string>(jsonModule.attr("dumps")(dict));
                     return LocateCandidate(nlohmann::json::parse(jsonString));
                 }),
             py::arg("dict"),
             "Construct an exact, filtered, or feature-ID-expression candidate from its "
             "wire dictionary.")
-        .def_readwrite("tile_key", &LocateCandidate::tileKey_)
+        .def_rw("tile_key", &LocateCandidate::tileKey_)
         .def(
             "to_dict",
             [](LocateCandidate const& self) { return datasourceJsonToPython(self.serialize()); },
@@ -424,13 +418,13 @@ void bindDataSourceServer(py::module_& m)
         "AttachmentRequest",
         "Request for one named feature-tile side payload.")
         .def(py::init<>())
-        .def_readwrite(
+        .def_rw(
             "tile_key",
             &AttachmentRequest::tileKey_)
-        .def_readwrite(
+        .def_rw(
             "name",
             &AttachmentRequest::name_)
-        .def_readwrite(
+        .def_rw(
             "source_id",
             &AttachmentRequest::sourceId_);
 
@@ -439,14 +433,13 @@ void bindDataSourceServer(py::module_& m)
         "AttachmentResponse",
         "Immutable bytes and HTTP metadata for a named tile attachment.")
         .def(
-            py::init(
+            py::new_(
                 [](std::string name,
                    std::string mimeType,
                    py::bytes bytes,
                    std::optional<std::string> etag)
                 {
-                    auto value =
-                        bytes.cast<std::string>();
+                    std::string_view value(bytes.c_str(), bytes.size());
                     return AttachmentResponse{
                         .name_ =
                             std::move(name),
@@ -465,20 +458,20 @@ void bindDataSourceServer(py::module_& m)
             py::arg("name"),
             py::arg("mime_type") =
                 "application/octet-stream",
-            py::arg("bytes") = py::bytes{},
+            py::arg("bytes") = py::bytes(""),
             py::arg("etag") = std::nullopt)
-        .def_readwrite(
+        .def_rw(
             "name",
             &AttachmentResponse::name_)
-        .def_readwrite(
+        .def_rw(
             "mime_type",
             &AttachmentResponse::mimeType_)
-        .def_property(
+        .def_prop_rw(
             "bytes",
             [](AttachmentResponse const& self)
             {
                 if (!self.bytes_) {
-                    return py::bytes{};
+                    return py::bytes("");
                 }
                 return py::bytes(
                     reinterpret_cast<
@@ -489,8 +482,7 @@ void bindDataSourceServer(py::module_& m)
             [](AttachmentResponse& self,
                py::bytes bytes)
             {
-                auto value =
-                    bytes.cast<std::string>();
+                std::string_view value(bytes.c_str(), bytes.size());
                 self.bytes_ =
                     std::make_shared<
                         std::vector<
@@ -498,11 +490,11 @@ void bindDataSourceServer(py::module_& m)
                         value.begin(),
                         value.end());
             })
-        .def_readwrite(
+        .def_rw(
             "etag",
             &AttachmentResponse::etag_);
 
-    py::class_<DataSourceServer, std::shared_ptr<DataSourceServer>>(m, "DataSourceServer", R"pbdoc(
+    py::class_<DataSourceServer>(m, "DataSourceServer", R"pbdoc(
         Small HTTP datasource server implemented from Python callbacks.
 
         Construct it with a `DataSourceInfo` dictionary, attach tile/locate
@@ -510,14 +502,14 @@ void bindDataSourceServer(py::module_& m)
         `RemoteDataSource`.
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](py::dict const& dict, MapSchema::ConstPtr schema)
                 {
                     // Reuse Python's JSON conversion before native metadata validation.
-                    py::module json_module = py::module::import("json");
-                    py::function json_dumps = json_module.attr("dumps");
+                    py::module_ json_module = py::module_::import_("json");
+                    py::callable json_dumps = json_module.attr("dumps");
 
-                    auto json_str = json_dumps(dict).cast<std::string>();
+                    auto json_str = py::cast<std::string>(json_dumps(dict));
 
                     nlohmann::json j = nlohmann::json::parse(json_str);
 
@@ -553,7 +545,7 @@ void bindDataSourceServer(py::module_& m)
             py::arg("map_schema") = nullptr)
         .def(
             "on_tile_feature_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            [](DataSourceServer& self, py::callable callback) -> DataSourceServer&
             {
                 return self.onTileFeatureRequest(
                     [callback = std::move(callback)](PartitionFeatureLayer::Ptr tile)
@@ -563,6 +555,7 @@ void bindDataSourceServer(py::module_& m)
                     });
             },
             py::arg("callback"),
+            py::rv_policy::reference,
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             feature layer is received.
@@ -573,7 +566,7 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "on_tile_sourcedata_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            [](DataSourceServer& self, py::callable callback) -> DataSourceServer&
             {
                 return self.onTileSourceDataRequest(
                     [callback = std::move(callback)](PartitionSourceDataLayer::Ptr tile)
@@ -583,6 +576,7 @@ void bindDataSourceServer(py::module_& m)
                     });
             },
             py::arg("callback"),
+            py::rv_policy::reference,
             R"pbdoc(
             Set the Callback which will be invoked when a `/tile`-request for a
             source-data layer is received.
@@ -595,21 +589,21 @@ void bindDataSourceServer(py::module_& m)
             "on_object_discovery_request",
             &DataSourceServer::onObjectDiscoveryRequest,
             py::arg("callback"),
-            py::return_value_policy::reference_internal,
+            py::rv_policy::reference_internal,
             "Set an ObjectDiscoveryRequest -> ObjectDiscoveryResult callback; never load payloads "
             "here.")
         .def(
             "on_locate_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            [](DataSourceServer& self, py::callable callback) -> DataSourceServer&
             {
                 return self.onLocateRequest(
                     [callback = std::move(callback)](LocateRequest const& request) {
                         py::gil_scoped_acquire gil;
-                        return callback(request).cast<
-                            std::vector<LocateCandidate>>();
+                        return py::cast<std::vector<LocateCandidate>>(callback(request));
                     });
             },
             py::arg("callback"),
+            py::rv_policy::reference,
             R"pbdoc(
             Set the Callback which will be invoked when a `/locate` request is received.
             The callback receives a LocateRequest and must return a list of
@@ -617,7 +611,7 @@ void bindDataSourceServer(py::module_& m)
         )pbdoc")
         .def(
             "on_attachment_request",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            [](DataSourceServer& self, py::callable callback) -> DataSourceServer&
             {
                 return self.onAttachmentRequest(
                     [callback =
@@ -633,18 +627,18 @@ void bindDataSourceServer(py::module_& m)
                         if (result.is_none()) {
                             return {};
                         }
-                        return result.cast<
-                            AttachmentResponse>();
+                        return py::cast<AttachmentResponse>(result);
                     });
             },
             py::arg("callback"),
+            py::rv_policy::reference,
             R"pbdoc(
             Set the callback invoked for `/attachment`. It receives an
             AttachmentRequest and returns AttachmentResponse or None.
         )pbdoc")
         .def(
             "on_cache_expired",
-            [](DataSourceServer& self, py::function callback) -> DataSourceServer&
+            [](DataSourceServer& self, py::callable callback) -> DataSourceServer&
             {
                 return self.onCacheExpired(
                     [callback = std::move(callback)](
@@ -658,6 +652,7 @@ void bindDataSourceServer(py::module_& m)
                     });
             },
             py::arg("callback"),
+            py::rv_policy::reference,
             R"pbdoc(
             Set the callback invoked when a service reports that an expired cached
             tile for this datasource is being refreshed. The callback receives
@@ -713,8 +708,8 @@ void bindDataSourceServer(py::module_& m)
             native type definitions; pass it alongside this dictionary to reconstruct
             a datasource without losing its identity contract.
         )pbdoc")
-        .def_property_readonly(
+        .def_prop_ro(
             "map_schema",
-            [](DataSourceServer& self) { return self.info().mapSchema_; },
+            [](DataSourceServer& self) { return finalizedSchema(self.info().mapSchema_); },
             "Return the shared immutable MapSchema, retaining its native owner.");
 }

@@ -231,8 +231,14 @@ endif()
 
 endif ()
 
-if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
-    CPMAddPackage("gh:pybind/pybind11@3.0.1")
+if (MAPGET_WITH_WHEEL)
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+    set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module
+                 OPTIONAL_COMPONENTS Development.SABIModule)
+    CPMAddPackage(NAME nanobind GITHUB_REPOSITORY wjakob/nanobind
+                  GIT_TAG v3.1.0 DOWNLOAD_ONLY YES)
+    include("${nanobind_SOURCE_DIR}/cmake/nanobind-config.cmake")
 endif()
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
@@ -247,7 +253,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.2.8@1.2.8")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#2072b59aa2a4b0048fbac61dd03411f33b5b7646")
 endif()
 
 if (MAPGET_ENABLE_TESTING)
