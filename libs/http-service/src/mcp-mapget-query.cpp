@@ -5,6 +5,7 @@
 #include "mapget/model/featureid.h"
 #include "mapget/model/layerschema.h"
 #include "mapget/model/mapschema.h"
+#include "mapget/model/shapepoint.h"
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatareference.h"
 #include "mapget/service/locate.h"
@@ -460,6 +461,7 @@ Json McpMapgetTools::Call::Query::evaluate(
         found = expressions_.emplace(std::move(key), std::move(*ast)).first;
     }
     simfil::Diagnostics data;
+    PointQueryError::Capture pointErrors;
     auto summary = simfil::eval(
         *env_,
         *found->second,
@@ -495,6 +497,14 @@ Json McpMapgetTools::Call::Query::evaluate(
          .deadline = call_.deadline_,
          .cancel = call_.cancelled.get()},
         &data);
+    try {
+        pointErrors.rethrowIfFailed();
+    }
+    catch (PointQueryError const& e) {
+        call_.issues_.push_back(boundedJson({{"phase", "evaluate"}, {"message", e.what()}}));
+        call_.truncate("query_error");
+        return Json::array();
+    }
     if (summary) {
         call_.remainingWork_ -= std::min(call_.remainingWork_, summary->work);
         if (summary->reason != simfil::EvaluationSummary::Reason::Complete)

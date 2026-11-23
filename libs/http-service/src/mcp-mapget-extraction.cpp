@@ -479,18 +479,13 @@ void McpMapgetTools::Call::Extraction::extractFeatures(PartitionFeatureLayer::Pt
                                      std::string_view(call_.arguments["attributeLayer"]
                                                           .get_ref<std::string const&>()) == name))
                                 {
-                                    auto validities = attribute->validityOrNull();
-                                    auto validityCount = validities ? validities->size() : 0;
+                                    auto view = attribute->validityView(feature, name);
+                                    auto validityCount = view.size();
                                     while (scan_->validity < std::max<uint32_t>(validityCount, 1)) {
                                         if (!call_.step())
                                             return;
                                         auto v = scan_->validity;
-                                        auto context = attribute->queryContext(
-                                            feature,
-                                            name,
-                                            index,
-                                            v,
-                                            validityCount);
+                                        auto context = view.queryContext(index, v);
                                         auto schema = tile->layerSchema() ?
                                             tile->layerSchema()->attributeQuerySchema(
                                                 feature->typeId(),
@@ -504,7 +499,7 @@ void McpMapgetTools::Call::Extraction::extractFeatures(PartitionFeatureLayer::Pt
                                             Json(v) :
                                             Json(nullptr);
                                         auto validity = validityCount ?
-                                            tile->resolve<Validity>(*validities->at(v)) :
+                                            view.at(v) :
                                             model_ptr<Validity>{};
                                         if (!extractRow(
                                                 feature,
@@ -587,7 +582,10 @@ bool McpMapgetTools::Call::Extraction::extractRow(
     }
     if (call_.arguments.value("geometry", false) && call_.incomplete_.empty()) {
         auto geometry = feature->geomOrNull();
-        if (!validity)
+        if (!validity && row.contains("validityIndex") && !row["validityIndex"].is_null())
+            row["geometry"] =
+                nullptr;  // A selected marker without a location is not the whole feature.
+        else if (!validity)
             row["geometry"] = geometry ?
                 call_.query_->valueJson(simfil::Value::field(simfil::ModelNode::Ptr(geometry))) :
                 Json(nullptr);
