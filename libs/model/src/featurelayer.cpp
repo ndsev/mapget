@@ -1297,6 +1297,8 @@ model_ptr<Validity>
 resolveInternal(tag<Validity>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
     switch (node.addr().column()) {
+    case PartitionFeatureLayer::ColumnId::MarkerValidityView:
+        return Validity(node, model.mpKey_);
     case PartitionFeatureLayer::ColumnId::Validities: {
         auto const validityIndex = node.addr().index();
         if (validityIndex >= model.impl_->validities_.size()) {
@@ -1396,6 +1398,7 @@ PartitionFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveF
         return {};
     case ColumnId::SourceDataReferences: cb(*resolve<SourceDataReferenceItem>(n)); return {};
     case ColumnId::Validities:
+    case ColumnId::MarkerValidityView:
     case ColumnId::SimpleValidity: cb(*resolve<Validity>(n)); return {};
     case ColumnId::ValidityPoints: cb(*resolve<PointNode>(n)); return {};
     case ColumnId::ValidityCollections: cb(*resolve<MultiValidity>(n)); return {};

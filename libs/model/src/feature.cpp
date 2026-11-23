@@ -28,6 +28,21 @@ model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model,
     }
     return model.resolve<Feature>(**rootResult);
 }
+
+// Generic property traversal and export know the host. Typed storage traversal
+// (clone, fingerprint, conversion) must never read or hash virtual markers.
+model_ptr<AttributeLayerList> publicAttributeLayers(model_ptr<Feature> const& feature)
+{
+    auto stored = feature->attributeLayersOrNull();
+    if (stored) {
+        auto schema = feature->model().layerSchema();
+        if (schema && !schema->pointSeries().empty())
+            return feature->model().resolve<AttributeLayerList>(simfil::ModelNodeAddress{
+                PartitionFeatureLayer::ColumnId::FeatureAttributeLayerListView,
+                feature->addr().index()});
+    }
+    return stored;
+}
 }  // namespace
 
 RelationArrayView::ExtensionPtr RelationArrayView::mergedExtension() const
@@ -511,8 +526,17 @@ void Feature::updateFields() const
 nlohmann::json Feature::toJson() const
 {
     auto json = simfil::MandatoryDerivedModelNodeBase<PartitionFeatureLayer>::toJson();
-    if (auto layers = attributeLayersOrNull()) {
-        json["properties"]["layer"] = layers->toJson();
+    // A duplicate basic property wraps every sibling in an array. The reserved
+    // layer map is always an object and is emitted first by FeaturePropertyView.
+    // Unwrap its already exported value rather than evaluating every marker twice.
+    if (auto props = json.find("properties"); props != json.end() && props->is_object()) {
+        auto layers = props->find("layer");
+        if (layers != props->end() && layers->is_array() && !layers->empty() &&
+            attributeLayerNodeAddress())
+        {
+            auto published = std::move(layers->front());
+            *layers = std::move(published);
+        }
     }
     return json;
 }
@@ -905,7 +929,7 @@ simfil::ModelNode::Ptr Feature::FeaturePropertyView::at(int64_t i) const
     if (!feature) {
         return {};
     }
-    auto mergedLayers = feature->attributeLayersOrNull();
+    auto mergedLayers = publicAttributeLayers(feature);
     if (mergedLayers) {
         if (i == 0)
             return mergedLayers;
@@ -934,7 +958,7 @@ simfil::ModelNode::Ptr Feature::FeaturePropertyView::get(const simfil::StringId&
         return {};
     }
     if (f == StringPool::LayerStr) {
-        auto mergedLayers = feature->attributeLayersOrNull();
+        auto mergedLayers = publicAttributeLayers(feature);
         if (mergedLayers) {
             return mergedLayers;
         }
@@ -968,7 +992,7 @@ bool Feature::FeaturePropertyView::iterate(const simfil::ModelNode::IterCallback
     if (!feature) {
         return true;
     }
-    if (auto mergedLayers = feature->attributeLayersOrNull()) {
+    if (auto mergedLayers = publicAttributeLayers(feature)) {
         if (!cb(*mergedLayers))
             return false;
     }

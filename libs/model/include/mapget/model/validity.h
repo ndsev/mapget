@@ -99,6 +99,7 @@ class Validity : public simfil::ProceduralObject<7, Validity, PartitionFeatureLa
     friend class PointNode;
     friend class AttrPointIndex;
     friend class AttrPointIndexRange;
+    friend class AttributeValidityView;
 
 public:
     using Direction = ValidityData::Direction;
@@ -276,9 +277,25 @@ public:
         simfil::ModelNodeAddress a,
         simfil::detail::mp_key key);
 
+    /** Reconstitute a read-only point marker after ModelNode slicing. */
+    Validity(simfil::ModelNode const& marker, simfil::detail::mp_key key);
+
     Validity() = delete;
 
 protected:
+    /** The source offset is public; vertex is its location on the selected source axis. */
+    static model_ptr<Validity> view(
+        model_ptr<Geometry> const& geometry,
+        uint32_t ordinal,
+        GeometryOffsetType type,
+        double offset,
+        double vertex,
+        Direction direction,
+        bool named,
+        bool planar,
+        std::optional<Point> const& explicitPosition = std::nullopt);
+    void exposeFields();
+
     /**
      * Materialize one direction-only occurrence and replace its collection slot.
      * Requires the owner context supplied by MultiValidity; detached simple views

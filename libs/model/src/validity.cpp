@@ -4,6 +4,9 @@
 #include "featurelayer.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace mapget
@@ -11,6 +14,34 @@ namespace mapget
 
 namespace
 {
+// A sliced ModelNode keeps only its owner, address and scalar payload. Retain
+// the two stations and the exact source geometry there, not in a tile column.
+// This is process-local data; it is never part of the stream format.
+struct MarkerPosition
+{
+    double offset;
+    double vertex;
+    simfil::ModelNodeAddress geometry;
+    Validity::GeometryOffsetType type;
+    Validity::Direction direction;
+    uint8_t named;
+    uint8_t planar;
+};
+static_assert(std::is_trivially_copyable_v<MarkerPosition> && sizeof(MarkerPosition) == 24);
+using MarkerCoordinates = std::array<double, 3>;
+
+MarkerPosition markerPosition(simfil::ModelNode const& node)
+{
+    auto bytes = std::get_if<simfil::ByteArray>(&node.runtimeData());
+    if (!bytes ||
+        (bytes->bytes.size() != sizeof(MarkerPosition) &&
+         bytes->bytes.size() != sizeof(MarkerPosition) + sizeof(MarkerCoordinates)))
+        raise("Invalid runtime point marker.");
+    MarkerPosition result;
+    std::memcpy(&result, bytes->bytes.data(), sizeof(result));
+    return result;
+}
+
 /** Return the full validity record backing an AttrPoint index view. */
 model_ptr<Validity>
 attrPointValidity(PartitionFeatureLayer const& model, simfil::ModelNodeAddress const& viewAddress)
@@ -466,6 +497,8 @@ GeomType geomTypeForOffsetValidity(
 
 void Validity::ensureMaterialized()
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
+        raise("A point-series marker is a read-only view.");
     if (data_) {
         return;
     }
@@ -560,7 +593,47 @@ Validity::Validity(
     : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
       data_(data)
 {
-    if (data_->direction_)
+    exposeFields();
+}
+
+model_ptr<Validity> Validity::view(
+    model_ptr<Geometry> const& geometry,
+    uint32_t ordinal,
+    GeometryOffsetType type,
+    double offset,
+    double vertex,
+    Direction direction,
+    bool named,
+    bool planar,
+    std::optional<Point> const& explicitPosition)
+{
+    MarkerPosition position{offset, vertex, geometry->addr(), type, direction, named, planar};
+    simfil::ByteArray payload{
+        std::string_view{reinterpret_cast<char const*>(&position), sizeof(position)}};
+    if (explicitPosition) {
+        MarkerCoordinates xyz{explicitPosition->x, explicitPosition->y, explicitPosition->z};
+        payload.bytes.append(reinterpret_cast<char const*>(xyz.data()), sizeof(xyz));
+    }
+    auto node = ModelNode::Ptr::make(
+        geometry->owningModel(),
+        ModelNodeAddress{PartitionFeatureLayer::ColumnId::MarkerValidityView, ordinal},
+        std::move(payload));
+    return model_ptr<Validity>::make(*node);
+}
+
+Validity::Validity(simfil::ModelNode const& marker, simfil::detail::mp_key key)
+    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(
+          marker.owningModel(),
+          marker.addr(),
+          key)
+{
+    ModelNode::data_ = marker.runtimeData();
+    exposeFields();
+}
+
+void Validity::exposeFields()
+{
+    if (direction() != Empty)
         fields_.emplace_back(
             StringPool::DirectionStr,
             [](Validity const& self) {
@@ -576,7 +649,8 @@ Validity::Validity(
             { return model_ptr<simfil::ValueNode>::make(*referencedGeometryName, self.model_); });
     }
 
-    if (data_->geomDescrType_ == SimpleGeometry) {
+    auto const description = geometryDescriptionType();
+    if (description == SimpleGeometry) {
         // SimpleGeometry stores an explicit geometry node, so no offset or
         // transition metadata fields are exposed in the JSON view.
         fields_.emplace_back(
@@ -586,7 +660,7 @@ Validity::Validity(
         return;
     }
 
-    if (data_->geomDescrType_ == FeatureTransition) {
+    if (description == FeatureTransition) {
         // Semantic transitions serialize as feature references plus endpoint
         // metadata instead of an explicit geometry payload.
         fields_.emplace_back(
@@ -622,21 +696,21 @@ Validity::Validity(
         return;
     }
 
-    if (data_->geomDescrType_ == AttrPointIndexValidity) {
+    if (description == AttrPointIndexValidity) {
         fields_.emplace_back(
             StringPool::AttrPointIndexStr,
             [](Validity const& self) { return self.attrPointIndex(); });
         return;
     }
 
-    if (data_->geomDescrType_ == AttrPointIndexRangeValidity) {
+    if (description == AttrPointIndexRangeValidity) {
         fields_.emplace_back(
             StringPool::AttrPointIndexRangeStr,
             [](Validity const& self) { return self.attrPointIndexRange(); });
         return;
     }
 
-    if (data_->geomOffsetType_ != InvalidOffsetType) {
+    if (geometryOffsetType() != InvalidOffsetType) {
         fields_.emplace_back(
             StringPool::OffsetTypeStr,
             [](Validity const& self)
@@ -678,17 +752,16 @@ Validity::Validity(
             });
     };
 
-    if (data_->geomDescrType_ == OffsetRangeValidity) {
-        auto& start = data_->geomDescr_.range_.first;
-        auto& end = data_->geomDescr_.range_.second;
+    if (auto range = offsetRange()) {
+        auto const& [start, end] = *range;
         exposeOffsetPoint(StringPool::StartStr, 1, start);
         exposeOffsetPoint(StringPool::EndStr, 2, end);
     }
-    else if (data_->geomDescrType_ == OffsetPointValidity) {
-        exposeOffsetPoint(StringPool::PointStr, 0, data_->geomDescr_.point_);
+    else if (auto point = offsetPoint()) {
+        exposeOffsetPoint(StringPool::PointStr, 0, *point);
     }
 
-    if (data_->featureAddress_) {
+    if (data_ && data_->featureAddress_) {
         fields_.emplace_back(
             StringPool::FeatureIdStr,
             [](Validity const& self) { return self.featureId(); });
@@ -703,6 +776,8 @@ void Validity::setDirection(const Validity::Direction& v)
 
 Validity::Direction Validity::direction() const
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
+        return markerPosition(*this).direction;
     if (!data_) {
         return simpleDirection_;
     }
@@ -711,6 +786,8 @@ Validity::Direction Validity::direction() const
 
 Validity::GeometryOffsetType Validity::geometryOffsetType() const
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
+        return markerPosition(*this).type;
     if (!data_) {
         return InvalidOffsetType;
     }
@@ -719,6 +796,8 @@ Validity::GeometryOffsetType Validity::geometryOffsetType() const
 
 Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
+        return OffsetPointValidity;
     if (!data_) {
         return NoGeometry;
     }
@@ -733,6 +812,10 @@ void Validity::setGeometryName(std::optional<std::string_view> geometryName)
 
 std::optional<std::string_view> Validity::geometryName() const
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView) {
+        auto m = markerPosition(*this);
+        return m.named ? model().geometryName(m.geometry) : std::nullopt;
+    }
     if (!data_) {
         return {};
     }
@@ -758,6 +841,8 @@ void Validity::setOffsetPoint(Validity::GeometryOffsetType offsetType, double po
 
 std::optional<Point> Validity::offsetPoint() const
 {
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
+        return Point{markerPosition(*this).offset, 0., 0.};
     if (!data_) {
         return {};
     }
@@ -998,6 +1083,40 @@ SelfContainedGeometry Validity::computeGeometry(
 {
     if (transitionPivotIndex) {
         *transitionPivotIndex = std::numeric_limits<uint32_t>::max();
+    }
+    if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView) {
+        // Never reselect by name: two geometries with that name can be distinct.
+        auto m = markerPosition(*this);
+        auto source = geometryCollection ?
+            geometryCollection->mergedAt(addr().index()) :
+            ModelNode::Ptr{};
+        if (!source || source->borrowedModel() != borrowedModel() || source->addr() != m.geometry) {
+            if (error)
+                *error = "Marker geometry is not part of this occurrence.";
+            return {};
+        }
+        auto const& bytes = std::get<simfil::ByteArray>(runtimeData()).bytes;
+        if (bytes.size() > sizeof(MarkerPosition)) {
+            // An inserted logical point is source geometry in its own right; it
+            // need not sit on the segment between its original neighbours.
+            MarkerCoordinates xyz;
+            std::memcpy(xyz.data(), bytes.data() + sizeof(MarkerPosition), sizeof(xyz));
+            return {{Point{xyz[0], xyz[1], xyz[2]}}, {}, GeomType::Points};
+        }
+        auto geometry = model().resolve<Geometry>(*source);
+        if (!std::isfinite(m.vertex) || m.vertex < 0 || m.vertex >= double(geometry->numPoints()))
+            return {};
+        auto i = static_cast<uint32_t>(m.vertex);
+        Point point = geometry->pointAt(i);
+        if (auto t = m.vertex - i; t != 0 && i + 1 < geometry->numPoints()) {
+            auto delta = geometry->pointAt(i + 1) - point;
+            if (m.planar)
+                delta.x = std::remainder(delta.x, 360.);
+            point += delta * t;
+            if (m.planar && std::abs(point.x) > 180.)
+                point.x = std::remainder(point.x, 360.);
+        }
+        return {{point}, {}, GeomType::Points};
     }
     if (geometryDescriptionType() == SimpleGeometry) {
         // Return the self-contained geometry points.
