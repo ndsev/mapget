@@ -207,7 +207,8 @@ TEST_CASE(
     for (auto const& candidate : {MapSchema::ConstPtr(schema), copy}) {
         auto view = candidate->layer("Road");
         CHECK(view->attributeScopes().size() == 2);
-        CHECK(candidate->statistics()["counts"]["queryContexts"] == 1);
+        CHECK(candidate->statistics()["counts"]["attributeQueryContexts"] == 1);
+        CHECK(candidate->statistics()["counts"]["shapePointRoots"] == 1);
         auto query = view->attributeQuerySchema("Road", attribute);
         REQUIRE(query != simfil::NoTypeId);
         CHECK(view->childSchema(query, "$feature") == root);
@@ -584,7 +585,7 @@ std::pair<size_t, size_t> binaryColumn(std::string const& payload, size_t start,
     throw std::logic_error("Unreachable binary column index.");
 }
 
-/** Mutate the map metadata column in a checksum-valid codec-v7 payload, so
+/** Mutate the map metadata column in a checksum-valid v7/v8 payload, so
  * malformed-graph tests reach the structural reader rather than the digest check. */
 std::vector<uint8_t>
 mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)> const& change)
@@ -598,7 +599,7 @@ mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)>
     input.value4b(version);
     input.text1b(identity, 128);
     input.text1b(payload, 64 * 1024 * 1024);
-    REQUIRE(version == 7);
+    REQUIRE((version == 7 || version == 8));
     REQUIRE(input.adapter().isCompletedSuccessfully());
     std::vector<uint8_t> body(payload.begin(), payload.end());
     bitsery::Deserializer<Adapter> content(Adapter(body.begin(), body.end()));
@@ -899,7 +900,9 @@ TEST_CASE("Layer JSON roundtrip retains local aliases and only reachable types",
     restored->finalize();
     // A standalone layer gets a new compact type-ID namespace, not holes for A.
     REQUIRE(copy->featureSchema("Road"));
-    CHECK(restored->typeCount() == graph->typeCount() - 1);
+    CHECK(
+        restored->statistics()["counts"]["physicalTypes"].get<size_t>() ==
+        graph->statistics()["counts"]["physicalTypes"].get<size_t>() - 1);
     REQUIRE(copy->mapSchema()->featureIdentities().size() == 1);
     CHECK(
         copy->mapSchema()->featureIdentities().front().toJson() ==

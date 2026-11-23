@@ -1184,6 +1184,9 @@ LayerSchema::Ptr MapSchema::importLayer(
                     auto index = added->addr().index();
                     // Native import remaps produced memberships inside the same transaction.
                     auto imported = schema_->import(*staged, index, root);
+                    if (auto meta = mapgetMetadata(json);
+                        meta && meta->contains("pointMeasurements"))
+                        schema_->importPointDeclarations(index, meta->at("pointMeasurements"));
                     schema_->layerBuild.at(index).fingerprint = std::move(fingerprint);
                     schema_->layerAt(index).root = imported;
                     result = std::move(added);
@@ -1492,7 +1495,8 @@ Json LayerSchema::toJsonSchema() const
     for (size_t index = 1; index < reachable.size(); ++index) {
         auto id = TypeId(index);
         auto const& row = graph.data(id);
-        if (!reachable[id] || row.flags & MapSchema::Impl::QueryRootFlag)
+        if (!reachable[id] ||
+            row.flags & (MapSchema::Impl::QueryRootFlag | MapSchema::Impl::PointQueryFlag))
             continue;
         auto type = owner->schemaType(id);
         auto kindName = simfil::SchemaType::kindNameId(type.kind());
@@ -1704,6 +1708,8 @@ Json LayerSchema::toJsonSchema() const
                 {"anyOf", Json::array({std::move(out), {{"type", "null"}}})}};
         }
     }
+    if (auto points = graph.pointDeclarationsJson(addr_.index()); !points.is_null())
+        result["x-mapget"]["pointMeasurements"] = std::move(points);
     if (graph.relationsDeclared(layer)) {
         for (auto const& [name, root] : graph.featureRoots(layer)) {
             auto& metadata = result["definitions"][std::to_string(root)]["x-mapget"];

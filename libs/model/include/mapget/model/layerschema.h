@@ -216,13 +216,25 @@ public:
         std::string_view layer,
         std::string_view name);
 
-    /** Declare original-vertex measurements on an existing feature/layer/attribute use site. */
+    /** Declare original-vertex measurements on a named Attribute use site. Finalization
+     * validates the actual record and operand types, including referenced profiles. */
     void addPointSeries(PointSeries series);
+    /** Register a layer-local portable transform. Repeating an identical declaration is harmless.
+     */
     void addPointCodec(std::string name, PointSeries::Codec codec);
+
+    /** Borrow the immutable declaration inventory after publication; retain this layer or its map.
+     */
     [[nodiscard]] std::span<PointSeries const> pointSeries() const;
+
+    /** Borrow only this concrete use site's series. Requires a finalized schema. */
+    [[nodiscard]] std::span<PointSeries const>
+    pointSeries(std::string_view feature, std::string_view attributeLayer, std::string_view name)
+        const;
     [[nodiscard]] PointSeries::Codec const* pointCodec(std::string_view name) const;
 
-    /** Context for point-scope expressions; NoTypeId for an unknown feature. */
+    /** Point-scope root of a produced feature. Unknown features, unfinished graphs and
+     * pre-point (v7) artifacts have no such root and return NoTypeId. */
     [[nodiscard]] simfil::TypeId shapePointQuerySchema(std::string_view featureType) const;
 
     /** Test this layer's production membership, independently of map-wide identity lookup. */
