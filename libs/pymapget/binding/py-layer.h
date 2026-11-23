@@ -415,6 +415,7 @@ inline SourceDataAddress sourceDataAddressFromPython(py::handle value)
 inline model_ptr<SourceDataReferenceCollection>
 makeSourceDataReferences(PartitionFeatureLayer& self, py::iterable const& entries)
 {
+    auto asText = [](py::handle value) { return py::cast<std::string>(py::str(value)); };
     std::vector<QualifiedSourceDataReference> refs;
     for (auto const& item : entries) {
         std::string layerId;
@@ -423,22 +424,16 @@ makeSourceDataReferences(PartitionFeatureLayer& self, py::iterable const& entrie
 
         if (py::isinstance<py::dict>(item)) {
             auto dict = py::borrow<py::dict>(item);
-            py::object layerIdObject;
-            if (dict.contains("layer_id")) {
-                layerIdObject = dict["layer_id"];
-            } else {
-                layerIdObject = dict["layerId"];
-            }
-            layerId = py::cast<std::string>(py::str(layerIdObject));
-            qualifier = py::cast<std::string>(py::str(dict["qualifier"]));
+            layerId = asText(dict[dict.contains("layer_id") ? "layer_id" : "layerId"]);
+            qualifier = asText(dict["qualifier"]);
             address = sourceDataAddressFromPython(dict["address"]);
         } else {
             auto tuple = py::borrow<py::tuple>(item);
             if (tuple.size() != 3) {
                 throw py::value_error("source-data references must be dicts or (layer_id, qualifier, address) tuples");
             }
-            layerId = py::cast<std::string>(py::str(tuple[0]));
-            qualifier = py::cast<std::string>(py::str(tuple[1]));
+            layerId = asText(tuple[0]);
+            qualifier = asText(tuple[1]);
             address = sourceDataAddressFromPython(tuple[2]);
         }
 
