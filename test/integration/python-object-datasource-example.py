@@ -117,6 +117,23 @@ def exercise(source, port):
         "sourceId": payload["sourceId"],
         "sourceRevision": payload["sourceRevision"]}]
 
+    # A binary shape-point row contains the original index even when the first
+    # vertex was filtered out. Its local dependency identifies the source above.
+    vertices = mapget.FilterChannel(
+        "vertices", mapget.FilterScope.SHAPE_POINT,
+        entry_filter="$pointIndex == 1", entry_fields=["$pointIndex"])
+    point_request = mapget.FilterRequest(
+        source.MAP, source.LAYER, partitions, "road-end", 1, [vertices],
+        source_id=layer.source_id())
+    points, = client.filter(point_request)
+    row, = points[0].shape_point_entries()
+    assert row.feature_id().to_string() == canonical_id
+    assert (row.geometry_ordinal(), row.point_index()) == (0, 1)
+    assert row.values().to_dict() == [[1]]
+    assert points[0].shape_point_entry_at(1) is None
+    assert points.dependencies()[0]["source_id"] == layer.source_id()
+    assert points.dependencies()[0]["source_revision"] == layer.source_revision()
+
     empty = client.discover_objects(mapget.ObjectDiscoveryRequest(
         source.MAP, source.LAYER, PackedTileId.from_wgs84(0, 0, source.LEVEL)))
     assert empty.status == mapget.ObjectDiscoveryStatus.SUCCESS and not empty.objects
