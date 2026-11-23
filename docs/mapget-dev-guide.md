@@ -866,22 +866,18 @@ Both preserve unrelated public YAML; field PATCH does not reload datasources.
 ## Releases
 
 On `release/X.Y.Z`, set `MAPGET_VERSION` in `CMakeLists.txt` to `X.Y.Z`.
-Merge the green release PR to `main`, wait for `CI and Deploy`, then run the
-manual `Create Release` workflow from `main`. Enter the version without `v`.
 
-The guarded workflow validates the CMake version and successful `main` CI,
-creates `vX.Y.Z`, and dispatches the wheel matrix. `setuptools_scm` supplies
-tagged and development versions. Pull requests and ordinary branch pushes
-build and test without uploading to PyPI. To publish a preview, dispatch
-`CI and Deploy` on the intended `release/X.Y.Z` branch. It checks the branch
-against the CMake version and publishes the next `X.Y.ZrcN` after the highest
-candidate already on PyPI (starting at `rc1`). Use `pip install --pre mapget`
-in a clean environment to try it; plain `pip install mapget` selects the last
-final release. Dispatches on tags retain their existing final-release behavior.
+**Preview before merging:** Manually run `CI and Deploy` on that release
+branch. It checks the CMake version, refuses a version already published as
+final, and publishes the next `X.Y.ZrcN` on PyPI after the tests pass
+(starting at `rc1`). Pull requests and ordinary branch builds do not publish
+a preview. See the [setup guide](mapget-setup.md#installing-mapget) for the
+stable and preview install commands.
 
-The wheel contains one nanobind split-mode extension per platform and CPU
-architecture. CPython 3.10 and newer share the `cp310-abi3` artifact; pip
-selects the matching `nanobind-backend` runtime for the interpreter.
+**Final release:** Merge the green release PR to `main`, wait for `CI and
+Deploy` to pass there, then run `Create Release` from `main` with `X.Y.Z`
+(no `v`). It verifies the CMake version and successful CI, creates `vX.Y.Z`,
+and dispatches the tagged wheel build. An RC is not retagged as the final.
 
 ## Datasource initialization recovery
 
