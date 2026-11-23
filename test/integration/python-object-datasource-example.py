@@ -81,6 +81,16 @@ def exercise(source, port):
     assert payload["sourceId"] == layer.source_id()
     assert payload["sourceRevision"] == layer.source_revision()
     assert payload["sourceRevision"]
+    # Inspection asks the recorded provider for just the picked host. Even an
+    # empty selection carries the revision of the complete source partition.
+    for feature_id, expected_ids in [(canonical_id, [canonical_id]), ("Road.0.0", [])]:
+        selection = {**request, "sourceId": layer.source_id(), "featureIds": [{
+            "partition": request["partitions"][0], "ids": [feature_id]}]}
+        selected = json.loads(post(base, "/tiles", {
+            "requests": [selection], "responseType": "jsonl"}).splitlines()[0])
+        assert [feature["id"] for feature in selected["features"]] == expected_ids
+        assert selected["sourceId"] == layer.source_id()
+        assert selected["sourceRevision"] == layer.source_revision()
     subsets = post(base, "/filter", {
         "requests": [request], "responseType": "jsonl",
         "channels": [{"channelId": "roads", "scope": "feature",
