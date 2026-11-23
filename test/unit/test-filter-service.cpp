@@ -2672,6 +2672,7 @@ TEST_CASE(
     failed->setError("output source unavailable");
     failed->setErrorCode(503);
     failed->setTtl(std::chrono::seconds{5});
+    failed->publishSourceSnapshot(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     FeatureLayerFilterRequest definition{
@@ -2783,6 +2784,7 @@ TEST_CASE(
         cache->getStringPool(info.stringPoolId_));
     failed->setError("halo unavailable");
     failed->setTtl(std::chrono::seconds(5));
+    failed->publishSourceSnapshot(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     auto definition = filterDefinition();
