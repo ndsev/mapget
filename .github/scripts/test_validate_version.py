@@ -10,12 +10,30 @@ from validate_version import (
     determine_release_context,
     get_base_version,
     get_cmake_version,
+    next_candidate,
     validate_versions,
 )
 
 
 class ValidateVersionTest(unittest.TestCase):
     """Covers each CI event that introduces a release identity."""
+
+    def test_candidate_only_on_release_branch_dispatch(self):
+        event = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/release/2026.6.0"}
+        context = determine_release_context(event)
+        self.assertEqual(context, ReleaseContext("2026.6.0", "Release candidate"))
+        self.assertTrue(validate_versions("2026.5.0", "2026.5.1.dev1", context))
+        for ref in ["refs/heads/main", "refs/heads/feature/x"]:
+            self.assertIsNone(determine_release_context(dict(event, GITHUB_REF=ref)).expected_version)
+        with self.assertRaises(ValueError):
+            determine_release_context(dict(event, GITHUB_REF="refs/heads/release/bad"))
+
+    def test_next_candidate_uses_only_matching_releases(self):
+        self.assertEqual(next_candidate("1.0.0", {}), "1.0.0rc1")
+        releases = dict.fromkeys(["1.0.0rc2", "1.0.0rc10", "1.0.0.dev500", "1.0.1rc90"])
+        self.assertEqual(next_candidate("1.0.0", releases), "1.0.0rc11")
+        with self.assertRaises(ValueError):
+            next_candidate("1.0.0", {"1.0.0": []})
 
     def test_extracts_cmake_and_scm_base_versions(self):
         with tempfile.TemporaryDirectory() as directory:

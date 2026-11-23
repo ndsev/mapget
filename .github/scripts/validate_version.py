@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -11,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
+from urllib.request import urlopen
 
 
 CMAKE_VERSION_PATTERN = re.compile(r"set\(MAPGET_VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\)")
@@ -124,8 +126,25 @@ def determine_release_context(
             )
         expected = branch_version
         build_type = "Release pull request"
+    elif environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and github_ref.startswith("refs/heads/release/"):
+        branch_version = normalize_release_version(
+            github_ref.removeprefix("refs/heads/release/"), "release branch", allow_leading_v=False
+        )
+        if expected and expected != branch_version:
+            raise ValueError(f"Requested release {expected} does not match release branch {branch_version}.")
+        expected = branch_version
+        build_type = "Release candidate"
 
     return ReleaseContext(expected, build_type, require_scm_match)
+
+
+def next_candidate(base: str, releases: Mapping) -> str:
+    """Count only published candidates for this exact final version."""
+    if base in releases:
+        raise ValueError(f"Final release {base} is already on PyPI.")
+    pattern = re.compile(re.escape(base) + r"rc([0-9]+)")
+    numbers = (int(match[1]) for name in releases if (match := pattern.fullmatch(name)))
+    return f"{base}rc{max(numbers, default=0) + 1}"
 
 
 def validate_versions(
@@ -159,6 +178,8 @@ def validate_versions(
 def main() -> int:
     """Validate the current checkout and publish resolved values to GitHub Actions."""
     parser = argparse.ArgumentParser()
+    parser.add_argument("--resolve-candidate", action="store_true",
+                        help="Choose the package version for a candidate build from PyPI.")
     parser.add_argument(
         "--expected-version",
         help="Release version requested by the guarded release workflow.",
@@ -194,8 +215,12 @@ def main() -> int:
     print("Version validation passed.")
 
     if output_path := os.environ.get("GITHUB_OUTPUT"):
+        version = scm_version
+        if args.resolve_candidate and context.build_type == "Release candidate":
+            with urlopen("https://pypi.org/pypi/mapget/json", timeout=30) as response:
+                version = next_candidate(cmake_version, json.load(response)["releases"])
         with open(output_path, "a", encoding="utf-8") as output:
-            output.write(f"version={scm_version}\n")
+            output.write(f"version={version}\n")
             output.write(f"base_version={scm_base_version}\n")
             output.write(f"cmake_version={cmake_version}\n")
 

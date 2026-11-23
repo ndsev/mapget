@@ -871,9 +871,17 @@ manual `Create Release` workflow from `main`. Enter the version without `v`.
 
 The guarded workflow validates the CMake version and successful `main` CI,
 creates `vX.Y.Z`, and dispatches the wheel matrix. `setuptools_scm` supplies
-tagged and development versions. Release PRs publish unique development
-previews such as `2026.3.5.dev31001`; ordinary `main` pushes build but do not
-upload another snapshot.
+tagged and development versions. Pull requests and ordinary branch pushes
+build and test without uploading to PyPI. To publish a preview, dispatch
+`CI and Deploy` on the intended `release/X.Y.Z` branch. It checks the branch
+against the CMake version and publishes the next `X.Y.ZrcN` after the highest
+candidate already on PyPI (starting at `rc1`). Use `pip install --pre mapget`
+in a clean environment to try it; plain `pip install mapget` selects the last
+final release. Dispatches on tags retain their existing final-release behavior.
+
+The wheel contains one nanobind split-mode extension per platform and CPU
+architecture. CPython 3.10 and newer share the `cp310-abi3` artifact; pip
+selects the matching `nanobind-backend` runtime for the interpreter.
 
 ## Datasource initialization recovery
 
