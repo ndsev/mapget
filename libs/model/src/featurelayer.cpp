@@ -330,6 +330,17 @@ PartitionFeatureLayer::PartitionFeatureLayer(
     : PartitionFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
       impl_(std::make_unique<Impl>(strings, layerInfo))
 {
+    // Publish decoded field spellings even when a source stores its values under
+    // different names. Read-side point evaluation never interns into a published tile.
+    if (auto schema = layerSchema())
+        for (auto const& series : schema->pointSeries()) {
+            if (series.markers_ == PointSeries::Markers::PointValidities &&
+                !strings->emplace("pointValidities"))
+                throw std::length_error("Point validity name exceeds the tile dictionary.");
+            for (auto const& field : series.fields_)
+                if (!strings->emplace(field.name_))
+                    throw std::length_error("Point-series field name exceeds the tile dictionary.");
+        }
     setSchemaPool(layerInfo_->schemaOwner());
     impl_->geometryAnchor_ = Point(
         tileId.kind() == PartitionKind::Tile ?
@@ -1433,7 +1444,15 @@ tl::expected<PartitionFeatureLayer::QueryResult, simfil::Error> PartitionFeature
     impl_->expressionEnvironment_->traces.clear();
     simfil::BoundExpression expression(*ast, *impl_->expressionEnvironment_);
     QueryResult result;
+    PointQueryError::Capture pointErrors;
     auto values = expression.eval(node, &result.diagnostics);
+    try {
+        pointErrors.rethrowIfFailed();
+    }
+    catch (PointQueryError const& e) {
+        impl_->expressionEnvironment_->traces.clear();
+        return tl::unexpected(simfil::Error(simfil::Error::RuntimeError, e.what()));
+    }
     if (!values) {
         impl_->expressionEnvironment_->traces.clear();
         return tl::unexpected(values.error());

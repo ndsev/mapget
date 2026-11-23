@@ -25,6 +25,8 @@ add_library(mapget-model STATIC
   include/mapget/model/relation.h
   include/mapget/model/incoming-relations.h
   include/mapget/model/point.h
+  include/mapget/model/pointseries.h
+  include/mapget/model/shapepoint.h
   include/mapget/model/pointcloud-sampler.h
     include/mapget/model/pointcloud-geometry.h
   include/mapget/model/pointnode.h
@@ -55,6 +57,7 @@ add_library(mapget-model STATIC
   src/json-compare.cpp
   src/layerschema.cpp
   src/layerschema-search.cpp
+  src/mapschema-pointseries.cpp
   src/mapschema.cpp
   src/mapschema-descriptor.cpp
   src/mapschema-query.cpp
@@ -65,12 +68,18 @@ add_library(mapget-model STATIC
   src/info.cpp
   src/feature.cpp
   src/attr.cpp
+  src/attribute-validity-view.cpp
   src/attrpoint.cpp
   src/attrlayer.cpp
   src/featureid.cpp
   src/relation.cpp
   src/stream.cpp
   src/geometry.cpp
+  src/shapepoint.cpp
+  src/shapepoint-axis.cpp
+  src/shapepoint-series.cpp
+  src/shapepoint-sampling.cpp
+  src/shapepoint-context.cpp
   src/point.cpp
   src/pointnode.cpp
   src/simfilgeometry.cpp

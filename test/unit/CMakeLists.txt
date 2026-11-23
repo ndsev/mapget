@@ -10,6 +10,9 @@ add_executable(test.mapget
   test-feature-id-index.cpp
   test-foreign-feature-id.cpp
   test-model-geometry.cpp
+  test-shapepoint.cpp
+  test-attribute-validity-view.cpp
+  test-mapschema-pointseries.cpp
   test-pointcloud-sampler.cpp
   test-incoming-relations.cpp
   test-filter-service.cpp
