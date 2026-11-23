@@ -222,7 +222,21 @@ private:
             return;
         }
         ancestors_.push_back(key);
-        if (column == Column::GeometryCollections || column == Column::FeatureGeometryCollectionView) {
+        if (column == Column::AttributeLayerLists || column == Column::FeatureAttributeLayerListView) {
+            // Generic field lookup binds each occurrence to its host and can
+            // expose virtual measurement markers to SIMFIL and inspection.
+            // Walk the stored layer handles instead. Their physical fields
+            // include occurrence discriminators, raw records and stored
+            // validities without resolving a record against a geometry.
+            byte('v');
+            auto layers = owner->resolve<AttributeLayerList>(value);
+            number(layers->size());
+            layers->forEachLayer([&](std::string_view name, model_ptr<AttributeLayer> const& layer) {
+                text(name);
+                optionalNode(layer);
+                return true;
+            });
+        } else if (column == Column::GeometryCollections || column == Column::FeatureGeometryCollectionView) {
             byte('G');
             auto collection = owner->resolve<GeometryCollection>(value);
             number(collection->numGeometries());
