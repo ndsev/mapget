@@ -5,6 +5,35 @@
 namespace mapget
 {
 
+namespace
+{
+void storeOrdinal(Attribute& attribute, std::string_view key, uint32_t ordinal)
+{
+    auto id = attribute.model().strings()->get(key);
+    if (id && attribute.get(id))
+        throw std::invalid_argument("Point series occurrence discriminator already set.");
+    if (!attribute.addField(key,attribute.model().newValue(int64_t(ordinal))))
+        throw std::invalid_argument("Cannot store point series occurrence discriminator.");
+}
+
+std::optional<uint32_t> storedOrdinal(Attribute const& attribute, std::string_view key)
+{
+    auto id=attribute.model().strings()->get(key);
+    auto node=id?attribute.get(id):simfil::ModelNode::Ptr{};
+    if (!node) return {};
+    auto value=node->value();
+    auto raw=std::get_if<int64_t>(&value);
+    if (!raw || *raw<0 || static_cast<uint64_t>(*raw)>UINT32_MAX)
+        throw std::invalid_argument("Invalid point series occurrence discriminator.");
+    return static_cast<uint32_t>(*raw);
+}
+}
+
+void Attribute::setPointSeriesBranch(uint32_t value) {storeOrdinal(*this,"_mapgetPointSeriesBranch",value);}
+void Attribute::setPointSeriesGeometry(uint32_t value) {storeOrdinal(*this,"_mapgetPointSeriesGeometry",value);}
+std::optional<uint32_t> Attribute::pointSeriesBranch() const {return storedOrdinal(*this,"_mapgetPointSeriesBranch");}
+std::optional<uint32_t> Attribute::pointSeriesGeometry() const {return storedOrdinal(*this,"_mapgetPointSeriesGeometry");}
+
 model_ptr<simfil::OverlayNode> Attribute::queryContext(
     model_ptr<Feature> const& feature,
     std::string_view layerName,

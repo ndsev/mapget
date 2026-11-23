@@ -28,6 +28,13 @@ public:
     [[nodiscard]] model_ptr<MultiValidity> validityOrNull() const;
     void setValidity(const model_ptr<MultiValidity>& validities) const;
 
+    /** Optional source disambiguators on this occurrence. Omit both for uniquely
+     * resolvable declarations. Restricted feature clones carry these as model fields. */
+    void setPointSeriesBranch(uint32_t referencedBranch);
+    void setPointSeriesGeometry(uint32_t geometryOrdinal);
+    [[nodiscard]] std::optional<uint32_t> pointSeriesBranch() const;
+    [[nodiscard]] std::optional<uint32_t> pointSeriesGeometry() const;
+
     /**
      * Read-only attribute name accessor.
      */

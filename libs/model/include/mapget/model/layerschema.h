@@ -16,6 +16,7 @@
 #include "mapget/model/featureschema.h"
 #include "mapget/model/info.h"
 #include "mapget/model/memory.h"
+#include "mapget/model/pointseries.h"
 #include "mapget/model/stringpool.h"
 #include "simfil/error.h"
 #include "simfil/evaluation.h"
@@ -214,6 +215,15 @@ public:
         std::string_view featureType,
         std::string_view layer,
         std::string_view name);
+
+    /** Declare original-vertex measurements on an existing feature/layer/attribute use site. */
+    void addPointSeries(PointSeries series);
+    void addPointCodec(std::string name, PointSeries::Codec codec);
+    [[nodiscard]] std::span<PointSeries const> pointSeries() const;
+    [[nodiscard]] PointSeries::Codec const* pointCodec(std::string_view name) const;
+
+    /** Context for point-scope expressions; NoTypeId for an unknown feature. */
+    [[nodiscard]] simfil::TypeId shapePointQuerySchema(std::string_view featureType) const;
 
     /** Test this layer's production membership, independently of map-wide identity lookup. */
     [[nodiscard]] bool producesFeatureType(std::string_view name) const;

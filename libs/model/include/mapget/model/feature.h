@@ -6,6 +6,7 @@
 #include "attrlayer.h"
 #include "featureid.h"
 #include "tileid.h"
+#include "shapepoint.h"
 #include "relation.h"
 #include "geometry.h"
 #include "merged-array-view.h"
@@ -105,6 +106,10 @@ public:
      */
     model_ptr<GeometryCollection> geom();
     [[nodiscard]] model_ptr<GeometryCollection> geomOrNull() const;
+
+    /** Invalid geometry ordinals yield an empty range; cancellation is query-local. */
+    [[nodiscard]] ShapePointRange shapePoints(
+        uint32_t geometryOrdinal, std::function<bool()> cancelled = {}) const;
 
     /** Copy the first stored geometry, or return an empty value when none is attached. */
     [[nodiscard]] SelfContainedGeometry firstGeometry() const;
