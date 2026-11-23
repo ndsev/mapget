@@ -97,12 +97,15 @@ private:
             node(*value);
     }
 
-    /** The source feature owns geometry slots, including repeated or coincident lines. */
-    void host(Feature const& feature)
+    /** Keep the map and typed parts of a reference, including secondary and foreign IDs. */
+    void identity(FeatureId const& id)
     {
-        text(feature.typeId());
-        number(feature.schemaType().id());
-        auto parts = feature.id()->keyValuePairs();
+        text(id.typeId());
+        auto map = id.externalMapId();
+        byte(map.has_value());
+        if (map)
+            text(*map);
+        auto parts = id.keyValuePairs();
         number(parts.size());
         for (auto const& [key, value] : parts) {
             text(key);
@@ -112,6 +115,13 @@ private:
             else
                 text(std::get<std::string_view>(value));
         }
+    }
+
+    /** The source feature owns geometry slots, including repeated or coincident lines. */
+    void host(Feature const& feature)
+    {
+        identity(*feature.id());
+        number(feature.schemaType().id());
         optionalNode(feature.sourceDataReferences());
         auto geometries = feature.geomOrNull();
         number(geometries ? geometries->numGeometries() : 0);
@@ -172,6 +182,17 @@ private:
         if (schema)
             text(schema.pool()->identity() == layer_.schemaId() ? std::string_view{} : schema.pool()->identity());
 
+        // A local FeatureId exposes a string to SIMFIL. Its typed identity and
+        // an ordinary string with that spelling are distinct inspection data.
+        // Resolve every model-specific node in its own pool, including nodes
+        // supplied by a different partition through a merged feature view.
+        auto const* owner = value.borrowedModel();
+        if (column == Column::FeatureIds || column == Column::ExternalFeatureIds) {
+            byte('I');
+            identity(*owner->resolve<FeatureId>(value));
+            return;
+        }
+        byte('N');
         if (type != simfil::ValueType::Object && type != simfil::ValueType::Array) {
             std::visit([&](auto const& scalar) {
                 using T = std::decay_t<decltype(scalar)>;
@@ -193,7 +214,7 @@ private:
             return;
         }
 
-        auto key = std::pair{value.borrowedModel(), value.addr().value_};
+        auto key = std::pair{owner, value.addr().value_};
         auto ancestor = std::find(ancestors_.begin(), ancestors_.end(), key);
         if (ancestor != ancestors_.end()) {
             byte('R');
@@ -203,7 +224,7 @@ private:
         ancestors_.push_back(key);
         if (column == Column::GeometryCollections || column == Column::FeatureGeometryCollectionView) {
             byte('G');
-            auto collection = layer_.resolve<GeometryCollection>(value);
+            auto collection = owner->resolve<GeometryCollection>(value);
             number(collection->numGeometries());
             collection->forEachGeometry([&](model_ptr<Geometry> const& member) {
                 geometry(*member);
@@ -212,20 +233,20 @@ private:
         } else if (column == Column::GeometryViews ||
                    (column >= Column::PointGeometries && column <= Column::GltfNodeIndexGeometries)) {
             byte('g');
-            geometry(*layer_.resolve<Geometry>(value));
+            geometry(*owner->resolve<Geometry>(value));
         } else {
             if (column == Column::Attributes) {
                 // Source-record links are available to inspection through the
                 // native attribute API independently of the query field list.
                 byte('a');
-                auto attribute = layer_.resolve<Attribute>(value);
+                auto attribute = owner->resolve<Attribute>(value);
                 text(attribute->name());
                 optionalNode(attribute->sourceDataReferences());
             } else if (column == Column::Validities) {
                 // Certain validity kinds project only their geometric description.
                 // An explicit host selector still determines which source can use it.
                 byte('V');
-                auto validity = layer_.resolve<Validity>(value);
+                auto validity = owner->resolve<Validity>(value);
                 byte(validity->geometryDescriptionType());
                 optionalNode(validity->featureId());
             } else {
@@ -235,7 +256,7 @@ private:
             number(count);
             for (uint32_t i = 0; i < count; ++i) {
                 if (type == simfil::ValueType::Object)
-                    text(value.borrowedModel()->lookupStringId(value.keyAt(i)).value_or(""));
+                    text(owner->lookupStringId(value.keyAt(i)).value_or(""));
                 optionalNode(value.at(i));
             }
         }

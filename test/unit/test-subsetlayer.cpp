@@ -210,6 +210,11 @@ TEST_CASE("A revision follows the complete feature snapshot across reload and re
     CHECK(cold->sourceRevision() == revision);
     CHECK(makeSource(-12, 48, false)->sourceRevision() != revision);
     CHECK(makeSource(-13, 56, false)->sourceRevision() != revision);
+    auto reference = makeSource(-13, 48, false);
+    auto spelling = makeSource(-13, 48, false);
+    reference->at(0)->attributes()->addField("target", reference->at(1)->id());
+    spelling->at(0)->attributes()->addField("target", reference->at(1)->id()->toString());
+    CHECK(reference->sourceRevision() != spelling->sourceRevision());
     source->publishSourceSnapshot("sample");
     CHECK(source->sourceRevision() == revision);
     std::vector<std::string> selected{"Road.1"};
