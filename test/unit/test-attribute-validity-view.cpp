@@ -367,6 +367,26 @@ TEST_CASE(
         REQUIRE(endpoint.points_.size() == 1);
         CHECK(endpoint.points_[0] == selected->pointAt(1));
     }
+    SECTION("A raw feature query reports an ambiguous marker target without unwinding SIMFIL")
+    {
+        f.host->addLine({Point{17, 70}, Point{18, 70}});
+        CHECK_THROWS_AS(f.publicAttribute(f.host), PointQueryError);
+        // Cover both named lookup and wildcard iteration over the attached layer.
+        for (auto query : {"properties.layer.profiles.SPEED.attributeValue.records",
+                           "properties.layer.profiles.*.attributeValue.records"}) {
+            auto result = f.tile->evaluate(query, *f.host, false, false);
+            REQUIRE_FALSE(result);
+            CHECK(result.error().type == simfil::Error::RuntimeError);
+            CHECK(result.error().message.find("selects multiple geometries") != std::string::npos);
+        }
+        auto featureRead = f.host->evaluate("properties.layer.profiles.SPEED.attributeValue");
+        REQUIRE_FALSE(featureRead);
+        CHECK(featureRead.error().type == simfil::Error::RuntimeError);
+        auto unrelated = f.tile->evaluate("properties.layer.profiles.id", *f.host, false, false);
+        REQUIRE(unrelated);
+        REQUIRE(unrelated->values.size() == 1);
+        CHECK(unrelated->values.front().toString() == "37");
+    }
 }
 
 TEST_CASE("Shared marker profiles retain the host and exact branch path", "[attribute-markers]")

@@ -242,7 +242,7 @@ Feature::evaluateAll(const std::string_view& expression)
 {
     auto result = model().evaluate(expression, *this, false);
     if (!result)
-        tl::unexpected<simfil::Error>(std::move(result.error()));
+        return tl::unexpected<simfil::Error>(std::move(result.error()));
 
     return result->values;
 }

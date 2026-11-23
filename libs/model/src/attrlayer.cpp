@@ -2,6 +2,7 @@
 #include "feature.h"
 #include "featurelayer.h"
 #include "mapget/log.h"
+#include "shapepoint-context.h"
 
 namespace mapget
 {
@@ -116,7 +117,15 @@ class AttachedLayer final : public simfil::Model
         if (!value || value->addr().column() != PartitionFeatureLayer::ColumnId::Attributes)
             return value;
         auto attr = host_->model().resolve<Attribute>(*value);
-        return attr->validityView(host_, *lookupStringId(name_)).node();
+        try {
+            return attr->validityView(host_, *lookupStringId(name_)).node();
+        }
+        catch (PointQueryError const&) {
+            if (!PointQueryError::Capture::recordCurrent())
+                throw;
+            // SIMFIL may be iterating through a noexcept callback before the public node exists.
+            return shape::Context::scalar(std::monostate{});
+        }
     }
 
 public:
