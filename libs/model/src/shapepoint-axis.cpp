@@ -52,6 +52,15 @@ void Axis::check() const
         throw PointQueryError("Shape-point evaluation cancelled.");
 }
 
+bool Axis::owns(FeatureId const& ref) const
+{
+    auto id = host_->id();
+    if (id->borrowedModel() == ref.borrowedModel() && id->addr() == ref.addr())
+        return true;
+    return ref.typeId() == id->typeId() && ref.mapId() == id->mapId() &&
+        ref.keyValuePairs() == id->keyValuePairs();
+}
+
 bool Axis::near(double a, double b)
 {
     return std::abs(a - b) <=
@@ -111,8 +120,7 @@ bool Axis::selects(PointSeries const& decl, Attribute const& attr) const
         if (!(i % 128))
             check();
         auto v = attr.model().resolve<Validity>(*valid->at(i));
-        if (auto ref = v->featureId(); ref &&
-            (ref->mapId() != host_->model().mapId() || ref->toString() != host_->id()->toString()))
+        if (auto ref = v->featureId(); ref && !owns(*ref))
             continue;
         auto p = v->attrPointIndex();
         auto r = v->attrPointIndexRange();
@@ -121,7 +129,7 @@ bool Axis::selects(PointSeries const& decl, Attribute const& attr) const
         auto name = v->geometryName();
         if (!seq && !target && !name)
             continue;
-        if (seq && seq->featureId()->toString() != host_->id()->toString())
+        if (seq && !owns(*seq->featureId()))
             continue;
         uint32_t g = 0;
         host_->geomOrNull()->forEachGeometry(
@@ -243,8 +251,7 @@ std::optional<double> Axis::vertexAt(double distance, PointSeries::Measure measu
 
 double Axis::logicalVertex(AttrPointSequence const& sequence, uint32_t logical) const
 {
-    if (sequence.geometryIndex() != ordinal_ ||
-        sequence.featureId()->toString() != host_->id()->toString() ||
+    if (sequence.geometryIndex() != ordinal_ || !owns(*sequence.featureId()) ||
         logical >= sequence.positionCount())
         throw PointQueryError("Logical index references a different point sequence.");
     auto points = sequence.attrPoints();
@@ -295,8 +302,7 @@ std::optional<double> Axis::project(Point p) const
 std::optional<Axis::Span>
 Axis::coverage(Validity const& v, PointSeries::Measure measure, bool declared) const
 {
-    if (auto ref = v.featureId(); ref &&
-        (ref->mapId() != host_->model().mapId() || ref->toString() != host_->id()->toString()))
+    if (auto ref = v.featureId(); ref && !owns(*ref))
         return {};
     if (auto name = v.geometryName(); name && geometry_->name() != name)
         return {};
@@ -314,7 +320,7 @@ Axis::coverage(Validity const& v, PointSeries::Measure measure, bool declared) c
         auto p = v.attrPointIndex();
         auto r = v.attrPointIndexRange();
         auto seq = p ? p->sequence() : r->sequence();
-        if (!seq || seq->geometryIndex() != ordinal_)
+        if (!seq || seq->geometryIndex() != ordinal_ || !owns(*seq->featureId()))
             return {};
         return Span{
             logicalVertex(*seq, p ? p->index() : r->start()),

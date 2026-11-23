@@ -210,12 +210,6 @@ void SeriesReader::select() const
             index_ = std::move(selection);
         });
 }
-bool SeriesReader::referenced() const
-{
-    select();
-    return index_.referenced;
-}
-
 Node SeriesReader::member(Index const& index, uint32_t i, PointSeries::Path const& path) const
 {
     if (!index.records || i >= index.count)
@@ -380,7 +374,7 @@ model_ptr<AttrPointSequence> const& SeriesReader::sequence() const
                 auto r = validity->attrPointIndexRange();
                 auto seq = p ? p->sequence() : (r ? r->sequence() : model_ptr<AttrPointSequence>{});
                 if (!seq || seq->geometryIndex() != axis_->ordinal_ ||
-                    seq->featureId()->toString() != axis_->host_->id()->toString())
+                    !axis_->owns(*seq->featureId()))
                     continue;
                 if (selected && selected->addr() != seq->addr())
                     throw PointQueryError(

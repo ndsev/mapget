@@ -31,6 +31,7 @@ public:
     // retaining their own applicability ranges, target identities and raw paths.
     std::shared_ptr<RecordIndexes> indexes;
     void check() const;
+    [[nodiscard]] bool owns(FeatureId const&) const;
     [[nodiscard]] bool selects(PointSeries const& decl, Attribute const& attachment) const;
     [[nodiscard]] bool fallbackGeometry() const;
     [[nodiscard]] std::optional<Span>

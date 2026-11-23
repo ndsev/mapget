@@ -54,6 +54,8 @@ SeriesReader::Sample SeriesReader::decode(
     s.unit = field.unit_;
     s.contributors.emplace_back(ordinal, 1.);
     select();
+    if (index_.referenced && std::holds_alternative<std::monostate>(s.alternative))
+        s.alternative = alternativeKey(read(axis_->host_, decl_.hostTarget_));
     auto raw = member(index_, ordinal, field.path_);
     if (!raw || raw->type() == ValueType::Null || raw->type() == ValueType::Undef)
         return s;

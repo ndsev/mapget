@@ -584,6 +584,8 @@ TEST_CASE(
         auto referenced = f.occurrences(1, other);
         REQUIRE(referenced->size() == 1);
         CHECK(f.field(referenced->at(0), "reading")->toJson() == 22);
+        auto explanation = f.field(f.field(referenced->at(0), "$samples"), "reading")->toJson();
+        CHECK(explanation.at(0)["alternative"] == 2);
         f.attr->setPointSeriesBranch(0);
         REQUIRE_THROWS_AS(f.reading(1), PointQueryError);
     }
@@ -633,6 +635,10 @@ TEST_CASE(
     CHECK(f.reading(1) == 42);
     CHECK(f.samples(1).at(0)["contributors"][0]["recordIndex"] == 1);
     CHECK(f.reading(2).is_null());
+    auto other = f.tile->newFeature("Path", {{"key", int64_t{2}}});
+    other->addGeometry(points.geometry());
+    other->attributeLayers()->newLayer("profiles")->addAttribute(f.attr);
+    CHECK(f.occurrences(1, other)->size() == 0);  // The logical sequence targets the first host.
     f.record(4, 0, 17);
     REQUIRE_THROWS_AS(f.reading(1), PointQueryError);
 }

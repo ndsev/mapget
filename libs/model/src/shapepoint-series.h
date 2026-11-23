@@ -76,7 +76,6 @@ public:
         std::string unit;
         std::vector<std::pair<uint32_t, double>> contributors;
     };
-    [[nodiscard]] bool referenced() const;
     [[nodiscard]] std::vector<Sample>
     samples(uint32_t vertex, PointSeries::Field const& field, std::span<Axis::Span const> spans)
         const;
