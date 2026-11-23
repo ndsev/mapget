@@ -81,6 +81,13 @@ def get_base_version(version: str) -> str:
     return match.group(1)
 
 
+def check_requested_version(requested: str | None, actual: str, source: str) -> str:
+    """A caller-supplied version must agree with the selected branch or tag."""
+    if requested and requested != actual:
+        raise ValueError(f"Requested release {requested} does not match {source} version {actual}.")
+    return actual
+
+
 def determine_release_context(
     environment: Mapping[str, str],
     explicit_version: str | None = None,
@@ -104,11 +111,7 @@ def determine_release_context(
             github_ref.removeprefix("refs/tags/"),
             "tag",
         )
-        if expected and expected != tag_version:
-            raise ValueError(
-                f"Requested release {expected} does not match tag version {tag_version}."
-            )
-        expected = tag_version
+        expected = check_requested_version(expected, tag_version, "tag")
         build_type = "Tagged release"
         require_scm_match = True
     elif (
@@ -120,19 +123,13 @@ def determine_release_context(
             environment["GITHUB_HEAD_REF"].removeprefix("release/"),
             "release branch",
         )
-        if expected and expected != branch_version:
-            raise ValueError(
-                f"Requested release {expected} does not match release branch {branch_version}."
-            )
-        expected = branch_version
+        expected = check_requested_version(expected, branch_version, "release branch")
         build_type = "Release pull request"
     elif environment.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and github_ref.startswith("refs/heads/release/"):
         branch_version = normalize_release_version(
             github_ref.removeprefix("refs/heads/release/"), "release branch", allow_leading_v=False
         )
-        if expected and expected != branch_version:
-            raise ValueError(f"Requested release {expected} does not match release branch {branch_version}.")
-        expected = branch_version
+        expected = check_requested_version(expected, branch_version, "release branch")
         build_type = "Release candidate"
 
     return ReleaseContext(expected, build_type, require_scm_match)

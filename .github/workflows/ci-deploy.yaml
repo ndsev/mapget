@@ -280,7 +280,7 @@ jobs:
 
   test-shared-wheel:
     name: Install the same Linux wheel on CPython ${{ matrix.python-version }}
-    needs: build-manylinux
+    needs: [determine-version, build-manylinux]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -298,11 +298,17 @@ jobs:
       - name: Audit the stable Python ABI
         if: matrix.python-version == '3.14'
         run: |
-          python -m pip install abi3audit
+          python -m pip install --only-binary=:all: abi3audit==0.0.26
           abi3audit --strict dist/*.whl
       - name: Install and exercise the repaired stable-ABI wheel
+        env:
+          WHEEL_VERSION: ${{ needs.determine-version.outputs.version }}
         run: |
-          python -m pip install dist/mapget-*-cp310-abi3-*.whl
+          test -f dist/mapget-*-cp310-abi3-*.whl
+          # Select only the artifact from this run, even if its version is on PyPI.
+          python -m pip install --only-binary=:all: --no-index --find-links dist --no-deps "mapget==$WHEEL_VERSION"
+          python -m pip install --only-binary=:all: "mapget==$WHEEL_VERSION"
+          python -m pip check
           python test/integration/python-bindings-smoke.py
 
   deploy:
