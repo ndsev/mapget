@@ -230,4 +230,7 @@ if (NOT WITH_COVERAGE)
       # Request from cpp datasource
       -f "python -m mapget --config .integration/test-config-py/sample-first-datasource.yaml fetch"
   )
+  set_tests_properties(
+    test-cli-cpp test-cli-datasource-exe test-cli-python test-config-cpp test-config-py
+    PROPERTIES TIMEOUT 240)
 endif ()
