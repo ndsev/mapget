@@ -96,8 +96,8 @@ public:
     /** Retained-capacity estimate for this owner, including its lookup indexes. */
     [[nodiscard]] MemoryUsageBreakdown memoryUsage() const;
 
-    /** Return the frozen counts, 16-bit capacities and retained-memory lower bound.
-     * The summary is assembled once; status polling never traverses the graph. */
+    /** Frozen artifact counts and limits, plus live point-query view counts and
+     * retained memory. Status polling never traverses the type graph. */
     [[nodiscard]] nlohmann::json statistics() const;
 
     /** Ordered direct artifact lineage, independent of live datasource registrations. */
@@ -110,6 +110,11 @@ public:
     /** Translate one contributor type; this artifact's own valid IDs are unchanged. */
     [[nodiscard]] simfil::TypeId
     remapSchema(std::string_view sourceIdentity, simfil::TypeId id) const;
+
+    /** Translate a point view's expression result back into the published artifact.
+     * Raw fields keep their producer domain; query-only containers use a generic
+     * result domain. An unrelated (non-point) schema reference passes through. */
+    [[nodiscard]] simfil::SchemaType pointResultType(simfil::SchemaType const& type) const;
 
     /** Borrow a construction-only source-ID table. Decoded artifacts do not retain these tables. */
     [[nodiscard]] std::span<simfil::TypeId const>

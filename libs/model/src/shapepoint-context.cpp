@@ -1,5 +1,6 @@
 #include "shapepoint-context.h"
 #include "mapget/model/shapepoint.h"
+#include "simfil/model/schema-pool.h"
 
 namespace mapget::shape
 {
@@ -14,6 +15,39 @@ struct Context::Node final : simfil::MandatoryDerivedModelNodeBase<Context>
         return model().size_ ? simfil::ValueType::Array : simfil::ValueType::Object;
     }
     simfil::TypeId schema() const override { return model().type_.id(); }
+    // Compound projection copies child nodes directly, without SIMFIL's scalar
+    // field inference. Carry that same edge on inline values and virtual children.
+    Ptr child(Ptr value, std::optional<Id> key) const
+    {
+        if (!value || !model().type_ || value->schemaType())
+            return value;
+        auto kind = value->type();
+        if (kind == simfil::ValueType::Null || kind == simfil::ValueType::Undef)
+            return value;
+        auto compound = kind == simfil::ValueType::Array || kind == simfil::ValueType::Object;
+        auto source = compound ? dynamic_cast<Context const*>(value->borrowedModel()) : nullptr;
+        if (compound && !source)
+            return value;  // Raw producer containers keep their own storage and namespace.
+        auto name = key ? model().strings_->resolve(*key) : std::nullopt;
+        auto type = key ? (name ? model().type_.field(*name).type() : simfil::SchemaType{}) :
+                          model().type_.itemType();
+        if (!type)
+            return value;
+        if (source) {
+            // The untyped sample/candidate may be shared; qualify this use, not its storage.
+            auto view = std::make_shared<Context>(source->strings_, type);
+            view->fields_ = source->fields_;
+            view->size_ = source->size_;
+            view->at_ = source->at_;
+            view->lookup_ = source->lookup_;
+            return Ptr::make(std::move(view), value->addr());
+        }
+        auto scalar = value->value();
+        if (auto text = std::get_if<std::string_view>(&scalar))
+            scalar = std::string(*text);
+        return Ptr::make(owningModel(), simfil::ModelNodeAddress{Model::Scalar, type.id()},
+                         std::move(scalar));
+    }
     uint32_t size() const override
     try {
         return model().size_ ? model().size_() : static_cast<uint32_t>(model().fields_.size());
@@ -34,7 +68,8 @@ struct Context::Node final : simfil::MandatoryDerivedModelNodeBase<Context>
         if (i < 0 || static_cast<uint64_t>(i) >= size())
             return {};
         auto result = model().at_ ? model().at_(i) : model().fields_[i].second();
-        return result ? result : Context::scalar(std::monostate{});
+        return result ? child(result, model().size_ ? std::nullopt : std::optional{keyAt(i)}) :
+                        Context::scalar(std::monostate{});
     }
     catch (PointQueryError const&) {
         if (!PointQueryError::Capture::recordCurrent())
@@ -46,9 +81,9 @@ struct Context::Node final : simfil::MandatoryDerivedModelNodeBase<Context>
         for (auto const& [id, read] : model().fields_)
             if (id == key) {
                 auto node = read();
-                return node ? node : Context::scalar(std::monostate{});
+                return node ? child(node, key) : Context::scalar(std::monostate{});
             }
-        return model().lookup_ ? model().lookup_(key) : Ptr{};
+        return model().lookup_ ? child(model().lookup_(key), key) : Ptr{};
     }
     catch (PointQueryError const&) {
         if (!PointQueryError::Capture::recordCurrent())
@@ -66,6 +101,13 @@ struct Context::Node final : simfil::MandatoryDerivedModelNodeBase<Context>
         return true;
     }
 };
+
+simfil::SchemaType Context::resolveSchemaType(simfil::ModelNode const& node) const
+{
+    if (node.addr().column() == Scalar && type_)
+        return type_.pool()->schemaType(static_cast<simfil::TypeId>(node.addr().index()));
+    return node.addr().column() == FirstNontrivialColumnId ? type_ : simfil::SchemaType{};
+}
 
 tl::expected<void, simfil::Error>
 Context::resolve(simfil::ModelNode const& node, ResolveFn const& cb) const

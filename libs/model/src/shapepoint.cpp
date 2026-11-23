@@ -271,9 +271,18 @@ public:
                 [&]
                 {
                     decltype(slot.results) next;
+                    auto output = occurrence_->queryType.field(*strings_->resolve(id)).type();
                     for (auto const& b : slot.bindings)
-                        for (auto& s : b.reader->samples(point_, *b.field, b.spans))
+                        for (auto& s : b.reader->samples(point_, *b.field, b.spans)) {
+                            // An exact anchor in a linear series can return its raw integer.
+                            // Its decoded measurement is still float; contributors keep the integer.
+                            if (output.kind() == simfil::SchemaType::Kind::Float && s.value &&
+                                s.value->type() == simfil::ValueType::Int)
+                            {
+                                s.value = Context::scalar(double(std::get<int64_t>(s.value->value())));
+                            }
                             next.emplace_back(&b, std::move(s));
+                        }
                     slot.results = std::move(next);
                 });
             if (!explain) {
@@ -298,15 +307,20 @@ struct ShapePointRange::State : public std::enable_shared_from_this<State>
         : axis(std::make_shared<Axis>(std::move(host), index, std::move(cancelled))),
           strings(axis->host_->model().strings())
     {
-        if (auto layer = axis->host_->model().layerSchema()) {
-            auto id = layer->shapePointQuerySchema(axis->host_->typeId());
-            if (id)
-                queryType = layer->mapSchema()->schemaType(id).retain();
-        }
     }
     std::shared_ptr<Axis> axis;
     Context::Dictionary strings;
     simfil::SchemaType queryType;
+    std::once_flag queryTypeReady;
+    simfil::SchemaType const& rootType()
+    {
+        // Coordinate-only picks and scans never need the host's query graph.
+        std::call_once(queryTypeReady, [&] {
+            if (auto layer = axis->host_->model().layerSchema())
+                queryType = layer->shapePointQueryType(axis->host_->typeId());
+        });
+        return queryType;
+    }
     std::once_flag initialized;
     using Occurrences = std::vector<std::shared_ptr<Occurrence>>;
     Occurrences all;
@@ -503,6 +517,6 @@ Node ShapePointView::queryContext() const
                 return s->axis->geometry_;
             return {};
         },
-        state_->queryType);
+        state_->rootType());
 }
 }  // namespace mapget

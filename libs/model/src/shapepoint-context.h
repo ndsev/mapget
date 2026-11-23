@@ -46,6 +46,7 @@ public:
     {
         return type_.id() == id ? type_ : simfil::SchemaType{};
     }
+    simfil::SchemaType resolveSchemaType(simfil::ModelNode const& node) const override;
     std::optional<std::string_view> lookupStringId(Id id) const override
     {
         return strings_->resolve(id);

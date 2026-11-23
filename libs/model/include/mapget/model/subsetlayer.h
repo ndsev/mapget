@@ -743,6 +743,9 @@ public:
 
     void setDiagnostics(simfil::Diagnostics const& diagnostics);
     [[nodiscard]] simfil::Diagnostics const& diagnostics() const;
+    /** Copy evaluated values, translating private point query types to portable source types. */
+    [[nodiscard]] tl::expected<model_ptr<Array>, simfil::Error>
+    copyProjectedValues(std::span<simfil::Value const> values, bool mayContainPointTypes);
     void setTraces(std::map<std::string, simfil::Trace> traces);
     [[nodiscard]] size_t traceCount() const;
     [[nodiscard]] model_ptr<FilterTrace> traceAt(size_t index) const;

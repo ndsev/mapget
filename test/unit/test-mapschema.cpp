@@ -208,7 +208,7 @@ TEST_CASE(
         auto view = candidate->layer("Road");
         CHECK(view->attributeScopes().size() == 2);
         CHECK(candidate->statistics()["counts"]["attributeQueryContexts"] == 1);
-        CHECK(candidate->statistics()["counts"]["shapePointRoots"] == 1);
+        CHECK(view->shapePointQueryType("Road"));
         auto query = view->attributeQuerySchema("Road", attribute);
         REQUIRE(query != simfil::NoTypeId);
         CHECK(view->childSchema(query, "$feature") == root);
@@ -585,7 +585,7 @@ std::pair<size_t, size_t> binaryColumn(std::string const& payload, size_t start,
     throw std::logic_error("Unreachable binary column index.");
 }
 
-/** Mutate the map metadata column in a checksum-valid v7/v8 payload, so
+/** Mutate the map metadata column in a checksum-valid v7/v8/v9 payload, so
  * malformed-graph tests reach the structural reader rather than the digest check. */
 std::vector<uint8_t>
 mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)> const& change)
@@ -599,7 +599,7 @@ mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)>
     input.value4b(version);
     input.text1b(identity, 128);
     input.text1b(payload, 64 * 1024 * 1024);
-    REQUIRE((version == 7 || version == 8));
+    REQUIRE((version == 7 || version == 8 || version == 9));
     REQUIRE(input.adapter().isCompletedSuccessfully());
     std::vector<uint8_t> body(payload.begin(), payload.end());
     bitsery::Deserializer<Adapter> content(Adapter(body.begin(), body.end()));

@@ -513,7 +513,20 @@ private:
 class FeatureLayerFilterRequest::ExpressionEvaluator
 {
 public:
-    using ProgramKey = std::tuple<std::string, bool, simfil::TypeId>;
+    // A host-local point graph can reuse every numeric type ID of another host.
+    // Pin the pool: neither a program nor a remembered failure may outlive its namespace.
+    struct SchemaKey
+    {
+        simfil::SchemaType type;
+        SchemaKey(simfil::SchemaType const& root) : type(root.retain()) {}
+        auto operator<=>(SchemaKey const& other) const
+        {
+            return std::pair{type.pool(), type.id()} <=>
+                std::pair{other.type.pool(), other.type.id()};
+        }
+        bool operator==(SchemaKey const& other) const { return type == other.type; }
+    };
+    using ProgramKey = std::tuple<std::string, bool, SchemaKey>;
 
     /** Reuse only within one unchanged context; the key intentionally omits model identity. */
     using ValueCache = std::map<ProgramKey, std::vector<simfil::Value>>;
@@ -535,18 +548,7 @@ public:
             std::vector<simfil::ModelNode::Ptr> result;
             result.reserve(values_.size());
             for (size_t index = 0; index < values_.size(); ++index) {
-                // A projection can return a whole object whose measurements
-                // are read for the first time while copying its children.
-                tl::expected<model_ptr<Array>, simfil::Error> copied;
-                try {
-                    PointQueryError::Capture pointErrors;
-                    copied = target.copySequence(values_[index]);
-                    pointErrors.rethrowIfFailed();
-                }
-                catch (PointQueryError const& error) {
-                    copied =
-                        tl::unexpected(simfil::Error{simfil::Error::RuntimeError, error.what()});
-                }
+                auto copied = target.copyProjectedValues(values_[index], scope == Scope::ShapePoint);
                 if (!copied) {
                     errors_.push_back(
                         {static_cast<uint32_t>(index), "materialization", copied.error().message});
@@ -658,7 +660,7 @@ public:
     [[nodiscard]] tl::expected<bool, Failure> filter(
         std::optional<std::string> const& expression,
         simfil::ModelNode const& context,
-        simfil::TypeId schema,
+        simfil::SchemaType const& schema,
         simfil::Diagnostics* diagnostics = nullptr,
         ValueCache* valueCache = nullptr)
     {
@@ -676,7 +678,7 @@ public:
     [[nodiscard]] Projection fields(
         std::string_view channelId,
         simfil::ModelNode const& context,
-        simfil::TypeId schema,
+        simfil::SchemaType const& schema,
         std::span<std::string const> expressions,
         Scope scope,
         Issues& issues,
@@ -733,25 +735,25 @@ private:
         std::string_view expression,
         simfil::ModelNode const& context,
         bool anyMode,
-        simfil::TypeId rootSchema,
+        simfil::SchemaType const& rootSchema,
         simfil::Diagnostics* diagnostics,
         ValueCache* valueCache)
     {
-        ProgramKey key = std::make_tuple(std::string(expression), anyMode, rootSchema);
+        ProgramKey key{std::string(expression), anyMode, SchemaKey{rootSchema}};
         if (valueCache && !diagnostics) {
             if (auto cached = valueCache->find(key); cached != valueCache->end()) {
                 return cached->second;
             }
         }
 
+        if (environment_->schema() != rootSchema)
+            environment_->setSchema(rootSchema);
         auto found = programs_.find(key);
         if (found == programs_.end()) {
             simfil::CompileOptions options{
                 .any = anyMode,
                 .rewriteMode = simfil::RewriteMode::Schema,
-                .rootSchema = schemaIdentity_ ?
-                    schemaIdentity_->mapSchema()->schemaType(rootSchema) :
-                    simfil::SchemaType{},
+                .rootSchema = rootSchema,
             };
             // Context fields such as $validityCount address this exact candidate.
             // Recursive shorthand skips lookup-only overlay fields. Let SIMFIL
@@ -924,7 +926,7 @@ private:
         std::vector<FeatureLayerRelationDescriptor> relationDescriptors_;
         // Shape rows are emitted as each vertex is visited. A predicate compiled
         // against one feature type can fail even when another type is valid.
-        std::set<std::pair<Scope, simfil::TypeId>> rejectedPointFilterSchemas_;
+        std::set<std::pair<Scope, ExpressionEvaluator::SchemaKey>> rejectedPointFilterSchemas_;
     };
 
     using FeatureIdCacheKey = std::pair<simfil::Model const*, uint32_t>;
@@ -979,7 +981,7 @@ private:
     void scanShapePoints(
         model_ptr<Feature> const& feature,
         simfil::ModelNode const& featureContext,
-        simfil::TypeId featureSchema,
+        simfil::SchemaType const& featureSchema,
         Channel& channel,
         ExpressionEvaluator::ValueCache& featureEvaluations,
         ShapePointRanges& ranges);
@@ -988,7 +990,7 @@ private:
     void scanAttributes(
         model_ptr<Feature> const& feature,
         simfil::ModelNode const& featureContext,
-        simfil::TypeId featureSchema,
+        simfil::SchemaType const& featureSchema,
         Channel& channel,
         ExpressionEvaluator::ValueCache& featureEvaluations);
 
@@ -1008,7 +1010,7 @@ private:
         std::optional<std::string> const& expression,
         Scope scope,
         ExpressionEvaluator::Failure const& failure,
-        simfil::TypeId rootSchema = simfil::NoTypeId);
+        simfil::SchemaType const& rootSchema = {});
 
     /** Collect one feature's representative point in every addressed grid cell. */
     void collectPointGroupMembers(
@@ -1055,7 +1057,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::rejectFilterCandidate(
     std::optional<std::string> const& expression,
     Scope scope,
     ExpressionEvaluator::Failure const& failure,
-    simfil::TypeId rootSchema)
+    simfil::SchemaType const& rootSchema)
 {
     issues_.add(
         channel.definition_.channelId_,
@@ -1269,7 +1271,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::collectStoredRelationDescripto
                 auto entryMatch = evaluator_->filter(
                     entryFilter,
                     *context,
-                    static_cast<simfil::ModelNode const&>(*relation).schema());
+                    relation->schemaType());
                 if (!entryMatch) {
                     rejectFilterCandidate(
                         channel,
@@ -1982,7 +1984,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
     model_ptr<Feature> const& feature,
     size_t sourceFeatureOrdinal)
 {
-    auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
+    auto const featureSchema = feature->schemaType();
     simfil::ModelNode::Ptr featureContext;
     ExpressionEvaluator::ValueCache featureEvaluations;
     ShapePointRanges pointRanges;
@@ -2089,7 +2091,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
 void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& featureContext,
-    simfil::TypeId featureSchema,
+    simfil::SchemaType const& featureSchema,
     Channel& channel,
     ExpressionEvaluator::ValueCache& featureEvaluations,
     ShapePointRanges& ranges)
@@ -2099,12 +2101,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
         return;
 
     auto const& definition = channel.definition_;
-    auto registry = sourceLayer_.layerSchema();
-    auto pointSchema = registry ?
-        registry->shapePointQuerySchema(feature->id()->typeId()) :
-        simfil::NoTypeId;
-    if (channel.rejectedPointFilterSchemas_.contains({Scope::ShapePoint, pointSchema}))
-        return;
+    std::optional<simfil::SchemaType> pointSchema;
     std::optional<TileSubsetChannel::ShapePointHost> host;
     uint32_t ordinal = 0;
     geometries->forEachGeometry(
@@ -2134,13 +2131,19 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
                 simfil::ModelNode::Ptr root;
                 if (definition.entryFilter_ || !definition.entryFields_.empty()) {
                     root = evaluator_->context(*point->queryContext());
+                    if (!pointSchema) {
+                        // Empty is a valid (V7) schema. Never interpret a local ID in the tile.
+                        pointSchema = root->schemaType().retain();
+                        if (channel.rejectedPointFilterSchemas_.contains({Scope::ShapePoint, *pointSchema}))
+                            return false;
+                    }
                 }
                 ExpressionEvaluator::ValueCache pointEvaluations;
                 if (definition.entryFilter_) {
                     auto match = evaluator_->filter(
                         definition.entryFilter_,
                         *root,
-                        pointSchema,
+                        *pointSchema,
                         collectEntryFilterDiagnostics_ ? &diagnostics_ : nullptr,
                         &pointEvaluations);
                     if (!match) {
@@ -2149,7 +2152,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
                             definition.entryFilter_,
                             Scope::ShapePoint,
                             match.error(),
-                            pointSchema);
+                            *pointSchema);
                         if (match.error().compilation_)
                             return false;
                         continue;
@@ -2194,7 +2197,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
                 auto projection = evaluator_->fields(
                     definition.channelId_,
                     *root,
-                    pointSchema,
+                    *pointSchema,
                     definition.entryFields_,
                     Scope::ShapePoint,
                     issues_,
@@ -2219,7 +2222,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
 void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
     model_ptr<Feature> const& feature,
     simfil::ModelNode const& featureContext,
-    simfil::TypeId featureSchema,
+    simfil::SchemaType const& featureSchema,
     Channel& channel,
     ExpressionEvaluator::ValueCache& featureEvaluations)
 {
@@ -2250,11 +2253,12 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
         }
         auto const thisAttributeIndex = attributeIndex++;
         auto const validities = attribute->validityView(feature, layerName);
-        auto const payloadSchema = static_cast<simfil::ModelNode const&>(*attribute).schema();
+        auto const payloadSchema = attribute->schemaType();
         auto const querySchema = registry ?
-            registry->attributeQuerySchema(feature->typeId(), payloadSchema) :
+            registry->attributeQuerySchema(feature->typeId(), payloadSchema.id()) :
             simfil::NoTypeId;
-        auto const attributeSchema = querySchema ? querySchema : payloadSchema;
+        auto const attributeSchema = querySchema ?
+            registry->mapSchema()->schemaType(querySchema) : payloadSchema;
 
         auto evaluateCandidate =
             [&](model_ptr<Validity> const& validity,
@@ -2396,7 +2400,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanExactRoots()
             auto rootMatch = evaluator_->filter(
                 channel.definition_.featureFilter_,
                 *context,
-                static_cast<simfil::ModelNode const&>(*feature).schema());
+                feature->schemaType());
             if (!rootMatch) {
                 rejectFilterCandidate(
                     channel,
@@ -2564,7 +2568,7 @@ FeatureLayerFilterRequest::completePointGroups(
             });
         }
         auto const representativeSchema =
-            static_cast<simfil::ModelNode const&>(*representative.feature_).schema();
+            representative.feature_->schemaType();
         auto values = evaluator->second->fields(
             definition.channelId_,
             *context,
@@ -2870,7 +2874,7 @@ FeatureLayerFilterRequest::completeRelations(
                     ->fields(
                         definition.channelId_,
                         *context,
-                        static_cast<simfil::ModelNode const&>(*feature).schema(),
+                        feature->schemaType(),
                         definition.featureFields_,
                         Scope::Feature,
                         issues);
@@ -2924,7 +2928,7 @@ FeatureLayerFilterRequest::completeRelations(
             }
             auto context = (*evaluator)->relationContext(descriptor, twoway);
             auto const relationSchema =
-                static_cast<simfil::ModelNode const&>(*descriptor.relation_).schema();
+                descriptor.relation_->schemaType();
             if (!descriptor.entryFilterPreflighted_) {
                 auto entryMatch =
                     (*evaluator)->filter(definition.entryFilter_, *context, relationSchema);

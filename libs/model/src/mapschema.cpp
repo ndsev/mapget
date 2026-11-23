@@ -1142,7 +1142,7 @@ void MapSchema::Impl::validate() const
         }
         if (d.annotations)
             (void)annotation(d.annotations);
-        if (wireVersion == PointCodecVersion && !d.flags) {
+        if (wireVersion >= ExpandedPointVersion && !d.flags) {
             // Producer data must never depend on a generated view: composition copies
             // physical definitions first, then rebuilds query contexts in its own namespace.
             auto physical = [&](TypeId child)
@@ -1598,7 +1598,7 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
             string(archive, constituent.first, 128, memory);
             mapFormat(archive, constituent.second);
         });
-    if (wireVersion == PointCodecVersion)
+    if (wireVersion >= ExpandedPointVersion)
         pointWire(s, memory);
 }
 
@@ -1700,7 +1700,8 @@ MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, siz
     s.value4b(magic);
     s.value4b(version);
     if (magic != 0x4843534d ||
-        (version != Impl::LegacyCodecVersion && version != Impl::PointCodecVersion))
+        (version != Impl::LegacyCodecVersion && version != Impl::ExpandedPointVersion &&
+         version != Impl::PointCodecVersion))
         throw std::invalid_argument("Unsupported MapSchema binary format.");
     std::string identity, payload;
     size_t memory = bytes.size();
@@ -2610,8 +2611,11 @@ bool LayerSchema::iterate(IterCallback const& callback) const
 
 MemoryUsageBreakdown MapSchema::memoryUsage() const
 {
-    if (schema_->memorySummary)
-        return *schema_->memorySummary;
+    if (schema_->memorySummary) {
+        auto result = *schema_->memorySummary;
+        schema_->accountPointViews(result);
+        return result;
+    }
     MemoryUsageBreakdown result;
     result.add(
         "format",
@@ -2686,9 +2690,11 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
 void MapSchema::Impl::summarize()
 {
     auto counts = pool.schemaStatistics();
-    size_t producedCount = 0, relationCount = 0;
+    size_t producedCount = 0, pointHostCount = 0, relationCount = 0;
     for (auto const& layer : layers) {
         producedCount += featureRoots(layer).size();
+        if (LayerType(layer.type) == LayerType::Features)
+            pointHostCount += featureRoots(layer).size();
         relationCount += relationIds(layer).size();
     }
     auto pointTypes = std::count_if(
@@ -2701,7 +2707,7 @@ void MapSchema::Impl::summarize()
          {{"types", types.empty() ? 0 : types.size() - 1},
           {"physicalTypes", types.empty() ? 0 : types.size() - 1 - queryRoots.size() - pointTypes},
           {"queryContexts", queryRoots.size() + pointTypes},
-          {"shapePointRoots", pointRoots.size()},
+          {"shapePointRoots", wireVersion == PointCodecVersion ? pointHostCount : pointRoots.size()},
           {"attributeQueryContexts", queryRoots.size()},
           {"fields", counts.fields},
           {"fieldEdges", counts.fieldEdges},
@@ -2731,7 +2737,11 @@ nlohmann::json MapSchema::statistics() const
 {
     if (!finalized())
         throw std::logic_error("MapSchema statistics require a finalized graph.");
-    return schema_->statistics;
+    auto result = schema_->statistics;
+    auto memory = *schema_->memorySummary;
+    schema_->accountPointViews(memory, &result["counts"]);
+    result["memory"] = memory.toJson();
+    return result;
 }
 
 std::span<TypeId const> MapSchema::schemaRemap(std::string_view sourceIdentity) const

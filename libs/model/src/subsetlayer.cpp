@@ -1,5 +1,6 @@
 #include "subsetlayer.h"
 #include "mapschema.h"
+#include "mapschema-pointquery.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1880,6 +1881,33 @@ simfil::Diagnostics const& PartitionSubsetLayer::diagnostics() const
     return diagnostics_;
 }
 
+tl::expected<model_ptr<Array>, simfil::Error> PartitionSubsetLayer::copyProjectedValues(
+    std::span<simfil::Value const> values, bool mayContainPointTypes)
+{
+    simfil::ModelPool::CopyOptions options;
+    if (mayContainPointTypes) {
+        auto info = layerInfo();
+        options.schemaRemap = [owner = info ? info->schemaOwner() : nullptr](simfil::SchemaType const& type)
+        {
+            if (owner)
+                return owner->pointResultType(type);
+            if (isPublishedPointQueryPool(type.pool()))
+                throw std::invalid_argument("Cannot publish point values without their source schema.");
+            return type;
+        };
+    }
+    try {
+        // Walking a projected compound may force an otherwise unread lazy point field.
+        PointQueryError::Capture errors;
+        auto result = copySequence(values, options);
+        errors.rethrowIfFailed();
+        return result;
+    }
+    catch (PointQueryError const& error) {
+        return tl::unexpected(simfil::Error{simfil::Error::RuntimeError, error.what()});
+    }
+}
+
 /**
  * Replace trace rows in name order and copy their values into this model. A failed
  * copy records an issue and keeps an empty value sequence for that trace.
@@ -1888,7 +1916,7 @@ void PartitionSubsetLayer::setTraces(std::map<std::string, simfil::Trace> traces
 {
     traces_.clear();
     for (auto&& [name, trace] : traces) {
-        auto values = copySequence(trace.values);
+        auto values = copyProjectedValues(trace.values, true);
         if (!values) {
             addIssue({"", name, Scope::Feature,
                 fmt::format("Trace materialization failure: {}", values.error().message), 1});

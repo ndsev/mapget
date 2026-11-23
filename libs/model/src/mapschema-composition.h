@@ -439,6 +439,10 @@ public:
         : target_(target), inputs_(inputs)
     {
         for (size_t s = 0; s < inputs.size(); ++s) {
+            // A V8 producer can qualify a value with any of its expanded point
+            // types. Preserve all those handles rather than guessing a V9 use site.
+            if (inputs[s]->schema_->wireVersion == ExpandedPointVersion)
+                target_.wireVersion = ExpandedPointVersion;
             offsets_.push_back(origins_.size());
             for (size_t id = 1; id <= inputs[s]->typeCount(); ++id) {
                 if (origins_.size() >= MaxEdges)

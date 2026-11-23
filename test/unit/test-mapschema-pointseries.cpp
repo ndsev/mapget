@@ -6,6 +6,10 @@
 #include <bitsery/adapter/stream.h>
 #include <bitsery/traits/string.h>
 #include <picosha2.h>
+#include <array>
+#include <barrier>
+#include <fstream>
+#include <future>
 #include <sstream>
 
 using namespace mapget;
@@ -76,9 +80,65 @@ std::vector<uint8_t> bytes(MapSchema const& schema)
     return {s.begin(), s.end()};
 }
 
+Type occurrenceList(Type root, std::string_view layer = "rules", std::string_view name = "SPEED")
+{
+    return root.field("$attributes").type().field(layer).type().field(name).type();
+}
+
 Type occurrence(Type root, std::string_view layer = "rules", std::string_view name = "SPEED")
 {
-    return root.field("$attributes").type().field(layer).type().field(name).type().itemType();
+    return occurrenceList(root, layer, name).itemType();
+}
+
+Type attribute(Type feature, std::string_view layer = "rules", std::string_view name = "SPEED")
+{
+    return feature.field("properties")
+        .type()
+        .field("layer")
+        .type()
+        .field(layer)
+        .type()
+        .field(name)
+        .type();
+}
+
+/** Check the candidate contract, not the local numeric handles of either query graph. */
+void checkSpeedCandidate(Type candidate)
+{
+    REQUIRE(candidate);
+    auto value = candidate.field("value").type();
+    REQUIRE(value.numericDomain());
+    CHECK(value.kind() == Kind::Float);
+    CHECK(value.numericDomain()->unit == "mph");
+    CHECK(candidate.field("status").type().kind() == Kind::String);
+    auto source = candidate.field("contributors").type().itemType();
+    CHECK(source.field("recordIndex").type().kind() == Kind::Int);
+    CHECK(source.field("weight").type().kind() == Kind::Float);
+    CHECK(source.field("path").type().elements().size() == 2);
+    auto raw = source.field("raw").type();
+    REQUIRE(raw.numericDomain());
+    CHECK(raw.kind() == Kind::Int);
+    CHECK(raw.numericDomain()->unit == "km/h");
+    REQUIRE(raw.numericDomain()->maximum);
+    CHECK(std::visit([](auto n) { return n == 255; }, *raw.numericDomain()->maximum));
+}
+
+std::vector<uint8_t> golden(char const* file)
+{
+    std::ifstream input(std::string(MAPGET_TEST_DATA_DIR) + "/" + file, std::ios::binary);
+    REQUIRE(input.is_open());
+    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
+uint32_t wireVersion(std::vector<uint8_t> const& data)
+{
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    bitsery::Deserializer<Adapter> reader(Adapter(data.begin(), data.end()));
+    uint32_t magic = 0, version = 0;
+    reader.value4b(magic);
+    reader.value4b(version);
+    REQUIRE(magic == 0x4843534d);  // MSCH
+    return version;
 }
 }  // namespace
 
@@ -126,13 +186,18 @@ TEST_CASE(
         CHECK(codec->codes_.back().lower_ == 100.);
         CHECK(codec->codes_.back().status_ == "range");
         CHECK_FALSE(layer->pointCodec("other"));
-        CHECK(layer->shapePointQuerySchema("NotProduced") == simfil::NoTypeId);
-        auto root = map->schemaType(layer->shapePointQuerySchema("Road"));
+        CHECK_FALSE(layer->shapePointQueryType("NotProduced"));
+        auto root = layer->shapePointQueryType("Road");
         REQUIRE(root);
         CHECK(root.field("$geometryOrdinal").type().kind() == Kind::Int);
         CHECK(root.field("$pointIndex").required() == true);
         CHECK(root.field("$feature").role() == Role::Context);
-        CHECK(root.field("$feature").type().id() == layer->featureSchema("Road"));
+        auto host = root.field("$feature").type();
+        auto canonicalHost = map->schemaType(layer->featureSchema("Road"));
+        REQUIRE(host);
+        CHECK(map->pointResultType(host) == canonicalHost);
+        REQUIRE(host.field("roadKey"));
+        CHECK(host.field("roadKey").type().kind() == canonicalHost.field("roadKey").type().kind());
         CHECK(root.field("$geometry").role() == Role::Context);
         CHECK(root.field("$attributes").role() == Role::Data);
         auto attrs = root.field("$attributes").type();
@@ -161,32 +226,20 @@ TEST_CASE(
         REQUIRE(candidate);
         CHECK(candidate.field("alternative").type().kind() == Kind::Int);
         CHECK(candidate.field("value").type() == values);
-        auto attribute =
-            root.field("$feature")
-                .type()
-                .field("properties")
-                .type()
-                .field("layer")
-                .type()
-                .field("rules")
-                .type()
-                .field("SPEED")
-                .type();
-        auto overlay = map->schemaType(layer->attributeQuerySchema("Road", attribute.id()));
+        auto overlay =
+            map->schemaType(layer->attributeQuerySchema("Road", attribute(canonicalHost).id()));
         REQUIRE(overlay);
         CHECK(overlay.field("$samples").role() == Role::Context);
         CHECK(overlay.field("$samples").required() == false);
-        CHECK(overlay.field("$samples").type().field("speed").type().itemType() == candidate);
+        checkSpeedCandidate(overlay.field("$samples").type().field("speed").type().itemType());
+        checkSpeedCandidate(candidate);
         CHECK(overlay.field("validity").role() == Role::Data);
         CHECK(overlay.field("validity").type().id() == map->findSchema("mapget:Validities"));
-        CHECK_FALSE(attribute.field("$samples"));
-        CHECK(candidate.field("status").type().kind() == Kind::String);
-        auto contributor = candidate.field("contributors").type().itemType();
-        CHECK(contributor.field("recordIndex").type().kind() == Kind::Int);
-        CHECK(contributor.field("raw").type().kind() == Kind::Int);
-        CHECK(contributor.field("path").type().elements().size() == 2);
-        CHECK(root.fieldPaths(map->dictionary().get("speed")).size() == 1);
-        CHECK(root.fieldPaths(map->dictionary().get("contributors")).empty());
+        CHECK_FALSE(attribute(host).field("$samples"));
+        CHECK_FALSE(attribute(canonicalHost).field("$samples"));
+        auto const& viewNames = root.pool()->dictionary();
+        CHECK(root.fieldPaths(viewNames.get("speed")).size() == 1);
+        CHECK(root.fieldPaths(viewNames.get("contributors")).empty());
         CHECK(map->strings()->get("profile") != 0);
         CHECK(map->checkForErrors().empty());
     }
@@ -376,7 +429,7 @@ TEST_CASE(
     f.map->finalize();
     auto schema = MapSchema::read(bytes(*f.map));
     auto layer = schema->layer("Roads");
-    auto occ = occurrence(schema->schemaType(layer->shapePointQuerySchema("Road")));
+    auto occ = occurrence(layer->shapePointQueryType("Road"));
     REQUIRE(occ);
     auto selected = layer->pointSeries("Road", "rules", "SPEED");
     REQUIRE(selected.size() == 2);
@@ -388,11 +441,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Point declarations are canonical content; composition rebuilds and translates point types",
+    "Composition preserves canonical marker remaps and rebuilds site-qualified point views",
     "[mapschema][pointseries]")
 {
     Profile a, b;
     auto descriptor = a.series();
+    descriptor.markers_ = PointSeries::Markers::PointValidities;
     auto codec = a.codec();
     a.layer->addPointCodec("decode", codec);
     a.layer->addPointSeries(descriptor);
@@ -432,18 +486,342 @@ TEST_CASE(
     }
     auto merged = MapSchema::compose({}, inputs);
     auto layer = merged->layer("Roads");
-    auto root = merged->schemaType(layer->shapePointQuerySchema("Road"));
-    auto occ = occurrence(root);
+    auto physical = attribute(merged->schemaType(layer->featureSchema("Road")));
+    auto query = merged->schemaType(layer->attributeQuerySchema("Road", physical.id()));
+    auto occ = occurrence(layer->shapePointQueryType("Road"));
     for (auto const& input : inputs) {
-        auto source = input->schemaType(input->layer("Roads")->shapePointQuerySchema("Road"));
-        CHECK(merged->remapSchema(input->schemaId(), source.id()) == root.id());
-        CHECK(merged->remapSchema(input->schemaId(), occurrence(source).id()) == occ.id());
+        auto origin = input->layer("Roads");
+        auto name = origin->pointSeries().front().fields_.front().name_;
+        auto native = attribute(input->schemaType(origin->featureSchema("Road")));
+        auto overlay = input->schemaType(origin->attributeQuerySchema("Road", native.id()));
+        auto candidate = overlay.field("$samples").type().field(name).type().itemType();
+        auto effective = query.field("$samples").type().field(name).type().itemType();
+        REQUIRE(candidate);
+        REQUIRE(effective);
+        CHECK(merged->remapSchema(input->schemaId(), native.id()) == physical.id());
+        CHECK(merged->remapSchema(input->schemaId(), overlay.id()) == query.id());
+        CHECK(merged->remapSchema(input->schemaId(), candidate.id()) == effective.id());
+        checkSpeedCandidate(occ.field("$samples").type().field(name).type().itemType());
+        auto sourceUse = occurrence(origin->shapePointQueryType("Road"));
+        CHECK(sourceUse.field(name));
+        CHECK_FALSE(sourceUse.field(name == "speed" ? "another" : "speed"));
     }
     REQUIRE(occ.field("speed"));
     REQUIRE(occ.field("another"));
     auto loaded = MapSchema::read(bytes(*merged));
     CHECK(bytes(*merged) == bytes(*loaded));
-    CHECK(loaded->layer("Roads")->shapePointQuerySchema("Road") == root.id());
+    auto restored = occurrence(loaded->layer("Roads")->shapePointQueryType("Road"));
+    CHECK(restored.field("speed"));
+    CHECK(restored.field("another"));
+}
+
+TEST_CASE(
+    "One extension can specialize just one of two uses of the same physical attribute",
+    "[mapschema][pointseries]")
+{
+    Profile base, extension;
+    base.map->finalize();  // Both use sites start as ordinary covering occurrences.
+    extension.layer->addPointSeries(extension.series());
+    extension.layer->addPointCodec("decode", extension.codec());
+    extension.map->finalize();
+    auto original = base.layer->shapePointQueryType("Road");
+    auto specialized = extension.layer->shapePointQueryType("Road");
+    REQUIRE(specialized);
+    REQUIRE(original);
+    CHECK(specialized.pool()->identity() != original.pool()->identity());
+    // A trace can persist this declared candidate even without virtual validity markers.
+    auto candidate =
+        occurrence(specialized).field("$samples").type().field("speed").type().itemType();
+    checkSpeedCandidate(extension.map->pointResultType(candidate));
+    CHECK(extension.map->pointResultType(occurrence(specialized)).kind() == Kind::Any);
+    REQUIRE(occurrence(original));
+    CHECK(occurrence(original) == occurrence(original, "other", "UNSAMPLED"));
+    CHECK(occurrenceList(original) == occurrenceList(original, "other", "UNSAMPLED"));
+    CHECK(occurrence(original).field("attributeValue").role() == Role::Data);
+    CHECK_FALSE(occurrence(original).field("speed"));
+    auto raw = attribute(original.field("$feature").type());
+    CHECK(base.map->pointResultType(raw) == base.attr);
+    CHECK_THROWS_AS(extension.map->pointResultType(raw), std::invalid_argument);
+
+    std::array<MapSchema::ConstPtr, 2> inputs{base.map, extension.map};
+    for (int order = 0; order < 2; ++order) {
+        CAPTURE(order);
+        auto merged = MapSchema::compose({}, inputs);
+        auto layer = merged->layer("Roads");
+        auto host = merged->schemaType(layer->featureSchema("Road"));
+        REQUIRE(attribute(host) == attribute(host, "other", "UNSAMPLED"));
+        auto root = layer->shapePointQueryType("Road");
+        auto sampled = occurrence(root), ordinary = occurrence(root, "other", "UNSAMPLED");
+        REQUIRE(sampled);
+        REQUIRE(ordinary);
+        CHECK(sampled != ordinary);
+        CHECK(occurrenceList(root) != occurrenceList(root, "other", "UNSAMPLED"));
+        CHECK(sampled.field("attributeValue").role() == Role::Context);
+        CHECK(ordinary.field("attributeValue").role() == Role::Data);
+        CHECK(sampled.field("speed"));
+        CHECK_FALSE(ordinary.field("speed"));
+        CHECK_FALSE(ordinary.field("$samples").type().field("speed"));
+        auto wildcard = root.field("$attributes").type().elements();
+        CHECK(std::ranges::find(wildcard, sampled.id()) != wildcard.end());
+        CHECK(std::ranges::find(wildcard, ordinary.id()) != wildcard.end());
+        CHECK_FALSE(occurrence(original).field("speed"));
+        std::swap(inputs[0], inputs[1]);
+    }
+}
+
+TEST_CASE(
+    "Querying hundreds of ordinary uses does not grow the published graph",
+    "[mapschema][pointseries]")
+{
+    auto make = [](unsigned count)
+    {
+        Profile f;
+        for (unsigned i = 0; i < count; ++i)
+            f.layer->bindAttribute(f.attr, "Road", "rules", "ordinary" + std::to_string(i));
+        for (auto unit : {"m", "ft"}) {
+            auto height = f.map->schemaType(f.map->addSchema(Kind::Float)).asScalar();
+            height.setNumericDomain({.unit = unit});
+            auto raw = f.map->newAttribute(std::string("height-") + unit);
+            raw.addField("height", height);
+            f.layer->bindAttribute(raw, "Road", "rules", unit);
+        }
+        f.map->finalize();
+        return f.map;
+    };
+    auto small = make(1), wide = make(256);
+    // The producer has more names/edges but no extra payload types.
+    CHECK(wide->typeCount() == small->typeCount());
+    auto before = bytes(*wide);
+    REQUIRE(wireVersion(before) == 9);
+    auto decoded = MapSchema::read(before, wide->schemaId());
+    for (auto map : {MapSchema::ConstPtr(wide), decoded}) {
+        auto counts = map->statistics().at("counts");
+        auto typeCount = map->typeCount();
+        auto root = map->layer("Roads")->shapePointQueryType("Road");
+        REQUIRE(root);
+        for (auto name : {"ordinary0", "ordinary127", "ordinary255"}) {
+            CAPTURE(name);
+            auto use = occurrence(root, "rules", name);
+            REQUIRE(use);
+            CHECK(use.field("attributeValue").role() == Role::Data);
+            CHECK(use.field("condition").type().kind() == Kind::Bool);
+            CHECK(use.field("$validities").type().itemType().kind() == Kind::Int);
+        }
+        auto metres = occurrenceList(root, "rules", "m"),
+             feet = occurrenceList(root, "rules", "ft");
+        REQUIRE(metres.itemType());
+        REQUIRE(feet.itemType());
+        CHECK(metres != feet);
+        CHECK(metres.itemType() != feet.itemType());
+        for (auto unit : {"m", "ft"}) {
+            auto height = occurrence(root, "rules", unit).field("height").type();
+            REQUIRE(height.numericDomain());
+            CHECK(height.numericDomain()->unit == unit);
+        }
+        CHECK(map->typeCount() == typeCount);
+        // Live query-cache telemetry is allowed to grow; the published graph is not.
+        auto after = map->statistics().at("counts");
+        for (auto key :
+             {"types",
+              "physicalTypes",
+              "fields",
+              "fieldEdges",
+              "elementEdges",
+              "alternativeEdges",
+              "internedNames",
+              "queryContexts",
+              "attributeQueryContexts"})
+        {
+            CAPTURE(key);
+            CHECK(after.at(key) == counts.at(key));
+        }
+        CHECK(bytes(*map) == before);
+    }
+}
+
+TEST_CASE(
+    "Concurrent first use retains a point view beyond host cache churn and producer lifetime",
+    "[mapschema][pointseries]")
+{
+    Type retained;
+    {
+        Profile f;
+        auto cm = f.map->schemaType(f.map->addSchema(Kind::Int)).asScalar();
+        cm.setTypeName("fixture.RawDistance");
+        cm.setNumericDomain({.encoding = "int16", .unit = "m", .scale = .01, .offset = 1.});
+        cm.addNamedValue(
+            {.name = "MISSING",
+             .value = int64_t{-32768},
+             .role = Type::NamedValue::Role::Special,
+             .meaning = Type::NamedValue::Meaning::Unknown});
+        f.attr.addField("distance", cm);
+        f.layer->addPointSeries(f.series());
+        f.layer->addPointCodec("decode", f.codec());
+        for (unsigned i = 0; i < 12; ++i) {
+            auto name = "Other" + std::to_string(i);
+            (void)f.layer->newFeature({name, {{{"key", {}, IdPartDataType::U32}}}});
+            f.layer->bindAttribute(f.attr, name, "rules", "SPEED");
+        }
+        f.map->finalize();
+        std::array<std::future<Type>, 6> queries;
+        std::barrier start(static_cast<std::ptrdiff_t>(queries.size()));
+        for (auto& next : queries)
+            next = std::async(
+                std::launch::async,
+                [layer = f.layer, &start]
+                {
+                    start.arrive_and_wait();
+                    return layer->shapePointQueryType("Road");
+                });
+        for (auto& next : queries) {
+            auto view = next.get();
+            REQUIRE(view);
+            if (!retained)
+                retained = view;
+            CHECK(view == retained);
+        }
+        CHECK(f.map->pointResultType(occurrence(retained).field("distance").type()) == cm);
+        for (unsigned i = 0; i < 12; ++i) {
+            auto other = f.layer->shapePointQueryType("Other" + std::to_string(i));
+            REQUIRE(other);
+            CHECK(other.pool()->identity() != retained.pool()->identity());
+            REQUIRE(occurrence(other).field("condition"));
+            CHECK_FALSE(occurrence(other).field("speed"));
+        }
+    }
+    checkSpeedCandidate(
+        occurrence(retained).field("$samples").type().field("speed").type().itemType());
+    for (auto use : {attribute(retained.field("$feature").type()), occurrence(retained)}) {
+        auto distance = use.field("distance").type();
+        CHECK(distance.typeName() == "fixture.RawDistance");
+        auto domain = distance.numericDomain();
+        REQUIRE(domain);
+        CHECK(domain->encoding == "int16");
+        CHECK(domain->unit == "m");
+        CHECK(domain->scale == .01);
+        CHECK(domain->offset == 1.);
+        auto missing = distance.namedValue("MISSING");
+        REQUIRE(missing);
+        CHECK(missing->role == Type::NamedValue::Role::Special);
+        CHECK(missing->meaning == Type::NamedValue::Meaning::Unknown);
+    }
+}
+
+TEST_CASE(
+    "Two process-wide warm point views respect active readers and source lifetime",
+    "[mapschema][pointseries]")
+{
+    auto source = [](std::string field) -> MapSchema::ConstPtr
+    {
+        Profile f;
+        auto series = f.series();
+        series.fields_.front().name_ = std::move(field);
+        f.layer->addPointCodec("decode", f.codec());
+        f.layer->addPointSeries(std::move(series));
+        f.map->finalize();
+        return f.map;
+    };
+    auto query = [](auto const& map)
+    {
+        return map->layer("Roads")->shapePointQueryType("Road");
+    };
+    auto warm = [&](auto const& map)
+    {
+        auto root = query(map);
+        REQUIRE(root);
+        return root.pool()->weak_from_this();  // Do not keep a reader alive.
+    };
+    auto live = [](MapSchema::ConstPtr const& map)
+    {
+        return map->statistics().at("counts").at("livePointQueryViews").get<size_t>();
+    };
+    auto a = source("firstSpeed"), b = source("secondSpeed"), c = source("thirdSpeed");
+    auto reader = query(a);
+    REQUIRE(reader);
+    auto original = reader.pool()->weak_from_this();
+    auto second = warm(b);
+    auto third = warm(c);
+    REQUIRE_FALSE(second.expired());
+    REQUIRE_FALSE(third.expired());
+    CHECK(live(a) == 1);
+    CHECK(live(b) == 1);
+    CHECK(live(c) == 1);
+    // A is cold now. Read its retained handle without refreshing its cache slot.
+    REQUIRE_FALSE(original.expired());
+    CHECK(occurrence(reader).field("firstSpeed"));
+    reader = {};
+    REQUIRE(original.expired());
+    CHECK(live(a) == 0);
+
+    auto again = query(a);
+    REQUIRE(again);
+    checkSpeedCandidate(
+        occurrence(again).field("$samples").type().field("firstSpeed").type().itemType());
+    CHECK_FALSE(occurrence(again).field("secondSpeed"));
+    CHECK(live(b) + live(c) == 1);
+    auto rewarmed = again.pool()->weak_from_this();
+    again = {};
+    REQUIRE_FALSE(rewarmed.expired());
+    CHECK(live(a) == 1);
+    auto producer = std::weak_ptr(a);
+    a.reset();
+    CHECK(producer.expired());
+    CHECK(rewarmed.expired());
+}
+
+TEST_CASE(
+    "Composing a legacy contributor preserves its wire and type translation contract",
+    "[mapschema][pointseries]")
+{
+    Profile fresh;
+    auto series = fresh.series();
+    series.markers_ = PointSeries::Markers::AppendToValidity;
+    fresh.layer->addPointSeries(series);
+    fresh.layer->addPointCodec("decode", fresh.codec());
+    fresh.map->finalize();
+    REQUIRE(wireVersion(bytes(*fresh.map)) == 9);
+    MapSchema::ConstPtr old;
+    uint32_t effectiveVersion = 9;
+    SECTION("V7 has no point view and does not force expanded output")
+    {
+        old = MapSchema::read(golden("mapschema-v7.bin"));
+        CHECK_FALSE(old->layer("Values")->shapePointQueryType("Reference"));
+    }
+    SECTION("V8 keeps every expanded handle translatable")
+    {
+        // schema.bin from the original seven-file generate-shape-point-fixture Lane publication.
+        // Do not regenerate it with the compact schema writer.
+        auto data = golden("mapschema-v8.bin");
+        REQUIRE(wireVersion(data) == 8);
+        REQUIRE(
+            picosha2::hash256_hex_string(data) ==
+            "e5617df572cb402be5240cbc7bf4d3934bec59d8982eb120a99ec87e35e22c28");
+        old = MapSchema::read(
+            data,
+            "mapget-schema:sha256:"
+            "40c1fa82d182d8f54107a68652788cb9a21ac09694f780269d8a01a0b364311e");
+        auto lane = old->layer("Lane")->shapePointQueryType("Lane");
+        REQUIRE(occurrence(lane, "LaneAdasLayerWithGeo", "CURVATURE").field("curvature"));
+        CHECK(bytes(*old) == data);
+        effectiveVersion = 8;
+    }
+    std::array<MapSchema::ConstPtr, 2> inputs{old, fresh.map};
+    auto merged = MapSchema::compose({}, inputs);
+    auto data = bytes(*merged);
+    CHECK(wireVersion(data) == effectiveVersion);
+    for (auto const& source : inputs) {
+        for (size_t i = 1; i <= source->typeCount(); ++i) {
+            auto id = merged->remapSchema(source->schemaId(), simfil::TypeId(i));
+            REQUIRE(merged->schemaType(id));
+        }
+    }
+    auto restored = MapSchema::read(data, merged->schemaId());
+    CHECK(bytes(*restored) == data);
+    REQUIRE(occurrence(restored->layer("Roads")->shapePointQueryType("Road")).field("speed"));
+    if (effectiveVersion == 8) {
+        auto lane = restored->layer("Lane")->shapePointQueryType("Lane");
+        REQUIRE(occurrence(lane, "LaneAdasLayerWithGeo", "CURVATURE").field("curvature"));
+    }
 }
 
 TEST_CASE(
@@ -475,16 +853,19 @@ TEST_CASE(
             layer->pointSeries("Road", "rules", "SPEED").data() ==
             layer->pointSeries("Road", "other", "UNSAMPLED").data() + 1);
         auto types = samples.types();
-        REQUIRE(types.size() == 2);
-        auto root = map->schemaType(layer->shapePointQuerySchema("Road"));
+        REQUIRE_FALSE(types.empty());
+        auto root = layer->shapePointQueryType("Road");
         for (auto [group, attr, field] :
              {std::tuple{"rules", "SPEED", "speed"}, std::tuple{"other", "UNSAMPLED", "limit"}})
         {
-            auto actual =
-                occurrence(root, group, attr).field("$samples").type().field(field).type();
-            CHECK(std::ranges::any_of(
+            auto pointSamples = occurrence(root, group, attr).field("$samples").type();
+            checkSpeedCandidate(pointSamples.field(field).type().itemType());
+            CHECK_FALSE(pointSamples.field(field == std::string_view("speed") ? "limit" : "speed"));
+            auto found = std::ranges::find_if(
                 types,
-                [&](auto id) { return map->schemaType(id).field(field).type() == actual; }));
+                [&](auto id) { return bool(map->schemaType(id).field(field)); });
+            REQUIRE(found != types.end());
+            checkSpeedCandidate(map->schemaType(*found).field(field).type().itemType());
         }
         auto validities = overlay.field("pointValidities");
         REQUIRE(validities);
@@ -513,8 +894,8 @@ TEST_CASE(
     f.layer->addPointCodec("decode", f.codec());
     f.map->finalize();
     auto restored = MapSchema::read(bytes(*f.map));
-    auto root = restored->layer("Roads")->shapePointQuerySchema("Road");
-    REQUIRE(occurrence(restored->schemaType(root)).field("speed"));
+    auto root = restored->layer("Roads")->shapePointQueryType("Road");
+    REQUIRE(occurrence(root).field("speed"));
 }
 
 TEST_CASE(
@@ -598,49 +979,75 @@ TEST_CASE(
         CHECK(rows.front().position_.vertexMeasures_ == series.position_.vertexMeasures_);
         CHECK(rows.front().position_.kind_ == series.position_.kind_);
         CHECK(rows.front().position_.intervalAxis_ == series.position_.intervalAxis_);
-        auto root = layer->mapSchema()->schemaType(layer->shapePointQuerySchema("Road"));
+        auto root = layer->shapePointQueryType("Road");
         CHECK(occurrence(root).field("mCoordinates").role() == Role::Context);
     }
 }
 
 TEST_CASE(
-    "Checksum-valid point artifacts still validate their raw accessors and envelope version",
+    "Checksum-valid point artifacts still validate the expanded or compact representation",
     "[mapschema][pointseries]")
 {
     Profile f;
     f.layer->addPointSeries(f.series());
     f.layer->addPointCodec("decode", f.codec());
     f.map->finalize();
-    auto data = bytes(*f.map);
-    auto warm = MapSchema::read(data);
-    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
-    bitsery::Deserializer<Adapter> reader(Adapter(data.begin(), data.end()));
-    uint32_t magic = 0, version = 0;
-    std::string id, payload;
-    reader.value4b(magic);
-    reader.value4b(version);
-    reader.text1b(id, 128);
-    reader.text1b(payload, data.size());
-    REQUIRE(version == 8);
+    auto reject = [](std::vector<uint8_t> const& data, auto mutate)
+    {
+        auto warm = MapSchema::read(data);
+        using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+        bitsery::Deserializer<Adapter> reader(Adapter(data.begin(), data.end()));
+        uint32_t magic = 0, version = 0;
+        std::string id, payload;
+        reader.value4b(magic);
+        reader.value4b(version);
+        reader.text1b(id, 128);
+        reader.text1b(payload, data.size());
+        REQUIRE(reader.adapter().isCompletedSuccessfully());
+        mutate(version, payload);
+        id = "mapget-schema:sha256:" + picosha2::hash256_hex_string(payload);
+        std::ostringstream output(std::ios::binary);
+        bitsery::Serializer<bitsery::OutputStreamAdapter> writer(output);
+        writer.value4b(magic);
+        writer.value4b(version);
+        writer.text1b(id, 128);
+        writer.text1b(payload, UINT32_MAX);
+        writer.adapter().flush();
+        auto mutated = output.str();
+        CHECK_THROWS(MapSchema::read(
+            std::span(reinterpret_cast<uint8_t const*>(mutated.data()), mutated.size())));
+    };
     SECTION("old version with the same cached identity")
     {
-        version = 7;
+        reject(
+            bytes(*f.map),
+            [](auto& version, auto&)
+            {
+                REQUIRE(version == 9);
+                version = 8;
+            });
     }
-    SECTION("declared accessor changed independently of typed graph")
+    SECTION("V9 accessor changed independently of the producer graph")
     {
-        auto field = payload.find("rawSpeed");
-        REQUIRE(field != std::string::npos);
-        payload.replace(field, 8, "badSpeed");
-        id = "mapget-schema:sha256:" + picosha2::hash256_hex_string(payload);
+        reject(
+            bytes(*f.map),
+            [](auto&, auto& payload)
+            {
+                auto field = payload.find("rawSpeed");
+                REQUIRE(field != std::string::npos);
+                payload.replace(field, 8, "badSpeed");
+            });
     }
-    std::ostringstream output(std::ios::binary);
-    bitsery::Serializer<bitsery::OutputStreamAdapter> writer(output);
-    writer.value4b(magic);
-    writer.value4b(version);
-    writer.text1b(id, 128);
-    writer.text1b(payload, UINT32_MAX);
-    writer.adapter().flush();
-    auto mutated = output.str();
-    CHECK_THROWS(MapSchema::read(
-        std::span(reinterpret_cast<uint8_t const*>(mutated.data()), mutated.size())));
+    SECTION("V8 expanded use-site key does not match its declaration")
+    {
+        reject(
+            golden("mapschema-v8.bin"),
+            [](auto& version, auto& payload)
+            {
+                REQUIRE(version == 8);
+                auto key = payload.find("/sample/curvature/source");
+                REQUIRE(key != std::string::npos);
+                payload[key + 1] = 'X';
+            });
+    }
 }

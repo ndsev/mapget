@@ -32,7 +32,7 @@ struct MapSchema::Impl
         AttributeOwner,
         AttributeOwners
     };
-    static constexpr uint32_t LegacyCodecVersion = 7, PointCodecVersion = 8;
+    static constexpr uint32_t LegacyCodecVersion = 7, ExpandedPointVersion = 8, PointCodecVersion = 9;
     static constexpr uint32_t PointQueryFlag = 16;
     static constexpr size_t MaxEdges = 4 * 1024 * 1024;
     static constexpr size_t GlobalLayer = std::numeric_limits<size_t>::max();
@@ -216,9 +216,17 @@ struct MapSchema::Impl
     class CompositionBuilder;
     class JsonCompiler;
     class PointBuilder;
+    class PointQueryPool;
+    struct PointViewSlot;
     // Sparse by layer: immutable descriptors and a derived feature-to-query-root lookup.
     std::map<size_t, point_schema::Declarations> pointDeclarations;
     std::map<std::pair<size_t, StringId>, TypeId> pointRoots;
+    // V9 point queries are per-host compiled views, not types in the wire artifact.
+    mutable std::mutex pointQueryMutex;
+    mutable std::map<std::pair<size_t, StringId>, std::shared_ptr<PointViewSlot>> pointViews;
+    TypeId pointResultAny = 0;
+    simfil::SchemaType pointQueryType(LayerSchema const&, std::string_view feature) const;
+    void accountPointViews(MemoryUsageBreakdown& memory, nlohmann::json* counts = nullptr) const;
     uint32_t wireVersion = LegacyCodecVersion;
     bool pointsPrepared = false;
     void preparePointSchemas(bool verify = false);

@@ -1,4 +1,4 @@
-#include "mapschema-impl.h"
+#include "mapschema-pointquery.h"
 #include "pointseries-numeric.h"
 
 #include <cmath>
@@ -339,13 +339,9 @@ PointSeries::Codec const* LayerSchema::pointCodec(std::string_view name) const
     return nullptr;
 }
 
-TypeId LayerSchema::shapePointQuerySchema(std::string_view feature) const
+simfil::SchemaType LayerSchema::shapePointQueryType(std::string_view feature) const
 {
-    auto const& graph = *mapSchema()->schema_;
-    if (!graph.frozen)
-        return simfil::NoTypeId;
-    auto it = graph.pointRoots.find({addr_.index(), graph.dictionary.get(feature)});
-    return it == graph.pointRoots.end() ? simfil::NoTypeId : it->second;
+    return mapSchema()->schema_->pointQueryType(*this, feature);
 }
 
 Json MapSchema::Impl::pointDeclarationsJson(size_t index) const
@@ -405,6 +401,7 @@ class MapSchema::Impl::PointBuilder
     MapSchema& pool_;
     bool verify_;
     size_t work_ = 0;
+    PointQueryPool* view_ = nullptr;
     std::map<std::string, TypeId, std::less<>> generated_;
     std::set<TypeId> used_;
     TypeId integer_ = 0, number_ = 0, string_ = 0, indices_ = 0, path_ = 0;
@@ -421,6 +418,16 @@ class MapSchema::Impl::PointBuilder
         if (n > limit - work_)
             throw std::length_error("Point schema validation work budget exceeded.");
         work_ += n;
+    }
+
+    TypeId raw(TypeId id) const { return view_ ? view_->raw(id) : id; }
+
+    Nodes raw(Nodes ids) const
+    {
+        if (view_)
+            for (auto& id : ids)
+                id = view_->raw(id);
+        return ids;
     }
 
     /** Expand choice arms, never arrays or wildcard/context edges. A null arm means absence. */
@@ -568,11 +575,11 @@ class MapSchema::Impl::PointBuilder
             return pos->second;
         if (verify_ && inserted)
             invalid("missing generated type " + key);
-        auto id = verify_ ? pos->second : pool_.addSchema(kind);
+        auto id = verify_ ? pos->second : view_ ? view_->addSchema(kind) : pool_.addSchema(kind);
         pos->second = id;
         used_.insert(id);
-        auto type = pool_.schemaType(id);
         if (verify_) {
+            auto type = pool_.schemaType(id);
             auto const& row = graph_.data(id);
             if (row.owners || row.pointer || row.metaType || row.zserioType || row.attributeType ||
                 row.attributeCode || row.annotations || !type.typeName().empty() ||
@@ -610,21 +617,31 @@ class MapSchema::Impl::PointBuilder
                 invalid("invalid generated physical unit");
             return id;
         }
-        auto& row = graph_.data(id);
-        row.flags = PointQueryFlag;
-        row.key = graph_.text(key);
-        if (open)
-            pool_.setOpen(id, true);
-        for (auto const& [name, edge] : fields) {
-            for (auto child : edge.types)
-                pool_.addFieldSchema(id, name, child, edge.multimap);
-            pool_.setFieldRole(id, name, edge.role);
-            pool_.setFieldRequired(id, name, edge.required);
+        auto write = [&](auto& destination)
+        {
+            if (open)
+                destination.setOpen(id, true);
+            for (auto const& [name, edge] : fields) {
+                for (auto child : edge.types)
+                    destination.addFieldSchema(id, name, child, edge.multimap);
+                destination.setFieldRole(id, name, edge.role);
+                destination.setFieldRequired(id, name, edge.required);
+            }
+            for (auto child : items)
+                destination.addElementSchema(id, child);
+            if (!unit.empty())
+                destination.schemaType(id).asScalar().setNumericDomain({.unit = unit});
+        };
+        if (view_) {
+            write(*view_);
+            view_->bindResult(id, key, graph_.pointResultAny);
         }
-        for (auto child : items)
-            pool_.addElementSchema(id, child);
-        if (!unit.empty())
-            type.asScalar().setNumericDomain({.unit = unit});
+        else {
+            auto& row = graph_.data(id);
+            row.flags = PointQueryFlag;
+            row.key = graph_.text(key);
+            write(pool_);
+        }
         return id;
     }
 
@@ -854,7 +871,8 @@ class MapSchema::Impl::PointBuilder
             }
             out.unit = unit.value_or("");
             if (!transformed && !differentUnit)
-                out.physical.types = out.raw;  // Preserve raw scalar metadata on a true identity.
+                out.physical.types =
+                    raw(out.raw);  // Preserve raw scalar metadata on a true identity.
             else {
                 auto kind = !transformed && onlyIntegers ? Kind::Int : Kind::Float;
                 out.physical.types = {
@@ -871,10 +889,80 @@ class MapSchema::Impl::PointBuilder
         return result;
     }
 
+    /** Only declared series own typed explanation data on the wire. Ordinary named
+     * attribute lookup, lists and occurrence fields are compiled in the host view. */
+    TypeId sampleTypes(
+        std::string const& key,
+        LayerSchema const& layer,
+        Site const& site,
+        TypeId feature,
+        Fields* fields)
+    {
+        Fields samples, markerFields;
+        bool append = false, separate = false;
+        for (auto series : site.series) {
+            append |= series->markers_ == PointSeries::Markers::AppendToValidity;
+            separate |= series->markers_ == PointSeries::Markers::PointValidities;
+            for (auto& [name, out] : outputs(layer, *series, site.attributes, feature)) {
+                auto sampleKey = childKey(key + "/sample", name);
+                Fields contributors{
+                    {"recordIndex", {integer_, Role::Data, true}},
+                    {"weight", {number_, Role::Data, true}},
+                    {"path", {path_, Role::Data, true}}};
+                contributors["raw"].types = raw(std::move(out.raw));
+                auto contributor =
+                    node(sampleKey + "/source", Kind::Object, std::move(contributors));
+                Fields candidate{
+                    {"contributors",
+                     {node(sampleKey + "/sources", Kind::Array, {}, {contributor}),
+                      Role::Data,
+                      true}},
+                    {"value", out.physical},
+                    {"status", string_},
+                    {"lower", number_},
+                    {"upper", number_},
+                    {"unit", string_}};
+                if (!out.alternative.empty())
+                    candidate["alternative"].types = raw(std::move(out.alternative));
+                auto value = node(sampleKey, Kind::Object, std::move(candidate));
+                samples[name] = node(sampleKey + "/list", Kind::Array, {}, {value});
+                if (series->markers_ != PointSeries::Markers::None)
+                    markerFields[name] = samples[name];
+                if (fields)
+                    (*fields)[name] = std::move(out.physical);
+            }
+        }
+        if (!view_ && !markerFields.empty()) {
+            auto marker = node(key + "/marker-samples", Kind::Object, std::move(markerFields));
+            // Some tiles annotate a union Attribute, others its selected physical arm.
+            // The shared attribute-query root must include all *possible* named uses.
+            auto attrs = leaves(site.attributes);
+            attrs.insert(attrs.end(), site.attributes.begin(), site.attributes.end());
+            unique(attrs);
+            bool bound = false;
+            for (auto attr : attrs)
+                if (auto query = graph_.findQueryRoot(feature, attr)) {
+                    auto& context = markers_[query];
+                    context.samples.push_back(marker);
+                    context.append |= append;
+                    context.separate |= separate;
+                    bound = true;
+                }
+            if (!bound)
+                invalid("no attribute-query root for a marker use");
+        }
+        return samples.empty() ?
+            node("empty-samples", Kind::Object) :
+            node(key + "/samples", Kind::Object, std::move(samples));
+    }
+
     TypeId
     occurrence(std::string const& key, LayerSchema const& layer, Site const& site, TypeId feature)
     {
         Fields fields = fieldsOf(site.attributes);
+        if (view_)
+            for (auto& [_, edge] : fields)
+                edge.types = raw(std::move(edge.types));
         fields["$attributeIndex"] = {integer_, Role::Data, true};
         fields["$layer"] = {string_, Role::Data, true};
         fields["$name"] = {string_, Role::Data, true};
@@ -885,8 +973,6 @@ class MapSchema::Impl::PointBuilder
             if (auto it = fields.find(name); it != fields.end())
                 it->second.role = Role::Context;
         };
-        Fields samples, markerFields;
-        bool append = false, separate = false;
         // These are procedural members (or occurrence routing hints), not ordinary
         // stored payload members. Named lookup still delegates to the raw Attribute.
         for (auto name :
@@ -918,91 +1004,55 @@ class MapSchema::Impl::PointBuilder
                     carrier(field.path_);
             }
         }
-        for (auto series : site.series) {
-            append |= series->markers_ == PointSeries::Markers::AppendToValidity;
-            separate |= series->markers_ == PointSeries::Markers::PointValidities;
-            for (auto& [name, out] : outputs(layer, *series, site.attributes, feature)) {
-                auto sampleKey = childKey(key + "/sample", name);
-                Fields contributors{
-                    {"recordIndex", {integer_, Role::Data, true}},
-                    {"weight", {number_, Role::Data, true}},
-                    {"path", {path_, Role::Data, true}}};
-                contributors["raw"].types = std::move(out.raw);
-                auto contributor =
-                    node(sampleKey + "/source", Kind::Object, std::move(contributors));
-                Fields candidate{
-                    {"contributors",
-                     {node(sampleKey + "/sources", Kind::Array, {}, {contributor}),
-                      Role::Data,
-                      true}},
-                    {"value", out.physical},
-                    {"status", string_},
-                    {"lower", number_},
-                    {"upper", number_},
-                    {"unit", string_}};
-                if (!out.alternative.empty())
-                    candidate["alternative"].types = std::move(out.alternative);
-                auto value = node(sampleKey, Kind::Object, std::move(candidate));
-                samples[name] = node(sampleKey + "/list", Kind::Array, {}, {value});
-                if (series->markers_ != PointSeries::Markers::None)
-                    markerFields[name] = samples[name];
-                fields[name] = std::move(
-                    out.physical);  // Contextual output takes precedence over the raw carrier.
-            }
-        }
-        if (!markerFields.empty()) {
-            auto marker = node(key + "/marker-samples", Kind::Object, std::move(markerFields));
-            // Some tiles annotate a union Attribute, others its selected physical arm.
-            // The shared attribute-query root must include all *possible* named uses.
-            auto attrs = leaves(site.attributes);
-            attrs.insert(attrs.end(), site.attributes.begin(), site.attributes.end());
-            unique(attrs);
-            bool bound = false;
-            for (auto attr : attrs)
-                if (auto query = graph_.findQueryRoot(feature, attr)) {
-                    auto& context = markers_[query];
-                    context.samples.push_back(marker);
-                    context.append |= append;
-                    context.separate |= separate;
-                    bound = true;
-                }
-            if (!bound)
-                invalid("no attribute-query root for a marker use");
-        }
-        fields["$samples"] = {
-            samples.empty() ?
-                node("empty-samples", Kind::Object) :
-                node(key + "/samples", Kind::Object, std::move(samples)),
-            Role::Context};
+        fields["$samples"] = {sampleTypes(key, layer, site, feature, &fields), Role::Context};
         auto open = std::ranges::any_of(
             leaves(site.attributes, true),
             [&](TypeId id) { return pool_.schemaType(id).open(); });
         return node(key, Kind::Object, std::move(fields), {}, {}, open);
     }
 
-    void feature(LayerSchema const& layer, std::string const& name, TypeId feature, Sites& owners)
+    TypeId
+    feature(LayerSchema const& layer, std::string const& name, TypeId feature, Sites const& owners)
     {
         auto key = childKey(childKey("point", layer.name()), name);
         Fields indexes;
         Nodes all;
+        // In a host-local graph, two ordinary sites with exactly the same raw
+        // targets differ only in runtime values ($name, $layer, etc.). A composed
+        // host with an added series will take the declared path for that site.
+        std::map<Nodes, std::pair<TypeId, TypeId>> ordinaryLists;
         for (auto const& [layerName, attributes] : owners) {
             auto indexKey = childKey(key + "/index", layerName);
             Fields named;
             for (auto const& [attrName, site] : attributes) {
+                bool ordinary = view_ && site.series.empty();
+                if (ordinary) {
+                    if (auto cached = ordinaryLists.find(site.attributes);
+                        cached != ordinaryLists.end())
+                    {
+                        auto [occurrence, list] = cached->second;
+                        all.push_back(occurrence);
+                        named[attrName] = {list, Role::Context};
+                        continue;
+                    }
+                }
                 auto use = childKey(indexKey + "/use", attrName);
                 auto occ = occurrence(use, layer, site, feature);
+                auto list = node(use + "/list", Kind::Array, {}, {occ});
+                if (ordinary)
+                    ordinaryLists.emplace(site.attributes, std::pair{occ, list});
                 all.push_back(occ);
-                named[attrName] = {node(use + "/list", Kind::Array, {}, {occ}), Role::Context};
+                named[attrName] = {list, Role::Context};
             }
             indexes[layerName] = {node(indexKey, Kind::Object, std::move(named)), Role::Context};
         }
+        if (view_)
+            unique(all);  // Schema alternatives, not a deduplication of runtime occurrences.
         auto attributes =
             node(key + "/attributes", Kind::Array, std::move(indexes), std::move(all));
         // A thin legacy feature need not declare the native Geometry vocabulary. Its open
         // reference is still lookup-only and never proves that an actual member is absent.
-        auto geometry = pool_.findSchema("mapget:Geometry");
-        if (!geometry)
-            geometry = pool_.schemaType(feature).field("geometry").type().id();
+        auto geometry = raw(geometryType(feature));
         if (!geometry)
             geometry = node("open-geometry", Kind::Object, {}, {}, {}, true);
         auto root = node(
@@ -1010,13 +1060,16 @@ class MapSchema::Impl::PointBuilder
             Kind::Object,
             {{"$pointIndex", {integer_, Role::Data, true}},
              {"$geometryOrdinal", {integer_, Role::Data, true}},
-             {"$feature", {feature, Role::Context, true}},
+             {"$feature", {raw(feature), Role::Context, true}},
              {"$geometry", {geometry, Role::Context, true}},
              {"$attributes", {attributes, Role::Data, true}}});
-        auto featureId = graph_.dictionary.get(name);
-        if (!featureId)
-            invalid("missing feature dictionary key");
-        graph_.pointRoots.emplace(std::pair{size_t(layer.addr().index()), featureId}, root);
+        return root;
+    }
+
+    TypeId geometryType(TypeId feature) const
+    {
+        auto id = pool_.findSchema("mapget:Geometry");
+        return id ? id : pool_.schemaType(feature).field("geometry").type().id();
     }
 
     /** Marker candidates are lookup-only on the selected attribute query context, not
@@ -1133,8 +1186,46 @@ class MapSchema::Impl::PointBuilder
         }
     }
 
+    void primitives()
+    {
+        (void)node("empty-samples", Kind::Object);
+        (void)node("open-geometry", Kind::Object, {}, {}, {}, true);
+        integer_ = node("integer", Kind::Int);
+        number_ = node("number", Kind::Float);
+        string_ = node("string", Kind::String);
+        indices_ = node("indices", Kind::Array, {}, {integer_});
+        path_ = node("path", Kind::Array, {}, {string_, integer_});
+    }
+
+    /** The same literal owner lookup binds published declarations and host-local queries. */
+    void bind(Sites& owners, PointSeries const& row)
+    {
+        auto group = owners.find(row.attributeLayer_);
+        if (group == owners.end() || !group->second.contains(row.attribute_))
+            invalid(
+                "no matching use site on " + row.featureType_ + "/" + row.attributeLayer_ + "/" +
+                row.attribute_);
+        group->second.at(row.attribute_).series.push_back(&row);
+    }
+
 public:
     PointBuilder(Impl& graph, bool verify) : graph_(graph), pool_(graph.pool), verify_(verify) {}
+
+    std::shared_ptr<PointQueryPool>
+    query(LayerSchema const& layer, std::string const& name, TypeId host)
+    {
+        auto view = std::make_shared<PointQueryPool>();
+        view->importHost(graph_, host, geometryType(host));
+        view_ = view.get();
+        primitives();
+        auto owners = sites(host, name, layer.name());
+        for (auto const& row : layer.pointSeries())
+            if (row.featureType_ == name)
+                bind(owners, row);
+        auto root = feature(layer, name, host, owners);
+        view->publish(root, childKey(childKey("point", layer.name()), name));
+        return view;
+    }
 
     void run()
     {
@@ -1151,6 +1242,7 @@ public:
                 invalid("generated point types in a legacy schema");
             return;
         }
+        bool expanded = graph_.wireVersion == ExpandedPointVersion;
         for (auto& [index, rows] : graph_.pointDeclarations)
             declarations(index, rows);
         for (size_t i = 0; i < graph_.layers.size(); ++i) {
@@ -1169,7 +1261,8 @@ public:
                     static StringPool const vocabulary("point-static");
                     for (StringId id = StringPool::MessageStr + 1;
                          id <= StringPool::OverlayGeometryOrdinalStr;
-                         ++id) {
+                         ++id)
+                    {
                         auto spelling = vocabulary.resolve(id);
                         if (spelling && !graph_.dictionary.get(*spelling)) {
                             if (verify_)
@@ -1182,26 +1275,44 @@ public:
                     }
                     registerName("value");
                     registerName("unit");
-                    (void)node("empty-samples", Kind::Object);
-                    (void)node("open-geometry", Kind::Object, {}, {}, {}, true);
-                    integer_ = node("integer", Kind::Int);
-                    number_ = node("number", Kind::Float);
-                    string_ = node("string", Kind::String);
-                    indices_ = node("indices", Kind::Array, {}, {integer_});
-                    path_ = node("path", Kind::Array, {}, {string_, integer_});
+                    primitives();
+                    if (!expanded) {
+                        auto key = "mapget:primitive:" + std::to_string(uint32_t(Kind::Any));
+                        graph_.pointResultAny = verify_ ?
+                            pool_.findSchema(key) :
+                            pool_.primitive(Kind::Any);
+                        if (!graph_.pointResultAny ||
+                            pool_.schemaType(graph_.pointResultAny).kind() != Kind::Any)
+                            invalid("missing generic point result type");
+                    }
                 }
                 auto id = layer->featureSchema(name);
+                auto const& declarations = byFeature[name];
+                if (declarations.empty() && !expanded)
+                    continue;
                 auto owners = sites(id, name, layer->name());
-                for (auto row : byFeature[name]) {
-                    auto group = owners.find(row->attributeLayer_);
-                    if (group == owners.end() || !group->second.contains(row->attribute_))
-                        invalid(
-                            "no matching use site on " + name + "/" + row->attributeLayer_ + "/" +
-                            row->attribute_);
-                    group->second.at(row->attribute_).series.push_back(row);
+                for (auto row : declarations) {
+                    bind(owners, *row);
                     bound.insert(row);
                 }
-                feature(*layer, name, id, owners);
+                if (expanded) {
+                    auto root = feature(*layer, name, id, owners);
+                    graph_.pointRoots.emplace(std::pair{i, graph_.dictionary.get(name)}, root);
+                }
+                else {
+                    auto hostKey = childKey(childKey("point", layer->name()), name);
+                    for (auto const& [group, groupSites] : owners) {
+                        auto indexKey = childKey(hostKey + "/index", group);
+                        for (auto const& [attribute, site] : groupSites)
+                            if (!site.series.empty())
+                                sampleTypes(
+                                    childKey(indexKey + "/use", attribute),
+                                    *layer,
+                                    site,
+                                    id,
+                                    nullptr);
+                    }
+                }
             }
             if (bound.size() != layer->pointSeries().size())
                 invalid("series owner is not produced by this layer");
@@ -1209,14 +1320,119 @@ public:
         markerOverlays();
         if (used_.size() != generated_.size())
             invalid("orphan generated type");
-        auto version = used_.empty() && graph_.pointDeclarations.empty() ?
-            LegacyCodecVersion :
-            PointCodecVersion;
+        auto version = used_.empty() && graph_.pointDeclarations.empty() ? LegacyCodecVersion :
+            expanded                                                     ? ExpandedPointVersion :
+                                                                           PointCodecVersion;
         if (verify_ && graph_.wireVersion != version)
             invalid("noncanonical point artifact version");
         graph_.wireVersion = version;
     }
 };
+
+/** Each host can find its live view without keeping it alive. The two most
+ * recent slots across this module also own their views, while their sources exist. */
+struct MapSchema::Impl::PointViewSlot
+{
+    std::weak_ptr<PointQueryPool> live;  // Protected by the source's pointQueryMutex.
+
+    static void
+    touch(std::shared_ptr<PointViewSlot> const& slot, std::shared_ptr<PointQueryPool> const& view)
+    {
+        // Only weak slots are global. A dying source needs no deregistration
+        // and a warm slot cannot prolong either its source or its dictionary.
+        static std::mutex mutex;
+        static std::array<std::weak_ptr<PointViewSlot>, 2> recent;
+        std::shared_ptr<PointViewSlot> first, second;
+        std::shared_ptr<PointQueryPool> retired;
+        {
+            std::lock_guard lock(mutex);
+            first = recent[0].lock();
+            if (first == slot)
+                return;
+            second = recent[1].lock();
+            if (first) {
+                if (second && second != slot)
+                    retired = std::move(second->warm_);
+                recent[1] = first;
+            }
+            else if (second == slot) {
+                recent[1].reset();
+            }
+            recent[0] = slot;
+            slot->warm_ = view;
+        }
+        // The evicted pool and any concurrently discarded slots are destroyed
+        // outside the global lock. Active evaluations own their pools directly.
+    }
+
+private:
+    std::shared_ptr<PointQueryPool> warm_;
+};
+
+simfil::SchemaType
+MapSchema::Impl::pointQueryType(LayerSchema const& layer, std::string_view feature) const
+{
+    if (!frozen || wireVersion == LegacyCodecVersion || !layer.producesFeatureType(feature))
+        return {};
+    auto key = std::pair{size_t(layer.addr().index()), dictionary.get(feature)};
+    if (wireVersion == ExpandedPointVersion) {
+        auto it = pointRoots.find(key);
+        return it == pointRoots.end() ? Schema{} : pool.schemaType(it->second).retain();
+    }
+    std::shared_ptr<PointViewSlot> slot;
+    std::shared_ptr<PointQueryPool> view;
+    {
+        // Single-flight per source. Constructing a view never takes the process-wide lock.
+        std::lock_guard lock(pointQueryMutex);
+        auto it = pointViews.lower_bound(key);
+        if (it == pointViews.end() || it->first != key)
+            it = pointViews.emplace_hint(it, key, std::make_shared<PointViewSlot>());
+        slot = it->second;
+        view = slot->live.lock();
+        if (!view) {
+            PointBuilder builder(*pool.schema_, false);
+            view = builder.query(layer, std::string(feature), layer.featureSchema(feature));
+            slot->live = view;
+        }
+    }
+    PointViewSlot::touch(slot, view);
+    return view->schemaType(view->root_).retain();
+}
+
+simfil::SchemaType MapSchema::pointResultType(simfil::SchemaType const& type) const
+{
+    auto view = dynamic_cast<Impl::PointQueryPool const*>(type.pool());
+    if (!view || !type)
+        return type;
+    if (view->sourceIdentity_ != schemaId())
+        throw std::invalid_argument("Point result belongs to another source schema.");
+    return schemaType(view->resultTypes_.at(type.id()));
+}
+
+void MapSchema::Impl::accountPointViews(MemoryUsageBreakdown& memory, Json* counts) const
+{
+    std::lock_guard lock(pointQueryMutex);
+    simfil::MemoryUsage usage;
+    size_t live = 0, types = 0;
+    for (auto const& [_, item] : pointViews) {
+        if (auto view = item->live.lock()) {
+            usage += view->usage_;
+            types += view->typeCount();
+            ++live;
+        }
+    }
+    memory.add("point-query-views", usage);
+    memory.add(
+        "point-query-cache",
+        {pointViews.size() * (sizeof(decltype(pointViews)::value_type) + sizeof(PointViewSlot)),
+         pointViews.size() *
+             (sizeof(decltype(pointViews)::value_type) + sizeof(PointViewSlot) +
+              5 * sizeof(void*))});
+    if (counts) {
+        (*counts)["livePointQueryViews"] = live;
+        (*counts)["livePointQueryTypes"] = types;
+    }
+}
 
 void MapSchema::Impl::preparePointSchemas(bool verify)
 {

@@ -37,11 +37,39 @@ layer->addPointSeries(std::move(s));
 
 Paths contain literal field names, not expressions or string-pool IDs. A raw value
 may be at a different path from its contextual field name. MapSchema validates
-the source paths, numeric operands, output types and codec references, freezes
-them into the binary artifact and derives each feature's point query schema.
-Layer JSON interchange uses `x-mapget.pointMeasurements.series` and `codecs`.
-The same artifact drives native filtering and WASM inspection. V7 artifacts
-remain readable as V7; they do not acquire serialized point declarations.
+the source paths, numeric operands, output types and codec references before
+publication. Layer JSON interchange uses `x-mapget.pointMeasurements.series`
+and `codecs`.
+
+The V9 artifact contains the producer types, point declarations and the types
+of decoded results and their explanations. It does **not** contain an occurrence
+object and list for every attribute on every feature. On first use,
+`layer->shapePointQueryType(featureName)` derives the named and enumerable
+point fields from that feature's actual attribute bindings and declarations.
+This also works on features with ordinary attributes and no sampled fields.
+Native filtering and WASM completion use the same builder. Keep the returned
+SIMFIL type: its numeric ID belongs to its own pool, not to the source MapSchema.
+The native process (or one WASM module) keeps the two most recently used host
+views warm **across all schemas**, not two per datasource. Active readers can
+hold additional views across eviction. Dropping a source also drops its warm
+ownership. Compiled point expressions can be shared by concurrent evaluations,
+but the expression cache alone does not keep a point view alive.
+Schema statistics count its live view types and allocated capacity
+separately from the published artifact. Subset results use published schema
+types, never a view-local type ID.
+
+For scale, a native run over the 20 feature types in a 12-layer NDS.Live
+schema measured roughly 0.6–18 ms to construct a cold host view, and
+3.7–4.6 MB of allocated capacity per view. Those are machine- and
+schema-dependent measurements, not latency guarantees or process RSS.
+
+V7 artifacts keep their original identity. Filtering for an original point's
+index or geometry still works, but V7 has no typed point root or declared
+samples. V8 artifacts retain their expanded point roots. Composing
+with a V8 producer preserves that layout so all its type IDs can still be
+translated; newly built V9-only composites use compact artifacts. Consumers
+that only read through V8 must be updated before publishing V9 artifacts.
+This changes the schema artifact version, not the tile stream framing.
 
 ## Coverage is not sampling
 

@@ -5,12 +5,17 @@
 #include "../../libs/model/src/shapepoint-series.h"
 #include "mapget/model/featurelayer.h"
 #include "mapget/model/mapschema.h"
+#include "mapget/model/simfilexpressioncache.h"
+#include "mapget/model/simfilutil.h"
 #include "shape-point-lane-fixture.h"
 
 #include <algorithm>
+#include <fstream>
 #include <future>
+#include <iterator>
 #include <limits>
 #include <span>
+#include <sstream>
 
 namespace
 {
@@ -88,6 +93,8 @@ struct Profile
             attrType.addField("branches", list(branch));
         }
         attrType.addField("condition", integer);
+        if (rawMetadata)
+            attrType.addField("rawCode", raw);
         schema->bindAttribute(attrType, "Path", "profiles", "PROFILE");
         schema->addPointSeries(std::move(s));
         map->finalize();
@@ -449,9 +456,11 @@ TEST_CASE("Point contexts carry the schema used by named and wildcard queries", 
     Profile f;
     f.attr->validity()->newComplete();
     auto root = f.host->shapePoints(0).at(1)->queryContext();
-    auto type = f.map->schemaType(f.schema->shapePointQuerySchema("Path"));
+    auto type = f.schema->shapePointQueryType("Path");
     REQUIRE(type);
+    CHECK(type.pool() != f.map.get());
     REQUIRE(root->schemaType() == type);
+    CHECK(f.field(root, "$feature")->schemaType() == f.host->schemaType());
     auto attributes = f.field(root, "$attributes");
     REQUIRE(attributes);
     auto layer = f.field(attributes, "profiles");
@@ -468,6 +477,274 @@ TEST_CASE("Point contexts carry the schema used by named and wildcard queries", 
     CHECK(occurrenceType == attributes->schemaType().itemType());
     CHECK(named->at(0)->schemaType() == occurrenceType);
     CHECK(attributes->at(0)->schemaType() == occurrenceType);
+}
+
+TEST_CASE("Shape-point projection publishes source domains, not query-local IDs",
+          "[shapepoint][projection]")
+{
+    Profile f(Profile::declaration(), {{0, 0}, {1, 0}}, [](simfil::SchemaScalarType raw)
+    { raw.setNumericDomain({.encoding = "uint8", .unit = "km/h", .maximum = uint64_t{255}}); });
+    f.attr->validity()->newComplete();
+    f.record(0, 1, 21);
+    f.record(1, 1, 31);
+    auto inlineValue = f.tile->newSmallValue(int16_t{7});
+    REQUIRE_FALSE(inlineValue->schemaType());
+    REQUIRE(f.attr->addField("rawCode", inlineValue));
+    auto sourceType = f.attr->schemaType().field("rawCode").type();
+    REQUIRE(sourceType.numericDomain());
+    FeatureLayerFilterRequest request;
+    auto& channel = request.channels_.emplace_back();
+    channel.channelId_ = "domains";
+    channel.scope_ = FeatureLayerFilterScope::ShapePoint;
+    channel.entryFilter_ = "$pointIndex == 0";
+    channel.entryFields_ = {"$attributes.profiles.PROFILE.*",
+                            "$attributes.profiles.PROFILE.*.rawCode",
+                            "trace($attributes.profiles.PROFILE.*.$samples.reading.*, -1, 'candidate')"};
+    auto result = request.filter(*f.tile);
+    REQUIRE(result);
+    auto subset = *result;
+    INFO(subset->toJson()["issues"].dump());
+    REQUIRE(subset->issues().empty());
+    std::stringstream wire;
+    REQUIRE(subset->write(wire));
+    auto data = wire.str();
+    // A reader knows the source MapSchema and dictionary only, never the host's query pool.
+    auto decoded = std::make_shared<PartitionSubsetLayer>(
+        std::vector<uint8_t>(data.begin(), data.end()),
+        [&](auto const&, auto const&) { return f.tile->layerInfo(); },
+        [&](auto const&) { return f.strings; });
+    auto entry = decoded->at(0)->shapePointEntryAt(0);
+    REQUIRE(entry);
+    auto slots = entry->values();
+    REQUIRE(slots->size() == 3);
+    auto occurrence = slots->at(0)->at(0);
+    REQUIRE(occurrence);
+    CHECK(occurrence->schemaType().pool() == f.map.get());
+    auto measurement = f.field(occurrence, "reading");
+    REQUIRE(measurement);
+    CHECK(measurement->type() == simfil::ValueType::Float);
+    REQUIRE(measurement->schemaType().numericDomain());
+    CHECK(measurement->schemaType().numericDomain()->unit == "km/h");
+    CHECK(f.field(occurrence, "rawCode")->schemaType() == sourceType);
+    CHECK(slots->at(1)->at(0)->schemaType() == sourceType);
+    auto checkCandidate = [&](Node const& candidate) {
+        REQUIRE(candidate);
+        CHECK(candidate->schemaType().pool() == f.map.get());
+        auto contributors = f.field(candidate, "contributors");
+        REQUIRE(contributors);
+        REQUIRE(contributors->size() == 1);
+        auto raw = f.field(contributors->at(0), "raw");
+        REQUIRE(raw);
+        CHECK(raw->toJson() == 21);
+        CHECK(raw->schemaType() == sourceType);
+    };
+    checkCandidate(slots->at(2)->at(0));
+    REQUIRE(decoded->traceCount() == 1);
+    checkCandidate(decoded->traceAt(0)->values()->at(0));
+}
+
+TEST_CASE("Equal point root IDs from different hosts compile distinct projections",
+          "[shapepoint][projection]")
+{
+    auto map = std::make_shared<MapSchema>();
+    auto layer = map->newLayer("Hosts", LayerType::Features);
+    auto integer = map->schemaType(map->primitive(simfil::SchemaType::Kind::Int));
+    for (auto [name, member] : {std::pair{"Alpha", "onlyAlpha"}, {"Bravo", "onlyBravo"}}) {
+        (void)layer->newFeature({name, {{{"key", {}, IdPartDataType::U32}}}});
+        auto attr = map->newAttribute(name);
+        attr.addField(member, integer);
+        layer->bindAttribute(attr, name, "profiles", "PROFILE");
+    }
+    map->finalize();
+    auto alpha = layer->shapePointQueryType("Alpha");
+    auto bravo = layer->shapePointQueryType("Bravo");
+    REQUIRE(alpha);
+    REQUIRE(bravo);
+    REQUIRE(alpha.pool() != bravo.pool());
+    REQUIRE(alpha.id() == bravo.id());
+    DataSourceInfo info;
+    info.layers_["Hosts"] = std::make_shared<LayerInfo>();
+    info.layers_["Hosts"]->layerId_ = "Hosts";
+    info.setMapSchema(map);
+    auto tile = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromTileXY(1, 0, 1), "hosts", "Map", info.getLayer("Hosts"),
+        std::make_shared<StringPool>("hosts"));
+    for (auto [name, member] : {std::pair{"Alpha", "onlyAlpha"}, {"Bravo", "onlyBravo"}}) {
+        auto host = tile->newFeature(name, {{"key", int64_t{1}}});
+        host->addLine({Point{1, 2}, Point{2, 2}});
+        auto attr = host->attributeLayers()->newLayer("profiles")->newAttribute("PROFILE");
+        attr->validity()->newComplete();
+        REQUIRE(attr->addField(member, int64_t{42}));
+    }
+    FeatureLayerFilterRequest request;
+    auto& channel = request.channels_.emplace_back();
+    channel.channelId_ = "members";
+    channel.scope_ = FeatureLayerFilterScope::ShapePoint;
+    channel.entryFilter_ = "$pointIndex == 0";
+    // A standalone name needs recursive schema shorthand on its own host only.
+    channel.entryFields_ = {"onlyAlpha", "onlyBravo"};
+    auto result = request.filter(*tile);
+    REQUIRE(result);
+    REQUIRE((*result)->issues().empty());
+    auto output = (*result)->at(0);
+    REQUIRE(output->shapePointEntryCount() == 2);
+    CHECK(output->shapePointEntryAt(0)->values()->toJson() == Json::array({{42}, {nullptr}}));
+    CHECK(output->shapePointEntryAt(1)->values()->toJson() == Json::array({{nullptr}, {42}}));
+
+    // Across independent readers the verified source + host identity, not an
+    // allocation address or a caller-supplied schema name, authorizes reuse.
+    SimfilExpressionCache cache;
+    auto env = makeEnvironment(tile->strings());
+    auto program = [&](simfil::SchemaType root, LayerSchema::Ptr owner) {
+        simfil::CompileOptions options{
+            .any = false, .rewriteMode = simfil::RewriteMode::Schema, .rootSchema = root};
+        return cache.getOrCompile("onlyAlpha", options, owner, {}, [&] {
+            return simfil::compile(*env, "onlyAlpha", options);
+        });
+    };
+    auto first = program(alpha, layer);
+    auto second = program(bravo, layer);
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(*first != *second);
+    std::stringstream wire;
+    REQUIRE(map->write(wire));
+    auto bytes = wire.str();
+    auto other = MapSchema::read(std::vector<uint8_t>(bytes.begin(), bytes.end()))->layer("Hosts");
+    auto sameHost = other->shapePointQueryType("Alpha");
+    REQUIRE(sameHost.pool() != alpha.pool());
+    auto hit = program(sameHost, other);
+    REQUIRE(hit);
+    CHECK(*hit == *first);
+    auto spoof = std::make_shared<simfil::SchemaPool>();
+    while (spoof->typeCount() < alpha.id())
+        (void)spoof->newObjectType();
+    spoof->finalize(std::string(alpha.pool()->identity()));
+    auto untrusted = spoof->schemaType(alpha.id());
+    REQUIRE(program(untrusted, layer));
+    REQUIRE(program(untrusted, layer));
+    auto stats = cache.statistics();
+    CHECK(stats.entries == 2);
+    CHECK(stats.hits == 1);
+    CHECK(stats.compiles == 4);
+}
+
+TEST_CASE("Cached point enum programs share live readers without pinning evicted pools",
+          "[shapepoint][expression-cache]")
+{
+    auto map = std::make_shared<MapSchema>();
+    auto layer = map->newLayer("Hosts", LayerType::Features);
+    for (auto host : {"Alpha", "Bravo", "Charlie"})
+        (void)layer->newFeature({host, {{{"key", {}, IdPartDataType::U32}}}});
+    auto state = map->newEnumType();
+    state.addSymbol("TRACK_IDLE");
+    auto extra = map->newObjectType();
+    extra.setOpen(true);
+    auto attr = map->newAttribute("Status");
+    attr.addField("state", state);
+    attr.addField("extra", extra);
+    layer->bindAttribute(attr, "Alpha", "profiles", "STATUS");
+    map->finalize();
+
+    SimfilExpressionCache cache(1);
+    auto env = makeEnvironment(std::make_shared<StringPool>("point-cache"));
+    auto get = [&](simfil::SchemaType root, std::string_view query) {
+        simfil::CompileOptions opts{
+            .any = false, .rewriteMode = simfil::RewriteMode::Schema, .rootSchema = root};
+        return cache.getOrCompile(query, opts, layer, {}, [&] {
+            return simfil::compile(*env, query, opts);
+        });
+    };
+    auto evictWarmAlpha = [&] {
+        REQUIRE(layer->shapePointQueryType("Bravo"));
+        REQUIRE(layer->shapePointQueryType("Charlie"));
+    };
+    auto root = layer->shapePointQueryType("Alpha");
+    REQUIRE(root);
+    auto pool = root.pool()->weak_from_this();
+    bool complete = true;
+    REQUIRE_FALSE(root.enumSymbolPaths(root.pool()->dictionary().get("TRACK_IDLE"), &complete).empty());
+    REQUIRE_FALSE(complete);  // This shorthand requires a schema-bound runtime predicate.
+    auto first = get(root, "TRACK_IDLE");
+    auto second = get(root, "TRACK_IDLE");
+    REQUIRE(first);
+    REQUIRE(second);
+    REQUIRE(*first == *second);
+    CHECK(cache.statistics().hits == 1);
+    root = {};
+    evictWarmAlpha();
+    first->reset();
+    REQUIRE_FALSE(pool.expired());  // Only the remaining reader's AST keeps this pool alive.
+    second->reset();
+    REQUIRE(pool.expired());        // The cache and the source are both still live.
+
+    auto rebuilt = layer->shapePointQueryType("Alpha");
+    REQUIRE(get(rebuilt, "TRACK_IDLE"));
+    CHECK(cache.statistics().compiles == 2);
+    SECTION("A stale private slot leaves room for a strong canonical program") {
+        auto canonical = map->schemaType(layer->featureSchema("Alpha"));
+        auto program = get(canonical, "true");
+        REQUIRE(program);
+        std::weak_ptr<simfil::AST const> witness = *program;
+        program->reset();
+        REQUIRE_FALSE(witness.expired());
+        auto again = get(canonical, "true");
+        REQUIRE(again);
+        CHECK(*again == witness.lock());
+        CHECK(cache.statistics().compiles == 3);
+    }
+    SECTION("A cached point compilation error survives pool eviction") {
+        auto failure = get(rebuilt, "(");
+        REQUIRE_FALSE(failure);
+        auto witness = rebuilt.pool()->weak_from_this();
+        rebuilt = {};
+        evictWarmAlpha();
+        REQUIRE(witness.expired());
+        auto again = get(layer->shapePointQueryType("Alpha"), "(");
+        REQUIRE_FALSE(again);
+        CHECK(again.error() == failure.error());
+        CHECK(cache.statistics().failedCompiles == 1);
+        CHECK(cache.statistics().compiles == 3);
+    }
+    CHECK(cache.statistics().entries == 1);
+}
+
+TEST_CASE("A native V7 feature scans original vertices without a typed point root",
+          "[shapepoint][legacy]")
+{
+    // Authored once using the V7 writer: a features layer, not a reference-only identity.
+    std::ifstream file(MAPGET_TEST_DATA_DIR "/mapschema-v7-feature.bin", std::ios::binary);
+    REQUIRE(file.is_open());
+    std::vector<uint8_t> bytes(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{});
+    REQUIRE(bytes.at(4) == 7);
+    auto map = MapSchema::read(bytes);
+    auto layer = map->layer("Paths");
+    REQUIRE(layer->producesFeatureType("Path"));
+    REQUIRE_FALSE(layer->shapePointQueryType("Path"));
+    DataSourceInfo info;
+    info.layers_["Paths"] = std::make_shared<LayerInfo>();
+    info.layers_["Paths"]->layerId_ = "Paths";
+    info.setMapSchema(map);
+    auto tile = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromTileXY(1, 0, 1), "v7", "V7", info.getLayer("Paths"),
+        std::make_shared<StringPool>("v7"));
+    auto host = tile->newFeature("Path", {{"id", int64_t{1}}});
+    host->addLine({Point{0, 0}, Point{1, 2}});
+    auto root = host->shapePoints(0).at(1)->queryContext();
+    CHECK_FALSE(root->schemaType());
+    FeatureLayerFilterRequest request;
+    auto& channel = request.channels_.emplace_back();
+    channel.channelId_ = "untyped";
+    channel.scope_ = FeatureLayerFilterScope::ShapePoint;
+    channel.entryFilter_ = "$pointIndex == 1";
+    channel.entryFields_ = {"$pointIndex", "$geometry.type"};
+    auto result = request.filter(*tile);
+    REQUIRE(result);
+    REQUIRE((*result)->issues().empty());
+    REQUIRE((*result)->at(0)->shapePointEntryCount() == 1);
+    auto row = (*result)->at(0)->shapePointEntryAt(0);
+    CHECK(row->position() == host->shapePoints(0).at(1)->position());
+    CHECK(row->values()->toJson() == Json::array({{1}, {"LineString"}}));
 }
 
 TEST_CASE("Signed vertex measures select stations independently of XY length", "[shapepoint]")
