@@ -15,3 +15,4 @@
 
 - **User guide** (`docs/mapget-user-guide.md`) – covers installation, configuration, REST usage, caching, data model basics and troubleshooting.
 - **Developer guide** (`docs/mapget-dev-guide.md`) – explains the architecture, libraries, datasource interfaces, diagrams and build instructions.
+- [Measurements on original geometry vertices](docs/shape-point-measurements.md) explains datasource declarations, applicability, interpolation and inspection provenance.
