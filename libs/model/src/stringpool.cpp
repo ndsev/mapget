@@ -111,6 +111,27 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(ExpressionIndexStr, "expressionIndex");
     addStaticKey(StageStr, "stage");
     addStaticKey(MessageStr, "message");
+    addStaticKey(ShapePointEntriesStr, "shapePointEntries");
+    addStaticKey(GeometryOrdinalStr, "geometryOrdinal");
+    addStaticKey(SourceGeometryTypeStr, "sourceGeometryType");
+    addStaticKey(PointIndexStr, "pointIndex");
+    addStaticKey(PositionStr, "position");
+    addStaticKey(OverlayPointIndexStr, "$pointIndex");
+    addStaticKey(OverlayGeometryStr, "$geometry");
+    addStaticKey(OverlayAttributesStr, "$attributes");
+    addStaticKey(OverlayLayerIdStr, "$layerId");
+    addStaticKey(OverlayValiditiesStr, "$validities");
+    addStaticKey(OverlaySamplesStr, "$samples");
+    addStaticKey(ContributorsStr, "contributors");
+    addStaticKey(RecordIndexStr, "recordIndex");
+    addStaticKey(WeightStr, "weight");
+    addStaticKey(RawStr, "raw");
+    addStaticKey(StatusStr, "status");
+    addStaticKey(LowerStr, "lower");
+    addStaticKey(UpperStr, "upper");
+    addStaticKey(PathStr, "path");
+    addStaticKey(AlternativeStr, "alternative");
+    addStaticKey(OverlayGeometryOrdinalStr, "$geometryOrdinal");
 }
 
 tl::expected<void, simfil::Error>

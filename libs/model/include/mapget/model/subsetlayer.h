@@ -27,6 +27,7 @@ class PartitionSubsetLayer;
 class TileSubsetChannel;
 class FeatureEntry;
 class AttributeValidityEntry;
+class ShapePointEntry;
 class RelationEntry;
 class GroupEntry;
 
@@ -36,6 +37,7 @@ enum class Scope : uint8_t {
     Attribute,
     Relation,
     Group,
+    ShapePoint,
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(
@@ -45,6 +47,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {Scope::Attribute, "attribute"},
         {Scope::Relation, "relation"},
         {Scope::Group, "group"},
+        {Scope::ShapePoint, "shapepoint"},
     })
 
 /** Direction of the directed relation descriptor represented by a relation row. */
@@ -204,6 +207,72 @@ public:
 
 private:
     Data* data_ = nullptr;
+};
+
+/**
+ * One original vertex selected by a shape-point channel. Vertex ordinals are
+ * relative to the visible source geometry, so coincident positions and slices
+ * can still be picked unambiguously. Host data is shared by all retained rows.
+ */
+class ShapePointEntry : public simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>
+{
+public:
+    /** Stored once per surviving feature geometry and channel. */
+    struct GeometryData
+    {
+        MODEL_COLUMN_TYPE(20);
+        simfil::ModelNodeAddress featureId_{};
+        simfil::ModelNodeAddress hostValues_{};
+        simfil::ModelNodeAddress hostValueErrors_{};
+        uint32_t geometryOrdinal_ = 0;
+        GeomType sourceGeometryType_ = GeomType::Points;
+        uint8_t geometryNameIndex_ = 0;
+    };
+
+    /** The compact coordinate follows the ordinary subset geometry anchor. */
+    struct Data
+    {
+        MODEL_COLUMN_TYPE(28);
+        uint32_t geometryRecord_ = 0;
+        uint32_t pointIndex_ = 0;
+        glm::vec3 offset_{};
+        simfil::ModelNodeAddress values_{};
+        simfil::ModelNodeAddress valueErrors_{};
+    };
+
+    [[nodiscard]] model_ptr<FeatureId> featureId() const;
+    [[nodiscard]] uint32_t geometryOrdinal() const;
+    [[nodiscard]] GeomType sourceGeometryType() const;
+    [[nodiscard]] std::optional<std::string> geometryName() const;
+    [[nodiscard]] uint32_t pointIndex() const;
+    [[nodiscard]] Point position() const;
+    [[nodiscard]] model_ptr<Array> hostValues() const;
+    [[nodiscard]] model_ptr<Array> values() const;
+    [[nodiscard]] std::vector<ProjectedValueError> hostValueErrors() const;
+    [[nodiscard]] std::vector<ProjectedValueError> valueErrors() const;
+    [[nodiscard]] nlohmann::json toJson() const override;
+
+    explicit ShapePointEntry(simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(key)
+    {
+    }
+    ShapePointEntry(
+        Data const* data,
+        simfil::ModelConstPtr pool,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+protected:
+    [[nodiscard]] simfil::ValueType type() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr at(int64_t index) const override;
+    [[nodiscard]] uint32_t size() const override;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+    [[nodiscard]] simfil::StringId keyAt(int64_t index) const override;
+    [[nodiscard]] bool iterate(IterCallback const& cb) const override;
+
+private:
+    [[nodiscard]] GeometryData const& geometryRecord() const;
+    Data const* data_ = nullptr;
 };
 
 /** One expanded attribute-validity candidate with host and entry projections. */
@@ -433,7 +502,7 @@ public:
 
     struct Data
     {
-        MODEL_COLUMN_TYPE(40);
+        MODEL_COLUMN_TYPE(44);
 
         simfil::ModelNodeAddress channelId_{};
         simfil::ModelNodeAddress geometryName_{};
@@ -443,6 +512,7 @@ public:
         simfil::ArrayIndex attributeValidityEntries_ = simfil::InvalidArrayIndex;
         simfil::ArrayIndex relationEntries_ = simfil::InvalidArrayIndex;
         simfil::ArrayIndex groupEntries_ = simfil::InvalidArrayIndex;
+        simfil::ArrayIndex shapePointEntries_ = simfil::InvalidArrayIndex;
         uint32_t geometryTypes_ = 0;
         Scope scope_ = Scope::Feature;
     };
@@ -464,6 +534,47 @@ public:
     [[nodiscard]] size_t attributeValidityEntryCount() const;
     [[nodiscard]] size_t relationEntryCount() const;
     [[nodiscard]] size_t groupEntryCount() const;
+
+    [[nodiscard]] size_t shapePointEntryCount() const;
+
+    /** Direct inverse of the entry ordinal stored in a GPU pick. An invalid ordinal returns null.
+     */
+    [[nodiscard]] model_ptr<ShapePointEntry> shapePointEntryAt(size_t ordinal) const;
+
+    /** Opaque construction handles keep host and geometry data in this output channel. */
+    class ShapePointHost
+    {
+        friend class TileSubsetChannel;
+        simfil::ModelNode::Ptr channel_;
+        simfil::ModelNodeAddress featureId_, values_, errors_;
+    };
+
+    class ShapePointGeometry
+    {
+        friend class TileSubsetChannel;
+        simfil::ModelNode::Ptr channel_;
+        uint32_t record_ = 0;
+    };
+
+    /** Materialize host slots exactly once, even when several geometries survive. */
+    ShapePointHost newShapePointHost(
+        model_ptr<FeatureId> const& featureId,
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
+    ShapePointGeometry newShapePointGeometry(
+        ShapePointHost const& host,
+        uint32_t geometryOrdinal,
+        GeomType sourceGeometryType,
+        std::optional<std::string_view> geometryName);
+    model_ptr<ShapePointEntry> newShapePointEntry(
+        ShapePointGeometry const& geometry,
+        uint32_t pointIndex,
+        Point const& position,
+        std::span<simfil::ModelNode::Ptr const> values = {},
+        std::span<ProjectedValueError const> valueErrors = {});
+
+    bool forEachShapePointEntry(
+        std::function<bool(model_ptr<ShapePointEntry> const&)> const& callback) const;
 
     /** Count terminal rows for scope(); relation-supporting feature rows are excluded. */
     [[nodiscard]] size_t entryCount() const;
@@ -569,6 +680,7 @@ class PartitionSubsetLayer : public PartitionFeatureModelLayerBase
     friend class FilterTrace;
     friend class FeatureEntry;
     friend class AttributeValidityEntry;
+    friend class ShapePointEntry;
     friend class RelationEntry;
     friend class GroupEntry;
     friend class TileSubsetChannel;
@@ -730,6 +842,9 @@ public:
     void setGeometryAnchor(Point const& anchor);
 
 protected:
+    /** Resolve the inline position of a shape-point row as an ordinary geometry point. */
+    [[nodiscard]] model_ptr<PointNode>
+    resolvePointNode(simfil::ModelNode const& node) const override;
     tl::expected<void, simfil::Error> resolve(
         simfil::ModelNode const& node,
         ResolveFn const& callback) const override;
@@ -787,6 +902,10 @@ private:
         attributeValidityEntries_;
     simfil::ModelColumn<RelationEntry::Data, simfil::detail::ColumnPageSize / 2> relationEntries_;
     simfil::ModelColumn<GroupEntry::Data, simfil::detail::ColumnPageSize / 2> groupEntries_;
+    simfil::ModelColumn<ShapePointEntry::GeometryData, simfil::detail::ColumnPageSize / 2>
+        shapePointGeometries_;
+    simfil::ModelColumn<ShapePointEntry::Data, simfil::detail::ColumnPageSize / 2>
+        shapePointEntries_;
     simfil::ModelColumn<FilterTrace::Data, simfil::detail::ColumnPageSize / 2> traces_;
 };
 

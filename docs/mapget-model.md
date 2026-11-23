@@ -908,10 +908,22 @@ aggregate arrays which reference typed column entries:
   and geometries, relation identity/provenance/direction, and projected values;
 - `GroupEntry`: stable group key, representative feature/geometry, projected
   values, and all participating feature IDs.
+- A `ShapePointEntry` identifies a vertex by host feature ID, original geometry
+  ordinal and original vertex index. Its position is the source coordinate at
+  that index. Coincident coordinates can identify different rows.
 
 A channel's `scope()` determines which typed aggregate is terminal.
 Relation-channel feature entries are supporting endpoints rather than
 additional terminal rows.
+
+For a shape-point channel, `shapePointEntryAt(index)` looks up the row carried
+by a pick and `forEachShapePointEntry` walks the accepted vertices in source
+order. Rows from one source geometry share its ordinal, name and original type.
+Geometries from one host share its ID and feature projections. A consumer can
+draw a point using its position and ordered entry projections alone. To inspect
+its source attributes, fetch the host in the local dependency's partition,
+match its source revision and use `feature->shapePoints(geometryOrdinal).at(pointIndex)`.
+For a geometry view, the index is relative to the visible slice.
 
 Protocol 5.3 projections are result sequences: the outer `values`/`hostValues`
 array corresponds positionally to the requested expressions, and every element
@@ -1071,7 +1083,7 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 6.3, including exact schema
+Binary readers and writers must both use protocol 6.4, including exact schema
 bindings, typed scalars and version-2 incoming manifests. Error and empty-tile
 expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
 string-pool caches are cleared by the normal startup compatibility check.

@@ -34,11 +34,11 @@ support:
   alias for JSON Lines.
 
 Binary producers and consumers must use the same major/minor stream version.
-The current format, 6.3.0, changes static dictionary IDs to include schema enum
-`rawValue` and field-multiplicity metadata; readers reject older streams before interpreting their
-payload fields. Rebuild and deploy native servers, binary datasource clients
-and browser WASM together. Its schema artifacts use MapSchema codec 7 and
-SchemaPool codec 4, which likewise reject older encodings.
+Version 6.4.0 adds shape-point subset rows and source snapshot revisions.
+Readers check the version in the frame header. Deploy matching native servers,
+binary datasource clients and browser WASM together. Point-series schema
+artifacts use MapSchema codec 8. Schemas without these declarations continue
+to use codec 7. Both embed SchemaPool codec 4.
 
 `/filter` JSON Lines interleaves status records with payload records. Select
 payloads by `type: "PartitionSubsetLayer"`; do not assume the first line is a
@@ -508,24 +508,25 @@ Every channel has a unique `channelId` and a request scope:
 - `feature`: evaluate terminal feature rows;
 - `attribute`: expand each admitted feature into attribute/validity contexts;
 - `relation`: traverse stored relations;
+- `shapepoint` visits each original vertex of the selected source geometries.
 - `auto`: normalize `entryFilter` using `LayerSchema` and select feature or
   attribute scope before constructing the result.
 
 The returned channel stores one concrete terminal scope: `feature`,
-`attribute`, `relation`, or `group`.
+`attribute`, `relation`, `shapepoint`, or `group`.
 
 Candidate evaluation is deliberately split:
 
 1. `featureTypes`, geometry selectors, and `featureFilter` gate feature roots.
 2. Scope expansion creates the terminal candidate.
-3. `entryFilter` gates that feature, attribute-validity, or relation context.
+3. `entryFilter` gates the resulting feature, attribute-validity, relation, or original shape-point context.
 4. `featureFields` are evaluated on the owning feature; `entryFields` are
    evaluated on the terminal context.
 
 All filters and fields are schema-compiled in their actual context.
 `rewrite: true` only enables `LayerSchema::normalizeSearchQuery()` for
 `entryFilter`; `rewrite: false` does not disable ordinary schema compilation.
-Relation channels require `rewrite: false`.
+Relation and shape-point channels require `rewrite: false`.
 
 Prepared-search channels may include `schemaId` with the exact artifact identity used during client-side interpretation. The service checks it against the selected datasource before requesting any tiles. A mismatch rejects the request with a preparation-required diagnostic. These channels carry explicit predicates and scope with `rewrite: false`; the server compiles that meaning without selecting an alternative interpretation.
 
@@ -554,6 +555,46 @@ dictionary is an explicit materialization failure.
 
 `bindings` accepts null, boolean, signed integer, finite floating-point, and
 string values. Bindings are available as SIMFIL constants and overlay fields.
+
+<!-- mcp:
+title: "Filter shape-point contexts"
+keywords: ["shapepoint", "original vertex", "curvature", "slope", "$pointIndex", "$attributes"]
+-->
+### Shape-point contexts
+
+Set `scope` to `shapepoint` to query original vertices within a selected geometry.
+`geometryTypes` and `geometryName` select the **source geometry**. A line selector
+therefore returns point rows for its vertices. Omitting the name visits each
+matching geometry. Shape-point channels support feature and entry predicates
+and projections. Point-cloud sampling, grouping and relation options are incompatible.
+
+```json
+{
+  "channelId": "lane-curvature",
+  "scope": "shapepoint",
+  "featureTypes": ["Lane"],
+  "geometryTypes": 2,
+  "geometryName": "ADAS",
+  "entryFilter": "$pointIndex == 1",
+  "entryFields": ["$attributes.LaneAdasLayerWithGeo.CURVATURE.*.curvature"]
+}
+```
+
+The point context exposes the host through `$feature`, its selected geometry
+through `$geometry`, the geometry ordinal through `$geometryOrdinal` and the
+original vertex ordinal through `$pointIndex`.
+`$attributes.<layer>.<name>.*` traverses the applicable attribute occurrences
+at that vertex. A datasource can publish measurements, units and sample
+provenance with a point-series declaration. Omit the entry filter to draw every
+original vertex and supply a fallback style for missing measurements.
+
+Each `shapePointEntries` row includes `featureId`, `geometryOrdinal`,
+`sourceGeometryType`, the optional `geometryName`, `pointIndex`, and the
+three-component `position`. Feature and entry projections retain their ordered
+slots and per-expression errors. Filtering preserves source order, repeated
+coordinates and the indices of geometry slices. The terminal row ordinal counts
+only retained vertices. Picking or inspecting a row uses its original geometry
+and vertex ordinals and the local dependency's source snapshot revision.
 
 <!-- mcp:
 title: "Filter attribute contexts"

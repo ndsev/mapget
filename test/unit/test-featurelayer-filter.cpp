@@ -13,10 +13,12 @@
 
 #include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/mapschema.h"
+#include "mapget/model/shapepoint.h"
 #include "mapget/model/simfilexpressioncache.h"
 #include "mapget/model/simfilutil.h"
 #include "mapget/model/stream.h"
 #include "mapget/service/locate.h"
+#include "shape-point-lane-fixture.h"
 #include "simfil/model/schema-pool.h"
 
 using namespace mapget;
@@ -590,6 +592,370 @@ TEST_CASE(
     REQUIRE(selected.has_value());
     REQUIRE(selected->size() == 1);
     REQUIRE(selected->front()->id()->toString() == source->at(1)->id()->toString());
+}
+
+TEST_CASE(
+    "Lane curvature point projections round-trip with the source snapshot and a missing slope",
+    "[feature-layer-filter][shapepoint][point-wire-golden]")
+{
+    auto lane = test::shapePointLane();
+    auto request = test::shapePointLaneRequest();
+    auto filtered = request.filter(*lane);
+    REQUIRE(filtered);
+    auto subset = *filtered;
+    auto channel = subset->at(0);
+    INFO(channel->toJson().dump());
+    INFO(subset->toJson()["issues"].dump());
+    REQUIRE(channel->entryCount() == 1);
+    auto row = channel->shapePointEntryAt(0);
+    CHECK(row->featureId()->toString() == "Lane.545555028.2");
+    CHECK(row->geometryOrdinal() == 1);
+    CHECK(row->pointIndex() == 1);
+    CHECK(row->hostValues()->toJson() == R"([[2]])"_json);
+    CHECK(row->values()->toJson() == R"([[-0.15296],[null]])"_json);
+    CHECK(row->valueErrors().empty());
+    REQUIRE(subset->localSourceDependency());
+    CHECK(subset->localSourceDependency()->sourceRevision_ == lane->sourceRevision());
+
+    auto sourcePoint = lane->at(0)->shapePoints(row->geometryOrdinal()).at(row->pointIndex());
+    REQUIRE(sourcePoint);
+    CHECK(row->position() == sourcePoint->position());
+    std::stringstream bytes;
+    REQUIRE(subset->write(bytes));
+    auto data = bytes.str();
+    auto decoded = std::make_shared<PartitionSubsetLayer>(
+        std::vector<uint8_t>(data.begin(), data.end()),
+        [&](auto const&, auto const&) { return lane->layerInfo(); },
+        [&](auto const&) { return lane->strings(); });
+    REQUIRE(decoded->at(0)->shapePointEntryCount() == 1);
+    CHECK(decoded->at(0)->shapePointEntryAt(0)->toJson() == row->toJson());
+    CHECK(decoded->dependencies() == subset->dependencies());
+}
+
+TEST_CASE(
+    "Adding unprojected source attributes does not grow the shape-point subset payload",
+    "[feature-layer-filter][shapepoint][point-wire-golden]")
+{
+    FeatureLayerFilterRequest request{
+        .channels_ = {{
+            .channelId_ = "vertices",
+            .scope_ = FeatureLayerFilterScope::ShapePoint,
+            .entryFields_ = {"$pointIndex"},
+        }},
+    };
+    auto serialize = [&](PartitionFeatureLayer const& source)
+    {
+        auto result = request.filter(source);
+        REQUIRE(result);
+        REQUIRE((*result)->at(0)->shapePointEntryCount() == 2);
+        std::ostringstream bytes;
+        REQUIRE((*result)->write(bytes));
+        return bytes.str().size();
+    };
+    auto simple = makeFilterSource();
+    auto detailed = makeFilterSource();
+    auto layer = detailed->at(0)->attributeLayers()->newLayer("other");
+    for (unsigned i = 0; i < 256; ++i) {
+        auto occurrence = layer->newAttribute("additional-" + std::to_string(i));
+        occurrence->addField("details", detailed->newValue(std::string(256, 'x')));
+    }
+    CHECK(serialize(*detailed) == serialize(*simple));
+}
+
+TEST_CASE(
+    "Shape-point filtering retains original geometry and visible vertex ordinals",
+    "[feature-layer-filter][shapepoint]")
+{
+    auto source = makeFilterSource();
+    auto road = source->at(0);
+    auto base = source->newGeometry(GeomType::Line, 4);
+    base->append({11.0, 48.0, 20.});
+    base->append({11.1, 48.1, 30.});
+    // Coincident visible vertices must retain separate source indices.
+    base->append({11.2, 48.2, 40.});
+    base->append({11.2, 48.2, 40.});
+    auto adas = source->newGeometryView(GeomType::Line, 2, 2, base);
+    adas->setName("ADAS");
+    road->addGeometry(adas);
+
+    FeatureLayerFilterChannel definition{
+        .channelId_ = "markers",
+        .featureFilter_ = "roadId == expectedRoad",
+        .entryFilter_ = "$pointIndex == keep",
+        .scope_ = FeatureLayerFilterScope::ShapePoint,
+        .featureTypes_ = {"Road"},
+        .featureFields_ = {"roadId"},
+        .entryFields_ = {"$pointIndex", "$feature.typeId", "unregisteredPointFunction()"},
+        .geometryTypes_ = 1U << static_cast<unsigned>(GeomType::Line),
+        .geometryName_ = "ADAS",
+    };
+    FeatureLayerFilterRequest request{
+        .channels_ = {definition},
+        .bindings_ = {{"keep", int64_t{1}}, {"expectedRoad", int64_t{42}}},
+    };
+    auto filtered = request.filter(*source);
+    REQUIRE(filtered);
+    auto output = (*filtered)->at(0);
+    REQUIRE(output->scope() == Scope::ShapePoint);
+    REQUIRE(output->entryCount() == 1);
+    auto first = output->shapePointEntryAt(0);
+    REQUIRE(first);
+    CHECK(first->geometryOrdinal() == 1);
+    CHECK(first->pointIndex() == 1);
+    CHECK(first->position() == adas->pointAt(1));
+    auto json = first->toJson();
+    CHECK(json["hostValues"] == nlohmann::json::array({{42}}));
+    CHECK(json["values"] == nlohmann::json::array({{1}, {"Road"}, nlohmann::json::array()}));
+    REQUIRE(first->valueErrors().size() == 1);
+    CHECK(first->valueErrors()[0].expressionIndex_ == 2);
+    CHECK(first->valueErrors()[0].stage_ == "compilation");
+
+    request.channels_[0].entryFilter_.reset();
+    request.channels_[0].geometryName_.reset();
+    request.channels_[0].entryFields_.clear();
+    auto wildcard = request.filter(*source);
+    REQUIRE(wildcard);
+    auto all = (*wildcard)->at(0);
+    REQUIRE(all->entryCount() == 4);
+    CHECK(all->shapePointEntryAt(1)->geometryOrdinal() == 0);
+    CHECK(all->shapePointEntryAt(2)->geometryOrdinal() == 1);
+    CHECK(all->shapePointEntryAt(2)->pointIndex() == 0);
+    CHECK(all->shapePointEntryAt(2)->position() == all->shapePointEntryAt(3)->position());
+    CHECK(
+        all->shapePointEntryAt(1)->hostValues()->addr() ==
+        all->shapePointEntryAt(3)->hostValues()->addr());
+}
+
+TEST_CASE(
+    "A shape-point predicate that fails compilation reports once per root schema",
+    "[feature-layer-filter][shapepoint]")
+{
+    auto source = makeFilterSource();
+    auto other = source->newFeature("Road", {{"tileId", int64_t{1}}, {"roadId", int64_t{43}}});
+    auto geometry = other->geom()->newGeometry(GeomType::Points, 1, true);
+    geometry->append({11., 48., 0.});
+    FeatureLayerFilterRequest request{
+        .channels_ =
+            {{.channelId_ = "broken",
+              .entryFilter_ = "unknownPointFunction()",
+              .scope_ = FeatureLayerFilterScope::ShapePoint},
+             {.channelId_ = "vertices", .scope_ = FeatureLayerFilterScope::ShapePoint}},
+    };
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    CHECK((*result)->at(0)->shapePointEntryCount() == 0);
+    CHECK((*result)->at(1)->shapePointEntryCount() == 3);
+    auto const& issues = (*result)->issues();
+    REQUIRE(issues.size() == 1);
+    CHECK(issues.front().scope_ == Scope::ShapePoint);
+    CHECK(issues.front().occurrenceCount_ == 1);
+}
+
+TEST_CASE(
+    "Shape-point wildcard skips bounds and visits polygon buffers without synthesizing closure",
+    "[feature-layer-filter][shapepoint]")
+{
+    auto source = makeFilterSource();
+    auto geometry = source->at(0)->geom();
+    auto bounds = geometry->newGeometry(GeomType::AABB, 2);
+    bounds->setAabb({11., 48., 0.}, {0.1, 0.1, 20.});
+    auto gltf = geometry->newGeometry(GeomType::GltfNodeIndex, 1);
+    gltf->setGltfNodeIndex(7);
+    auto polygon = geometry->newGeometry(GeomType::Polygon, 3);
+    polygon->append({11., 48., 0.});
+    polygon->append({11.1, 48., 0.});
+    polygon->append({11., 48.1, 0.});
+
+    FeatureLayerFilterRequest request{
+        .channels_ = {{.channelId_ = "vertices", .scope_ = FeatureLayerFilterScope::ShapePoint}},
+    };
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    auto channel = (*result)->at(0);
+    REQUIRE(channel->shapePointEntryCount() == 5);
+    for (uint32_t i = 0; i < 3; ++i) {
+        auto row = channel->shapePointEntryAt(2 + i);
+        CHECK(row->sourceGeometryType() == GeomType::Polygon);
+        CHECK(row->geometryOrdinal() == 3);
+        CHECK(row->pointIndex() == i);
+        CHECK(row->position() == polygon->pointAt(i));
+    }
+}
+
+TEST_CASE(
+    "Shape-point cancellation can stop inside one large source geometry",
+    "[feature-layer-filter][shapepoint][cancellation]")
+{
+    auto source = makeFilterSource();
+    auto line = source->at(0)->geom()->newGeometry(GeomType::Line, 4096, true);
+    line->setName("dense");
+    for (uint32_t i = 0; i < 4096; ++i)
+        line->append({11.0 + i * 0.000001, 48., 0.});
+    FeatureLayerFilterRequest request{
+        .channels_ = {{
+            .channelId_ = "vertices",
+            .scope_ = FeatureLayerFilterScope::ShapePoint,
+            .geometryName_ = "dense",
+        }},
+    };
+    size_t polls = 0;
+    auto result = request.filterSource(*source, true, {}, [&] { return ++polls >= 2; });
+    REQUIRE(result);
+    auto count = result->layer_->at(0)->shapePointEntryCount();
+    CHECK(polls >= 2);
+    CHECK(count > 0);
+    CHECK(count < line->numPoints());
+}
+
+TEST_CASE(
+    "Attribute filtering links each appended marker to its actual measurement record",
+    "[feature-layer-filter][shapepoint][point-marker]")
+{
+    auto source = test::shapePointLane(false, PointSeries::Markers::AppendToValidity);
+    FeatureLayerFilterRequest request{
+        .channels_ = {{
+            .channelId_ = "anchors",
+            .entryFilter_ = "$name == 'CURVATURE' and $validityIndex == 1",
+            .scope_ = FeatureLayerFilterScope::Attribute,
+            .entryFields_ =
+                {"$samples.curvature.*.value",
+                 "$samples.curvature.*.contributors.*.recordIndex",
+                 "$samples.curvature.*.contributors.*.raw",
+                 "$validityCount",
+                 "($validityIndex)",
+                 "$name"},
+        }}};
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    auto channel = (*result)->at(0);
+    INFO(channel->toJson().dump());
+    REQUIRE(channel->attributeValidityEntryCount() == 1);
+    channel->forEachAttributeValidityEntry(
+        [&](auto const& entry)
+        {
+            CHECK(entry->validityIndex() == 1);
+            CHECK(entry->validityCount() == 2);
+            CHECK(entry->valueErrors().empty());
+            CHECK(
+                entry->values()->toJson() == R"([[-0.15296],[0],[7],[2],[1],["CURVATURE"]])"_json);
+            REQUIRE(entry->geometry()->numGeometries() == 1);
+            entry->geometry()->forEachGeometry(
+                [&](auto const& geometry)
+                {
+                    CHECK(geometry->geomType() == GeomType::Points);
+                    CHECK(geometry->pointAt(0) == source->at(0)->shapePoints(1).at(1)->position());
+                    return true;
+                });
+            return true;
+        });
+
+    // The alternate public layout exposes pointValidities as a payload field.
+    // Its marker records do not introduce new stored/append-to-validity candidates.
+    source = test::shapePointLane(false, PointSeries::Markers::PointValidities);
+    request.channels_.front().entryFilter_ = "$name == 'CURVATURE'";
+    request.channels_.front().entryFields_ = {"$validityCount", "count(pointValidities.*)"};
+    result = request.filter(*source);
+    REQUIRE(result);
+    channel = (*result)->at(0);
+    REQUIRE(channel->attributeValidityEntryCount() == 1);
+    channel->forEachAttributeValidityEntry(
+        [](auto const& entry)
+        {
+            CHECK(entry->values()->toJson() == R"([[1],[1]])"_json);
+            return true;
+        });
+}
+
+TEST_CASE(
+    "An ambiguous marker geometry remains a local attribute issue",
+    "[feature-layer-filter][shapepoint][point-marker]")
+{
+    auto source = test::shapePointLane(false, PointSeries::Markers::AppendToValidity, "ADAS");
+    FeatureLayerFilterRequest request{
+        .channels_ =
+            {{.channelId_ = "anchors", .scope_ = FeatureLayerFilterScope::Attribute},
+             {.channelId_ = "vertices", .scope_ = FeatureLayerFilterScope::ShapePoint}},
+    };
+    auto result = request.filter(*source);
+    REQUIRE(result);
+    CHECK((*result)->at(0)->attributeValidityEntryCount() == 0);
+    CHECK((*result)->at(1)->shapePointEntryCount() == 4);
+    auto const& issues = (*result)->issues();
+    REQUIRE(issues.size() == 1);
+    CHECK(issues.front().scope_ == Scope::Attribute);
+    CHECK(issues.front().message_.find("CURVATURE") != std::string::npos);
+
+    // A target selector can encounter the same virtual validity through the
+    // public feature. Both its predicate and its ID expression report that
+    // model error while the selector is still responsible for the result.
+    std::string expression = "properties.layer.LaneAdasLayerWithGeo.CURVATURE.validity";
+    for (auto const& selector :
+         {FeatureLayerSelector{.typeId_ = "Lane", .featureFilter_ = expression},
+          FeatureLayerSelector{.typeId_ = "Lane", .featureIdExpression_ = expression}})
+    {
+        auto selected = source->find(selector);
+        REQUIRE_FALSE(selected);
+        CHECK(selected.error().message.find("multiple geometries") != std::string::npos);
+    }
+}
+
+TEST_CASE(
+    "An ambiguous point measurement fails only its requested slot",
+    "[feature-layer-filter][shapepoint][projection]")
+{
+    auto source = test::shapePointLane(true);
+    auto request = test::shapePointLaneRequest();
+    request.channels_.front().entryFields_.push_back("$pointIndex");
+    auto filtered = request.filter(*source);
+    REQUIRE(filtered);
+    auto row = (*filtered)->at(0)->shapePointEntryAt(0);
+    REQUIRE(row);
+    INFO(row->toJson().dump());
+    REQUIRE(row->valueErrors().size() == 1);
+    CHECK(row->valueErrors()[0].expressionIndex_ == 0);
+    CHECK(row->valueErrors()[0].stage_ == "evaluation");
+    CHECK(row->values()->toJson() == R"([[],[null],[1]])"_json);
+
+    // Returning the whole occurrence defers reading the ambiguous scalar
+    // until the projected object is copied into the output layer.
+    request.channels_.front().entryFields_ = {
+        "$attributes.LaneAdasLayerWithGeo.CURVATURE.*",
+        "$pointIndex"};
+    auto deferred = request.filter(*source);
+    REQUIRE(deferred);
+    auto copied = (*deferred)->at(0)->shapePointEntryAt(0);
+    REQUIRE(copied);
+    REQUIRE(copied->valueErrors().size() == 1);
+    CHECK(copied->valueErrors()[0].expressionIndex_ == 0);
+    CHECK(copied->valueErrors()[0].stage_ == "materialization");
+    CHECK(copied->values()->toJson() == R"([[],[1]])"_json);
+}
+
+TEST_CASE(
+    "Shape-point expansion has an explicit scope and disallows conflicting operators",
+    "[feature-layer-filter][shapepoint]")
+{
+    FeatureLayerFilterChannel channel{
+        .channelId_ = "markers",
+        .scope_ = FeatureLayerFilterScope::ShapePoint};
+    REQUIRE(channel.validateScopeOptions());
+    SECTION("Search normalization")
+    {
+        channel.rewrite_ = true;
+    }
+    SECTION("Point grid")
+    {
+        channel.group_.emplace();
+    }
+    SECTION("Relations")
+    {
+        channel.relation_.emplace();
+    }
+    SECTION("Point cloud sampling, even exact")
+    {
+        channel.pointCloudMaxPoints_ = 0;
+    }
+    CHECK_FALSE(channel.validateScopeOptions());
 }
 
 TEST_CASE(

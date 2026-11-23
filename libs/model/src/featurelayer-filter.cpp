@@ -1,5 +1,6 @@
-#include "mapget/model/pointcloud-geometry.h"
 #include "featurelayer-filter.h"
+#include "mapget/model/pointcloud-geometry.h"
+#include "shapepoint.h"
 
 #include <algorithm>
 #include <array>
@@ -41,6 +42,9 @@ public:
     explicit CancellationProbe(FeatureLayerFilterCancellationCheck const& check) : check_(check) {}
 
     [[nodiscard]] bool boundary() const { return check_ && check_(); }
+
+    /** A model range can retain a copy without capturing this stack-owned scan. */
+    [[nodiscard]] FeatureLayerFilterCancellationCheck const& callback() const { return check_; }
 
     [[nodiscard]] bool periodic()
     {
@@ -183,6 +187,7 @@ LayerSchema::SearchQueryRequestedScope requestedScopeForNormalization(FeatureLay
     case FeatureLayerFilterScope::Attribute:
         return LayerSchema::SearchQueryRequestedScope::Attribute;
     case FeatureLayerFilterScope::Auto: return LayerSchema::SearchQueryRequestedScope::Auto;
+    case FeatureLayerFilterScope::ShapePoint:
     case FeatureLayerFilterScope::Relation: break;
     }
     return LayerSchema::SearchQueryRequestedScope::Feature;
@@ -207,11 +212,93 @@ Scope terminalScope(FeatureLayerFilterChannel const& channel)
     case FeatureLayerFilterScope::Auto: return Scope::Feature;
     case FeatureLayerFilterScope::Attribute: return Scope::Attribute;
     case FeatureLayerFilterScope::Relation: return Scope::Relation;
+    case FeatureLayerFilterScope::ShapePoint: return Scope::ShapePoint;
     }
     return Scope::Feature;
 }
 
 }  // namespace
+
+tl::expected<void, simfil::Error> FeatureLayerFilterChannel::validateScopeOptions() const
+{
+    if (scope_ == FeatureLayerFilterScope::ShapePoint && rewrite_) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            fmt::format(
+                "Shape-point channel '{}' does not support search-query normalization.",
+                channelId_)});
+    }
+    if (pointCloudMaxPoints_ &&
+        (scope_ != FeatureLayerFilterScope::Feature || group_ || relation_ ||
+         geometryTypes_ != (1U << static_cast<unsigned>(GeomType::Points))))
+    {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            "Point-cloud sampling requires a feature-only point channel."});
+    }
+    if (geometryName_ && geometryName_->empty()) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            fmt::format("Filter channel '{}' has an empty concrete geometry name.", channelId_),
+        });
+    }
+    if (!group_ && scope_ == FeatureLayerFilterScope::Feature && !entryFields_.empty()) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            fmt::format(
+                "Feature channel '{}' must put every projection in featureFields.",
+                channelId_),
+        });
+    }
+    if (scope_ == FeatureLayerFilterScope::Relation) {
+        if (!relation_) {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                fmt::format("Relation channel '{}' requires relation options.", channelId_),
+            });
+        }
+        if (rewrite_) {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                fmt::format(
+                    "Relation channel '{}' does not support search-query normalization.",
+                    channelId_),
+            });
+        }
+    }
+    else if (relation_) {
+        return tl::unexpected(simfil::Error{
+            simfil::Error::InvalidArguments,
+            fmt::format("Non-relation channel '{}' must not carry relation options.", channelId_),
+        });
+    }
+    if (group_) {
+        if (scope_ != FeatureLayerFilterScope::Feature || !featureFields_.empty() || entryFilter_) {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                fmt::format(
+                    "Point-grid channel '{}' requires feature scope, empty featureFields, and "
+                    "no entryFilter.",
+                    channelId_),
+            });
+        }
+        auto const& origin = group_->origin_;
+        auto const& size = group_->cellSize_;
+        if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) ||
+            !std::isfinite(size.x) || !std::isfinite(size.y) || !std::isfinite(size.z) ||
+            size.x <= 0.0 || size.y <= 0.0 || size.z <= 0.0)
+        {
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
+                fmt::format(
+                    "Point-grid channel '{}' requires finite origin and positive finite "
+                    "cellSize components.",
+                    channelId_),
+            });
+        }
+    }
+    return {};
+}
 
 tl::expected<void, simfil::Error>
 FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) const
@@ -228,7 +315,8 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
     auto const canValidateTypes = layerInfo && !layerInfo->layerSchema()->featureTypes().empty();
     for (auto const& channel : channels_) {
         if (channel.relation_ && channel.relation_->incoming_) {
-            return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
+            return tl::unexpected(simfil::Error{
+                simfil::Error::InvalidArguments,
                 "Incoming inspection requires service-backed exact roots through POST /filter."});
         }
         if (channel.channelId_.empty()) {
@@ -243,83 +331,8 @@ FeatureLayerFilterRequest::validate(PartitionFeatureLayer const& sourceLayer) co
                 fmt::format("Duplicate filter channelId '{}'.", channel.channelId_),
             });
         }
-        if (channel.pointCloudMaxPoints_ &&
-            (channel.scope_ != FeatureLayerFilterScope::Feature ||
-             channel.group_ || channel.relation_ || channel.geometryTypes_ != (1U << static_cast<unsigned>(GeomType::Points)))) {
-            return tl::unexpected(simfil::Error{simfil::Error::InvalidArguments,
-                "Point-cloud sampling requires a feature-only point channel."});
-        }
-        if (channel.geometryName_ && channel.geometryName_->empty()) {
-            return tl::unexpected(simfil::Error{
-                simfil::Error::InvalidArguments,
-                fmt::format(
-                    "Filter channel '{}' has an empty concrete geometry name.",
-                    channel.channelId_),
-            });
-        }
-        if (!channel.group_ && channel.scope_ == FeatureLayerFilterScope::Feature &&
-            !channel.entryFields_.empty())
-        {
-            return tl::unexpected(simfil::Error{
-                simfil::Error::InvalidArguments,
-                fmt::format(
-                    "Feature channel '{}' must put every projection in featureFields.",
-                    channel.channelId_),
-            });
-        }
-        if (channel.scope_ == FeatureLayerFilterScope::Relation) {
-            if (!channel.relation_) {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InvalidArguments,
-                    fmt::format(
-                        "Relation channel '{}' requires relation options.",
-                        channel.channelId_),
-                });
-            }
-            if (channel.rewrite_) {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InvalidArguments,
-                    fmt::format(
-                        "Relation channel '{}' does not support search-query normalization.",
-                        channel.channelId_),
-                });
-            }
-        }
-        else if (channel.relation_) {
-            return tl::unexpected(simfil::Error{
-                simfil::Error::InvalidArguments,
-                fmt::format(
-                    "Non-relation channel '{}' must not carry relation options.",
-                    channel.channelId_),
-            });
-        }
-        if (channel.group_) {
-            if (channel.scope_ != FeatureLayerFilterScope::Feature ||
-                !channel.featureFields_.empty() || channel.entryFilter_)
-            {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InvalidArguments,
-                    fmt::format(
-                        "Point-grid channel '{}' requires feature scope, empty featureFields, and "
-                        "no entryFilter.",
-                        channel.channelId_),
-                });
-            }
-            auto const& origin = channel.group_->origin_;
-            auto const& size = channel.group_->cellSize_;
-            if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) ||
-                !std::isfinite(size.x) || !std::isfinite(size.y) || !std::isfinite(size.z) ||
-                size.x <= 0.0 || size.y <= 0.0 || size.z <= 0.0)
-            {
-                return tl::unexpected(simfil::Error{
-                    simfil::Error::InvalidArguments,
-                    fmt::format(
-                        "Point-grid channel '{}' requires finite origin and positive finite "
-                        "cellSize components.",
-                        channel.channelId_),
-                });
-            }
-        }
+        if (auto valid = channel.validateScopeOptions(); !valid)
+            return valid;
         for (auto const& featureType : channel.featureTypes_) {
             if (featureType.empty()) {
                 return tl::unexpected(simfil::Error{
@@ -522,7 +535,18 @@ public:
             std::vector<simfil::ModelNode::Ptr> result;
             result.reserve(values_.size());
             for (size_t index = 0; index < values_.size(); ++index) {
-                auto copied = target.copySequence(values_[index]);
+                // A projection can return a whole object whose measurements
+                // are read for the first time while copying its children.
+                tl::expected<model_ptr<Array>, simfil::Error> copied;
+                try {
+                    PointQueryError::Capture pointErrors;
+                    copied = target.copySequence(values_[index]);
+                    pointErrors.rethrowIfFailed();
+                }
+                catch (PointQueryError const& error) {
+                    copied =
+                        tl::unexpected(simfil::Error{simfil::Error::RuntimeError, error.what()});
+                }
                 if (!copied) {
                     errors_.push_back(
                         {static_cast<uint32_t>(index), "materialization", copied.error().message});
@@ -610,26 +634,6 @@ public:
             return simfil::ModelNode::Ptr(root);
         }
         auto result = simfil::model_ptr<simfil::OverlayNode>::make(simfil::Value::field(root));
-        addBindings(result);
-        return result;
-    }
-
-    /** Build the attribute-scope overlay consumed by channel expressions. */
-    [[nodiscard]] simfil::model_ptr<simfil::OverlayNode> attributeContext(
-        model_ptr<Attribute> const& attribute,
-        model_ptr<Feature> const& feature,
-        std::string_view layerName,
-        uint32_t attributeIndex,
-        bool hasValidity,
-        uint32_t validityIndex,
-        uint32_t validityCount) const
-    {
-        auto result = attribute->queryContext(
-            feature,
-            layerName,
-            attributeIndex,
-            validityIndex,
-            hasValidity ? validityCount : 0);
         addBindings(result);
         return result;
     }
@@ -749,6 +753,24 @@ private:
                     schemaIdentity_->mapSchema()->schemaType(rootSchema) :
                     simfil::SchemaType{},
             };
+            // Context fields such as $validityCount address this exact candidate.
+            // Recursive shorthand skips lookup-only overlay fields. Let SIMFIL
+            // identify a standalone symbol, including a parenthesized one.
+            if (options.rootSchema && expression.find('$') != std::string_view::npos &&
+                expression.find_first_of(".[") == std::string_view::npos)
+            {
+                auto const& dictionary = options.rootSchema.pool()->dictionary();
+                simfil::StringId directField = expression.starts_with('$') ?
+                    dictionary.get(expression) :
+                    simfil::StringPool::Empty;
+                if (!directField) {
+                    auto symbol = simfil::standaloneQuerySymbol(*environment_, expression);
+                    if (symbol && *symbol && (**symbol).starts_with('$'))
+                        directField = dictionary.get(**symbol);
+                }
+                if (directField && options.rootSchema.fieldType(directField))
+                    options.rewriteMode = simfil::RewriteMode::None;
+            }
             auto ast = expressionCache_.getOrCompile(
                 expression,
                 options,
@@ -766,31 +788,44 @@ private:
         environment_->traces.clear();
         simfil::Diagnostics expressionDiagnostics;
         tl::expected<std::vector<simfil::Value>, simfil::Error> values;
-        if (anyMode) {
-            values = found->second.eval(context, diagnostics ? &expressionDiagnostics : nullptr);
+        try {
+            // SIMFIL invokes nested expression callbacks through noexcept
+            // functions. Surface any deferred point-model error at this slot.
+            PointQueryError::Capture pointErrors;
+            if (anyMode) {
+                values =
+                    found->second.eval(context, diagnostics ? &expressionDiagnostics : nullptr);
+            }
+            else {
+                simfil::EvaluationOptions limits;
+                limits.maxResults = 100000;
+                limits.maxWork = 1000000;
+                auto summary = found->second.eval(
+                    context,
+                    simfil::LambdaResultFn(
+                        [&](simfil::Context, simfil::Value value)
+                        {
+                            values->push_back(std::move(value));
+                            return simfil::Continue;
+                        }),
+                    limits,
+                    diagnostics ? &expressionDiagnostics : nullptr);
+                if (!summary) {
+                    values = tl::unexpected(summary.error());
+                }
+                else if (summary->reason != simfil::EvaluationSummary::Reason::Complete) {
+                    values = tl::unexpected(simfil::Error{
+                        simfil::Error::RuntimeError,
+                        "Projection evaluation budget exceeded; no partial results were "
+                        "published."});
+                }
+            }
+            pointErrors.rethrowIfFailed();
         }
-        else {
-            simfil::EvaluationOptions limits;
-            limits.maxResults = 100000;
-            limits.maxWork = 1000000;
-            auto summary = found->second.eval(
-                context,
-                simfil::LambdaResultFn(
-                    [&](simfil::Context, simfil::Value value)
-                    {
-                        values->push_back(std::move(value));
-                        return simfil::Continue;
-                    }),
-                limits,
-                diagnostics ? &expressionDiagnostics : nullptr);
-            if (!summary) {
-                values = tl::unexpected(summary.error());
-            }
-            else if (summary->reason != simfil::EvaluationSummary::Reason::Complete) {
-                values = tl::unexpected(simfil::Error{
-                    simfil::Error::RuntimeError,
-                    "Projection evaluation budget exceeded; no partial results were published."});
-            }
+        catch (PointQueryError const& error) {
+            // A malformed or ambiguous point field affects this expression only.
+            // Independent measurements at the same vertex still project normally.
+            values = tl::unexpected(simfil::Error{simfil::Error::RuntimeError, error.what()});
         }
         if (!values) {
             environment_->traces.clear();
@@ -814,7 +849,8 @@ private:
         // Trace-bearing expressions are intentionally re-evaluated so each
         // channel retains its own observable trace behavior.
         if (valueCache && !diagnostics && !hasTraces) {
-            valueCache->emplace(std::move(key), *values);
+            // The programs map owns the key after a first-use compilation.
+            valueCache->emplace(found->first, *values);
         }
         return std::move(*values);
     }
@@ -886,6 +922,9 @@ private:
         std::vector<FeatureLayerPointGroupMember> pointGroupMembers_;
         std::vector<RelationRoot> relationRoots_;
         std::vector<FeatureLayerRelationDescriptor> relationDescriptors_;
+        // Shape rows are emitted as each vertex is visited. A predicate compiled
+        // against one feature type can fail even when another type is valid.
+        std::set<std::pair<Scope, simfil::TypeId>> rejectedPointFilterSchemas_;
     };
 
     using FeatureIdCacheKey = std::pair<simfil::Model const*, uint32_t>;
@@ -932,6 +971,19 @@ private:
     /** Evaluate one feature against every applicable channel. */
     void scanFeature(model_ptr<Feature> const& feature, size_t sourceFeatureOrdinal);
 
+    // Different style channels can read different fields on the same geometry.
+    // Keep its point-series indexes until every channel has visited this host.
+    using ShapePointRanges = std::vector<std::optional<ShapePointRange>>;
+
+    /** Stream accepted original vertices directly into the unpublished subset. */
+    void scanShapePoints(
+        model_ptr<Feature> const& feature,
+        simfil::ModelNode const& featureContext,
+        simfil::TypeId featureSchema,
+        Channel& channel,
+        ExpressionEvaluator::ValueCache& featureEvaluations,
+        ShapePointRanges& ranges);
+
     /** Evaluate every attribute validity context for one accepted host feature. */
     void scanAttributes(
         model_ptr<Feature> const& feature,
@@ -950,12 +1002,13 @@ private:
     [[nodiscard]] static bool
     featureTypeAllowed(model_ptr<Feature> const& feature, Channel const& channel);
 
-    /** Convert a failed predicate into an issue and disable broken compiled channels. */
+    /** Report a rejected predicate and stop revisiting a failed compilation. */
     void rejectFilterCandidate(
         Channel& channel,
         std::optional<std::string> const& expression,
         Scope scope,
-        ExpressionEvaluator::Failure const& failure);
+        ExpressionEvaluator::Failure const& failure,
+        simfil::TypeId rootSchema = simfil::NoTypeId);
 
     /** Collect one feature's representative point in every addressed grid cell. */
     void collectPointGroupMembers(
@@ -992,6 +1045,7 @@ private:
     PartitionSubsetLayer::Ptr resultLayer_;
     Issues issues_;
     std::vector<Channel> channels_;
+    FeatureIdCache featureIds_;
     simfil::Diagnostics diagnostics_;
     bool collectEntryFilterDiagnostics_ = false;
 };
@@ -1000,7 +1054,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::rejectFilterCandidate(
     Channel& channel,
     std::optional<std::string> const& expression,
     Scope scope,
-    ExpressionEvaluator::Failure const& failure)
+    ExpressionEvaluator::Failure const& failure,
+    simfil::TypeId rootSchema)
 {
     issues_.add(
         channel.definition_.channelId_,
@@ -1011,6 +1066,10 @@ void FeatureLayerFilterRequest::SourceEvaluation::rejectFilterCandidate(
             failure.compilation_ ? "Filter compilation" : "Filter evaluation",
             failure.error_.message));
     if (failure.compilation_) {
+        if (channel.definition_.scope_ == FeatureLayerFilterScope::ShapePoint) {
+            channel.rejectedPointFilterSchemas_.emplace(scope, rootSchema);
+            return;
+        }
         channel.filterCompilationFailed_ = true;
         channel.featureCandidates_.clear();
         channel.attributeCandidates_.clear();
@@ -1926,11 +1985,13 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
     auto const featureSchema = static_cast<simfil::ModelNode const&>(*feature).schema();
     simfil::ModelNode::Ptr featureContext;
     ExpressionEvaluator::ValueCache featureEvaluations;
+    ShapePointRanges pointRanges;
 
     for (size_t channelIndex = 0; channelIndex < channels_.size(); ++channelIndex) {
         auto& channel = channels_[channelIndex];
         if (!channel.active_ || channel.filterCompilationFailed_ ||
-            !featureTypeAllowed(feature, channel))
+            !featureTypeAllowed(feature, channel) ||
+            channel.rejectedPointFilterSchemas_.contains({Scope::Feature, featureSchema}))
         {
             continue;
         }
@@ -1956,7 +2017,8 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
                 channel,
                 channel.definition_.featureFilter_,
                 Scope::Feature,
-                hostMatch.error());
+                hostMatch.error(),
+                featureSchema);
             continue;
         }
         if (!*hostMatch) {
@@ -2009,8 +2071,149 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanFeature(
             continue;
         }
 
-        scanAttributes(feature, *featureContext, featureSchema, channel, featureEvaluations);
+        if (channel.definition_.scope_ == FeatureLayerFilterScope::ShapePoint) {
+            scanShapePoints(
+                feature,
+                *featureContext,
+                featureSchema,
+                channel,
+                featureEvaluations,
+                pointRanges);
+        }
+        else {
+            scanAttributes(feature, *featureContext, featureSchema, channel, featureEvaluations);
+        }
     }
+}
+
+void FeatureLayerFilterRequest::SourceEvaluation::scanShapePoints(
+    model_ptr<Feature> const& feature,
+    simfil::ModelNode const& featureContext,
+    simfil::TypeId featureSchema,
+    Channel& channel,
+    ExpressionEvaluator::ValueCache& featureEvaluations,
+    ShapePointRanges& ranges)
+{
+    auto geometries = feature->geomOrNull();
+    if (!geometries)
+        return;
+
+    auto const& definition = channel.definition_;
+    auto registry = sourceLayer_.layerSchema();
+    auto pointSchema = registry ?
+        registry->shapePointQuerySchema(feature->id()->typeId()) :
+        simfil::NoTypeId;
+    if (channel.rejectedPointFilterSchemas_.contains({Scope::ShapePoint, pointSchema}))
+        return;
+    std::optional<TileSubsetChannel::ShapePointHost> host;
+    uint32_t ordinal = 0;
+    geometries->forEachGeometry(
+        [&](model_ptr<Geometry> const& geometry)
+        {
+            auto const sourceOrdinal = ordinal++;
+            if (geometry->geomType() == GeomType::AABB ||
+                geometry->geomType() == GeomType::GltfNodeIndex ||
+                !geometrySelected(geometry, definition.geometryTypes_, definition.geometryName_))
+            {
+                return true;
+            }
+            // The retained range uses visible source indices even when this is a slice.
+            // Never generate samples from polygon closure, tessellation or display bounds.
+            if (ranges.size() <= sourceOrdinal)
+                ranges.resize(sourceOrdinal + 1);
+            auto& range = ranges[sourceOrdinal];
+            if (!range)
+                range = feature->shapePoints(sourceOrdinal, cancellation_.callback());
+            std::optional<TileSubsetChannel::ShapePointGeometry> geometryRecord;
+            for (uint32_t index = 0; index < range->size(); ++index) {
+                if (cancellation_.periodic())
+                    return false;
+                auto point = range->at(index);
+                if (!point)
+                    return false;
+                simfil::ModelNode::Ptr root;
+                if (definition.entryFilter_ || !definition.entryFields_.empty()) {
+                    root = evaluator_->context(*point->queryContext());
+                }
+                ExpressionEvaluator::ValueCache pointEvaluations;
+                if (definition.entryFilter_) {
+                    auto match = evaluator_->filter(
+                        definition.entryFilter_,
+                        *root,
+                        pointSchema,
+                        collectEntryFilterDiagnostics_ ? &diagnostics_ : nullptr,
+                        &pointEvaluations);
+                    if (!match) {
+                        rejectFilterCandidate(
+                            channel,
+                            definition.entryFilter_,
+                            Scope::ShapePoint,
+                            match.error(),
+                            pointSchema);
+                        if (match.error().compilation_)
+                            return false;
+                        continue;
+                    }
+                    if (!*match)
+                        continue;
+                }
+
+                // A filtered-out geometry costs no output record. All retained geometries
+                // for this host share the same feature ID and ordered feature projections.
+                if (!host) {
+                    auto projection = evaluator_->fields(
+                        definition.channelId_,
+                        featureContext,
+                        featureSchema,
+                        definition.featureFields_,
+                        Scope::Feature,
+                        issues_,
+                        &featureEvaluations);
+                    auto slots = projection.materialize(
+                        *resultLayer_,
+                        definition.channelId_,
+                        definition.featureFields_,
+                        Scope::Feature,
+                        issues_);
+                    host = channel.output_->newShapePointHost(
+                        copyFeatureId(feature->id(), featureIds_),
+                        slots,
+                        projection.errors_);
+                }
+                if (!geometryRecord) {
+                    geometryRecord = channel.output_->newShapePointGeometry(
+                        *host,
+                        sourceOrdinal,
+                        geometry->geomType(),
+                        geometry->name());
+                }
+                if (definition.entryFields_.empty()) {
+                    channel.output_->newShapePointEntry(*geometryRecord, index, point->position());
+                    continue;
+                }
+                auto projection = evaluator_->fields(
+                    definition.channelId_,
+                    *root,
+                    pointSchema,
+                    definition.entryFields_,
+                    Scope::ShapePoint,
+                    issues_,
+                    &pointEvaluations);
+                auto slots = projection.materialize(
+                    *resultLayer_,
+                    definition.channelId_,
+                    definition.entryFields_,
+                    Scope::ShapePoint,
+                    issues_);
+                channel.output_->newShapePointEntry(
+                    *geometryRecord,
+                    index,
+                    point->position(),
+                    slots,
+                    projection.errors_);
+            }
+            return true;
+        });
 }
 
 void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
@@ -2029,107 +2232,128 @@ void FeatureLayerFilterRequest::SourceEvaluation::scanAttributes(
     // values across the remaining rows for this feature and channel.
     std::optional<ExpressionEvaluator::Projection> hostValues;
     uint32_t attributeIndex = 0;
+    auto const registry = sourceLayer_.layerSchema();
+    auto reportMarkerIssue =
+        [&](std::string_view layerName, Attribute const& attribute, PointQueryError const& error)
+    {
+        issues_.add(
+            channel.definition_.channelId_,
+            "<validity>",
+            Scope::Attribute,
+            fmt::format("{}.{}: {}", layerName, attribute.name(), error.what()));
+    };
+
+    auto visitAttribute = [&](std::string_view layerName, model_ptr<Attribute> const& attribute)
+    {
+        if (cancellation_.periodic()) {
+            return false;
+        }
+        auto const thisAttributeIndex = attributeIndex++;
+        auto const validities = attribute->validityView(feature, layerName);
+        auto const payloadSchema = static_cast<simfil::ModelNode const&>(*attribute).schema();
+        auto const querySchema = registry ?
+            registry->attributeQuerySchema(feature->typeId(), payloadSchema) :
+            simfil::NoTypeId;
+        auto const attributeSchema = querySchema ? querySchema : payloadSchema;
+
+        auto evaluateCandidate =
+            [&](model_ptr<Validity> const& validity,
+                bool hasValidity,
+                uint32_t validityIndex,
+                uint32_t validityCount)
+        {
+            if (channel.filterCompilationFailed_) {
+                return;
+            }
+            auto context = validities.queryContext(thisAttributeIndex, validityIndex);
+            evaluator_->addBindings(context);
+            ExpressionEvaluator::ValueCache attributeEvaluations;
+            auto entryMatch = evaluator_->filter(
+                channel.definition_.entryFilter_,
+                *context,
+                attributeSchema,
+                collectEntryFilterDiagnostics_ ? &diagnostics_ : nullptr,
+                &attributeEvaluations);
+            if (!entryMatch) {
+                rejectFilterCandidate(
+                    channel,
+                    channel.definition_.entryFilter_,
+                    Scope::Attribute,
+                    entryMatch.error());
+                return;
+            }
+            if (!*entryMatch) {
+                return;
+            }
+            if (!hostValues) {
+                hostValues = evaluator_->fields(
+                    channel.definition_.channelId_,
+                    featureContext,
+                    featureSchema,
+                    channel.definition_.featureFields_,
+                    Scope::Feature,
+                    issues_,
+                    &featureEvaluations);
+            }
+            channel.attributeCandidates_.push_back(AttributeCandidate{
+                feature,
+                attribute,
+                validity,
+                std::string(layerName),
+                thisAttributeIndex,
+                hasValidity,
+                validityIndex,
+                validityCount,
+                *hostValues,
+                evaluator_->fields(
+                    channel.definition_.channelId_,
+                    *context,
+                    attributeSchema,
+                    channel.definition_.entryFields_,
+                    Scope::Attribute,
+                    issues_,
+                    &attributeEvaluations),
+            });
+        };
+
+        if (auto count = validities.size()) {
+            for (uint32_t index = 0; index < count; ++index) {
+                if (cancellation_.periodic())
+                    break;
+                // The public index addresses stored assignments, followed by
+                // declared measurement markers. The view owns the marker and
+                // its mapping to the original record, including repeated anchors.
+                try {
+                    if (auto validity = validities.at(index))
+                        evaluateCandidate(validity, true, index, count);
+                }
+                catch (PointQueryError const& error) {
+                    reportMarkerIssue(layerName, *attribute, error);
+                }
+            }
+        }
+        else {
+            // An attribute without validities still has one context;
+            // materialization uses its host feature's geometry.
+            evaluateCandidate({}, false, 0, 1);
+        }
+        return !channel.filterCompilationFailed_;
+    };
+
     attributeLayers->forEachLayer(
         [&](std::string_view layerName, model_ptr<AttributeLayer> const& attributeLayer)
         {
             return attributeLayer->forEachAttribute(
                 [&](model_ptr<Attribute> const& attribute)
                 {
-                    if (cancellation_.periodic()) {
-                        return false;
+                    try {
+                        return visitAttribute(layerName, attribute);
                     }
-                    auto const thisAttributeIndex = attributeIndex++;
-                    auto const attributeSchema =
-                        static_cast<simfil::ModelNode const&>(*attribute).schema();
-
-                    auto evaluateCandidate =
-                        [&](model_ptr<Validity> const& validity,
-                            bool hasValidity,
-                            uint32_t validityIndex,
-                            uint32_t validityCount)
-                    {
-                        if (channel.filterCompilationFailed_) {
-                            return;
-                        }
-                        auto context = evaluator_->attributeContext(
-                            attribute,
-                            feature,
-                            layerName,
-                            thisAttributeIndex,
-                            hasValidity,
-                            validityIndex,
-                            validityCount);
-                        ExpressionEvaluator::ValueCache attributeEvaluations;
-                        auto entryMatch = evaluator_->filter(
-                            channel.definition_.entryFilter_,
-                            *context,
-                            attributeSchema,
-                            collectEntryFilterDiagnostics_ ? &diagnostics_ : nullptr,
-                            &attributeEvaluations);
-                        if (!entryMatch) {
-                            rejectFilterCandidate(
-                                channel,
-                                channel.definition_.entryFilter_,
-                                Scope::Attribute,
-                                entryMatch.error());
-                            return;
-                        }
-                        if (!*entryMatch) {
-                            return;
-                        }
-                        if (!hostValues) {
-                            hostValues = evaluator_->fields(
-                                channel.definition_.channelId_,
-                                featureContext,
-                                featureSchema,
-                                channel.definition_.featureFields_,
-                                Scope::Feature,
-                                issues_,
-                                &featureEvaluations);
-                        }
-                        channel.attributeCandidates_.push_back(AttributeCandidate{
-                            feature,
-                            attribute,
-                            validity,
-                            std::string(layerName),
-                            thisAttributeIndex,
-                            hasValidity,
-                            validityIndex,
-                            validityCount,
-                            *hostValues,
-                            evaluator_->fields(
-                                channel.definition_.channelId_,
-                                *context,
-                                attributeSchema,
-                                channel.definition_.entryFields_,
-                                Scope::Attribute,
-                                issues_,
-                                &attributeEvaluations),
-                        });
-                    };
-
-                    auto validities = attribute->validityOrNull();
-                    if (validities && validities->size() > 0) {
-                        auto const count = validities->size();
-                        for (uint32_t index = 0; index < count; ++index) {
-                            if (cancellation_.periodic()) {
-                                break;
-                            }
-                            auto node = validities->at(index);
-                            evaluateCandidate(
-                                node ? attribute->model().resolve<Validity>(node) :
-                                       model_ptr<Validity>{},
-                                true,
-                                index,
-                                count);
-                        }
+                    catch (PointQueryError const& error) {
+                        // A malformed public marker layout affects only its own occurrence.
+                        reportMarkerIssue(layerName, *attribute, error);
+                        return true;
                     }
-                    else {
-                        // An attribute without validities still has one context;
-                        // materialization uses its host feature's geometry.
-                        evaluateCandidate({}, false, 0, 1);
-                    }
-                    return !channel.filterCompilationFailed_;
                 });
         });
 }
@@ -2196,14 +2420,13 @@ FeatureLayerFilterSourceResult FeatureLayerFilterRequest::SourceEvaluation::fini
 {
     std::vector<FeatureLayerPointGroupMember> pointGroupMembers;
     std::vector<FeatureLayerRelationDescriptor> relationDescriptors;
-    FeatureIdCache featureIds;
     for (size_t channelIndex = 0; channelIndex < channels_.size(); ++channelIndex) {
         auto& channel = channels_[channelIndex];
         if (materializeOutput_ && channel.definition_.scope_ == FeatureLayerFilterScope::Relation) {
             collectStoredRelationDescriptors(channelIndex, channel);
         }
         if (resultLayer_) {
-            materializeChannel(channel, featureIds);
+            materializeChannel(channel, featureIds_);
         }
         pointGroupMembers.insert(
             pointGroupMembers.end(),
@@ -2987,6 +3210,23 @@ PartitionFeatureLayer::find(
             context->set(StringPool::OverlayFeaturesStr, simfil::Value::field(featureArray));
             return context;
         };
+        auto evaluate = [&](model_ptr<Feature> const& feature)
+            -> tl::expected<std::vector<simfil::Value>, simfil::Error>
+        {
+            environment->warnings.clear();
+            environment->traces.clear();
+            try {
+                PointQueryError::Capture pointErrors;
+                auto values = program.eval(*makeContext(feature));
+                pointErrors.rethrowIfFailed();
+                environment->traces.clear();
+                return values;
+            }
+            catch (PointQueryError const& error) {
+                environment->traces.clear();
+                return tl::unexpected(simfil::Error{simfil::Error::RuntimeError, error.what()});
+            }
+        };
         if (selector.featureFilter_) {
             for (auto const& feature : features) {
                 if (cancelled()) {
@@ -2995,10 +3235,7 @@ PartitionFeatureLayer::find(
                 if (feature->typeId() != selector.typeId_) {
                     continue;
                 }
-                environment->warnings.clear();
-                environment->traces.clear();
-                auto values = program.eval(*makeContext(feature));
-                environment->traces.clear();
+                auto values = evaluate(feature);
                 if (!values) {
                     return tl::unexpected(values.error());
                 }
@@ -3011,10 +3248,7 @@ PartitionFeatureLayer::find(
 
         // An ID expression runs once at the first feature of the requested type;
         // $features exposes the complete source layer for set-based lookup.
-        environment->warnings.clear();
-        environment->traces.clear();
-        auto values = program.eval(*makeContext(representative->second));
-        environment->traces.clear();
+        auto values = evaluate(representative->second);
         if (!values) {
             return tl::unexpected(values.error());
         }

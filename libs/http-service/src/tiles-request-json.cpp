@@ -157,15 +157,17 @@ FeatureLayerFilterScope parseScope(nlohmann::json const& channel)
     }
     if (!found->is_string()) {
         throw std::runtime_error(
-            "channel.scope must be 'feature', 'attribute', 'relation', or 'auto'");
+            "channel.scope must be 'feature', 'attribute', 'relation', 'shapepoint', or 'auto'");
     }
     auto const value = found->get<std::string>();
     if (value == "feature") return FeatureLayerFilterScope::Feature;
     if (value == "attribute") return FeatureLayerFilterScope::Attribute;
     if (value == "relation") return FeatureLayerFilterScope::Relation;
+    if (value == "shapepoint")
+        return FeatureLayerFilterScope::ShapePoint;
     if (value == "auto") return FeatureLayerFilterScope::Auto;
     throw std::runtime_error(
-        "channel.scope must be 'feature', 'attribute', 'relation', or 'auto'");
+        "channel.scope must be 'feature', 'attribute', 'relation', 'shapepoint', or 'auto'");
 }
 
 /** Read exactly three finite numbers, or use the supplied default when omission is allowed. */
@@ -263,7 +265,7 @@ FeatureLayerStoredRelationOptions parseRelation(
     return result;
 }
 
-/** Parse channel fields and geometry-name wildcards; cross-field invariants are checked later. */
+/** Parse channel fields and reject conflicting shape-point expansion options at the transport. */
 FeatureLayerFilterChannel parseChannel(
     nlohmann::json const& channelJson)
 {
@@ -337,6 +339,10 @@ FeatureLayerFilterChannel parseChannel(
         found != channelJson.end())
     {
         channel.relation_ = parseRelation(*found);
+    }
+    if (channel.scope_ == FeatureLayerFilterScope::ShapePoint) {
+        if (auto valid = channel.validateScopeOptions(); !valid)
+            throw std::invalid_argument(valid.error().message);
     }
     return channel;
 }
@@ -693,6 +699,7 @@ std::string scopeToString(FeatureLayerFilterScope scope)
     case FeatureLayerFilterScope::Feature: return "feature";
     case FeatureLayerFilterScope::Attribute: return "attribute";
     case FeatureLayerFilterScope::Relation: return "relation";
+    case FeatureLayerFilterScope::ShapePoint: return "shapepoint";
     case FeatureLayerFilterScope::Auto: return "auto";
     }
     return "feature";

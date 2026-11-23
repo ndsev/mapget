@@ -88,6 +88,10 @@ if(MAPGET_WITH_JEMALLOC)
     TIMEOUT 20)
 endif()
 
+# Regenerate a native-produced lane fixture for wire-compatible WASM consumer tests.
+add_executable(generate-shape-point-fixture EXCLUDE_FROM_ALL generate-shape-point-fixture.cpp)
+target_link_libraries(generate-shape-point-fixture PRIVATE mapget-model)
+
 # The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
 add_dependencies(test.mapget test.mapget.datasource-server)
 

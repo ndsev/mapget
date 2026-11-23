@@ -151,8 +151,11 @@ public:
      *   + Canonical schema field multiplicity extends simfil's static dictionary;
      *     mapget field IDs shift and require matched native/WASM readers.
      *   + MapSchema codec 7 / SchemaPool codec 4 use canonical columns and arenas.
+     * - Version 6.4:
+     *   + Shape-point subset rows preserve original geometry/vertex identity and typed projections.
+     *   + Dependencies and feature snapshots carry a source revision for matching picks to data.
      */
-    static constexpr Version CurrentProtocolVersion{6, 3, 0};
+    static constexpr Version CurrentProtocolVersion{6, 4, 0};
 
     /** Highest sent dictionary ID per source string-pool namespace. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

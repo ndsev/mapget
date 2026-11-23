@@ -359,6 +359,10 @@ public:
                       setError("Unexpected tile layer type");
                       return;
                   }
+                  if (auto subset = std::dynamic_pointer_cast<PartitionSubsetLayer>(tile)) {
+                      std::lock_guard lock(mutex_);
+                      lastSubset_ = std::move(subset);
+                  }
                   receivedTileCount_.fetch_add(1, std::memory_order_relaxed);
                   cv_.notify_all();
               })
@@ -612,6 +616,12 @@ public:
         return cv_.wait_for(lock, timeout, [this] { return !clientId_.empty(); });
     }
 
+    PartitionSubsetLayer::Ptr lastSubset() const
+    {
+        std::lock_guard lock(mutex_);
+        return lastSubset_;
+    }
+
     int receivedTileCount() const { return receivedTileCount_.load(std::memory_order_relaxed); }
 
     void stop() { client_->stop(); }
@@ -703,6 +713,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::optional<nlohmann::json> lastStatus_;
+    PartitionSubsetLayer::Ptr lastSubset_;
     std::vector<nlohmann::json> statusHistory_;
     std::optional<nlohmann::json> lastActionControl_;
     std::string error_;
@@ -1657,6 +1668,61 @@ TEST_CASE("HttpDataSource", "[HttpDataSource]")
             auto runWsTilesRequest = [&](bool sendAuthHeader, const std::string& requestJson) {
                 return runWsTilesRequestAtPath("/interactive", sendAuthHeader, requestJson);
             };
+
+            // The identical channel selects original vertex 1 through both transports.
+            // Compare the decoded binary rows including projection errors and source identity.
+            {
+                nlohmann::json request = {
+                    {"channels",
+                     {{{"channelId", "vertices"},
+                       {"scope", "shapepoint"},
+                       {"featureFilter", "typeId == 'Way'"},
+                       {"geometryTypes", 2},
+                       {"geometryName", "centerline"},
+                       {"entryFilter", "$pointIndex == 1"},
+                       {"featureFields", {"typeId"}},
+                       {"entryFields", {"$pointIndex", "$feature.typeId", "brokenProjection()"}}}}},
+                    {"requests",
+                     {{{"mapId", "Tropico"},
+                       {"layerId", "WayLayer"},
+                       {"tileIds", {kHttpTileIdValue}}}}},
+                    {"responseType", "binary"},
+                };
+                SyncHttpClient http("127.0.0.1", service.port());
+                auto [result, resp] =
+                    http.postJson("/filter", request.dump(), {{"X-USER-ROLE", "Tropico-Viewer"}});
+                REQUIRE(result == drogon::ReqResult::Ok);
+                REQUIRE(resp);
+                REQUIRE(resp->statusCode() == drogon::k200OK);
+                PartitionSubsetLayer::Ptr rest;
+                TileLayerStream::Reader reader(
+                    [&](auto const&, auto const&) { return layerInfo; },
+                    [&](auto&& tile)
+                    { rest = std::dynamic_pointer_cast<PartitionSubsetLayer>(tile); });
+                reader.read(std::string(resp->body()));
+                REQUIRE(rest);
+                REQUIRE(rest->at(0)->shapePointEntryCount() == 1);
+                auto point = rest->at(0)->shapePointEntryAt(0);
+                CHECK(point->geometryOrdinal() == 0);
+                CHECK(point->pointIndex() == 1);
+                REQUIRE(point->valueErrors().size() == 1);
+                CHECK(point->valueErrors()[0].expressionIndex_ == 2);
+
+                request.erase("responseType");
+                request["filterId"] = "shape-point-transport-parity";
+                request["generation"] = 1;
+                WsTilesClient wsClient(service.port(), layerInfo, false);
+                REQUIRE(wsClient.connect(true));
+                requireConnected(wsClient)
+                    ->send(request.dump(), drogon::WebSocketMessageType::Text);
+                REQUIRE(wsClient.waitForDone(std::chrono::seconds(10)));
+                REQUIRE(wsClient.error().empty());
+                auto interactive = wsClient.lastSubset();
+                wsClient.stop();
+                REQUIRE(interactive);
+                CHECK(interactive->at(0)->toJson() == rest->at(0)->toJson());
+                CHECK(interactive->dependencies() == rest->dependencies());
+            }
 
             // WebSocket tiles: `/tiles` remains a legacy alias for `/interactive`.
             {

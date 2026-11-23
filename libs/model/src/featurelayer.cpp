@@ -1974,19 +1974,6 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         obj[std::string(key)] = obj[std::string(key)].get<int64_t>() + 1;
     };
 
-    auto geometryTypeKey = [](GeomType type) -> const char*
-    {
-        switch (type) {
-        case GeomType::Points: return "points";
-        case GeomType::Line: return "line";
-        case GeomType::Polygon: return "polygon";
-        case GeomType::Mesh: return "mesh";
-        case GeomType::AABB: return "aabb";
-        case GeomType::GltfNodeIndex: return "gltf-node-index";
-        }
-        return "points";
-    };
-
     std::unordered_set<uint32_t> countedGeometryAddresses;
     auto countGeometryAddress = [&](auto&& self, simfil::ModelNodeAddress geometryAddress) -> void
     {
@@ -2021,7 +2008,7 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
         auto geometryType = geometryAddress.column() == ColumnId::GeometryViews ?
             geomViews_.at(geometryAddress.index()).type_ :
             geometryTypeForColumn(geometryAddress.column());
-        auto typeKey = geometryTypeKey(geometryType);
+        auto typeKey = geometryTypeName(geometryType);
 
         increment(geometryUsage, "total");
         increment(geometryUsage["by-type"], typeKey);

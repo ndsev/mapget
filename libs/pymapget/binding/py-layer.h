@@ -98,6 +98,11 @@ struct BoundFeatureEntry : BoundSubsetNode<FeatureEntry>
     using BoundSubsetNode::BoundSubsetNode;
 };
 
+struct BoundShapePointEntry : BoundSubsetNode<ShapePointEntry>
+{
+    using BoundSubsetNode::BoundSubsetNode;
+};
+
 struct BoundAttributeValidityEntry
     : BoundSubsetNode<AttributeValidityEntry>
 {
@@ -150,6 +155,42 @@ inline void bindSubsetNodes(py::module_& m)
         .def("values", [](BoundFeatureEntry& self) {
             return BoundArray(self.modelNodePtr_->values());
         });
+
+    py::class_<ProjectedValueError>(m, "ProjectedValueError")
+        .def_readonly("expression_index", &ProjectedValueError::expressionIndex_)
+        .def_readonly("stage", &ProjectedValueError::stage_)
+        .def_readonly("message", &ProjectedValueError::message_);
+
+    py::class_<BoundShapePointEntry, BoundModelNode>(m, "ShapePointEntry")
+        .def(
+            "feature_id",
+            [](BoundShapePointEntry& self)
+            { return BoundFeatureId(self.modelNodePtr_->featureId()); })
+        .def(
+            "geometry_ordinal",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->geometryOrdinal(); })
+        .def(
+            "source_geometry_type",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->sourceGeometryType(); })
+        .def(
+            "geometry_name",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->geometryName(); })
+        .def(
+            "point_index",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->pointIndex(); })
+        .def("position", [](BoundShapePointEntry& self) { return self.modelNodePtr_->position(); })
+        .def(
+            "host_values",
+            [](BoundShapePointEntry& self) { return BoundArray(self.modelNodePtr_->hostValues()); })
+        .def(
+            "values",
+            [](BoundShapePointEntry& self) { return BoundArray(self.modelNodePtr_->values()); })
+        .def(
+            "host_value_errors",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->hostValueErrors(); })
+        .def(
+            "value_errors",
+            [](BoundShapePointEntry& self) { return self.modelNodePtr_->valueErrors(); });
 
     py::class_<BoundAttributeValidityEntry, BoundModelNode>(
         m,
@@ -302,6 +343,26 @@ inline void bindSubsetNodes(py::module_& m)
                 });
             return result;
         })
+        .def(
+            "shape_point_entries",
+            [](BoundTileSubsetChannel& self)
+            {
+                py::list result;
+                self.modelNodePtr_->forEachShapePointEntry(
+                    [&](auto const& entry)
+                    {
+                        result.append(BoundShapePointEntry(entry));
+                        return true;
+                    });
+                return result;
+            })
+        .def(
+            "shape_point_entry_at",
+            [](BoundTileSubsetChannel& self, size_t ordinal) -> py::object
+            {
+                auto entry = self.modelNodePtr_->shapePointEntryAt(ordinal);
+                return entry ? py::cast(BoundShapePointEntry(entry)) : py::none();
+            })
         .def("attribute_validity_entries",
             [](BoundTileSubsetChannel& self) {
                 py::list result;
@@ -972,7 +1033,8 @@ void bindTileLayer(py::module_& m)
         .value("FEATURE", Scope::Feature)
         .value("ATTRIBUTE", Scope::Attribute)
         .value("RELATION", Scope::Relation)
-        .value("GROUP", Scope::Group);
+        .value("GROUP", Scope::Group)
+        .value("SHAPE_POINT", Scope::ShapePoint);
 
     py::enum_<RelationDirection>(m, "RelationDirection")
         .value("FORWARD", RelationDirection::Forward)

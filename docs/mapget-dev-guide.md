@@ -554,6 +554,29 @@ channel also retains aggregate issues. Dictionary mapping uses existing IDs
 only: no downstream string-pool insertion or per-subset replacement dictionary.
 Protocol 5.3 readers must consume this sequence shape, not the former scalar slots.
 
+### Original shape points
+
+A shape-point channel selects original geometry vertices after its feature
+predicate succeeds. Shape-point channels on the same feature share one
+`ShapePointRange` per selected geometry, so different style rules can reuse
+the geometry's coverage, distance and record indexes. The scan copies only
+successful rows and their requested projections into the subset. Its temporary
+point contexts expire at the end of the host-feature scan.
+
+The lane curvature fixture produces the same bytes for native and WASM
+consumer tests. With native tests enabled, regenerate it in a local directory.
+
+```sh
+cmake --build build --target generate-shape-point-fixture
+build/bin/generate-shape-point-fixture build/shape-point-fixture
+```
+
+`catalog.json` describes the source. `schema.bin` holds the MapSchema artifact
+and `dictionary.frame` holds a complete framed string-pool message. The files
+`source.bin`, `selected.bin` and `subset.bin` are raw partition payloads
+from the production writers. `expected.json` records the original ordinals,
+projection values, revision and selected raw measurement for pick verification.
+
 ### Point groups
 
 The initial group operator is feature-only point-grid grouping. For tile layers, the source

@@ -194,6 +194,7 @@ void bindHttpClient(py::module_& m)
         .value("FEATURE", FeatureLayerFilterScope::Feature)
         .value("ATTRIBUTE", FeatureLayerFilterScope::Attribute)
         .value("RELATION", FeatureLayerFilterScope::Relation)
+        .value("SHAPE_POINT", FeatureLayerFilterScope::ShapePoint)
         .value("AUTO", FeatureLayerFilterScope::Auto);
 
     py::class_<FeatureLayerPointGridGroup>(m, "PointGridGroup")

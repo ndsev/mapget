@@ -2700,6 +2700,10 @@ bool detail::FilterRequestExecution::start(
     }
 
     for (auto const& channel : request->filter_.channels_) {
+        if (channel.scope_ == FeatureLayerFilterScope::ShapePoint) {
+            if (auto valid = channel.validateScopeOptions(); !valid)
+                return rejectStart(request, valid.error().message);
+        }
         if (channel.schemaId_ && *channel.schemaId_ != registration->info->schemaId_)
             return rejectStart(
                 request,

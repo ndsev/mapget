@@ -5,9 +5,10 @@
 #include <string>
 #include <vector>
 
-#include "mapget/model/featurelayer.h"
 #include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/featurelayer.h"
 #include "mapget/model/incoming-relations.h"
+#include "mapget/model/pointnode.h"
 #include "mapget/model/stream.h"
 #include "mapget/model/subsetlayer.h"
 
@@ -277,6 +278,86 @@ TEST_CASE("Filtering captures the source revision once across all channels and r
     CHECK(result->layer_->at(0)->featureEntryCount() == 96);
     CHECK(result->layer_->at(1)->featureEntryCount() == 96);
     CHECK(source->revisionReads == 1);
+}
+
+TEST_CASE(
+    "Shape-point wire rows preserve original identity, position and independent slots",
+    "[test.subsetlayer][shapepoint]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("PointWirePool");
+    auto subset = std::make_shared<PartitionSubsetLayer>(
+        TileId::fromWgs84(11, 48, 13),
+        strings->stringPoolId_,
+        "PointMap",
+        info,
+        strings);
+    subset->setGeometryAnchor({11.0, 48.0, 0.0});
+    auto id = subset->newFeatureId("Road", {{"roadId", int64_t{7}}});
+    auto const canonicalId = id->toString();
+    std::vector<std::string> hostFields{"roadId"}, pointFields{"curvature", "slope"};
+    auto channel =
+        subset->newChannel("vertex", Scope::ShapePoint, 2, "ADAS", hostFields, pointFields);
+    std::array hostSlots{projectedScalar(*subset, int64_t{7})};
+    std::array pointSlots{
+        projectedScalar(*subset, -0.15296),
+        simfil::ModelNode::Ptr(subset->newArray(0))};
+    std::array errors{ProjectedValueError{1, "evaluation", "Ambiguous slope"}};
+    auto host = channel->newShapePointHost(id, hostSlots);
+    auto geometry = channel->newShapePointGeometry(host, 1, GeomType::Line, "ADAS");
+    Point location{11.0625, 48.25, 543.5};
+    channel->newShapePointEntry(geometry, 1, location, pointSlots, errors);
+    channel->newShapePointEntry(geometry, 3, location, pointSlots, errors);
+
+    // The projection schema and geometry handle belong to exactly one channel.
+    auto other = subset->newChannel("other", Scope::ShapePoint, 2, {});
+    CHECK_THROWS(other->newShapePointEntry(geometry, 1, location));
+    CHECK_THROWS(channel->newShapePointEntry(geometry, 1, location));
+    CHECK_THROWS(channel->newShapePointGeometry(host, 0, GeomType::Line, "centerline"));
+    CHECK_FALSE(channel->shapePointEntryAt(2));
+    CHECK(subset->numVertices() == 2);
+    CHECK(subset->info().at("Filter/Entries/ShapePoints#count") == 2);
+
+    std::stringstream stream;
+    REQUIRE(subset->write(stream));
+    auto const encoded = stream.str();
+    auto decoded = std::make_shared<PartitionSubsetLayer>(
+        std::vector<uint8_t>(encoded.begin(), encoded.end()),
+        [&](auto const&, auto const&) { return info; },
+        [&](auto const&) { return strings; });
+    auto rows = decoded->at(0);
+    REQUIRE(rows->shapePointEntryCount() == 2);
+    CHECK(rows->entryCount() == 2);
+    auto first = rows->shapePointEntryAt(0);
+    auto second = rows->shapePointEntryAt(1);
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first->featureId()->toString() == canonicalId);
+    CHECK(first->geometryOrdinal() == 1);
+    CHECK(first->sourceGeometryType() == GeomType::Line);
+    CHECK(first->geometryName() == "ADAS");
+    CHECK(first->pointIndex() == 1);
+    CHECK(second->pointIndex() == 3);
+    CHECK(first->position() == location);
+    CHECK(first->hostValues()->addr() == second->hostValues()->addr());
+    CHECK(first->valueErrors() == std::vector<ProjectedValueError>(errors.begin(), errors.end()));
+    auto json = first->toJson();
+    CHECK(json["values"] == nlohmann::json::array({{-0.15296}, nlohmann::json::array()}));
+    CHECK(json["sourceGeometryType"] == "line");
+    CHECK(json["position"] == nlohmann::json(location));
+    auto generic = static_cast<simfil::ModelNode const&>(*first).get(StringPool::PositionStr);
+    REQUIRE(generic);
+    CHECK(generic->toJson() == json["position"]);
+    CHECK(decoded->resolve<PointNode>(*generic)->toJson() == json["position"]);
+    CHECK(rows->toJson()["shapePointEntries"][0] == json);
+    std::vector<uint32_t> seen;
+    CHECK_FALSE(rows->forEachShapePointEntry(
+        [&](auto const& entry)
+        {
+            seen.push_back(entry->pointIndex());
+            return false;
+        }));
+    CHECK(seen == std::vector<uint32_t>{1});
 }
 
 TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.subsetlayer]")

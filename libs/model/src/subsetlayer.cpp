@@ -373,6 +373,160 @@ bool FeatureEntry::iterate(IterCallback const& callback) const
     return true;
 }
 
+ShapePointEntry::ShapePointEntry(
+    Data const* data,
+    simfil::ModelConstPtr pool,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : simfil::MandatoryDerivedModelNodeBase<PartitionSubsetLayer>(std::move(pool), address, key),
+      data_(data)
+{
+}
+
+ShapePointEntry::GeometryData const& ShapePointEntry::geometryRecord() const
+{
+    return model().shapePointGeometries_.at(data_->geometryRecord_);
+}
+
+model_ptr<FeatureId> ShapePointEntry::featureId() const
+{
+    return model().resolve<FeatureId>(geometryRecord().featureId_);
+}
+
+uint32_t ShapePointEntry::geometryOrdinal() const
+{
+    return geometryRecord().geometryOrdinal_;
+}
+
+GeomType ShapePointEntry::sourceGeometryType() const
+{
+    return geometryRecord().sourceGeometryType_;
+}
+
+std::optional<std::string> ShapePointEntry::geometryName() const
+{
+    auto name = model().decodeGeometryName(geometryRecord().geometryNameIndex_);
+    return name ? std::optional<std::string>(*name) : std::nullopt;
+}
+
+uint32_t ShapePointEntry::pointIndex() const
+{
+    return data_->pointIndex_;
+}
+
+Point ShapePointEntry::position() const
+{
+    return model().geometryAnchor() + glm::dvec3(data_->offset_);
+}
+
+model_ptr<Array> ShapePointEntry::hostValues() const
+{
+    return model().resolve<Array>(geometryRecord().hostValues_);
+}
+
+model_ptr<Array> ShapePointEntry::values() const
+{
+    return model().resolve<Array>(data_->values_);
+}
+
+std::vector<ProjectedValueError> ShapePointEntry::hostValueErrors() const
+{
+    return model().readValueErrors(geometryRecord().hostValueErrors_);
+}
+
+std::vector<ProjectedValueError> ShapePointEntry::valueErrors() const
+{
+    return model().readValueErrors(data_->valueErrors_);
+}
+
+nlohmann::json ShapePointEntry::toJson() const
+{
+    nlohmann::json result{
+        {"type", "ShapePointEntry"},
+        {"featureId", featureId()->toJson()},
+        {"geometryOrdinal", geometryOrdinal()},
+        {"sourceGeometryType", geometryTypeName(sourceGeometryType())},
+        {"pointIndex", pointIndex()},
+        {"position", position()},
+        {"hostValues", arrayToJson(hostValues())},
+        {"hostValueErrors", arrayToJson(model().resolve<Array>(geometryRecord().hostValueErrors_))},
+        {"values", arrayToJson(values())},
+        {"valueErrors", arrayToJson(model().resolve<Array>(data_->valueErrors_))},
+    };
+    if (auto name = geometryName())
+        result["geometryName"] = *name;
+    return result;
+}
+
+simfil::ValueType ShapePointEntry::type() const
+{
+    return simfil::ValueType::Object;
+}
+
+uint32_t ShapePointEntry::size() const
+{
+    return geometryRecord().geometryNameIndex_ ? 10 : 9;
+}
+
+simfil::StringId ShapePointEntry::keyAt(int64_t index) const
+{
+    static constexpr simfil::StringId keys[] = {
+        StringPool::FeatureIdStr,
+        StringPool::GeometryOrdinalStr,
+        StringPool::SourceGeometryTypeStr,
+        StringPool::PointIndexStr,
+        StringPool::PositionStr,
+        StringPool::HostValuesStr,
+        StringPool::HostValueErrorsStr,
+        StringPool::ValuesStr,
+        StringPool::ValueErrorsStr,
+        StringPool::GeometryNameStr,
+    };
+    return index >= 0 && index < size() ? keys[index] : simfil::StringPool::Empty;
+}
+
+simfil::ModelNode::Ptr ShapePointEntry::at(int64_t index) const
+{
+    return get(keyAt(index));
+}
+
+simfil::ModelNode::Ptr ShapePointEntry::get(simfil::StringId const& field) const
+{
+    switch (field) {
+    case StringPool::FeatureIdStr: return featureId();
+    case StringPool::GeometryOrdinalStr:
+        return simfil::model_ptr<simfil::ValueNode>::make(int64_t{geometryOrdinal()}, model_);
+    case StringPool::SourceGeometryTypeStr:
+        return simfil::model_ptr<simfil::ValueNode>::make(
+            std::string_view(geometryTypeName(sourceGeometryType())),
+            model_);
+    case StringPool::GeometryNameStr:
+        if (auto name = model().decodeGeometryName(geometryRecord().geometryNameIndex_)) {
+            return simfil::model_ptr<simfil::ValueNode>::make(*name, model_);
+        }
+        return {};
+    case StringPool::PointIndexStr:
+        return simfil::model_ptr<simfil::ValueNode>::make(int64_t{pointIndex()}, model_);
+    case StringPool::PositionStr:
+        return model()
+            .resolve({PartitionSubsetLayer::ColumnId::ShapePointPositions, addr().index()});
+    case StringPool::HostValuesStr: return hostValues();
+    case StringPool::HostValueErrorsStr: return model().resolve(geometryRecord().hostValueErrors_);
+    case StringPool::ValuesStr: return values();
+    case StringPool::ValueErrorsStr: return model().resolve(data_->valueErrors_);
+    default: return {};
+    }
+}
+
+bool ShapePointEntry::iterate(IterCallback const& callback) const
+{
+    for (uint32_t index = 0; index < size(); ++index) {
+        if (!callback(*at(index)))
+            return false;
+    }
+    return true;
+}
+
 AttributeValidityEntry::AttributeValidityEntry(
     Data* data,
     simfil::ModelConstPtr pool,
@@ -971,6 +1125,117 @@ size_t TileSubsetChannel::groupEntryCount() const
     return entries ? entries->size() : 0;
 }
 
+size_t TileSubsetChannel::shapePointEntryCount() const
+{
+    auto entries = arrayAt(model(), data_->shapePointEntries_);
+    return entries ? entries->size() : 0;
+}
+
+model_ptr<ShapePointEntry> TileSubsetChannel::shapePointEntryAt(size_t ordinal) const
+{
+    auto const entries = arrayAt(model(), data_->shapePointEntries_);
+    if (!entries || ordinal >= entries->size())
+        return {};
+    return model().resolve<ShapePointEntry>(*entries->at(ordinal));
+}
+
+TileSubsetChannel::ShapePointHost TileSubsetChannel::newShapePointHost(
+    model_ptr<FeatureId> const& featureId,
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
+{
+    if (scope() != Scope::ShapePoint || values.size() != featureFieldCount()) {
+        raise("A shape-point host requires a shape-point channel and one slot per feature field.");
+    }
+    model().validateOwnedNode(featureId, "shape-point host feature ID");
+    ShapePointHost host;
+    host.channel_ = simfil::ModelNode::Ptr(*this);
+    host.featureId_ = featureId->addr();
+    host.values_ = model().newValueArray(values)->addr();
+    host.errors_ = model().newValueErrors(valueErrors, values.size())->addr();
+    return host;
+}
+
+TileSubsetChannel::ShapePointGeometry TileSubsetChannel::newShapePointGeometry(
+    ShapePointHost const& host,
+    uint32_t geometryOrdinal,
+    GeomType sourceGeometryType,
+    std::optional<std::string_view> geometryName)
+{
+    model().validateOwnedNode(host.channel_, "shape-point host channel");
+    if (host.channel_->addr() != addr())
+        raise("Shape-point host belongs to another channel.");
+    if (sourceGeometryType > GeomType::Mesh) {
+        raise("A bounds representation has no original shape points.");
+    }
+    if ((geometryTypes() & (1U << static_cast<unsigned>(sourceGeometryType))) == 0 ||
+        (!hasWildcardGeometryName() && this->geometryName() != geometryName))
+    {
+        raise("Original geometry does not match the shape-point channel selector.");
+    }
+    auto& records = model().shapePointGeometries_;
+    if (!simfil::ModelNodeAddress::checkIndex(records.size())) {
+        raise<std::length_error>("Too many shape-point geometry records.");
+    }
+    ShapePointGeometry geometry;
+    geometry.channel_ = host.channel_;
+    geometry.record_ = static_cast<uint32_t>(records.size());
+    records.emplace_back(ShapePointEntry::GeometryData{
+        host.featureId_,
+        host.values_,
+        host.errors_,
+        geometryOrdinal,
+        sourceGeometryType,
+        model().encodeGeometryName(geometryName),
+    });
+    return geometry;
+}
+
+model_ptr<ShapePointEntry> TileSubsetChannel::newShapePointEntry(
+    ShapePointGeometry const& geometry,
+    uint32_t pointIndex,
+    Point const& position,
+    std::span<simfil::ModelNode::Ptr const> values,
+    std::span<ProjectedValueError const> valueErrors)
+{
+    model().validateOwnedNode(geometry.channel_, "shape-point geometry channel");
+    if (geometry.channel_->addr() != addr() || values.size() != entryFieldCount()) {
+        raise("Shape-point row requires its original channel and one slot per entry field.");
+    }
+    auto& rows = model().shapePointEntries_;
+    if (!simfil::ModelNodeAddress::checkIndex(rows.size())) {
+        raise<std::length_error>("Too many shape-point subset rows.");
+    }
+    auto index = static_cast<uint32_t>(rows.size());
+    rows.emplace_back(ShapePointEntry::Data{
+        geometry.record_,
+        pointIndex,
+        glm::vec3(position - model().geometryAnchor()),
+        model().newValueArray(values)->addr(),
+        model().newValueErrors(valueErrors, values.size())->addr(),
+    });
+    auto row = model().resolve<ShapePointEntry>(
+        {PartitionSubsetLayer::ColumnId::ShapePointEntries, index});
+    arrayAt(model(), data_->shapePointEntries_)->append(row);
+    // newChannel initialized these counters. Increment the terminal count directly
+    // to avoid rescanning unrelated channels at every vertex of a long source line.
+    model().setInfo("Filter/Entries/ShapePoints#count", rows.size());
+    auto& total = model().info_["Filter/Entries/Total#count"];
+    if (total.is_number_unsigned()) {
+        ++total.get_ref<nlohmann::json::number_unsigned_t&>();
+    }
+    else {
+        model().updateEntryStatistics();
+    }
+    return row;
+}
+
+bool TileSubsetChannel::forEachShapePointEntry(
+    std::function<bool(model_ptr<ShapePointEntry> const&)> const& callback) const
+{
+    return model().forEachEntry(data_->shapePointEntries_, callback);
+}
+
 size_t TileSubsetChannel::entryCount() const
 {
     switch (scope()) {
@@ -978,6 +1243,7 @@ size_t TileSubsetChannel::entryCount() const
     case Scope::Attribute: return attributeValidityEntryCount();
     case Scope::Relation: return relationEntryCount();
     case Scope::Group: return groupEntryCount();
+    case Scope::ShapePoint: return shapePointEntryCount();
     }
     return 0;
 }
@@ -1179,6 +1445,15 @@ nlohmann::json TileSubsetChannel::toJson() const
         {"relationEntries", nlohmann::json::array()},
         {"groupEntries", nlohmann::json::array()},
     });
+    if (scope() == Scope::ShapePoint) {
+        result["shapePointEntries"] = nlohmann::json::array();
+        forEachShapePointEntry(
+            [&](auto const& entry)
+            {
+                result["shapePointEntries"].push_back(entry->toJson());
+                return true;
+            });
+    }
     forEachFeatureEntry([&](auto const& entry) {
         result["featureEntries"].push_back(entry->toJson());
         return true;
@@ -1210,7 +1485,7 @@ simfil::ModelNode::Ptr TileSubsetChannel::at(int64_t index) const
 
 uint32_t TileSubsetChannel::size() const
 {
-    return 10;
+    return scope() == Scope::ShapePoint ? 11 : 10;
 }
 
 simfil::ModelNode::Ptr TileSubsetChannel::get(simfil::StringId const& field) const
@@ -1234,6 +1509,8 @@ simfil::ModelNode::Ptr TileSubsetChannel::get(simfil::StringId const& field) con
         return arrayAt(model(), data_->attributeValidityEntries_);
     }
     if (field == StringPool::RelationEntriesStr) return arrayAt(model(), data_->relationEntries_);
+    if (field == StringPool::ShapePointEntriesStr)
+        return arrayAt(model(), data_->shapePointEntries_);
     if (field == StringPool::GroupEntriesStr) return arrayAt(model(), data_->groupEntries_);
     return {};
 }
@@ -1251,6 +1528,10 @@ simfil::StringId TileSubsetChannel::keyAt(int64_t index) const
     case 7: return StringPool::AttributeValidityEntriesStr;
     case 8: return StringPool::RelationEntriesStr;
     case 9: return StringPool::GroupEntriesStr;
+    case 10:
+        if (scope() == Scope::ShapePoint)
+            return StringPool::ShapePointEntriesStr;
+        return simfil::StringPool::Empty;
     default: return simfil::StringPool::Empty;
     }
 }
@@ -1344,6 +1625,8 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     serializer.object(attributeValidityEntries_);
     serializer.object(relationEntries_);
     serializer.object(groupEntries_);
+    serializer.object(shapePointGeometries_);
+    serializer.object(shapePointEntries_);
     serializer.object(traces_);
     readWriteCommonColumns(serializer);
 
@@ -1792,6 +2075,9 @@ model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
     auto attributeEntries = newArray(1);
     auto relationEntries = newArray(1);
     auto groupEntries = newArray(1);
+    auto shapePointEntries = scope == Scope::ShapePoint ?
+        static_cast<simfil::ArrayIndex>(newArray(1)->addr().index()) :
+        simfil::InvalidArrayIndex;
 
     if (!simfil::ModelNodeAddress::checkIndex(channels_.size()))
         raise<std::length_error>("Model node index exceeds its 24-bit representation");
@@ -1805,6 +2091,7 @@ model_ptr<TileSubsetChannel> PartitionSubsetLayer::newChannel(
         static_cast<simfil::ArrayIndex>(attributeEntries->addr().index()),
         static_cast<simfil::ArrayIndex>(relationEntries->addr().index()),
         static_cast<simfil::ArrayIndex>(groupEntries->addr().index()),
+        shapePointEntries,
         geometryTypes,
         scope,
     });
@@ -2206,6 +2493,8 @@ tl::expected<void, simfil::Error> PartitionSubsetLayer::write(std::ostream& outp
     serializer.object(attributeValidityEntries_);
     serializer.object(relationEntries_);
     serializer.object(groupEntries_);
+    serializer.object(shapePointGeometries_);
+    serializer.object(shapePointEntries_);
     serializer.object(traces_);
     readWriteCommonColumns(serializer);
     return ModelPool::write(outputStream);
@@ -2286,6 +2575,8 @@ MemoryUsageBreakdown PartitionSubsetLayer::memoryUsage() const
     result.add("subset.attribute-validity-entries", attributeValidityEntries_.memory_usage());
     result.add("subset.relation-entries", relationEntries_.memory_usage());
     result.add("subset.group-entries", groupEntries_.memory_usage());
+    result.add("subset.shape-point-geometries", shapePointGeometries_.memory_usage());
+    result.add("subset.shape-point-entries", shapePointEntries_.memory_usage());
     result.add("subset.traces", traces_.memory_usage());
     result.add("subset.dependencies", vectorMemoryUsage(dependencies_));
     for (auto const& dependency : dependencies_) {
@@ -2338,12 +2629,21 @@ bool PartitionSubsetLayer::forEachChannel(
 
 uint64_t PartitionSubsetLayer::numVertices() const
 {
-    return geometryVertexCount();
+    return geometryVertexCount() + shapePointEntries_.size();
 }
 
 Point PartitionSubsetLayer::geometryAnchor() const
 {
     return geometryAnchor_;
+}
+
+model_ptr<PointNode> PartitionSubsetLayer::resolvePointNode(simfil::ModelNode const& node) const
+{
+    if (node.addr().column() == ColumnId::ShapePointPositions) {
+        auto const& row = shapePointEntries_.at(node.addr().index());
+        return PointNode(node, geometryAnchor() + glm::dvec3(row.offset_), mpKey_);
+    }
+    return PartitionFeatureModelLayerBase::resolvePointNode(node);
 }
 
 void PartitionSubsetLayer::setGeometryAnchor(Point const& anchor)
@@ -2385,6 +2685,7 @@ void PartitionSubsetLayer::updateEntryStatistics()
         attributeValidityEntries_.size());
     setInfo("Filter/Entries/Relations#count", relationEntries_.size());
     setInfo("Filter/Entries/Groups#count", groupEntries_.size());
+    setInfo("Filter/Entries/ShapePoints#count", shapePointEntries_.size());
 }
 
 tl::expected<void, simfil::Error>
@@ -2408,6 +2709,7 @@ PartitionSubsetLayer::resolve(simfil::ModelNode const& node, ResolveFn const& ca
     case ColumnId::RelationEntries:
         callback(*resolve<RelationEntry>(node));
         return {};
+    case ColumnId::ShapePointEntries: callback(*resolve<ShapePointEntry>(node)); return {};
     case ColumnId::GroupEntries:
         callback(*resolve<GroupEntry>(node));
         return {};
@@ -2419,6 +2721,7 @@ PartitionSubsetLayer::resolve(simfil::ModelNode const& node, ResolveFn const& ca
         callback(*resolve<FeatureId>(node));
         return {};
     case ColumnId::Points:
+    case ColumnId::ShapePointPositions:
     case ColumnId::GeometryPointView:
         callback(*resolve<PointNode>(node));
         return {};
@@ -2532,8 +2835,21 @@ resolveInternal(tag<RelationEntry>, PartitionSubsetLayer const& model, ModelNode
         raise("Cannot cast this node to a RelationEntry.");
     }
     return RelationEntry(
-        const_cast<RelationEntry::Data*>(
-            &model.relationEntries_.at(node.addr().index())),
+        const_cast<RelationEntry::Data*>(&model.relationEntries_.at(node.addr().index())),
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+}
+
+template <>
+model_ptr<ShapePointEntry>
+resolveInternal(tag<ShapePointEntry>, PartitionSubsetLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != PartitionSubsetLayer::ColumnId::ShapePointEntries) {
+        raise("Cannot cast this node to a ShapePointEntry.");
+    }
+    return ShapePointEntry(
+        &model.shapePointEntries_.at(node.addr().index()),
         model.shared_from_this(),
         node.addr(),
         model.mpKey_);
