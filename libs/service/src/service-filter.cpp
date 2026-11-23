@@ -113,6 +113,8 @@ bool FilterRequestExecution::SourceTileContribution::Lifetime::expiresBefore(Lif
 void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageBreakdown& usage)
     const
 {
+    usage.add("dependency-strings", stringMemoryUsage(dependency_.sourceId_));
+    usage.add("dependency-strings", stringMemoryUsage(dependency_.sourceRevision_));
     usage.add("warnings", stringVectorMemoryUsage(warnings_));
     if (error_)
         usage.add("error", stringMemoryUsage(*error_));
@@ -1143,10 +1145,7 @@ FilterRequestExecution::commitSource(
             });
         }
 
-        auto const dependency = TileSubsetDependency{
-            MapPartitionKey(source),
-            result.sourceFeatureCount_,
-        };
+        auto const dependency = TileSubsetDependency::fromSource(source);
         for (auto const& dependent : dependentOutputsBySource[sourceIndex]) {
             auto& output = outputs[dependent.outputIndex_];
             if (output.state_ != OutputTileState::State::Pending) {
@@ -1243,10 +1242,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContr
         });
     }
     SourceTileContribution targetContribution{
-        TileSubsetDependency{
-            targetKey,
-            static_cast<uint32_t>(targetLayer.size()),
-        },
+        TileSubsetDependency::fromSource(targetLayer),
         {},
         {},
         {},

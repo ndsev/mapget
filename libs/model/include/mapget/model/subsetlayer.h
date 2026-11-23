@@ -65,7 +65,11 @@ struct TileSubsetDependency
 {
     MapPartitionKey sourceTileKey_;
     uint32_t sourceFeatureCount_ = 0;
+    std::string sourceId_;
+    std::string sourceRevision_;
 
+    /** Capture identity once for this partition, before copying a dependency to its outputs. */
+    static TileSubsetDependency fromSource(PartitionFeatureLayer const& source);
     bool operator==(TileSubsetDependency const&) const = default;
 };
 
@@ -614,10 +618,12 @@ public:
     /** Copy timestamp, TTL, info, legal text and warnings; preserve this subset's identity. */
     void adoptSourceInfo(PartitionFeatureLayer const& source);
 
-    /** Sort and deduplicate source keys; conflicting counts for one key throw. */
+    /** Sort and deduplicate source keys, rejecting conflicting counts, providers or revisions. */
     void setDependencies(std::vector<TileSubsetDependency> dependencies);
-    void addDependency(MapPartitionKey sourceTileKey, uint32_t sourceFeatureCount);
+    void addDependency(TileSubsetDependency dependency);
     [[nodiscard]] std::vector<TileSubsetDependency> const& dependencies() const;
+    /** Complete host partition for local pick ordinals, also in a mixed-channel subset. */
+    [[nodiscard]] TileSubsetDependency const* localSourceDependency() const;
     [[nodiscard]] std::optional<uint32_t> localSourceFeatureCount() const;
 
     void addIssue(FilterIssue issue);

@@ -50,6 +50,8 @@ struct DependencyWire
 {
     std::string sourceTileKey_;
     uint32_t sourceFeatureCount_ = 0;
+    std::string sourceId_;
+    std::string sourceRevision_;
 };
 
 /** String-based issue record readable before the model pool is hydrated. */
@@ -150,6 +152,24 @@ void readWriteDependencyWire(S& serializer, DependencyWire& dependency,
         dependency.sourceTileKey_,
         maxTextBytes);
     serializer.value4b(dependency.sourceFeatureCount_);
+    serializer.text1b(dependency.sourceId_, maxTextBytes);
+    serializer.text1b(dependency.sourceRevision_, maxTextBytes);
+}
+
+/** Both readers must identify the same unique, ordered set of source snapshots. */
+std::vector<TileSubsetDependency> decodeDependencies(std::vector<DependencyWire> wire)
+{
+    std::vector<TileSubsetDependency> result;
+    result.reserve(wire.size());
+    for (auto& dependency : wire) {
+        MapPartitionKey key(dependency.sourceTileKey_);
+        if (!result.empty() && !(result.back().sourceTileKey_ < key))
+            raise("Duplicate or unordered source dependency in PartitionSubsetLayer.");
+        result.push_back({
+            std::move(key), dependency.sourceFeatureCount_,
+            std::move(dependency.sourceId_), std::move(dependency.sourceRevision_)});
+    }
+    return result;
 }
 
 /** Share issue encoding with full and bounded metadata-prefix readers. */
@@ -1298,9 +1318,9 @@ PartitionSubsetLayer::PartitionSubsetLayer(
     std::vector<DependencyWire> dependencyWire;
     serializer.container(
         dependencyWire,
-        std::numeric_limits<uint32_t>::max(),
-        [](auto& nested, DependencyWire& dependency) {
-            readWriteDependencyWire(nested, dependency);
+        input.size(),
+        [&](auto& nested, DependencyWire& dependency) {
+            readWriteDependencyWire(nested, dependency, input.size());
         });
     std::vector<IssueWire> issueWire;
     serializer.container(
@@ -1334,13 +1354,7 @@ PartitionSubsetLayer::PartitionSubsetLayer(
                 serializer.adapter().error()));
     }
 
-    dependencies_.reserve(dependencyWire.size());
-    for (auto&& dependency : dependencyWire) {
-        dependencies_.push_back({
-            MapPartitionKey(dependency.sourceTileKey_),
-            dependency.sourceFeatureCount_,
-        });
-    }
+    dependencies_ = decodeDependencies(std::move(dependencyWire));
     issues_.reserve(issueWire.size());
     for (auto&& issue : issueWire) {
         issues_.push_back({
@@ -1450,13 +1464,7 @@ TileSubsetLayerMetadata PartitionSubsetLayer::readMetadata(
         raise("Failed to read PartitionSubsetLayer metadata.");
     }
 
-    result.dependencies_.reserve(dependencyWire.size());
-    for (auto&& dependency : dependencyWire) {
-        result.dependencies_.push_back({
-            MapPartitionKey(dependency.sourceTileKey_),
-            dependency.sourceFeatureCount_,
-        });
-    }
+    result.dependencies_ = decodeDependencies(std::move(dependencyWire));
     result.issues_.reserve(issueWire.size());
     for (auto&& issue : issueWire) {
         result.issues_.push_back({
@@ -1493,8 +1501,8 @@ void PartitionSubsetLayer::adoptSourceInfo(PartitionFeatureLayer const& source)
 }
 
 /**
- * Sort/deduplicate by source key, rejecting conflicting counts before replacing
- * the retained dependency vector. Source counts describe occupancy, not matches.
+ * A subset cannot refer to two different snapshots of one partition. Reject
+ * a conflict before replacing the existing dependency vector.
  */
 void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dependencies)
 {
@@ -1510,11 +1518,10 @@ void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dep
         if (!normalized.empty() &&
             normalized.back().sourceTileKey_ == dependency.sourceTileKey_)
         {
-            if (normalized.back().sourceFeatureCount_ !=
-                dependency.sourceFeatureCount_)
+            if (normalized.back() != dependency)
             {
                 raiseFmt(
-                    "Conflicting source feature counts for dependency {}.",
+                    "Conflicting source snapshots for dependency {}.",
                     dependency.sourceTileKey_.toString());
             }
             continue;
@@ -1525,10 +1532,19 @@ void PartitionSubsetLayer::setDependencies(std::vector<TileSubsetDependency> dep
     dependencies_ = std::move(normalized);
 }
 
-void PartitionSubsetLayer::addDependency(MapPartitionKey sourceTileKey, uint32_t sourceFeatureCount)
+TileSubsetDependency TileSubsetDependency::fromSource(PartitionFeatureLayer const& source)
+{
+    if (source.size() > std::numeric_limits<uint32_t>::max())
+        throw std::length_error("Feature count exceeds the subset dependency representation.");
+    return {
+        source.id(), static_cast<uint32_t>(source.size()),
+        source.sourceId(), source.sourceRevision()};
+}
+
+void PartitionSubsetLayer::addDependency(TileSubsetDependency dependency)
 {
     auto dependencies = dependencies_;
-    dependencies.push_back({std::move(sourceTileKey), sourceFeatureCount});
+    dependencies.push_back(std::move(dependency));
     setDependencies(std::move(dependencies));
 }
 
@@ -1537,7 +1553,7 @@ std::vector<TileSubsetDependency> const& PartitionSubsetLayer::dependencies() co
     return dependencies_;
 }
 
-std::optional<uint32_t> PartitionSubsetLayer::localSourceFeatureCount() const
+TileSubsetDependency const* PartitionSubsetLayer::localSourceDependency() const
 {
     auto const outputKey = id();
     auto found = std::find_if(
@@ -1546,10 +1562,14 @@ std::optional<uint32_t> PartitionSubsetLayer::localSourceFeatureCount() const
         [&](auto const& dependency) {
             return dependency.sourceTileKey_ == outputKey;
         });
-    if (found == dependencies_.end()) {
-        return std::nullopt;
-    }
-    return found->sourceFeatureCount_;
+    return found == dependencies_.end() ? nullptr : &*found;
+}
+
+std::optional<uint32_t> PartitionSubsetLayer::localSourceFeatureCount() const
+{
+    if (auto const* dependency = localSourceDependency())
+        return dependency->sourceFeatureCount_;
+    return std::nullopt;
 }
 
 void PartitionSubsetLayer::addIssue(FilterIssue issue)
@@ -2146,6 +2166,8 @@ tl::expected<void, simfil::Error> PartitionSubsetLayer::write(std::ostream& outp
         dependencyWire.push_back({
             dependency.sourceTileKey_.toString(),
             dependency.sourceFeatureCount_,
+            dependency.sourceId_,
+            dependency.sourceRevision_,
         });
     }
     serializer.container(
@@ -2219,6 +2241,8 @@ nlohmann::json PartitionSubsetLayer::toJson() const
         result["dependencies"].push_back({
             {"sourceTileKey", dependency.sourceTileKey_.toString()},
             {"sourceFeatureCount", dependency.sourceFeatureCount_},
+            {"sourceId", dependency.sourceId_},
+            {"sourceRevision", dependency.sourceRevision_},
         });
     }
     for (auto const& issue : issues_) {
@@ -2267,6 +2291,8 @@ MemoryUsageBreakdown PartitionSubsetLayer::memoryUsage() const
     for (auto const& dependency : dependencies_) {
         result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceTileKey_.mapId_));
         result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceTileKey_.layerId_));
+        result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceId_));
+        result.add("subset.dependency-strings", stringMemoryUsage(dependency.sourceRevision_));
     }
     result.add("subset.issues", vectorMemoryUsage(issues_));
     for (auto const& issue : issues_) {

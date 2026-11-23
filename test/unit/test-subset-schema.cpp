@@ -187,7 +187,6 @@ public:
         };
         std::vector<std::string> fields{"mixed", "empty"};
         auto id = subset->newFeatureId("Road", {{"id", int64_t{1}}});
-        (void)id->keyValuePairs();
         auto geometry = subset->newGeometryCollection(1, true);
         auto point = subset->newGeometry(GeomType::Points, 1, true);
         point->append(Point{0, 0, 0});

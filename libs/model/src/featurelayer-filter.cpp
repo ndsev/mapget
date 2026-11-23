@@ -1843,9 +1843,7 @@ void FeatureLayerFilterRequest::SourceEvaluation::prepare()
         resultLayer_->adoptSourceInfo(sourceLayer_);
         resultLayer_->setError(sourceLayer_.error());
         resultLayer_->setErrorCode(sourceLayer_.errorCode());
-        resultLayer_->addDependency(
-            MapPartitionKey(sourceLayer_),
-            static_cast<uint32_t>(sourceLayer_.size()));
+        resultLayer_->addDependency(TileSubsetDependency::fromSource(sourceLayer_));
         if (auto const& attachmentName = sourceLayer_.glbAttachmentName();
             attachmentName && !sourceLayer_.error())
         {

@@ -605,7 +605,8 @@ ServiceScheduler::takeNextTileJobLocked(std::unique_lock<std::mutex>& lock)
                 break;
             }
 
-            auto cached = cache_->getTileLayer(candidate->tileKey, *source->source->info);
+            auto cached = cache_->getTileLayer(
+                candidate->tileKey, *source->source->info, source->source->sourceId);
             if (cached.tile) {
                 log().debug("Serving cached tile: {}", candidate->tileKey.toString());
                 auto state = std::make_shared<TileLoadState>();

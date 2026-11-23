@@ -949,6 +949,7 @@ TEST_CASE(
     auto strings = std::make_shared<StringPool>("diagnostics");
     auto tile = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(0, 0, 1), "diagnostics", "Map", info, strings);
     auto source = createTestDataSourceInfo("diagnostics", "Map", info);
+    tile->publishSourceSnapshot("original-provider");
     tile->setError("503");
     tile->setTtl(std::chrono::seconds(5));
     cache->putTileLayer(tile);
@@ -959,6 +960,9 @@ TEST_CASE(
     cache->putTileLayer(tile);
     auto expired = cache->getTileLayer(tile->id(), source);
     REQUIRE_FALSE(expired.tile);
+    auto differentProvider = cache->getTileLayer(tile->id(), source, "replacement-provider");
+    CHECK_FALSE(differentProvider.tile);
+    CHECK_FALSE(differentProvider.expiredAt);
     REQUIRE(
         expired.expiredAt ==
         std::chrono::time_point_cast<std::chrono::microseconds>(tile->timestamp() + *tile->ttl()));

@@ -850,8 +850,24 @@ TEST_CASE(
         "012b20825d4a00d50000000000000000");
     auto restricted = requestTile(true);
     REQUIRE(restricted->size() == 1);
+    REQUIRE(full->sourceId() == service.sourceCatalog().sources.at(0).descriptor.sourceId);
+    REQUIRE_FALSE(full->sourceRevision().empty());
+    CHECK(restricted->sourceId() == full->sourceId());
+    CHECK(restricted->sourceRevision() == full->sourceRevision());
     CHECK(restricted->at(0)->toJson() == expected);
     CHECK(requestTile(false)->toJson() == full->toJson());
+
+    auto filtered = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap", "Road", std::vector<PartitionId>{firstTile()}, filterDefinition());
+    PartitionSubsetLayer::Ptr output;
+    filtered->onFilterResult([&](auto layer) { output = std::move(layer); });
+    REQUIRE(service.request(filtered));
+    filtered->wait();
+    REQUIRE(output);
+    auto const* dependency = output->localSourceDependency();
+    REQUIRE(dependency);
+    CHECK(dependency->sourceId_ == restricted->sourceId());
+    CHECK(dependency->sourceRevision_ == restricted->sourceRevision());
     CHECK(dataSource->requestedTiles().size() == 1);
 }
 

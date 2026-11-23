@@ -162,6 +162,21 @@ public:
     ~PartitionFeatureLayer() override;
 
     /**
+     * Return the complete source snapshot. Published models and restricted
+     * clones reuse the stored revision. A mutable standalone builder computes
+     * it from its current contents, so serializing before a later edit is safe.
+     */
+    [[nodiscard]] std::string sourceRevision() const override;
+
+    /**
+     * Publish a finished partition under its resolved catalog provider. A
+     * supplier may provide an opaque revision covering all geometry, attributes,
+     * provenance, and the exact schema. Otherwise compute a content digest here.
+     * Call after the last edit, before sharing the result with cache and clients.
+     */
+    void publishSourceSnapshot(std::string sourceId, std::string revision = {});
+
+    /**
      * Creates a new feature and insert it into this tile layer.
      * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId
@@ -468,7 +483,8 @@ public:
     /**
      * Create a copy of otherFeature in this layer with the given type
      * and full primary id-parts. Existing identities receive attributes/layers
-     * and relations; already attached cloned geometry addresses are not duplicated.
+     * and relations. Geometry keeps its source order and occurrence count. A
+     * geometry already copied for an attribute-point host is reused in its slot.
      * The destination schema must admit source types (same artifact or a composed
      * contributor). A populated properties container cannot change concrete type.
      * Node-copy limitations and partial-failure behavior below also apply.
@@ -484,8 +500,7 @@ public:
      * Create a copy of otherNode (which lives in otherLayer) in this layer.
      * The required cache preserves shared nodes within this destination. Geometry
      * views are materialized; whole Feature/FeatureProperties and standalone helper
-     * views are unsupported. Validity copies currently omit featureId/geometryName
-     * selectors. Failures can leave partial destination/cache state; discard both
+     * views are unsupported. Failures can leave partial destination/cache state; discard both
      * before retrying an operation that requires an all-or-nothing result.
      */
     simfil::ModelNode::Ptr clone(
@@ -502,6 +517,10 @@ protected:
         model_ptr<FeatureId> sourceFeatureId_;
         model_ptr<Feature> targetFeature_;
     };
+
+    /** Attach the source host's ordered geometry slots before copying references to them. */
+    void cloneFeatureGeometries(
+        CloneContext const& context, CloneCache& cache, Feature const& feature);
 
     /** Clone one node while propagating an optional feature-remapping context. */
     simfil::ModelNode::Ptr cloneNode(

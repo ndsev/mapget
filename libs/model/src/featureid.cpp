@@ -41,17 +41,14 @@ FeatureIdentity::Composition resolveComposition(
     return typeInfo.compositions()[compositionIndex];
 }
 
-/** Build the externally visible id-part layout after removing an optional tile prefix. */
-void resolveVisiblePartLayout(
+/** Visit schema-named slots in order, after removing an optional common tile prefix. */
+template <typename Callback>
+void forEachVisiblePart(
     PartitionFeatureModelLayerBase const& model,
     FeatureId::Data const& data,
     model_ptr<Array> const& values,
-    std::vector<simfil::StringId>& partNames,
-    std::vector<uint32_t>& visibleValueIndices)
+    Callback&& visit)
 {
-    partNames.clear();
-    visibleValueIndices.clear();
-
     if (!values) {
         return;
     }
@@ -116,41 +113,28 @@ void resolveVisiblePartLayout(
             continue;
         }
 
-        auto sid = model.strings()->emplace(composition.parts()[localStartIndex + slot].name());
-        if (!sid) {
-            break;
-        }
-        partNames.push_back(*sid);
-        visibleValueIndices.push_back(slot);
+        if (!visit(composition.parts()[localStartIndex + slot].name(), slot, valueNode))
+            return;
     }
 }
 
-template <typename Fn>
-/** Forward integer/string ID parts; skip missing/null/double values and reject bytes or bitmasks. */
+/** Preserve the named, typed scalar rather than converting ID parts to text. */
 void appendTypedKeyValue(
-    PartitionFeatureModelLayerBase const& model,
-    simfil::StringId key,
-    simfil::ModelNode::Ptr const& valueNode,
-    Fn&& fn)
+    KeyValueViewPairs& result, std::string_view name, simfil::ModelNode::Ptr const& value)
 {
-    auto keyStr = model.strings()->resolve(key);
-    if (!keyStr || !valueNode) {
+    if (!value)
         return;
-    }
 
     std::visit(
-        [&](auto&& v)
+        [&](auto const& scalar)
         {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (
-                std::is_same_v<T, simfil::ByteArray> || std::is_same_v<T, simfil::Bitmask>) {
-                raiseFmt("FeatureId part '{}' must be an integer or string.", *keyStr);
-            }
-            else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>) {
-                fn(*keyStr, v);
-            }
+            using T = std::decay_t<decltype(scalar)>;
+            if constexpr (std::is_same_v<T, simfil::ByteArray> || std::is_same_v<T, simfil::Bitmask>)
+                raiseFmt("FeatureId part '{}' must be an integer or string.", name);
+            else if constexpr (!std::is_same_v<T, std::monostate> && !std::is_same_v<T, double>)
+                result.emplace_back(name, scalar);
         },
-        valueNode->value());
+        value->value());
 }
 
 /** Escape separators and escape markers inside string-valued id parts. */
@@ -316,12 +300,14 @@ void FeatureId::ensureVisiblePartLayout() const
     if (visiblePartLayoutResolved_) {
         return;
     }
-    resolveVisiblePartLayout(
-        model(),
-        data_,
-        values_,
-        partNames_,
-        visibleValueIndices_);
+    forEachVisiblePart(model(), data_, values_, [&](std::string_view name, uint32_t slot, auto const&) {
+        auto sid = model().strings()->emplace(name);
+        if (!sid)
+            return false;
+        partNames_.push_back(*sid);
+        visibleValueIndices_.push_back(slot);
+        return true;
+    });
     visiblePartLayoutResolved_ = true;
 }
 
@@ -447,40 +433,27 @@ bool FeatureId::iterate(const simfil::ModelNode::IterCallback& cb) const
 KeyValueViewPairs FeatureId::keyValuePairs() const
 {
     KeyValueViewPairs result;
+    auto appendNamed = [&](model_ptr<simfil::Object> const& object) {
+        if (!object)
+            return;
+        for (auto const& [key, value] : object->fields()) {
+            if (auto name = model().strings()->resolve(key))
+                appendTypedKeyValue(result, *name, value);
+        }
+    };
     if (data_.idParts_.column() == simfil::ModelPool::ColumnId::Objects) {
-        auto parts = model().resolve<simfil::Object>(data_.idParts_);
-        result.reserve(parts->size());
-        for (auto const& [key, value] : parts->fields())
-            appendTypedKeyValue(
-                model(),
-                key,
-                value,
-                [&](std::string_view name, auto&& scalar) { result.emplace_back(name, scalar); });
-        return result;
+        appendNamed(model().resolve<simfil::Object>(data_.idParts_));
+    } else {
+        if (data_.useCommonTilePrefix_)
+            appendNamed(model().getIdPrefix());
+        // Feature strings and source revisions only need the schema's names.
+        // Interning those names here would mutate the producer's dictionary
+        // during filtering or produce incomplete IDs when the pool is frozen.
+        forEachVisiblePart(model(), data_, values_, [&](auto name, uint32_t, auto const& value) {
+            appendTypedKeyValue(result, name, value);
+            return true;
+        });
     }
-
-    ensureVisiblePartLayout();
-
-    if (data_.useCommonTilePrefix_) {
-        if (auto idPrefix = model().getIdPrefix()) {
-            for (auto const& [key, value] : idPrefix->fields()) {
-                appendTypedKeyValue(model(), key, value, [&](std::string_view keyName, auto&& v) {
-                    result.emplace_back(keyName, v);
-                });
-            }
-        }
-    }
-
-    if (values_) {
-        auto const limit = std::min<size_t>(partNames_.size(), visibleValueIndices_.size());
-        for (size_t i = 0; i < limit; ++i) {
-            auto valueNode = values_->at(static_cast<int64_t>(visibleValueIndices_[i]));
-            appendTypedKeyValue(model(), partNames_[i], valueNode, [&](std::string_view keyName, auto&& v) {
-                result.emplace_back(keyName, v);
-            });
-        }
-    }
-
     return result;
 }
 

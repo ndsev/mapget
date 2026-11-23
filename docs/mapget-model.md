@@ -928,7 +928,8 @@ Each subset also carries:
 - `filterId + generation` semantic identity;
 - the timestamp and positive TTL pair of the finite-lifetime source
   dependency with the earliest absolute expiry, when one exists;
-- source dependencies and `sourceFeatureCount`;
+- source dependencies with the full partition key, `sourceFeatureCount`,
+  catalog `sourceId` and complete feature `sourceRevision`;
 - inherited source `info()` statistics plus subset-owned terminal-entry and
   stored-geometry vertex counts;
 - aggregated structured issues and typed SIMFIL traces;
@@ -938,6 +939,16 @@ During service execution one output state may own an unpublished,
 single-writer work-in-progress subset. Cross-tile contributions contain source
 feature pointers/descriptors, not partially constructed model nodes. The
 completed value is serialized once and is immutable to consumers.
+
+A datasource with an authoritative revision covering its complete converted
+feature partition and exact schema can supply it through
+`publishSourceSnapshot(sourceId, revision)`. Otherwise the service computes
+a SHA-256 digest of the ordered features, geometry slots and original vertices,
+typed attribute occurrences, validity selectors and source-record references.
+It computes this after add-on composition, outside the scheduler lock. The
+source key, schema and model contents determine the digest. Dictionary numbering,
+load times, TTLs and cache eviction do not. The subset's local dependency
+and a feature-restricted inspection response both carry the complete revision.
 
 ## Binary tile streaming
 

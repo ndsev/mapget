@@ -546,6 +546,11 @@ simfil::ArrayIndex idPartValuesToArrayIndex(
     {
         auto const& idPart = composition.parts()[compositionIndex];
         if (idPartsIter != idParts.end() && idPart.name() == idPartsIter->first) {
+            // The feature exposes ID parts as named SIMFIL fields. Publish
+            // their names while building the tile, even though its compact
+            // storage only needs the corresponding schema slots and values.
+            if (auto name = layer.strings()->emplace(idPart.name()); !name)
+                raise(name.error().message);
             idValues->append(std::visit(
                 [&](auto&& v) -> simfil::ModelNode::Ptr { return layer.newValue(v); },
                 idPartsIter->second));
@@ -2616,6 +2621,19 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             break;
         }
         }
+        newNode->setGeometryName(resolved->geometryName());
+        // An AttrPointSequence also exposes its host ID through featureId().
+        // Copy only an explicitly stored selector. The cloned sequence already
+        // resolves its own host, even when an add-on remaps that feature's ID.
+        if (resolved->data_->featureAddress_) {
+            auto id = resolved->featureId();
+            if (context.sourceFeatureId_ && context.targetFeature_ && !id->externalMapId() &&
+                id->toString() == context.sourceFeatureId_->toString()) {
+                newNode->setFeatureId(context.targetFeature_->id());
+            } else {
+                newNode->setFeatureId(resolve<FeatureId>(*cloneNode(context, cache, otherLayer, id)));
+            }
+        }
         break;
     }
     case ColumnId::SimpleValidity: {
@@ -2700,9 +2718,6 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     case ColumnId::AttrPointSequences: {
         auto resolved = otherLayer->resolve<AttrPointSequence>(*otherNode);
         auto sourceFeatureId = resolved->featureId();
-        auto clonedGeometry =
-            resolve<Geometry>(*cloneNode(context, cache, otherLayer, resolved->geometry()));
-
         model_ptr<Feature> host;
         if (context.targetFeature_ && context.sourceFeatureId_ &&
             context.sourceFeatureId_->toString() == sourceFeatureId->toString())
@@ -2715,27 +2730,24 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
             host = find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
         }
         if (!host) {
-            // Restricted inspection snapshots still need the sequence's geometry host.
-            // Materialize only its identity here; the geometry and sequence follow below.
-            // A later explicit host clone fills its attributes without duplicating geometry.
+            // An unselected feature can own a selected attribute's source sequence.
             auto parts = sourceFeatureId->keyValuePairs();
             if (auto prefix = getIdPrefix(); prefix && parts.size() >= prefix->size())
                 parts.erase(parts.begin(), parts.begin() + prefix->size());
             host = newFeature(sourceFeatureId->typeId(), parts);
         }
-        bool geometryAttached = false;
-        if (auto geometries = host->geomOrNull()) {
-            geometries->forEachGeometry(
-                [&](model_ptr<Geometry> const& candidate)
-                {
-                    geometryAttached = candidate->addr().value_ == clonedGeometry->addr().value_;
-                    return !geometryAttached;
-                });
-        }
-        if (!geometryAttached) {
-            host->addGeometry(clonedGeometry);
-        }
 
+        auto const hostContext = CloneContext{sourceFeatureId, host};
+        auto const geometry = resolved->geometry();
+        auto const geometryKey = CloneCacheKey{
+            otherLayer.get(), geometry->addr().value_, host->addr().value_};
+        if (!cache.contains(geometryKey)) {
+            auto sourceHost = otherLayer->find(sourceFeatureId->typeId(), sourceFeatureId->keyValuePairs());
+            if (!sourceHost)
+                raise("Attribute-point sequence has no source geometry host.");
+            cloneFeatureGeometries(hostContext, cache, *sourceHost);
+        }
+        auto clonedGeometry = resolve<Geometry>(*cloneNode(hostContext, cache, otherLayer, geometry));
         auto newNode = newAttrPointSequence(host, clonedGeometry);
         newCacheNode = newNode;
         for (uint32_t index = 0; index < resolved->attrPointCount(); ++index) {
@@ -2801,6 +2813,37 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
     return newCacheNode;
 }
 
+void PartitionFeatureLayer::cloneFeatureGeometries(
+    CloneContext const& context, CloneCache& cache, Feature const& feature)
+{
+    auto geometries = feature.geomOrNull();
+    if (!geometries)
+        return;
+
+    // Merging a partially populated host must reuse its existing slots.
+    // Counting them preserves two original slots that share the very same
+    // geometry buffer, which a set or coordinate-based comparison loses.
+    auto host = context.targetFeature_;
+    std::unordered_map<uint32_t, uint32_t> existing;
+    if (auto attached = host->geomOrNull()) {
+        attached->forEachGeometry([&](auto const& geometry) {
+            ++existing[geometry->addr().value_];
+            return true;
+        });
+    }
+    geometries->forEachGeometry([&](auto const& geometry) {
+        // Merged feature views may expose a node owned by a different layer.
+        auto owner = std::static_pointer_cast<PartitionFeatureLayer>(geometry->model().shared_from_this());
+        auto copy = resolve<Geometry>(*cloneNode(context, cache, owner, geometry));
+        auto it = existing.find(copy->addr().value_);
+        if (it != existing.end() && it->second > 0)
+            --it->second;
+        else
+            host->addGeometry(copy);
+        return true;
+    });
+}
+
 void PartitionFeatureLayer::clone(
     CloneCache& clonedModelNodes,
     const PartitionFeatureLayer::Ptr& otherLayer,
@@ -2838,6 +2881,10 @@ void PartitionFeatureLayer::clone(
     if (auto refs = otherFeature.sourceDataReferences()) {
         cloneTarget->setSourceDataReferences(lookupOrClone(refs));
     }
+
+    // Some attribute validities reference a later geometry. Install all original
+    // slots first so those references cannot move their geometry to slot zero.
+    cloneFeatureGeometries(context, clonedModelNodes, otherFeature);
 
     // Adopt attributes
     if (auto attrs = otherFeature.attributesOrNull()) {
@@ -2880,31 +2927,6 @@ void PartitionFeatureLayer::clone(
                 auto cloned =
                     cloneNode(context, clonedModelNodes, owningLayer(layer), ModelNode::Ptr(layer));
                 baseAttrLayers->addLayer(layerName, resolve<AttributeLayer>(*cloned));
-                return true;
-            });
-    }
-
-    // Adopt geometries
-    if (auto geom = otherFeature.geomOrNull()) {
-        auto baseGeom = cloneTarget->geom();
-        geom->forEachGeometry(
-            [this, &baseGeom, &context, &clonedModelNodes, &owningLayer](auto&& geomElement)
-            {
-                auto clonedGeometry = resolve<Geometry>(*cloneNode(
-                    context,
-                    clonedModelNodes,
-                    owningLayer(geomElement),
-                    ModelNode::Ptr(geomElement)));
-                bool alreadyAttached = false;
-                baseGeom->forEachGeometry(
-                    [&](model_ptr<Geometry> const& candidate)
-                    {
-                        alreadyAttached = candidate->addr().value_ == clonedGeometry->addr().value_;
-                        return !alreadyAttached;
-                    });
-                if (!alreadyAttached) {
-                    baseGeom->addGeometry(clonedGeometry);
-                }
                 return true;
             });
     }

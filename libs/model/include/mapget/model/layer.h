@@ -137,6 +137,16 @@ public:
     /** Exact schema artifact pinned by this partition, independent of datasource reloads. */
     [[nodiscard]] std::string_view schemaId() const;
 
+    /** Catalog provider that published this partition. Standalone builders may have no provider. */
+    [[nodiscard]] std::string const& sourceId() const { return sourceId_; }
+
+    /**
+     * Identity of the complete feature partition from which this payload was taken.
+     * Available to header-only readers and retained by feature-restricted responses.
+     * Subset rows identify their source through the local subset dependency.
+     */
+    [[nodiscard]] virtual std::string sourceRevision() const { return sourceRevision_; }
+
     /** Install an exact, in-memory schema resolver for a partition's ModelPool payload. */
     void
     installSchemaResolver(simfil::ModelPool& model, SchemaResolveFun const& schemas = {}) const;
@@ -261,6 +271,8 @@ protected:
     PartitionId partitionId_;
     std::string stringPoolId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
+    std::string sourceId_;
+    std::string sourceRevision_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
     std::optional<int> errorCode_;

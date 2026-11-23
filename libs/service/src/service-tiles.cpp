@@ -170,7 +170,8 @@ void TileLoadJob::run() noexcept
         }
         if (nativeInfo && layer->schemaId() != nativeInfo->schemaOwner()->schemaId())
             raise("DataSource::get() returned a model with a different native schema.");
-        if (layer->schemaId() != effectiveInfo->schemaOwner()->schemaId()) {
+        auto const reboundSchema = layer->schemaId() != effectiveInfo->schemaOwner()->schemaId();
+        if (reboundSchema) {
             if (layer.use_count() != 1)
                 raise(
                     "DataSource::get() must return an exclusively owned model for schema "
@@ -212,6 +213,17 @@ void TileLoadJob::run() noexcept
         // filter/direct consumer, but those CPU/transport phases must not
         // consume the datasource's backend-concurrency budget.
         releasePermit();
+        if (layer->layerInfo()->type_ == LayerType::Features) {
+            if (isCancelled())
+                throw TileLoadCancelled();
+            auto& featureLayer = static_cast<PartitionFeatureLayer&>(*layer);
+            // A remote supplier may already have identified its complete native
+            // snapshot. Composition changes that contract. Fingerprint the final
+            // partition before it enters the scheduler's cache-publication lock.
+            auto revision = reboundSchema || !registration_->addOns.empty() ?
+                std::string{} : featureLayer.sourceRevision();
+            featureLayer.publishSourceSnapshot(registration_->sourceId, std::move(revision));
+        }
         scheduler_.completeTileJob(*state_, layer, true);
     }
     catch (TileLoadCancelled const&) {

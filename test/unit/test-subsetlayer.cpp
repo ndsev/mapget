@@ -6,6 +6,8 @@
 #include <vector>
 
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/featurelayer-filter.h"
+#include "mapget/model/incoming-relations.h"
 #include "mapget/model/stream.h"
 #include "mapget/model/subsetlayer.h"
 
@@ -108,8 +110,6 @@ TEST_CASE("All subset scopes preserve row-local projection errors on the wire", 
     auto subset = std::make_shared<PartitionSubsetLayer>(
         TileId::fromWgs84(11, 48, 13), "ProjectionErrors", "TestMap", info, strings);
     auto id = subset->newFeatureId("Road", {{"roadId", int64_t{1}}});
-    // Bare test dictionaries have no datasource-populated ID labels yet.
-    (void)id->keyValuePairs();
     auto geometry = pointGeometry(*subset, 1);
     std::vector<std::string> fields{"broken"};
     std::vector<simfil::ModelNode::Ptr> values{subset->newArray(1, true)};
@@ -157,6 +157,123 @@ TEST_CASE("All subset scopes preserve row-local projection errors on the wire", 
     });
 }
 
+TEST_CASE("A revision follows the complete feature snapshot across reload and restricted inspection",
+          "[test.subsetlayer][source-revision]")
+{
+    auto info = subsetLayerInfo();
+    auto tileId = TileId::fromWgs84(11, 48, 13);
+    auto makeSource = [&](int rawValue, uint32_t recordOffset, bool coldReload) {
+        auto strings = std::make_shared<StringPool>("RoadDictionary");
+        if (coldReload)
+            REQUIRE(strings->emplace("unrelated field from a different partition"));
+        auto tile = std::make_shared<PartitionFeatureLayer>(tileId, "RoadDictionary", "Map", info, strings);
+        auto road = tile->newFeature("Road", {{"roadId", int64_t{1}}});
+        tile->newFeature("Road", {{"roadId", int64_t{2}}});
+        for (auto name : {"centerline", "ADAS"}) {
+            auto geometry = tile->newGeometry(GeomType::Line, 2);
+            geometry->setName(name);
+            geometry->append({11.0, 48.0, 0});
+            geometry->append({11.001, 48.001, 0});
+            road->addGeometry(geometry);
+            if (std::string_view(name) != "ADAS")
+                continue;
+
+            // The same buffer occupies two original slots. The first occurrence
+            // is the axis of a validity that used to pull it ahead of centerline.
+            road->addGeometry(geometry);
+            auto sequence = tile->newAttrPointSequence(road, geometry);
+            auto slope = road->attributeLayers()->newLayer("Adas")->newAttribute("SLOPE");
+            slope->addField("raw", tile->newValue(int64_t{rawValue}));
+            QualifiedSourceDataReference ref{
+                .address_ = SourceDataAddress::fromBitPosition(recordOffset, 8),
+                .layerId_ = strings->emplace("raw").value(),
+                .qualifier_ = strings->emplace("sample").value()};
+            slope->setSourceDataReferences(tile->newSourceDataReferenceCollection({&ref, 1}));
+            auto validities = slope->validity();
+            validities->newAttrPointIndexRange(sequence, 0, 1);
+            auto bounded = validities->newRange(Validity::RelativeLengthOffset, 0.25, 0.75, "ADAS");
+            bounded->setFeatureId(road->id());
+        }
+        if (coldReload) {
+            tile->setTimestamp(std::chrono::system_clock::time_point{123s});
+            tile->setTtl(19ms);
+            tile->setInfo("Load/Time#us", 1);
+        }
+        return tile;
+    };
+
+    auto source = makeSource(-13, 48, false);
+    auto cold = makeSource(-13, 48, true);
+    auto const producerDictionary = source->strings()->highest();
+    auto revision = source->sourceRevision();
+    CHECK(source->strings()->highest() == producerDictionary);
+    CHECK(cold->sourceRevision() == revision);
+    CHECK(makeSource(-12, 48, false)->sourceRevision() != revision);
+    CHECK(makeSource(-13, 56, false)->sourceRevision() != revision);
+    source->publishSourceSnapshot("sample");
+    CHECK(source->sourceRevision() == revision);
+    std::vector<std::string> selected{"Road.1"};
+    auto restricted = cloneInspectionFeatures(source, selected);
+    REQUIRE(restricted->size() == 1);
+    CHECK(restricted->sourceId() == "sample");
+    CHECK(restricted->sourceRevision() == revision);
+    REQUIRE(restricted->numAttrPointSequences() == 1);
+    CHECK(restricted->attrPointSequenceAt(0)->geometryIndex() == 1);
+    auto clonedRoad = restricted->find("Road.1");
+    REQUIRE(clonedRoad);
+    REQUIRE(clonedRoad->geomOrNull()->numGeometries() == 3);
+    CHECK(clonedRoad->toJson() == source->find("Road.1")->toJson());
+
+    // The cheap header route used by erdblick must see the complete identity
+    // before it decides whether to construct the expensive feature model.
+    std::stringstream wire;
+    REQUIRE(restricted->write(wire));
+    auto encoded = wire.str();
+    std::vector<uint8_t> bytes(encoded.begin(), encoded.end());
+    auto metadata = [&](auto const&, auto const&) { return info; };
+    PartitionLayer header(bytes, metadata);
+    CHECK(header.sourceId() == "sample");
+    CHECK(header.sourceRevision() == revision);
+    auto decoded = std::make_shared<PartitionFeatureLayer>(
+        bytes, metadata, [&](auto const&) { return source->strings(); });
+    CHECK(decoded->sourceRevision() == revision);
+    CHECK(decoded->toServiceJson()["sourceId"] == "sample");
+    CHECK(decoded->find("Road.1")->toJson() == clonedRoad->toJson());
+
+    source->publishSourceSnapshot("sample", "supplier-snapshot-19");
+    CHECK(cloneInspectionFeatures(source, selected)->sourceRevision() == "supplier-snapshot-19");
+}
+
+TEST_CASE("Filtering captures the source revision once across all channels and rows",
+          "[test.subsetlayer][source-revision]")
+{
+    struct CountedSource : PartitionFeatureLayer
+    {
+        using PartitionFeatureLayer::PartitionFeatureLayer;
+        mutable size_t revisionReads = 0;
+
+        std::string sourceRevision() const override
+        {
+            ++revisionReads;
+            return PartitionFeatureLayer::sourceRevision();
+        }
+    };
+
+    auto strings = std::make_shared<StringPool>("CountedSource");
+    auto source = std::make_shared<CountedSource>(TileId::fromWgs84(11, 48, 13),
+        "CountedSource", "Map", subsetLayerInfo(), strings);
+    for (int64_t id = 0; id < 96; ++id)
+        source->newFeature("Road", {{"roadId", id}})->addPoint({11, 48, 0});
+    FeatureLayerFilterRequest request;
+    request.channels_ = {{.channelId_ = "first"}, {.channelId_ = "second"}};
+    auto result = request.filterSource(*source, true);
+    REQUIRE(result);
+    REQUIRE(result->layer_);
+    CHECK(result->layer_->at(0)->featureEntryCount() == 96);
+    CHECK(result->layer_->at(1)->featureEntryCount() == 96);
+    CHECK(source->revisionReads == 1);
+}
+
 TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.subsetlayer]")
 {
     auto info = subsetLayerInfo();
@@ -182,10 +299,14 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         {
             MapPartitionKey(LayerType::Features, "TestMap", "Road", haloTile),
             3,
+            "roads",
+            "halo-snapshot",
         },
         {
             MapPartitionKey(LayerType::Features, "TestMap", "Road", tileId),
             11,
+            "roads",
+            "host-snapshot",
         },
     });
     subset->addIssue({
@@ -309,6 +430,11 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     REQUIRE(subset->size() == 4);
     REQUIRE(subset->info()["Load/Backend#us"] == 42);
     REQUIRE(subset->localSourceFeatureCount() == 11);
+    REQUIRE(subset->localSourceDependency()->sourceRevision_ == "host-snapshot");
+    auto conflicting = *subset->localSourceDependency();
+    conflicting.sourceRevision_ = "changed";
+    REQUIRE_THROWS(subset->addDependency(conflicting));
+    REQUIRE(subset->localSourceDependency()->sourceRevision_ == "host-snapshot");
     REQUIRE(subset->dependencies().size() == 2);
     REQUIRE(subset->issues().size() == 1);
     REQUIRE(subset->glbAttachmentName() == "road-mesh");

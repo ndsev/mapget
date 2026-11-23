@@ -78,6 +78,9 @@ def exercise(source, port):
     payload = json.loads(payloads.splitlines()[0])
     assert payload["partition"] == request["partitions"][0]
     assert payload["features"][0]["id"] == canonical_id
+    assert payload["sourceId"] == layer.source_id()
+    assert payload["sourceRevision"] == layer.source_revision()
+    assert payload["sourceRevision"]
     subsets = post(base, "/filter", {
         "requests": [request], "responseType": "jsonl",
         "channels": [{"channelId": "roads", "scope": "feature",
@@ -100,7 +103,9 @@ def exercise(source, port):
     assert channel["featureEntries"][0]["values"] == [["Example road"]]
     assert subset["dependencies"] == [{
         "sourceTileKey": f"Features:{source.MAP}:{source.LAYER}:object/{source.OBJECT_ID}",
-        "sourceFeatureCount": 1}]
+        "sourceFeatureCount": 1,
+        "sourceId": payload["sourceId"],
+        "sourceRevision": payload["sourceRevision"]}]
 
     empty = client.discover_objects(mapget.ObjectDiscoveryRequest(
         source.MAP, source.LAYER, PackedTileId.from_wgs84(0, 0, source.LEVEL)))

@@ -447,6 +447,14 @@ At most 4096 distinct canonical feature IDs are accepted per envelope. The
 service may load/cache the complete source tile internally, but only the named
 features cross this response boundary.
 
+The common binary header and service JSON expose `sourceId` and an opaque
+`sourceRevision` for the complete feature partition. A response restricted
+to feature IDs keeps the same revision. To inspect an original geometry or
+vertex ordinal, request the recorded provider, then compare both values with
+the subset's local dependency before using the ordinal. An unchanged cold
+reload reproduces the revision. Changing source records or the effective
+schema produces a new revision even if the coordinates stay the same.
+
 `tileIdsByNextStage` and filter fields are rejected. Close the HTTP connection
 to cancel an in-flight stream.
 
@@ -690,7 +698,8 @@ contains:
 - ordered channels and their concrete scope/field schemas;
 - typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
   `GroupEntry` arrays;
-- source dependencies with `MapTileKey` and `sourceFeatureCount`;
+- source dependencies with `sourceTileKey`, `sourceFeatureCount`, `sourceId`
+  and `sourceRevision`;
 - scalar `Filter/Entries/*#count` statistics and
   `Filter/Geometry/Vertices#count` for cheap pre-deserialization accounting;
 - aggregated issues and SIMFIL traces;
