@@ -82,6 +82,10 @@ makeFilterStatusJson(FeatureLayerFilterTilesRequest const& request, std::string 
     if (request.sourceId_) {
         status["sourceId"] = *request.sourceId_;
     }
+    status["excludedPartitions"] = nlohmann::json::array();
+    for (auto const& partition : request.excludedPartitionIds_)
+        status["excludedPartitions"].push_back(partition.toJson());
+    status["spatialExtentRestricted"] = request.spatialExtentRestricted_.load();
     return status;
 }
 
@@ -523,8 +527,11 @@ void FilterRequestExecution::configure(
                     // Sorting nine direct lookups by source index preserves
                     // processing order without scanning the complete source
                     // union once for every output.
-                    dependenciesBySourceIndex
-                        .emplace_back(sourceIndexByTile.at(sourcePartitionId), sourcePartitionId);
+                    // Coverage can remove halo cells before scheduling. They are
+                    // not outstanding dependencies and must not delay completion.
+                    if (auto found = sourceIndexByTile.find(sourcePartitionId);
+                        found != sourceIndexByTile.end())
+                        dependenciesBySourceIndex.emplace_back(found->second, sourcePartitionId);
                 }
             }
             std::ranges::sort(
@@ -1654,14 +1661,19 @@ void FilterRequestExecution::scheduleRelationTarget(MapPartitionKey const& targe
         targetKey.layerId_,
         std::vector<PartitionId>{targetKey.partitionId_});
     child->sourceId_ = request->sourceId_;
+    child->spatialExtentPolicy_ = request->filter_.spatialExtentPolicy_;
     child->setWorkAdmissionGate(request->workAdmissionGate_);
     auto self = shared_from_this();
     child->onFeatureLayer([self, targetKey](PartitionFeatureLayer::Ptr layer)
                           { self->collectRelationTarget(targetKey, std::move(layer)); });
-    child->onDone_ = [self, targetKey](RequestStatus status)
+    child->onDone_ = [self, targetKey, weakChild = std::weak_ptr<LayerTilesRequest>(child)](RequestStatus status)
     {
+        auto completedChild = weakChild.lock();
+        if (completedChild && !completedChild->excludedPartitionIds_.empty()) self->request->spatialExtentRestricted_ = true;
         self->completeUnavailableRelationTarget(
             targetKey,
+            (completedChild && !completedChild->excludedPartitionIds_.empty()) ?
+                fmt::format("Relation target outside spatial extent: {}.", targetKey.toString()) :
             status == RequestStatus::Success ?
                 fmt::format(
                     "Relation target request completed without tile {}.",
@@ -2026,6 +2038,8 @@ FilterRequestExecution::finalizeOutput(ReadyOutput ready)
             ready.layer_->addWarning(local ? warning : fmt::format("{}: {}", key.toString(), warning));
     };
     // Rebuild diagnostics from all dependencies, including halo and relation tiles.
+    if (request->spatialExtentRestricted_)
+        ready.layer_->addWarning("Spatial extent restricted the dependency scope of this result.");
     ready.layer_->setError(std::nullopt);
     ready.layer_->setErrorCode(std::nullopt);
     for (auto& contribution : ready.contributions_) {
@@ -2714,6 +2728,23 @@ bool detail::FilterRequestExecution::start(
             request->tileIds_,
             [&](auto const& id) { return id.kind() != context.partitionKind_; }))
         return rejectStart(request, "Requested partition kind does not match layer metadata.");
+    // Retire excluded roots before expansion, capacity, or payload acquisition.
+    std::erase_if(request->tileIds_, [&](PartitionId const& partition) {
+        if (registration->permits(request->filter_.spatialExtentPolicy_, request->layerId_, partition))
+            return false;
+        request->excludedPartitionIds_.push_back(partition);
+        request->spatialExtentRestricted_ = true;
+        request->priorityPartitionIds_.erase(partition);
+        return true;
+    });
+    std::erase_if(request->exactRoots_, [&](FeatureLayerFilterRoot const& root) {
+        return std::ranges::find(request->tileIds_, root.partitionId_) == request->tileIds_.end();
+    });
+    if (request->tileIds_.empty()) {
+        request->notifyProgress(makeFilterStatusJson(*request, "Success"));
+        request->setStatus(RequestStatus::Success);
+        return true;
+    }
     auto const activeChannels = request->filter_.activeChannels();
     bool hasPointGroups = false;
     for (size_t index = 0; index < activeChannels.size(); ++index) {
@@ -2740,6 +2771,14 @@ bool detail::FilterRequestExecution::start(
         return rejectStart(request, tileIdsToProcess.error().message);
     }
 
+    // Configure only admitted dependencies so excluded halo tiles never remain pending.
+    std::erase_if(*tileIdsToProcess, [&](PartitionId const& partition) {
+        bool excluded = !registration->permits(
+            request->filter_.spatialExtentPolicy_, request->layerId_, partition);
+        if (excluded) request->spatialExtentRestricted_ = true;
+        return excluded;
+    });
+
     std::vector<PartitionId> prioritySourcePartitionIds;
     prioritySourcePartitionIds.reserve(prioritySourceMembership.size());
     std::ranges::copy_if(
@@ -2753,6 +2792,7 @@ bool detail::FilterRequestExecution::start(
         *tileIdsToProcess,
         prioritySourcePartitionIds);
     childRequest->sourceId_ = request->sourceId_;
+    childRequest->spatialExtentPolicy_ = request->filter_.spatialExtentPolicy_;
     childRequest->setWorkAdmissionGate(request->workAdmissionGate_);
     {
         std::lock_guard lock(request->childRequestsMutex_);

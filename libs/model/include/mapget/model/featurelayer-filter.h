@@ -1,4 +1,5 @@
 #pragma once
+#include "coverage.h"
 
 #include <compare>
 #include <cstddef>
@@ -250,6 +251,8 @@ struct FeatureLayerFilterRequest
     uint64_t generation_ = 0;
     std::vector<FeatureLayerFilterChannel> channels_;
     std::map<std::string, FeatureLayerFilterBinding> bindings_;
+    /** Owner-view policy inherited by every server-expanded dependency. */
+    SpatialExtentPolicy spatialExtentPolicy_;
 
     /**
      * Identify channels whose membership is not provably false after binding constants.

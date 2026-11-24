@@ -107,6 +107,7 @@ void IncomingRequestExecution::submit(std::vector<LayerTilesRequest::Ptr> const&
         if (terminal_ || request_->isCancelled())
             return;
         for (auto const& job : jobs) {
+            job->spatialExtentPolicy_ = request_->filter_.spatialExtentPolicy_;
             job->setWorkAdmissionGate(request_->workAdmissionGate_);
             request_->childRequests_.push_back(job);
         }
@@ -288,6 +289,13 @@ void IncomingRequestExecution::discover(RequestStatus status)
                     continue;
                 }
 
+                if (!source->permits(request_->filter_.spatialExtentPolicy_, layerId, key.partitionId_)) {
+                    request_->spatialExtentRestricted_ = true;
+                    collection.issues_.push_back("Incoming provider outside spatial extent.");
+                    collection.status_ = Status::Partial;
+                    continue;
+                }
+
                 // Complete describes the declared, searched scope. Earlier gaps
                 // remain in issues_ and make the result partial even if this
                 // particular provider is compatible and can be loaded.
@@ -307,6 +315,7 @@ void IncomingRequestExecution::discover(RequestStatus status)
                     layerId,
                     std::vector<PartitionId>{key.partitionId_});
                 child->sourceId_ = source->sourceId;
+                child->spatialExtentPolicy_ = request_->filter_.spatialExtentPolicy_;
                 child->onFeatureLayer(
                     [self = shared_from_this(),
                      declarations,
@@ -586,7 +595,11 @@ void IncomingRequestExecution::finish()
             fail("Datasource catalog changed during incoming discovery; retry required.");
             return;
         }
-        request_->notifyProgress({{"type", "mapget.filter.status"}, {"state", "Success"}});
+        auto excluded = nlohmann::json::array();
+        for (auto const& partition : request_->excludedPartitionIds_) excluded.push_back(partition.toJson());
+        request_->notifyProgress({{"type", "mapget.filter.status"}, {"state", "Success"},
+            {"excludedPartitions", std::move(excluded)},
+            {"spatialExtentRestricted", request_->spatialExtentRestricted_.load()}});
     }
     catch (std::exception const& error) {
         fail(error.what());

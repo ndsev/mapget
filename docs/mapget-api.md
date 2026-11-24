@@ -34,8 +34,9 @@ support:
   alias for JSON Lines.
 
 Binary producers and consumers must use the same major/minor stream version.
-The current format, 6.3.0, changes static dictionary IDs to include schema enum
-`rawValue` and field-multiplicity metadata; readers reject older streams before interpreting their
+The current format, 6.4.0, adds spatial extent policies and terminal exclusion
+statuses. It retains the schema enum `rawValue` and field-multiplicity dictionary
+metadata introduced in 6.3.0; readers reject older streams before interpreting
 payload fields. Rebuild and deploy native servers, binary datasource clients
 and browser WASM together. Its schema artifacts use MapSchema codec 7 and
 SchemaPool codec 4, which likewise reject older encodings.
@@ -1139,3 +1140,44 @@ Native clients receive snapshots with `onFeatureSnapshot` and manifests with
 `onIncomingRelations`; `FeatureInspectionView` validates and retains the bundle.
 Python clients can call `Client.incoming_relations(map_id, layer_id, partition, feature_id)`.
 The result exposes `target()`, `incoming()` and `collection()`.
+
+## Request-scoped spatial extent limits
+
+Spatial requests accept `spatialExtentPolicy`:
+
+```json
+{"defaultLimit": true, "maps": {"AnUnrestrictedMap": false}}
+```
+
+The map override wins over the default. Omitting the policy preserves legacy
+unrestricted requests. The server obtains geometry from its current authorized
+catalog; clients do not supply trusted exclusion geometry. `/tiles` request
+items, filtered requests, `/locate`, and `/objects/discover` propagate this policy
+to spatial child work. `/attachment` accepts its JSON serialization as the
+`spatialExtentPolicy` query parameter. Service-wide metadata remains available.
+Opaque object IDs remain unrestricted without sufficient spatial evidence;
+association-tile discovery is restricted before datasource work.
+
+Raw tile streams report excluded partitions with a Status record whose `type`
+is `mapget.spatialExtent.status`, `state` is `OutsideSpatialExtent`, and
+`excludedPartitions` contains tagged partition identities, alongside `mapId` and
+`layerId`. Requests still terminate successfully; exclusions produce no synthetic
+empty tile, cache entry, or TTL renewal. Filter status records carry
+`excludedPartitions` and `spatialExtentRestricted`; clipped point-group halos also
+produce a warning on the resulting subset. Discovery uses terminal
+`outsideSpatialExtent`. An excluded attachment returns HTTP 422.
+
+Policies are part of filtered-definition identity. Change the filter generation
+when changing a policy. Interactive raw snapshots discard predecessor ownership
+and queued data when their policy changes. Protocol version 6.4 adds these spatial
+metadata, request and terminal-status contracts.
+
+`mapget_get_coverage` exposes `coverageKnown`, `coverageComplete`, `coverageValid`,
+`serviceMetadata`, and `geometryComplete`. Complete metadata and a complete
+response are separate: response budgets may truncate returned geometry. A
+geographic extent with all holes is atomic; legacy summary ranges do not contain
+complete masks. Do not treat a truncated response as exclusion geometry.
+
+`/locate` also returns `spatialExtentExclusions`, parallel to `responses`, containing
+excluded candidate partition keys for each request. An empty match list with a
+nonempty exclusion list reports an outside-extent result without fetching payloads.

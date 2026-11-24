@@ -20,6 +20,7 @@ struct ParsedLayerTilesRequest
     std::string mapId;
     std::string layerId;
     std::optional<std::string> sourceId;
+    SpatialExtentPolicy spatialExtentPolicy;
     std::vector<PartitionId> tileIds;
     std::vector<PartitionId> priorityPartitionIds;
     std::map<PartitionId, std::vector<std::string>> featureIdsByTile;

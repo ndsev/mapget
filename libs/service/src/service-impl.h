@@ -110,7 +110,8 @@ struct Service::Impl
 
     /** Resolve a locate request through candidates and ordinary tile loading. */
     std::vector<LocateResponse> locate(
-        LocateRequest const& request, std::optional<ClientAuthorization> const& authorization);
+        LocateRequest const& request, std::optional<ClientAuthorization> const& authorization,
+        std::vector<MapPartitionKey>* spatialExclusions = nullptr);
 
     /** Resolve admission and optionally pin the authorized generation for later scheduling. */
     [[nodiscard]] LayerRequestContext resolveLayerRequest(

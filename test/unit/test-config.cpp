@@ -751,11 +751,12 @@ TEST_CASE(
          previousInfo = before.sources[0].info](RequestStatus status)
     {
         // Cancellation callbacks run after atomic publication, outside the catalog
-        // lock. This same-schema add-on preserves metadata but replaces the active
-        // registration; re-entry must already see its coherent Ready catalog row.
+        // lock. Even a same-schema add-on replaces coverage metadata with an
+        // incomplete composed footprint; re-entry must see its Ready catalog row.
         auto catalog = service->sourceCatalog();
         abortedWithPublishedCatalog = status == RequestStatus::Aborted &&
-            !catalog.sources.empty() && catalog.sources[0].info == previousInfo &&
+            !catalog.sources.empty() && catalog.sources[0].info != previousInfo &&
+            catalog.sources[0].info->getLayer("Features")->coverageComplete_ == false &&
             std::ranges::any_of(catalog.sources,
                                 [](auto const& entry) {
                                     return entry.descriptor.addOn &&

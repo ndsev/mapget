@@ -15,6 +15,7 @@ add_library(mapget-model STATIC
   include/mapget/model/featureidentity.h
   include/mapget/model/featureschema.h
   include/mapget/model/info.h
+  include/mapget/model/coverage.h
   include/mapget/model/feature.h
   include/mapget/model/attr.h
   include/mapget/model/attrpoint.h
@@ -62,6 +63,7 @@ add_library(mapget-model STATIC
   src/mapschema-native.cpp
   src/featureidentity.cpp
   src/info.cpp
+  src/coverage.cpp
   src/feature.cpp
   src/attr.cpp
   src/attrpoint.cpp

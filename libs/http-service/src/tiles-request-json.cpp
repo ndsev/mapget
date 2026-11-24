@@ -386,6 +386,8 @@ FeatureLayerFilterRequest parseFilterDefinition(
             "deliveryEpoch and deliveryEpochs are not supported");
     }
     FeatureLayerFilterRequest result;
+    if (object.contains("spatialExtentPolicy"))
+        result.spatialExtentPolicy_ = SpatialExtentPolicy::fromJson(object.at("spatialExtentPolicy"));
     if (auto id = optionalString(object, "filterId", true)) {
         result.filterId_ = std::move(*id);
     }
@@ -477,6 +479,8 @@ void parseRequestBase(
     result.mapId = requireString(requestJson, "mapId");
     result.layerId = requireString(requestJson, "layerId");
     result.sourceId = optionalString(requestJson, "sourceId");
+    if (requestJson.contains("spatialExtentPolicy"))
+        result.spatialExtentPolicy = SpatialExtentPolicy::fromJson(requestJson.at("spatialExtentPolicy"));
     parsePlainPartitionIdsInto(result, requestJson, result.layerId);
 
     // Delivery attempts are transport-owned in protocol 4.0. Silently
@@ -766,6 +770,8 @@ ParsedLayerTilesRequest parseRestFilterLayerRequestJson(
             "featureIds is supported only by plain /tiles requests");
     }
     result.filterRequest = filterTemplate;
+    if (requestJson.contains("spatialExtentPolicy"))
+        result.filterRequest->spatialExtentPolicy_ = result.spatialExtentPolicy;
     return result;
 }
 
@@ -838,6 +844,8 @@ nlohmann::json filterRequestToJson(
     bool includeIdentity)
 {
     auto result = nlohmann::json::object();
+    if (request.spatialExtentPolicy_ != SpatialExtentPolicy{})
+        result["spatialExtentPolicy"] = request.spatialExtentPolicy_.toJson();
     if (includeIdentity) {
         result["filterId"] = request.filterId_;
         result["generation"] = request.generation_;

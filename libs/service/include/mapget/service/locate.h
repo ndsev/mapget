@@ -26,6 +26,7 @@ public:
     /** Optional owning-layer/partition context disambiguates tile and object feature IDs. */
     std::optional<std::string> layerId_;
     std::optional<PartitionId> partition_;
+    SpatialExtentPolicy spatialExtentPolicy_;
     std::string mapId_;
     std::string typeId_;
     KeyValuePairs featureId_;

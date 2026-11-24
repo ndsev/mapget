@@ -619,6 +619,7 @@ public:
 
         std::vector<SnapshotRequest> snapshotRequests;
         std::set<MapPartitionKey> nextPendingTileKeys;
+        std::map<MapPartitionKey, SpatialExtentPolicy> nextSpatialPolicies;
         std::map<MapPartitionKey, int64_t> nextTilePriorityRanks;
         FilterRegistrationState filterRegistrations;
         try {
@@ -646,6 +647,7 @@ public:
                 for (auto const& key : pendingKeys) {
                     nextPendingTileKeys.insert(key);
                     nextTilePriorityRanks.try_emplace(key, priorityRank++);
+                    if (!parsed.filterRequest) nextSpatialPolicies.emplace(key, parsed.spatialExtentPolicy);
                 }
                 snapshotRequests.push_back(SnapshotRequest{
                     .request = std::move(parsed),
@@ -688,17 +690,28 @@ public:
                 rejectClientRequest(requestId, std::move(*error));
                 return;
             }
-            std::erase_if(
-                handoffRecords_,
-                [&](auto const& item) { return !nextPendingTileKeys.contains(item.first); });
+            // Raw output identities omit request policy. Drop queued/handoff data
+            // and predecessor ownership when the same tile changes policy.
+            std::set<MapPartitionKey> changedSpatialPolicies;
+            for (auto const& [key, policy] : nextSpatialPolicies) {
+                auto previous = spatialPolicies_.find(key);
+                if (previous != spatialPolicies_.end() && previous->second != policy)
+                    changedSpatialPolicies.insert(key);
+            }
+            spatialPolicies_ = std::move(nextSpatialPolicies);
+            std::erase_if(handoffRecords_, [&](auto const& item) {
+                return !nextPendingTileKeys.contains(item.first) || changedSpatialPolicies.contains(item.first);
+            });
 
             pendingTileKeys_ = std::move(nextPendingTileKeys);
             tilePriorityRanks_ = std::move(nextTilePriorityRanks);
             terminalOutputStatuses_.clear();
+            for (auto const& key : changedSpatialPolicies) pendingTileKeys_.erase(key);
             filterOutgoingByPendingLocked();
+            pendingTileKeys_.insert(changedSpatialPolicies.begin(), changedSpatialPolicies.end());
 
             for (auto owner = activeTileOwners_.begin(); owner != activeTileOwners_.end();) {
-                if (pendingTileKeys_.contains(owner->first)) {
+                if (pendingTileKeys_.contains(owner->first) && !changedSpatialPolicies.contains(owner->first)) {
                     retainedLayerOutputs[owner->second].insert(owner->first.partitionId_);
                     gTilesWsMetrics.retainedOutputs.fetch_add(1, std::memory_order_relaxed);
                     ++owner;
@@ -1336,6 +1349,7 @@ private:
             tileIds,
             priorityPartitionIds);
         request->sourceId_ = parsedRequest.sourceId;
+        request->spatialExtentPolicy_ = parsedRequest.spatialExtentPolicy;
         request->setWorkAdmissionGate(workAdmissionOpen_);
         request->featureIdsByTile_ = parsedRequest.featureIdsByTile;
         std::erase_if(
@@ -1948,8 +1962,11 @@ private:
             return;
         }
         bool shouldEmit = false;
+        auto exclusions = completedRequest->spatialExclusions();
+        exclusions["excludedPartitions"] = nlohmann::json::array();
         {
             std::lock_guard lock(mutex_);
+            exclusions["requestId"] = requestId_;
             auto const removedRequests = std::erase_if(
                 activeRequests_,
                 [&](LayerTilesRequest::Ptr const& request)
@@ -1960,6 +1977,9 @@ private:
                     ++owner;
                     continue;
                 }
+                if (std::ranges::find(completedRequest->excludedPartitionIds_, owner->first.partitionId_) !=
+                    completedRequest->excludedPartitionIds_.end())
+                    exclusions["excludedPartitions"].push_back(owner->first.partitionId_.toJson());
                 terminalOutputStatuses_[owner->first] = status;
                 owner = activeTileOwners_.erase(owner);
                 shouldEmit = true;
@@ -1968,6 +1988,8 @@ private:
             shouldEmit = shouldEmit && statusEmissionEnabled_;
         }
         if (shouldEmit) {
+            if (!exclusions["excludedPartitions"].empty())
+                sendControlMessage(TileLayerStream::MessageType::Status, exclusions.dump());
             queueStatusMessage({});
         }
     }
@@ -2256,6 +2278,7 @@ private:
     std::map<MapPartitionKey, FeatureLayerFilterTilesRequest::Ptr> activeFilterOwners_;
     std::map<MapPartitionKey, RequestStatus> terminalOutputStatuses_;
     std::set<MapPartitionKey> pendingTileKeys_;
+    std::map<MapPartitionKey, SpatialExtentPolicy> spatialPolicies_;
     std::map<MapPartitionKey, int64_t> tilePriorityRanks_;
     std::map<MapPartitionKey, int64_t> queuedTileFrameRefCount_;
     std::map<MapPartitionKey, HandoffRecord> handoffRecords_;

@@ -370,3 +370,32 @@ TEST_CASE(
     CHECK(received->partitionId().objectId() == UINT64_MAX);
     service.remove(source);
 }
+
+TEST_CASE("Object discovery excludes association tiles without guessing opaque object positions", "[Coverage][objects]")
+{
+    auto source = std::make_shared<ObjectSource>();
+    source->metadata.layers_.at("Road")->coverageComplete_ = true; // Known empty association area.
+    Service service(std::make_shared<MemCache>(), false, std::chrono::milliseconds{0}, 1);
+    service.add(source);
+    ObjectDiscoveryRequest query{"Objects", "Road", TileId::fromTileXY(1, 1, 13)};
+    query.spatialExtentPolicy_.defaultLimit_ = true;
+    std::promise<ObjectDiscoveryResult> promise;
+    auto future = promise.get_future();
+    service.discoverObjects(query, [&](auto result) { promise.set_value(std::move(result)); });
+    REQUIRE(future.wait_for(std::chrono::seconds{5}) == std::future_status::ready);
+    auto result = future.get();
+    CHECK(result.status_ == ObjectDiscoveryResult::Status::OutsideSpatialExtent);
+    CHECK(result.objects_.empty());
+    CHECK(result.ttl_ == std::chrono::milliseconds{0});
+    CHECK(ObjectDiscoveryResult::fromJson(result.toJson()).status_ == result.status_);
+    CHECK(source->discoveries == 0);
+
+    // A directly requested opaque object has no complete geographic proof of absence.
+    auto object = std::make_shared<LayerTilesRequest>("Objects", "Road",
+        std::vector<PartitionId>{PartitionId::object(UINT64_MAX)});
+    object->spatialExtentPolicy_.defaultLimit_ = true;
+    REQUIRE(service.request(std::vector{object}));
+    object->wait();
+    CHECK(object->getStatus() == RequestStatus::Success);
+    CHECK(source->fills == 1);
+}

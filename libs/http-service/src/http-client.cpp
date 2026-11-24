@@ -337,7 +337,22 @@ LayerTilesRequest::Ptr HttpClient::request(const LayerTilesRequest::Ptr& request
         { return impl_->resolve(mapId, layerId, sourceId); },
         [request](auto&& result) { request->notifyResult(result); },
         impl_->stringPoolProvider_,
-        std::function<void(TileLayerStream::MessageType, std::string_view)>{},
+        [request](TileLayerStream::MessageType type, std::string_view payload) {
+            if (type != TileLayerStream::MessageType::Status)
+                return;
+            auto status = nlohmann::json::parse(payload);
+            if (status.value("type", "") != "mapget.spatialExtent.status")
+                return;
+            if (status.at("mapId") != request->mapId_ || status.at("layerId") != request->layerId_)
+                throw std::runtime_error("Spatial exclusion belongs to another request");
+            std::set<PartitionId> retained(request->tileIds_.begin(), request->tileIds_.end());
+            for (auto const& partition : status.at("excludedPartitions")) {
+                auto id = PartitionId::fromJson(partition);
+                if (retained.erase(id)) request->excludedPartitionIds_.push_back(id);
+            }
+            auto [hasLiveOutputs, completed, changed] = request->retainOutputPartitionIds(retained);
+            if (!hasLiveOutputs || completed) request->setStatus(RequestStatus::Success);
+        },
         [this](std::string_view id) { return impl_->resolveSchema(id); });
 
     using namespace nlohmann;
@@ -498,6 +513,11 @@ HttpClient::filter(FeatureLayerFilterTilesRequest::Ptr const& request)
             }
             try {
                 auto status = nlohmann::json::parse(std::string(payload));
+                for (auto const& partition : status.value("excludedPartitions", nlohmann::json::array())) {
+                    auto id = PartitionId::fromJson(partition);
+                    if (std::ranges::find(request->excludedPartitionIds_, id) == request->excludedPartitionIds_.end())
+                        request->excludedPartitionIds_.push_back(id);
+                }
                 const auto state = status.value("state", std::string{});
                 // Delay incoming Success until manifest/snapshot validation below;
                 // otherwise observers could see completion before usable results.
@@ -598,7 +618,7 @@ HttpClient::filter(FeatureLayerFilterTilesRequest::Ptr const& request)
                     // Successful HTTP alone is insufficient: every manifest must
                     // resolve against the snapshots and cover exactly the requested
                     // target set before any incoming collection is delivered.
-                    if (!sawEnd || !sawSuccess || !reader->eos() || collections.empty())
+                    if (!sawEnd || !sawSuccess || !reader->eos())
                         throw std::runtime_error("Incomplete incoming inspection stream");
                     std::set<std::pair<MapPartitionKey, std::string>> targets;
                     for (auto const& collection : collections) {
@@ -608,6 +628,8 @@ HttpClient::filter(FeatureLayerFilterTilesRequest::Ptr const& request)
                     }
                     std::set<std::pair<MapPartitionKey, std::string>> expected;
                     for (auto const& root : request->exactRoots_) {
+                        if (std::ranges::find(request->excludedPartitionIds_, root.partitionId_) !=
+                            request->excludedPartitionIds_.end()) continue;
                         auto key = MapPartitionKey(
                             LayerType::Features,
                             request->mapId_,
@@ -665,6 +687,7 @@ HttpClient::filter(FeatureLayerFilterTilesRequest::Ptr const& request)
 ObjectDiscoveryResult HttpClient::discoverObjects(ObjectDiscoveryRequest const& request)
 {
     auto item = nlohmann::json{
+        {"spatialExtentPolicy", request.spatialExtentPolicy_.toJson()},
         {"mapId", request.mapId_},
         {"layerId", request.layerId_},
         {"tileIds", {request.tileId_.value()}}};
@@ -694,6 +717,7 @@ std::optional<AttachmentResponse> HttpClient::attachment(AttachmentRequest const
     httpRequest->setParameter("layerId", request.tileKey_.layerId_);
     httpRequest->setParameter("partition", request.tileKey_.partitionId_.toJson().dump());
     httpRequest->setParameter("name", request.name_);
+    httpRequest->setParameter("spatialExtentPolicy", request.spatialExtentPolicy_.toJson().dump());
     if (request.sourceId_)
         httpRequest->setParameter("sourceId", *request.sourceId_);
     applyHeaders(httpRequest, impl_->headers_);

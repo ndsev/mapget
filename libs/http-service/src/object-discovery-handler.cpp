@@ -72,6 +72,8 @@ void HttpService::Impl::handleObjectDiscoveryRequest(
                     id};
                 if (item.contains("sourceId"))
                     request.sourceId_ = item.at("sourceId").get<std::string>();
+                if (item.contains("spatialExtentPolicy"))
+                    request.spatialExtentPolicy_ = SpatialExtentPolicy::fromJson(item.at("spatialExtentPolicy"));
                 work.push_back(std::move(request));
             }
         }

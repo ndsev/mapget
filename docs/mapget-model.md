@@ -1156,3 +1156,34 @@ claims global completeness. `issues` explains incomplete discovery, and expiry
 includes dependencies that yielded no matches. The catalog's
 `incomingRelationTargetTypes` and `incomingRelationCoverageUnknown` are small
 service-derived hints; backend authorization and scope checks still apply.
+
+## Spatial coverage metadata
+
+A layer may publish `spatialExtent`, an array of geographic regions. Each region
+has `bounds: [west, south, east, north]` in WGS84 degrees and may have an
+`exterior` ring and `holes` (arrays of `[longitude, latitude]` pairs).
+East smaller than west denotes an antimeridian crossing. A supplied exterior is
+authoritative; its hole interiors are excluded and all ring edges are included.
+A tile touching the shape is included. Every region contributes.
+
+`coverageComplete: true` explicitly authorizes negative filtering only when the
+metadata validates. Missing/false completeness or malformed
+optional metadata leaves spatial requests unrestricted. Present authoritative
+`spatialExtent: []` with completeness true means known empty. Otherwise the
+legacy `coverage` grid ranges/bitmaps supply the shape (an empty list with explicit
+completeness true also means known empty); an empty `filled` mask
+still means the whole rectangle. Geographic extents override their legacy grid
+approximation, preserving holes. Coverage resolution is independent of requested
+data resolution. `serviceMetadata: true` identifies nonspatial service metadata
+and exempts it from exclusion.
+
+`CoverageQuery` in the native model interprets these rules for both the service
+and erdblick's WASM boundary. It provides compact rectangles and original-region
+bounds without expanding an entire large rectangle into individual cells.
+Uncertain add-on composites are marked incomplete pending full contributor union.
+
+Polygon validity uses robust orientation at full input precision: translating a
+small polygon must not turn it into unknown coverage. `CoverageQuery::overlappingPolygons()`
+returns the first overlapping pair of geographic polygon-region indices (bbox-only regions are excluded), including shared
+boundaries and respecting holes/dateline wrapping. This is a producer validation
+helper; generic mapget coverage still accepts unions of overlapping regions.

@@ -6,7 +6,8 @@ namespace mapget
 {
 void ObjectDiscoveryResult::validate() const
 {
-    if (status_ != Status::Success && status_ != Status::Unavailable && status_ != Status::Failed)
+    if (status_ != Status::Success && status_ != Status::Unavailable && status_ != Status::Failed &&
+        status_ != Status::OutsideSpatialExtent)
         throw std::invalid_argument("Unknown discovery status.");
     if (ttl_.count() < 0)
         throw std::invalid_argument("Negative discovery TTL.");
@@ -46,7 +47,7 @@ nlohmann::json ObjectDiscoveryResult::toJson() const
              "success" :
              status_ == Status::Unavailable ?
              "unavailable" :
-             "failed"},
+             status_ == Status::OutsideSpatialExtent ? "outsideSpatialExtent" : "failed"},
         {"objects", std::move(objects)},
         {"message", message_},
         {"timestamp",
@@ -63,6 +64,8 @@ ObjectDiscoveryResult ObjectDiscoveryResult::fromJson(nlohmann::json const& json
         result.status_ = Status::Success;
     else if (status == "unavailable")
         result.status_ = Status::Unavailable;
+    else if (status == "outsideSpatialExtent")
+        result.status_ = Status::OutsideSpatialExtent;
     else if (status == "failed")
         result.status_ = Status::Failed;
     else

@@ -28,6 +28,7 @@ void DataSourceRegistry::compose(std::vector<RegisteredDataSource::Ptr>& sources
         replacement->addOns = std::move(addons);
         replacement->info = replacement->nativeInfo;
         if (replacement->addOns.empty()) {
+            replacement->prepareCoverage();
             replacement->metadataMemory = replacement->info->memoryUsage().total();
             source = std::move(replacement);
             continue;
@@ -51,6 +52,8 @@ void DataSourceRegistry::compose(std::vector<RegisteredDataSource::Ptr>& sources
                         existing->partitionKind_ != layer->partitionKind_)
                         throw std::invalid_argument(
                             "Add-on layer kind/partition conflicts with the base map: " + name);
+                    // Base bounds cannot exclude contributions until full composition is available.
+                    existing->coverageComplete_ = false;
                 }
                 else if (layer->partitionKind_ == PartitionKind::Object)
                     throw std::invalid_argument(
@@ -93,10 +96,12 @@ void DataSourceRegistry::compose(std::vector<RegisteredDataSource::Ptr>& sources
             metadata.setMapSchema(MapSchema::compose(std::move(format), owners));
             replacement->info = std::make_shared<DataSourceInfo const>(std::move(metadata));
         }
-        else if (metadata.layers_.size() != replacement->nativeInfo->layers_.size()) {
+        else {
+            // Coverage can change even when the composed schema and layer list are identical.
             metadata.setMapSchema(base);
             replacement->info = std::make_shared<DataSourceInfo const>(std::move(metadata));
         }
+        replacement->prepareCoverage();
         replacement->metadataMemory = replacement->info->memoryUsage().total();
         if (replacement->info != replacement->nativeInfo)
             replacement->metadataMemory += replacement->nativeInfo->memoryUsage().total();

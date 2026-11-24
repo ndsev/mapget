@@ -74,6 +74,8 @@ void validateSelector(FeatureLayerSelector const& selector)
 
 LocateRequest::LocateRequest(const nlohmann::json& j)
 {
+    if (j.contains("spatialExtentPolicy"))
+        spatialExtentPolicy_ = SpatialExtentPolicy::fromJson(j.at("spatialExtentPolicy"));
     if (j.contains("layerId"))
         layerId_ = j.at("layerId").get<std::string>();
     if (j.contains("partition"))
@@ -126,6 +128,7 @@ nlohmann::json LocateRequest::serialize() const
             result["layerId"] = *layerId_;
         if (partition_)
             result["partition"] = partition_->toJson();
+        result["spatialExtentPolicy"] = spatialExtentPolicy_.toJson();
         return result;
     }
     nlohmann::json featureId = nlohmann::json::array();
@@ -138,6 +141,7 @@ nlohmann::json LocateRequest::serialize() const
         result["layerId"] = *layerId_;
     if (partition_)
         result["partition"] = partition_->toJson();
+    result["spatialExtentPolicy"] = spatialExtentPolicy_.toJson();
     return result;
 }
 

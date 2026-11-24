@@ -40,6 +40,13 @@ void Service::discoverObjects(
         callback(std::move(result));
         return;
     }
+    if (!selected->permits(request.spatialExtentPolicy_, request.layerId_, request.tileId_)) {
+        ObjectDiscoveryResult result;
+        result.status_ = ObjectDiscoveryResult::Status::OutsideSpatialExtent;
+        result.message_ = "Outside spatial extent";
+        callback(std::move(result));
+        return;
+    }
     impl_->scheduler_
         .enqueueDiscovery(std::move(selected), std::move(request), std::move(callback));
 }

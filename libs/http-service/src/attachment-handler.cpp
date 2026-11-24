@@ -88,12 +88,18 @@ void HttpService::Impl::handleAttachmentRequest(
             request.sourceId_ = std::move(sourceId);
         }
 
+        if (auto policy = req->getParameter("spatialExtentPolicy"); !policy.empty())
+            request.spatialExtentPolicy_ = SpatialExtentPolicy::fromJson(nlohmann::json::parse(policy));
         auto ifNoneMatch = req->getHeader("if-none-match");
         self_.requestAttachment(
             std::move(request),
             [callback = std::move(callback),
              ifNoneMatch = std::move(ifNoneMatch)](AttachmentResult result) mutable
             {
+                if (result.status_ == RequestStatus::OutsideSpatialExtent) {
+                    callback(plainResponse(drogon::k422UnprocessableEntity, "Outside spatial extent"));
+                    return;
+                }
                 if (result.status_ == RequestStatus::Unauthorized) {
                     callback(plainResponse(drogon::k403Forbidden, "Not authorized."));
                     return;

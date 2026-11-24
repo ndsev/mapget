@@ -3,6 +3,7 @@
 #include "mcp-mapget-query.h"
 
 #include "mapget/model/layerschema.h"
+#include "mapget/model/coverage.h"
 #include "mapget/model/mapschema.h"
 #include "ndsmath/wgs84.h"
 
@@ -547,19 +548,39 @@ void McpMapgetTools::Call::listSources()
 void McpMapgetTools::Call::getCoverage()
 {
     selectLayer();
+    CoverageQuery coverageQuery(*layer_);
     Json result{
         {"sourceId", source_.descriptor.sourceId},
         {"mapId", source_.info->mapId_},
         {"layerId", layer_->layerId_},
         {"partitionKind", layer_->partitionKind_ == PartitionKind::Tile ? "tile" : "object"},
-        {"coverageKnown", !layer_->coverage_.empty()},
+        {"coverageKnown", coverageQuery.complete() || coverageQuery.regionCount() > 0},
+        {"coverageComplete", coverageQuery.complete()},
+        {"coverageValid", coverageQuery.valid()},
+        {"serviceMetadata", layer_->serviceMetadata_},
+        {"geometryComplete", false},
         {"ranges", Json::array()}};
     if (layer_->tileAssociationLevel_)
         result["tileAssociationLevel"] = *layer_->tileAssociationLevel_;
     // Preserve completed ranges when a later bitmap exceeds the response budget.
     result = query_->boundedJson(result);
     try {
+        if (layer_->spatialExtent_) {
+            result["spatialExtent"] = Json::array();
+            for (auto const& extent : *layer_->spatialExtent_) {
+                if (!step() || result["spatialExtent"].size() >= limit_) {
+                    truncate("item_limit");
+                    break;
+                }
+                // An extent and all its holes are atomic: a partial polygon would lie about coverage.
+                result["spatialExtent"].push_back(query_->boundedJson(extent.toJson()));
+            }
+            result["geometryComplete"] = result["spatialExtent"].size() == layer_->spatialExtent_->size();
+        }
         for (auto const& coverage : layer_->coverage_) {
+            if (!coverage.min_.isValid() || !coverage.max_.isValid() ||
+                coverage.min_.level() != coverage.max_.level() || coverage.min_.x() > coverage.max_.x() ||
+                coverage.min_.y() > coverage.max_.y()) continue;
             if (!step())
                 break;
             if (arguments.contains("level") && arguments["level"] != coverage.min_.level())
@@ -633,6 +654,10 @@ void McpMapgetTools::Call::getCoverage()
             }
             result["ranges"].push_back(std::move(range));
         }
+        if (!layer_->spatialExtent_)
+            result["geometryComplete"] = coverageQuery.valid() &&
+                arguments.value("format", std::string{"summary"}) == "raw" &&
+                result["ranges"].size() == layer_->coverage_.size();
     }
     catch (std::length_error const&) { /* Retain only fully serialized coverage records. */
     }

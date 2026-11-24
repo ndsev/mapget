@@ -1,4 +1,5 @@
 #pragma once
+#include "mapget/model/coverage.h"
 
 #include "cache.h"
 #include "locate.h"
@@ -50,6 +51,7 @@ struct AttachmentRequest
     MapPartitionKey tileKey_;
     std::string name_;
     std::optional<std::string> sourceId_;
+    SpatialExtentPolicy spatialExtentPolicy_;
 };
 
 /** Immutable payload and HTTP metadata returned by a datasource attachment. */

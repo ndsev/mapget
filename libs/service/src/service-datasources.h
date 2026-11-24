@@ -30,6 +30,15 @@ struct RegisteredDataSource
     /** Capacity-based size of the canonical detached metadata snapshot. */
     simfil::MemoryUsage metadataMemory;
 
+    /** Compiled coverage belongs to this exact immutable catalog generation. */
+    std::map<std::string, CoverageQuery> coverage;
+
+    /** Rebuild only when creating/replacing a detached catalog snapshot. */
+    void prepareCoverage();
+    /** Shared admission boundary for roots, dependencies and discovery association tiles. */
+    [[nodiscard]] bool permits(SpatialExtentPolicy const& policy, std::string const& layerId,
+        PartitionId partition) const;
+
     /** A composed map is accessible only when every contributing provider permits access. */
     [[nodiscard]] bool authorized(std::optional<ClientAuthorization> const& headers) const;
 };

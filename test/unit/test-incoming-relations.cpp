@@ -363,6 +363,37 @@ TEST_CASE("Incoming HTTP contract preserves typed bundles and rejects interactiv
     service.remove(source);
 }
 
+TEST_CASE("Spatial exclusions terminate incoming HTTP and locate without acquiring tiles", "[Coverage][incoming]")
+{
+    auto source = std::make_shared<IncomingSource>();
+    auto layer = std::make_shared<LayerInfo>(*source->metadata.getLayer("Surface"));
+    layer->coverageComplete_ = true; // Complete, explicitly empty coverage.
+    source->metadata.layers_["Surface"] = layer;
+    auto& service = test::httpService();
+    service.add(source);
+    auto cleanup = [&service, &source](auto*) { service.remove(source); };
+    std::unique_ptr<IncomingSource, decltype(cleanup)> owner(source.get(), cleanup);
+    auto tile = TileId::fromTileXY(1,1,2);
+    auto request = incomingRequest(tile);
+    request->filter_.spatialExtentPolicy_.defaultLimit_ = true;
+    request->onFeatureSnapshot([](auto const&) { FAIL("Excluded root must not yield a snapshot"); });
+    request->onIncomingRelations([](auto const&) { FAIL("Excluded root must not yield a fabricated manifest"); });
+    HttpClient client("127.0.0.1", service.port());
+    client.filter(request);
+    CHECK(request->getStatus() == RequestStatus::Success);
+    CHECK(request->excludedPartitionIds_ == std::vector<PartitionId>{tile});
+    CHECK(source->tileLoads == 0);
+
+    LocateRequest locate({{"mapId", "IncomingMap"}, {"layerId", "Surface"},
+        {"partition", PartitionId(tile).toJson()}, {"typeId", "Surface"}, {"id", {{"id", 1}}},
+        {"spatialExtentPolicy", {{"defaultLimit", true}}}});
+    std::vector<MapPartitionKey> exclusions;
+    CHECK(service.locate(locate, {}, &exclusions).empty());
+    REQUIRE(exclusions.size() == 1);
+    CHECK(exclusions[0].partitionId_ == tile);
+    CHECK(source->tileLoads == 0);
+}
+
 TEST_CASE("Restricted incoming snapshots retain unselected attribute-point hosts", "[incoming]") {
     auto metadata = IncomingSource().metadata.layers_.at("Lane");
     auto source = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(1,1,2),

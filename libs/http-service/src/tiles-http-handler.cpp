@@ -268,6 +268,7 @@ struct HttpService::Impl::TilesStreamState : std::enable_shared_from_this<TilesS
             std::move(parsed.tileIds),
             std::move(parsed.priorityPartitionIds));
         request->sourceId_ = std::move(parsed.sourceId);
+        request->spatialExtentPolicy_ = parsed.spatialExtentPolicy;
         request->featureIdsByTile_ =
             std::move(parsed.featureIdsByTile);
         requests_.push_back(std::move(request));
@@ -711,7 +712,11 @@ void HttpService::Impl::handleTilesLikeRequest(
             [state](PartitionFeatureLayer::Ptr layer) { state->addResult(std::move(layer)); });
         request->onSourceDataLayer(
             [state](PartitionSourceDataLayer::Ptr layer) { state->addResult(std::move(layer)); });
-        request->onDone_ = [state](RequestStatus) { state->onRequestDone(); };
+        request->onDone_ = [state, weak = std::weak_ptr<LayerTilesRequest>(request)](RequestStatus) {
+            if (auto owner = weak.lock(); owner && !owner->excludedPartitionIds_.empty())
+                state->addStatus(owner->spatialExclusions());
+            state->onRequestDone();
+        };
     }
     for (auto& request : state->filterRequests_) {
         request->onFeatureSnapshot([state](auto const& layer) { state->addResult(layer); });

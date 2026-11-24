@@ -3207,3 +3207,108 @@ TEST_CASE(
     CHECK(request->isDone());
     CHECK(source->requestedTiles().empty());
 }
+
+/** Synthetic complete single-cell coverage with observable datasource calls. */
+class SpatiallyLimitedFilterDataSource : public FilterDataSource
+{
+public:
+    /** Publish an authoritative grid without changing the fixture's schema. */
+    DataSourceInfo info() override
+    {
+        auto info = FilterDataSource::info();
+        auto layer = std::make_shared<LayerInfo>(*info.layers_.at("Road"));
+        layer->coverage_ = {{firstTile(), firstTile(), {}}};
+        layer->coverageComplete_ = true;
+        info.layers_["Road"] = std::move(layer);
+        return info;
+    }
+};
+
+TEST_CASE("Spatial policy rejects tile work before acquisition and preserves unrestricted cache owners", "[Coverage][Service]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto source = std::make_shared<SpatiallyLimitedFilterDataSource>();
+    service.add(source);
+    auto limited = std::make_shared<LayerTilesRequest>("FilterMap", "Road",
+        std::vector<PartitionId>{firstTile(), secondTile()});
+    limited->spatialExtentPolicy_.defaultLimit_ = true;
+    std::vector<PartitionId> received;
+    limited->onFeatureLayer([&](auto tile) { received.push_back(tile->partitionId()); });
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{limited}));
+    limited->wait();
+    CHECK(limited->getStatus() == RequestStatus::Success);
+    CHECK(received == std::vector<PartitionId>{firstTile()});
+    CHECK(limited->excludedPartitionIds_ == std::vector<PartitionId>{secondTile()});
+    CHECK(source->requestedTiles() == std::vector<PartitionId>{firstTile()});
+    CHECK(limited->spatialExclusions()["state"] == "OutsideSpatialExtent");
+
+    auto unrestricted = std::make_shared<LayerTilesRequest>("FilterMap", "Road",
+        std::vector<PartitionId>{firstTile(), secondTile()});
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{unrestricted}));
+    unrestricted->wait();
+    CHECK(source->requestedTiles().size() == 2);
+    auto excluded = std::make_shared<LayerTilesRequest>("FilterMap", "Road", std::vector<PartitionId>{secondTile()});
+    excluded->spatialExtentPolicy_.defaultLimit_ = true;
+    excluded->onFeatureLayer([](auto) { FAIL("Excluded cached payload must not be delivered"); });
+    REQUIRE(service.request(std::vector<LayerTilesRequest::Ptr>{excluded}));
+    excluded->wait();
+    CHECK(excluded->isDone());
+    CHECK(excluded->excludedPartitionIds_.size() == 1);
+    CHECK(source->requestedTiles().size() == 2);
+
+    AttachmentRequest attachment{
+        .tileKey_ = MapPartitionKey(LayerType::Features, "FilterMap", "Road", secondTile()),
+        .name_ = "outside.glb"};
+    attachment.spatialExtentPolicy_.defaultLimit_ = true;
+    CHECK(service.attachment(attachment).status_ == RequestStatus::OutsideSpatialExtent);
+    CHECK(source->requestedTiles().size() == 2);
+}
+
+TEST_CASE("Excluded filter roots terminate explicitly without a source load", "[Coverage][Service]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto source = std::make_shared<SpatiallyLimitedFilterDataSource>();
+    service.add(source);
+    FeatureLayerFilterRequest filter;
+    filter.spatialExtentPolicy_.defaultLimit_ = true;
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "coverage";
+    channel.featureFields_ = {"id"};
+    filter.channels_.push_back(channel);
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>("FilterMap", "Road",
+        std::vector<PartitionId>{secondTile()}, filter);
+    nlohmann::json status;
+    request->onStatus([&](auto const& value) { status = value; });
+    REQUIRE(service.request(std::vector<FeatureLayerFilterTilesRequest::Ptr>{request}));
+    request->wait();
+    CHECK(request->getStatus() == RequestStatus::Success);
+    CHECK(status["state"] == "Success");
+    CHECK(status["excludedPartitions"].size() == 1);
+    CHECK(source->requestedTiles().empty());
+}
+
+TEST_CASE("Coverage-clipped point-group halos complete without loading excluded neighbours", "[Coverage][Service]")
+{
+    Service service(std::make_shared<MemCache>(32), false);
+    auto source = std::make_shared<SpatiallyLimitedFilterDataSource>();
+    service.add(source);
+    FeatureLayerFilterRequest filter;
+    filter.spatialExtentPolicy_.defaultLimit_ = true;
+    FeatureLayerFilterChannel channel;
+    channel.channelId_ = "groups";
+    channel.featureFilter_ = "true";
+    channel.geometryTypes_ = uint32_t{1} << static_cast<uint8_t>(GeomType::Points);
+    channel.group_ = FeatureLayerPointGridGroup{.origin_ = {0,0,0}, .cellSize_ = {1,1,1}};
+    filter.channels_.push_back(channel);
+    auto request = std::make_shared<FeatureLayerFilterTilesRequest>("FilterMap", "Road",
+        std::vector<PartitionId>{firstTile()}, filter);
+    TileSubsetLayer::Ptr output;
+    request->onFilterResult([&](auto layer) { output = std::move(layer); });
+    REQUIRE(service.request(request));
+    request->wait();
+    REQUIRE(request->getStatus() == RequestStatus::Success);
+    REQUIRE(output);
+    CHECK_FALSE(output->warnings().empty());
+    CHECK(request->spatialExtentRestricted_);
+    CHECK(source->requestedTiles() == std::vector<PartitionId>{firstTile()});
+}

@@ -19,6 +19,7 @@ add_executable(test.mapget
   test-featurelayer-filter.cpp
   test-simfil-geometry.cpp
   test-info.cpp
+  test-coverage.cpp
   test-mapschema-metadata.cpp
   test-mapschema.cpp
   test-mapschema-json.cpp

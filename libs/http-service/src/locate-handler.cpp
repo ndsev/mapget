@@ -15,20 +15,25 @@ void HttpService::Impl::handleLocateRequest(
         nlohmann::json j = nlohmann::json::parse(std::string(req->body()));
         auto requestsJson = j["requests"];
         auto allResponsesJson = nlohmann::json::array();
+        auto allExclusions = nlohmann::json::array();
         auto const authorization = config_.proxyAuth.authorization(req);
 
         for (auto const& locateReqJson : requestsJson) {
             LocateRequest locateReq{locateReqJson};
             auto responsesJson = nlohmann::json::array();
-            for (auto const& resp : self_.locate(locateReq, authorization))
+            std::vector<MapPartitionKey> exclusions;
+            for (auto const& resp : self_.locate(locateReq, authorization, &exclusions))
                 responsesJson.emplace_back(resp.serialize());
             allResponsesJson.emplace_back(responsesJson);
+            auto excluded = nlohmann::json::array();
+            for (auto const& key : exclusions) excluded.push_back(key.toString());
+            allExclusions.push_back(std::move(excluded));
         }
 
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(drogon::k200OK);
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-        resp->setBody(nlohmann::json::object({{"responses", allResponsesJson}}).dump());
+        resp->setBody(nlohmann::json::object({{"responses", allResponsesJson}, {"spatialExtentExclusions", allExclusions}}).dump());
         callback(resp);
     }
     catch (const std::exception& e) {

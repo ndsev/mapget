@@ -4,6 +4,7 @@
 #include "partitionid.h"
 
 #include <functional>
+#include <array>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -166,6 +167,19 @@ struct Version {
     [[nodiscard]] nlohmann::json toJson() const;
 };
 
+/** One geographic extent, with an optional exterior and its holes in WGS84 degrees. */
+struct SpatialExtent
+{
+    std::array<double, 4> bounds_; // west, south, east, north; east < west crosses the dateline.
+    std::optional<std::vector<std::array<double, 2>>> exterior_;
+    std::vector<std::vector<std::array<double, 2>>> holes_;
+
+    /** Read the compact geographic metadata without changing ring membership. */
+    static SpatialExtent fromJson(nlohmann::json const& json);
+    /** Preserve the authoritative shape separately from legacy grid approximations. */
+    [[nodiscard]] nlohmann::json toJson() const;
+};
+
 /**
  * Structure to represent a list of coverage flags
  * as a rectangle between a minimum and a maximum tile id.
@@ -237,6 +251,15 @@ struct LayerInfo
      * Multiple coverages may exist for the same zoom level.
      */
     std::vector<Coverage> coverage_;
+
+    /** Present geographic extents are authoritative, including an explicitly empty list. */
+    std::optional<std::vector<SpatialExtent>> spatialExtent_;
+
+    /** Only explicitly complete, valid coverage permits negative spatial filtering. */
+    std::optional<bool> coverageComplete_;
+
+    /** Service-global SourceData; ordinary tile headers are spatial and leave this false. */
+    bool serviceMetadata_ = false;
 
     /** Can this layer be read from? */
     bool canRead_ = true;

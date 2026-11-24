@@ -11,7 +11,7 @@ class LocateRequestExecution
 public:
     /** Capture the service and portable identity request for synchronous resolution. */
     LocateRequestExecution(Service::Impl& service, LocateRequest request,
-                          std::optional<ClientAuthorization> authorization);
+                          std::optional<ClientAuthorization> authorization, std::vector<MapPartitionKey>* spatialExclusions = nullptr);
 
     /** Resolve all candidate groups and return stable-deduplicated results. */
     std::vector<LocateResponse> run();
@@ -31,6 +31,7 @@ private:
     Service::Impl& service_;
     LocateRequest request_;
     std::optional<ClientAuthorization> authorization_;
+    std::vector<MapPartitionKey>* spatialExclusions_;
     std::mutex mutex_;
     std::condition_variable cv_;
     size_t pending_ = 0;

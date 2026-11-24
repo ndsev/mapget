@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "mapget/model/partitionid.h"
+#include "mapget/model/coverage.h"
 
 namespace mapget
 {
@@ -17,6 +18,7 @@ struct ObjectDiscoveryRequest
     std::string layerId_;
     TileId tileId_;
     std::optional<std::string> sourceId_;
+    SpatialExtentPolicy spatialExtentPolicy_;
 };
 
 /** Associations for one discovery tile; failure is not an empty successful list. */
@@ -34,7 +36,7 @@ struct ObjectDiscoveryResult
     };
 
     /** Missing association data remains distinguishable from a transport/backend error. */
-    enum class Status { Success, Unavailable, Failed };
+    enum class Status { Success, Unavailable, Failed, OutsideSpatialExtent };
     Status status_ = Status::Success;
     std::vector<Reference> objects_;
     std::string message_;

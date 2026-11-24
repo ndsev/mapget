@@ -679,9 +679,20 @@ void LayerTilesRequest::wait()
     }
 }
 
+nlohmann::json LayerTilesRequest::spatialExclusions() const
+{
+    auto partitions = nlohmann::json::array();
+    for (auto const& partition : excludedPartitionIds_)
+        partitions.push_back(partition.toJson());
+    return {{"type", "mapget.spatialExtent.status"}, {"state", "OutsideSpatialExtent"},
+        {"mapId", mapId_}, {"layerId", layerId_}, {"excludedPartitions", std::move(partitions)}};
+}
+
 nlohmann::json LayerTilesRequest::toJson()
 {
     auto requestJson = nlohmann::json::object({{"mapId", mapId_}, {"layerId", layerId_}});
+    if (spatialExtentPolicy_ != SpatialExtentPolicy{})
+        requestJson["spatialExtentPolicy"] = spatialExtentPolicy_.toJson();
     if (sourceId_) {
         requestJson["sourceId"] = *sourceId_;
     }
@@ -782,6 +793,14 @@ bool Service::Impl::requestTiles(
                     [&](auto const& id) { return id.kind() != context.partitionKind_; }))
                 throw std::invalid_argument(
                     "Requested partition kind does not match layer metadata.");
+            std::erase_if(request->tileIds_, [&](PartitionId const& partition) {
+                if (registration->permits(request->spatialExtentPolicy_, request->layerId_, partition))
+                    return false;
+                request->excludedPartitionIds_.push_back(partition);
+                request->priorityPartitionIds_.erase(partition);
+                request->featureIdsByTile_.erase(partition);
+                return true;
+            });
             request->prepareResolvedLayer(context.layerType_);
             if (request->isDone()) {
                 request->notifyStatus();
@@ -828,6 +847,11 @@ void Service::Impl::requestAttachment(
         return;
     }
 
+    if (!selectedSource->permits(request.spatialExtentPolicy_,
+            request.tileKey_.layerId_, request.tileKey_.partitionId_)) {
+        callback(AttachmentResult{.status_ = RequestStatus::OutsideSpatialExtent});
+        return;
+    }
     auto execution = std::make_shared<detail::AttachmentRequestExecution>();
     execution->request = std::move(request);
     execution->registration = selectedSource;
@@ -837,6 +861,7 @@ void Service::Impl::requestAttachment(
         execution->request.tileKey_.layerId_,
         std::vector<PartitionId>{execution->request.tileKey_.partitionId_});
     tileRequest->sourceId_ = execution->request.sourceId_;
+    tileRequest->spatialExtentPolicy_ = execution->request.spatialExtentPolicy_;
     tileRequest->onFeatureLayer(
         [execution](PartitionFeatureLayer::Ptr tile) { execution->consumeTile(tile); });
     tileRequest->onDone_ = [execution](RequestStatus status)

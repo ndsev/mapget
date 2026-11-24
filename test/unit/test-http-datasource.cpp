@@ -158,7 +158,7 @@ class BlockingInteractiveDataSource final : public DataSource
 public:
     /** Construct isolated metadata with enough source concurrency for overlap tests. */
     explicit BlockingInteractiveDataSource(
-        std::string mapId = "BlockingInteractiveMap")
+        std::string mapId = "BlockingInteractiveMap", bool completeCoverage = false)
         : info_(DataSourceInfo::fromJson(nlohmann::json{
               {"stringPoolId", mapId + "-pool"},
               {"mapId", mapId},
@@ -171,6 +171,11 @@ public:
                  }}}},
           }))
     {
+        if (completeCoverage) {
+            auto layer = info_.layers_.at("BlockingLayer");
+            layer->coverageComplete_ = true;
+            layer->coverage_ = {{TileId::fromValue(kHttpTileIdValue), TileId::fromValue(kHttpTileIdValue), {}}};
+        }
     }
 
     /** Return the synthetic datasource metadata. */
@@ -2926,4 +2931,43 @@ TEST_CASE("Configuration Endpoint Tests", "[Configuration]")
 
     DataSourceConfigService::get().end();
     fs::remove_all(tempDir);
+}
+
+TEST_CASE("Spatial exclusions complete over HTTP and interactive policy handoffs", "[Coverage][HttpDataSource]")
+{
+    auto& service = test::httpService();
+    auto source = std::make_shared<BlockingInteractiveDataSource>("SpatialTransportMap", true);
+    source->releaseAll();
+    service.add(source);
+    auto cleanup = [&service, &source](auto*) { service.remove(source); };
+    std::unique_ptr<BlockingInteractiveDataSource, decltype(cleanup)> owner(source.get(), cleanup);
+    auto const outside = TileId::fromValue(kSecondHttpTileIdValue);
+    HttpClient http("127.0.0.1", service.port());
+    auto request = std::make_shared<LayerTilesRequest>("SpatialTransportMap", "BlockingLayer", std::vector<PartitionId>{outside});
+    request->spatialExtentPolicy_.defaultLimit_ = true;
+    request->onFeatureLayer([](auto) { FAIL("Excluded HTTP requests must not synthesize empty payloads"); });
+    http.request(request);
+    CHECK(request->getStatus() == RequestStatus::Success);
+    CHECK(request->excludedPartitionIds_ == std::vector<PartitionId>{outside});
+    CHECK(source->fillCount(outside) == 0);
+
+    WsTilesClient ws(service.port(), source->info().getLayer("BlockingLayer"));
+    REQUIRE(ws.connect(true));
+    auto send = [&](bool limit) {
+        ws.resetStatus(); ws.resetTileCount();
+        nlohmann::json item{{"mapId", "SpatialTransportMap"}, {"layerId", "BlockingLayer"},
+            {"tileIds", {outside.value()}}, {"spatialExtentPolicy", {{"defaultLimit", limit}}}};
+        ws.send(nlohmann::json{{"requests", nlohmann::json::array({item})}}.dump());
+        REQUIRE(ws.waitForDone(std::chrono::seconds(5)));
+    };
+    send(true);
+    CHECK(ws.receivedTileCount() == 0);
+    CHECK(source->fillCount(outside) == 0);
+    send(false);
+    CHECK(ws.receivedTileCount() == 1);
+    CHECK(source->fillCount(outside) == 1);
+    send(true);
+    CHECK(ws.receivedTileCount() == 0);
+    CHECK(source->fillCount(outside) == 1);
+    ws.stop();
 }

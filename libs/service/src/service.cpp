@@ -137,9 +137,10 @@ bool Service::request(
 }
 
 std::vector<LocateResponse> Service::locate(
-    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization)
+    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization,
+    std::vector<MapPartitionKey>* spatialExclusions)
 {
-    return impl_->locate(request, authorization);
+    return impl_->locate(request, authorization, spatialExclusions);
 }
 
 void Service::abort(const LayerTilesRequest::Ptr& r)

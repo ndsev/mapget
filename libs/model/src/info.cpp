@@ -7,6 +7,7 @@
 #include "stream.h"
 
 #include <tuple>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <charconv>
@@ -388,12 +389,55 @@ nlohmann::json FeatureTypeInfo::toJson() const
     return nlohmann::json{{"name", name_}, {"uniqueIdCompositions", idCompositions}};
 }
 
+SpatialExtent SpatialExtent::fromJson(nlohmann::json const& json)
+{
+    // std::array conversion otherwise ignores trailing values, accepting malformed extents.
+    auto const& bounds = json.at("bounds");
+    if (!bounds.is_array() || bounds.size() != 4)
+        throw std::invalid_argument("Spatial extent bounds need exactly four coordinates");
+    auto ring = [](nlohmann::json const& value) {
+        if (!value.is_array()) throw std::invalid_argument("Spatial extent ring must be an array");
+        for (auto const& position : value)
+            if (!position.is_array() || position.size() != 2)
+                throw std::invalid_argument("Spatial extent position needs exactly two coordinates");
+    };
+    if (json.contains("exterior")) ring(json.at("exterior"));
+    if (json.contains("holes")) {
+        if (!json.at("holes").is_array()) throw std::invalid_argument("Spatial extent holes must be an array");
+        for (auto const& hole : json.at("holes")) ring(hole);
+    }
+    SpatialExtent result{json.at("bounds").get<std::array<double, 4>>()};
+    if (json.contains("exterior"))
+        result.exterior_ = json.at("exterior").get<std::vector<std::array<double, 2>>>();
+    if (json.contains("holes"))
+        result.holes_ = json.at("holes").get<std::vector<std::vector<std::array<double, 2>>>>();
+    return result;
+}
+
+nlohmann::json SpatialExtent::toJson() const
+{
+    nlohmann::json result{{"bounds", bounds_}};
+    if (exterior_) result["exterior"] = *exterior_;
+    if (!holes_.empty()) result["holes"] = holes_;
+    return result;
+}
+
 Coverage Coverage::fromJson(const nlohmann::json& j)
 {
+    // nlohmann numeric conversions narrow unchecked. Reject before conversion so
+    // malformed metadata cannot become an authoritative, unrelated tile range.
+    auto packed = [](nlohmann::json const& value) -> int32_t {
+        if (!value.is_number_integer() ||
+            (value.is_number_unsigned() && value.get<uint64_t>() > uint64_t(std::numeric_limits<int32_t>::max())) ||
+            (!value.is_number_unsigned() && (value.get<int64_t>() < std::numeric_limits<int32_t>::min() ||
+                value.get<int64_t>() > std::numeric_limits<int32_t>::max())))
+            throw std::invalid_argument("Coverage tile ID must be a signed 32-bit integer");
+        return value.get<int32_t>();
+    };
     try {
         if (j.is_number_integer() || j.is_number_unsigned()) {
             // A bare integer is shorthand for a single covered packed tile.
-            auto tileId = j.get<int32_t>();
+            auto tileId = packed(j);
             return {
                 TileId::fromValue(tileId),
                 TileId::fromValue(tileId),
@@ -401,8 +445,8 @@ Coverage Coverage::fromJson(const nlohmann::json& j)
             };
         }
         return {
-            TileId::fromValue(j.at("min").get<int32_t>()),
-            TileId::fromValue(j.at("max").get<int32_t>()),
+            TileId::fromValue(packed(j.at("min"))),
+            TileId::fromValue(packed(j.at("max"))),
             j.value("filled", std::vector<bool>())};
     }
     catch (nlohmann::json::out_of_range const& e) {
@@ -447,12 +491,6 @@ LayerInfo::fromJsonMetadata(nlohmann::json const& j, std::string const& layerId)
     try {
         const auto type = j.value("type", LayerType::Features);
 
-        std::vector<Coverage> coverages;
-        if (j.contains("coverage"))
-            for (auto& item : j.at("coverage")) {
-                coverages.push_back(Coverage::fromJson(item));
-            }
-
         auto result = std::make_shared<LayerInfo>();
         result->layerId_ = j.value("layerId", layerId);
         result->type_ = type;
@@ -467,7 +505,28 @@ LayerInfo::fromJsonMetadata(nlohmann::json const& j, std::string const& layerId)
             result->tileAssociationLevel_ = level.get<int>();
         }
         result->zoomLevels_ = j.value("zoomLevels", std::vector<int>());
-        result->coverage_ = std::move(coverages);
+        // Optional coverage must never make otherwise usable payloads inaccessible.
+        try {
+            if (j.contains("coverageComplete"))
+                result->coverageComplete_ = j.at("coverageComplete").get<bool>();
+            result->serviceMetadata_ = j.value("serviceMetadata", false);
+            if (j.contains("coverage")) {
+                if (!j.at("coverage").is_array()) throw std::invalid_argument("coverage must be an array.");
+                for (auto const& item : j.at("coverage")) result->coverage_.push_back(Coverage::fromJson(item));
+            }
+            if (j.contains("spatialExtent")) {
+                if (!j.at("spatialExtent").is_array())
+                    throw std::invalid_argument("spatialExtent must be an array.");
+                result->spatialExtent_.emplace();
+                for (auto const& extent : j.at("spatialExtent"))
+                    result->spatialExtent_->push_back(SpatialExtent::fromJson(extent));
+            }
+        }
+        catch (std::exception const& error) {
+            result->coverageComplete_ = false;
+            result->spatialExtent_.reset();
+            log().warn("Invalid optional coverage for layer {}: {}", result->layerId_, error.what());
+        }
         result->canRead_ = j.value("canRead", true);
         result->canWrite_ = j.value("canWrite", false);
         if (j.contains("defaultVisible")) result->defaultVisible_ = j.at("defaultVisible").get<bool>();
@@ -502,6 +561,13 @@ nlohmann::json LayerInfo::toJson() const
         result["tileAssociationLevel"] = *tileAssociationLevel_;
     if (defaultVisible_)
         result["defaultVisible"] = *defaultVisible_;
+    if (coverageComplete_) result["coverageComplete"] = *coverageComplete_;
+    if (serviceMetadata_) result["serviceMetadata"] = true;
+    if (spatialExtent_) {
+        result["spatialExtent"] = nlohmann::json::array();
+        for (auto const& extent : *spatialExtent_)
+            result["spatialExtent"].push_back(extent.toJson());
+    }
     return result;
 }
 
@@ -516,6 +582,15 @@ MemoryUsageBreakdown LayerInfo::memoryUsage() const
         auto const logicalBytes = (coverage.filled_.size() + 7) / 8;
         auto const allocatedBytes = (coverage.filled_.capacity() + 7) / 8;
         result.add("coverage-bits", {logicalBytes, allocatedBytes});
+    }
+    if (spatialExtent_) {
+        result.add("spatial-extents", vectorMemoryUsage(*spatialExtent_));
+        for (auto const& extent : *spatialExtent_) {
+            if (extent.exterior_) result.add("spatial-rings", vectorMemoryUsage(*extent.exterior_));
+            result.add("spatial-holes", vectorMemoryUsage(extent.holes_));
+            for (auto const& hole : extent.holes_)
+                result.add("spatial-rings", vectorMemoryUsage(hole));
+        }
     }
     // The service accounts unique MapSchema owners once, not once for each layer/source.
     return result;

@@ -68,6 +68,20 @@ DataSourceCatalogSourceUpdate makeSourceCatalogSourceUpdate(DataSourceCatalogEnt
 
 namespace mapget::detail
 {
+void RegisteredDataSource::prepareCoverage()
+{
+    coverage.clear();
+    for (auto const& [id, layer] : info->layers_)
+        coverage.emplace(id, CoverageQuery(*layer));
+}
+
+bool RegisteredDataSource::permits(SpatialExtentPolicy const& policy, std::string const& layerId,
+    PartitionId partition) const
+{
+    if (!policy.limits(info->mapId_) || partition.kind() != PartitionKind::Tile) return true;
+    auto found = coverage.find(layerId);
+    return found == coverage.end() || found->second.permits(partition.tileId());
+}
 
 bool RegisteredDataSource::authorized(std::optional<ClientAuthorization> const& headers) const
 {
@@ -164,6 +178,7 @@ DataSourceRegistry::add(DataSource::Ptr dataSource, std::optional<std::string> s
         .sourceId = std::move(effectiveSourceId),
     });
     registered->metadataMemory = registered->info->memoryUsage().total();
+    registered->prepareCoverage();
     auto next = sources_;
     next.push_back(registered);
     compose(next);  // Failure leaves the published registry and all running generations untouched.

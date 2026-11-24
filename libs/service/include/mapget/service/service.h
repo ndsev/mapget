@@ -41,7 +41,8 @@ enum class RequestStatus {
     Success = 0x1,      /** The request has been fully satisfied. */
     NoDataSource = 0x2, /** No data source could provide the requested map + layer. */
     Unauthorized = 0x3, /** The user is not authorized to access the requested data source. */
-    Aborted = 0x4       /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+    Aborted = 0x4,      /** Canceled, e.g. because a bundled request cannot be fulfilled. */
+    OutsideSpatialExtent = 0x5 /** Completed without loading an excluded spatial partition. */
 };
 
 enum class NoDataSourceReason {
@@ -244,6 +245,15 @@ public:
      */
     std::map<PartitionId, std::vector<std::string>> featureIdsByTile_;
 
+    /** Per-map spatial policy inherited by auxiliary and dependency requests. */
+    SpatialExtentPolicy spatialExtentPolicy_;
+    /** Requested partitions excluded before scheduling; never represented by empty cached tiles. */
+    std::vector<PartitionId> excludedPartitionIds_;
+
+    /** Explicit terminal exclusions; never encoded as ordinary empty tile payloads. */
+    nlohmann::json spatialExclusions() const;
+
+
     /**
      * The callback function which is called when all tiles have been processed.
      */
@@ -281,6 +291,7 @@ protected:
     void setStatus(RequestStatus s);
     void notifyStatus();
     nlohmann::json toJson();
+
 
 private:
     /** Return whether this request may originate another tile job. */
@@ -412,6 +423,11 @@ public:
 
     /** Optional exact relation roots grouped by their requested origin tile. */
     std::vector<FeatureLayerFilterRoot> exactRoots_;
+
+    /** Explicit terminal exclusions, separate from pending or missing source results. */
+    std::vector<PartitionId> excludedPartitionIds_;
+    /** Eligible output whose expanded dependency scope was spatially restricted. */
+    std::atomic_bool spatialExtentRestricted_{false};
 
     /**
      * Receive each emitted subset; callbacks for different outputs may overlap.
@@ -639,7 +655,8 @@ public:
      */
     std::vector<LocateResponse> locate(
         LocateRequest const& req,
-        std::optional<ClientAuthorization> const& authorization = {});
+        std::optional<ClientAuthorization> const& authorization = {},
+        std::vector<MapPartitionKey>* spatialExclusions = nullptr);
 
     /**
      * Discover associations without loading payloads, using the shared worker/permit budget.

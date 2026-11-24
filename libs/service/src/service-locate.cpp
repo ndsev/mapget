@@ -9,8 +9,8 @@ namespace mapget::detail
 {
 
 LocateRequestExecution::LocateRequestExecution(Service::Impl& service, LocateRequest request,
-    std::optional<ClientAuthorization> authorization)
-    : service_(service), request_(std::move(request)), authorization_(std::move(authorization))
+    std::optional<ClientAuthorization> authorization, std::vector<MapPartitionKey>* spatialExclusions)
+    : service_(service), request_(std::move(request)), authorization_(std::move(authorization)), spatialExclusions_(spatialExclusions)
 {
 }
 
@@ -39,6 +39,12 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
                     log().warn(
                         "Datasource returned an invalid locate candidate for {}.",
                         candidate.tileKey_.toString());
+                    continue;
+                }
+                if (!source->permits(request_.spatialExtentPolicy_,
+                        candidate.tileKey_.layerId_, candidate.tileKey_.partitionId_)) {
+                    if (spatialExclusions_ && std::ranges::find(*spatialExclusions_, candidate.tileKey_) == spatialExclusions_->end())
+                        spatialExclusions_->push_back(candidate.tileKey_);
                     continue;
                 }
                 auto key = std::make_pair(source->sourceId, candidate.tileKey_);
@@ -74,6 +80,7 @@ std::vector<LocateRequestExecution::CandidateGroup> LocateRequestExecution::plan
                     std::move(parsed.keyValuePairs_)};
                 resolved.layerId_ = layerInfo->layerId_;
                 resolved.partition_ = request_.partition_;
+                resolved.spatialExtentPolicy_ = request_.spatialExtentPolicy_;
                 appendCandidates(resolved);
             }
         }
@@ -97,6 +104,7 @@ std::vector<LocateResponse> LocateRequestExecution::run()
             group.tileKey.layerId_,
             std::vector<PartitionId>{group.tileKey.partitionId_});
         child->sourceId_ = registration->sourceId;
+        child->spatialExtentPolicy_ = request_.spatialExtentPolicy_;
         child->onFeatureLayer(
             [this, group = std::move(group)](PartitionFeatureLayer::Ptr tile)
             {
@@ -159,9 +167,10 @@ namespace mapget
 {
 
 std::vector<LocateResponse> Service::Impl::locate(
-    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization)
+    LocateRequest const& request, std::optional<ClientAuthorization> const& authorization,
+    std::vector<MapPartitionKey>* spatialExclusions)
 {
-    return detail::LocateRequestExecution(*this, request, authorization).run();
+    return detail::LocateRequestExecution(*this, request, authorization, spatialExclusions).run();
 }
 
 }  // namespace mapget
