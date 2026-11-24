@@ -159,6 +159,9 @@ CoverageQuery::CoverageQuery(LayerInfo const& layer)
         }
     }
     complete_ = valid_ && layer.coverageComplete_.value_or(false) && !layer.serviceMetadata_;
+    hasBounds_ = std::ranges::any_of(regions_, [](auto const& region) {
+        return !region.rectangles_.empty();
+    });
 }
 
 CoverageQuery::Relation CoverageQuery::classify(CoverageBounds area, std::optional<size_t> selected) const

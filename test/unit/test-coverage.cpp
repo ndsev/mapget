@@ -43,6 +43,43 @@ TEST_CASE("Coverage distinguishes unknown, complete empty, and service metadata"
     CHECK(parsed->serviceMetadata_);
 }
 
+TEST_CASE("Coverage availability distinguishes empty regions from usable partial geometry", "[Coverage]")
+{
+    auto a = TileId::fromTileXY(1, 1, 3), b = TileId::fromTileXY(2, 2, 3);
+    LayerInfo mask;
+    mask.coverageComplete_ = true;
+    mask.coverage_ = {{a, b, {false, false, false, false}}};
+    CoverageQuery emptyMask(mask);
+    CHECK(emptyMask.complete());
+    CHECK(emptyMask.regionCount() == 1);
+    CHECK_FALSE(emptyMask.hasBounds());
+
+    auto invalid = geographic({{{0, 0, 1, 1}, std::vector<std::array<double, 2>>{{0, 0}, {1, 1}}}});
+    CoverageQuery invalidQuery(invalid);
+    CHECK_FALSE(invalidQuery.valid());
+    CHECK(invalidQuery.regionCount() == 1);
+    CHECK_FALSE(invalidQuery.hasBounds());
+    invalid.spatialExtent_->push_back({{170, -90, -170, 90}});
+    CoverageQuery partial(invalid);
+    CHECK_FALSE(partial.complete());
+    CHECK(partial.hasBounds());
+    CHECK(partial.regionForTile(TileId::fromWgs84(179, 45, 13)) == 1);
+
+    auto unknown = geographic({});
+    unknown.coverageComplete_.reset();
+    auto metadata = geographic({{{0, 0, 1, 1}}});
+    metadata.serviceMetadata_ = true;
+    for (auto const& layer : std::vector<LayerInfo>{unknown, geographic({}), mask, invalid, metadata,
+            geographic({{{0, 0, 0, 0}}}), geographic({{{180, 90, 180, 90}}}),
+            geographic({{{-180, -90, -180, -90}}}), geographic({{{-180, -90, 180, 90}}})}) {
+        CoverageQuery query(layer);
+        for (int level = 0; level <= 15; ++level) {
+            CAPTURE(level);
+            CHECK(query.hasBounds() == !query.bounds({}, level).empty());
+        }
+    }
+}
+
 TEST_CASE("Full-resolution polygon validity does not depend on geographic translation", "[Coverage]")
 {
     double const step = 180. / (uint64_t{1} << 31);

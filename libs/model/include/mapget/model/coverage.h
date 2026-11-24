@@ -34,6 +34,8 @@ public:
     [[nodiscard]] bool complete() const { return complete_; }
     [[nodiscard]] bool valid() const { return valid_; }
     [[nodiscard]] size_t regionCount() const { return regions_.size(); }
+    /** Usable geometry can survive incomplete coverage; empty regions do not provide bounds. */
+    [[nodiscard]] bool hasBounds() const { return hasBounds_; }
     /** First intersecting/touching polygon pair, including containment and dateline equivalence.
      * This is an optional producer check; overlaps remain valid for generic unions.
      * Bounding-box-only regions are not bounding polygons and are ignored.
@@ -70,6 +72,7 @@ private:
     std::vector<Region> regions_;
     bool valid_ = true;
     bool complete_ = false;
+    bool hasBounds_ = false;
 };
 
 /** Request-scoped per-map policy; omitted policies retain legacy unrestricted behavior. */
