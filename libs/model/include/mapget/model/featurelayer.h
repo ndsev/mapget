@@ -61,6 +61,7 @@ class PartitionFeatureLayer : public PartitionFeatureModelLayerBase
     friend class Feature;
     friend class Relation;
     friend class RelationReference;
+    friend class ValidityReference;
     friend class AttrPoint;
     friend class AttrPointArray;
     friend class AttrPointSequence;
@@ -192,6 +193,10 @@ public:
      * feature's top-level relation list.
      */
     model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
+
+    /** Bind a property to a stored validity in its owning attribute, not to a tag or coordinate. */
+    model_ptr<ValidityReference>
+    newValidityReference(model_ptr<Attribute> const& owner, uint32_t index);
 
     /**
      * Create a shared sequence over a line with at least two shape points.
@@ -468,7 +473,8 @@ public:
     /**
      * Create a copy of otherFeature in this layer with the given type
      * and full primary id-parts. Existing identities receive attributes/layers
-     * and relations; already attached cloned geometry addresses are not duplicated.
+     * and relations. Geometry keeps its source order and occurrence count. A
+     * geometry already copied for an attribute-point host is reused in its slot.
      * The destination schema must admit source types (same artifact or a composed
      * contributor). A populated properties container cannot change concrete type.
      * Node-copy limitations and partial-failure behavior below also apply.
@@ -484,8 +490,7 @@ public:
      * Create a copy of otherNode (which lives in otherLayer) in this layer.
      * The required cache preserves shared nodes within this destination. Geometry
      * views are materialized; whole Feature/FeatureProperties and standalone helper
-     * views are unsupported. Validity copies currently omit featureId/geometryName
-     * selectors. Failures can leave partial destination/cache state; discard both
+     * views are unsupported. Failures can leave partial destination/cache state; discard both
      * before retrying an operation that requires an all-or-nothing result.
      */
     simfil::ModelNode::Ptr clone(
@@ -502,6 +507,10 @@ protected:
         model_ptr<FeatureId> sourceFeatureId_;
         model_ptr<Feature> targetFeature_;
     };
+
+    /** Attach the source host's ordered geometry slots before copying references to them. */
+    void cloneFeatureGeometries(
+        CloneContext const& context, CloneCache& cache, Feature const& feature);
 
     /** Clone one node while propagating an optional feature-remapping context. */
     simfil::ModelNode::Ptr cloneNode(

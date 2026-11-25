@@ -5,28 +5,43 @@
 namespace mapget
 {
 
+namespace
+{
+void storeOrdinal(Attribute& attribute, std::string_view key, uint32_t ordinal)
+{
+    auto id = attribute.model().strings()->get(key);
+    if (id && attribute.get(id))
+        throw std::invalid_argument("Point series occurrence discriminator already set.");
+    if (!attribute.addField(key,attribute.model().newValue(int64_t(ordinal))))
+        throw std::invalid_argument("Cannot store point series occurrence discriminator.");
+}
+
+std::optional<uint32_t> storedOrdinal(Attribute const& attribute, std::string_view key)
+{
+    auto id=attribute.model().strings()->get(key);
+    auto node=id?attribute.get(id):simfil::ModelNode::Ptr{};
+    if (!node) return {};
+    auto value=node->value();
+    auto raw=std::get_if<int64_t>(&value);
+    if (!raw || *raw<0 || static_cast<uint64_t>(*raw)>UINT32_MAX)
+        throw std::invalid_argument("Invalid point series occurrence discriminator.");
+    return static_cast<uint32_t>(*raw);
+}
+}
+
+void Attribute::setPointSeriesBranch(uint32_t value) {storeOrdinal(*this,"_mapgetPointSeriesBranch",value);}
+void Attribute::setPointSeriesGeometry(uint32_t value) {storeOrdinal(*this,"_mapgetPointSeriesGeometry",value);}
+std::optional<uint32_t> Attribute::pointSeriesBranch() const {return storedOrdinal(*this,"_mapgetPointSeriesBranch");}
+std::optional<uint32_t> Attribute::pointSeriesGeometry() const {return storedOrdinal(*this,"_mapgetPointSeriesGeometry");}
+
 model_ptr<simfil::OverlayNode> Attribute::queryContext(
     model_ptr<Feature> const& feature,
     std::string_view layerName,
     uint32_t attributeIndex,
     uint32_t validityIndex,
-    uint32_t validityCount) const
+    uint32_t /*validityCount*/) const
 {
-    if (!feature || &feature->model() != &model())
-        throw std::invalid_argument(
-            "Attribute query context requires a feature from the same layer.");
-    auto result = model_ptr<simfil::OverlayNode>::make(simfil::Value::field(*this));
-    result->set(StringPool::OverlayNameStr, simfil::Value::make(std::string(name())));
-    result->set(StringPool::OverlayFeatureStr, simfil::Value::field(*feature));
-    result->set(StringPool::OverlayLayerStr, simfil::Value::make(std::string(layerName)));
-    result->set(StringPool::OverlayAttributeIndexStr, simfil::Value::make(int64_t(attributeIndex)));
-    result->set(StringPool::OverlayValidityIndexStr, simfil::Value::make(int64_t(validityIndex)));
-    // An attribute without explicit validity still has one whole-feature evaluation context.
-    result->set(
-        StringPool::OverlayValidityCountStr,
-        simfil::Value::make(int64_t(std::max(1u, validityCount))));
-    result->set(StringPool::OverlayHasValidityStr, simfil::Value::make(validityCount != 0));
-    return result;
+    return validityView(feature, layerName).queryContext(attributeIndex, validityIndex);
 }
 
 namespace
@@ -126,9 +141,38 @@ model_ptr<MultiValidity> Attribute::validityOrNull() const
     return model().resolve<MultiValidity>(data_->validities_);
 }
 
+uint32_t Attribute::appendTaggedValidities(std::span<model_ptr<Validity> const> annotations)
+{
+    auto stored = validityOrNull();
+    uint32_t count = stored ? stored->size() : 0;
+    if (annotations.empty())
+        return count;
+    for (auto const& v : annotations)
+        if (!v || v->borrowedModel() != borrowedModel() ||
+            v->addr().column() != PartitionFeatureLayer::ColumnId::Validities || !v->tag())
+            throw std::invalid_argument(
+                "Value annotations require stored, tagged validities from the owning tile.");
+
+    // Keep the original assignment shared; only this attachment gains the property geometries.
+    uint32_t first = stored && !count ? 1 : count;
+    if (annotations.size() > UINT32_MAX - first)
+        throw std::length_error("Too many tagged validities on one attribute.");
+    auto combined = model().newValidityCollection(first + annotations.size());
+    if (stored && !count)
+        combined->newDirection(Validity::None);  // Explicitly empty is not an omitted assignment.
+    for (uint32_t i = 0; i < count; ++i)
+        combined->append(model().resolve<Validity>(*stored->at(i)));
+    for (auto const& v : annotations)
+        combined->append(v);
+    setValidity(combined);
+    return first;
+}
+
 void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const
 {
-    data_->validities_ = validities ? validities->addr() : ModelNodeAddress();;
+    if (validities && validities->borrowedModel() != borrowedModel())
+        throw std::invalid_argument("Validity collection must belong to the attribute's tile.");
+    data_->validities_ = validities ? validities->addr() : ModelNodeAddress{};
 }
 
 }

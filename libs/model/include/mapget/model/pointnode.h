@@ -44,6 +44,13 @@ public:
     PointNode(ModelNode const& baseNode, Validity::Data const* geomData, simfil::detail::mp_key key);
     PointNode(ModelNode const& baseNode, simfil::detail::mp_key key);
 
+    /** A subset shape-point row stores one coordinate directly, outside vertex buffer storage. */
+    PointNode(ModelNode const& baseNode, Point const& point, simfil::detail::mp_key key)
+        : simfil::MandatoryDerivedModelNodeBase<PartitionFeatureModelLayerBase>(baseNode, key),
+          point_(point)
+    {
+    }
+
 private:
     Point point_;
 };

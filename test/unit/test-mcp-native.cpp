@@ -7,6 +7,7 @@
 #include "mapget/service/locate.h"
 #include "mapget/service/memcache.h"
 #include "mcp-test-issuer.h"
+#include "shape-point-lane-fixture.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -187,6 +188,32 @@ public:
         if (request.getIntIdPart("id") == 1)
             return {LocateCandidate(key, "Road.1")};
         return {};
+    }
+};
+
+/** Serve the same measured lane as the filter/inspection fixture over the native MCP tool. */
+class NativeMarkerSource final : public NativeSource
+{
+    PartitionFeatureLayer::Ptr lane_ = test::shapePointLane(false, "adas-measurement-point");
+
+public:
+    NativeMarkerSource()
+    {
+        metadata.layers_.clear();
+        metadata.layers_.emplace("Lane", lane_->layerInfo());
+        metadata.schemaId_.clear();
+        metadata.setMapSchema(lane_->layerSchema()->mapSchema());
+    }
+    void fill(PartitionFeatureLayer::Ptr const& tile) override
+    {
+        PartitionFeatureLayer::CloneCache clones;
+        tile->setGeometryAnchor(lane_->geometryAnchor());
+        tile->clone(
+            clones,
+            lane_,
+            *lane_->at(0),
+            "Lane",
+            {{"tileId", int64_t{545555028}}, {"laneId", int64_t{2}}});
     }
 };
 
@@ -1049,6 +1076,27 @@ TEST_CASE(
          {"featureIds", {"Road.1"}},
          {"query", "typeId"}});
     CHECK(locate["result"]["items"].size() == 1);
+}
+
+TEST_CASE(
+    "Native attribute extraction includes an appended measurement anchor",
+    "[mcp-native][point-marker]")
+{
+    NativeFixture fixture(false, std::make_shared<NativeMarkerSource>());
+    auto args = NativeFixture::selection("Lane");
+    args["partitions"][0]["id"] = 545555028;
+    args["scope"] = "attribute";
+    args["attributeName"] = "CURVATURE";
+    args["query"] = "$samples.curvature.*.contributors.*.recordIndex";
+    args["geometry"] = true;
+    auto reply = fixture.call("mapget_extract_features", args);
+    INFO(reply.dump());
+    auto const& rows = reply.at("result").at("items");
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0]["validityIndex"] == 0);
+    CHECK(rows[1]["validityIndex"] == 1);
+    CHECK(rows[1]["values"].at(0) == NativeJson::array({0}));
+    CHECK(rows[1]["geometry"]["coordinates"].size() == 1);
 }
 
 TEST_CASE(

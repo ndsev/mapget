@@ -96,7 +96,10 @@ public:
     using PolygonRingStartStorage = simfil::ArrayArena<uint32_t, simfil::detail::ColumnPageSize / 2>;
 
     /** Shared custom column ids used by reusable feature-id and geometry nodes. */
-    struct ColumnId { enum : uint8_t {
+    struct ColumnId {
+        // A runtime-only address, deliberately outside the sequential wire columns.
+        static constexpr uint8_t MarkerValidityView = 0xfe;
+        enum : uint8_t {
         Features = FirstCustomColumnId,
         FeatureComplexData,
         FeatureProperties,
@@ -150,6 +153,9 @@ public:
         AttrPointSequenceReferences,
         AttrPointIndexView,
         AttrPointIndexRangeView,
+        ShapePointEntries,
+        ShapePointPositions,
+        ValidityReferences,
     }; };
 
     /**

@@ -16,6 +16,7 @@
 #include "mapget/model/featureschema.h"
 #include "mapget/model/info.h"
 #include "mapget/model/memory.h"
+#include "mapget/model/pointseries.h"
 #include "mapget/model/stringpool.h"
 #include "simfil/error.h"
 #include "simfil/evaluation.h"
@@ -214,6 +215,28 @@ public:
         std::string_view featureType,
         std::string_view layer,
         std::string_view name);
+
+    /** Declare original-vertex measurements on a named Attribute use site. Finalization
+     * validates the actual record and operand types, including referenced profiles. */
+    void addPointSeries(PointSeries series);
+    /** Register a layer-local portable transform. Repeating an identical declaration is harmless.
+     */
+    void addPointCodec(std::string name, PointSeries::Codec codec);
+
+    /** Borrow the immutable declaration inventory after publication; retain this layer or its map.
+     */
+    [[nodiscard]] std::span<PointSeries const> pointSeries() const;
+
+    /** Borrow only this concrete use site's series. Requires a finalized schema. */
+    [[nodiscard]] std::span<PointSeries const>
+    pointSeries(std::string_view feature, std::string_view attributeLayer, std::string_view name)
+        const;
+    [[nodiscard]] PointSeries::Codec const* pointCodec(std::string_view name) const;
+
+    /** Retained point-scope type for this produced feature. Its pool owns the query
+     * namespace; do not resolve its numeric ID against the datasource MapSchema.
+     * Unknown features, unfinished graphs and pre-point artifacts return an empty view. */
+    [[nodiscard]] simfil::SchemaType shapePointQueryType(std::string_view featureType) const;
 
     /** Test this layer's production membership, independently of map-wide identity lookup. */
     [[nodiscard]] bool producesFeatureType(std::string_view name) const;

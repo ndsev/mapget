@@ -47,10 +47,11 @@ public:
     /**
      * Retrieve a cached PartitionLayer for a DataSource, decoding it with the
      * supplied datasource metadata and cached string pool.
-     * Missing, unreadable and expired blobs return an empty tile; only expiry
-     * sets expiredAt so the service can notify the datasource before reloading.
+     * A supplied sourceId must match the provider that published the feature
+     * partition. Only expiry of that provider's own record sets expiredAt.
      */
-    LookupResult getTileLayer(MapPartitionKey const& tileKey, DataSourceInfo const& dataSource);
+    LookupResult getTileLayer(
+        MapPartitionKey const& tileKey, DataSourceInfo const& dataSource, std::string_view sourceId = {});
 
     /**
      * Remove every cached tile for one map.

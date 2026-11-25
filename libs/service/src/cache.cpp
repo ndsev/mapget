@@ -125,7 +125,8 @@ nlohmann::json Cache::getStatistics() const {
 }
 
 Cache::LookupResult
-Cache::getTileLayer(const MapPartitionKey& tileKey, DataSourceInfo const& dataSource)
+Cache::getTileLayer(
+    MapPartitionKey const& tileKey, DataSourceInfo const& dataSource, std::string_view sourceId)
 {
     LookupResult result;
     auto tileBlob = getTileLayerBlob(tileKey);
@@ -160,6 +161,11 @@ Cache::getTileLayer(const MapPartitionKey& tileKey, DataSourceInfo const& dataSo
         return result;
     }
     if (tile) {
+        if (!sourceId.empty() && tile->layerInfo()->type_ == LayerType::Features &&
+            tile->sourceId() != sourceId) {
+            cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+            return result;
+        }
         auto ttl = tile->ttl();
         if (ttl && ttl->count() > 0) {
             auto expiresAt = tile->timestamp() + *ttl;

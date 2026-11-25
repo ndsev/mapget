@@ -25,6 +25,8 @@ class LayerSchema;
  * compilation operation on a miss and bind the returned SharedAST to their own
  * worker-local Environment. The schema and compile-context identities isolate
  * ASTs whose schema rewrites or constants differ despite identical query text.
+ * Programs compiled against a private host point schema are shared only while
+ * a caller owns the AST: a schema-bound AST can itself keep its pool alive.
  */
 class SimfilExpressionCache
 {
@@ -43,7 +45,7 @@ public:
         uint64_t compileMicroseconds = 0;
     };
 
-    /** Create a cache which stops retaining new entries after `maxEntries`. */
+    /** Limit the combined number of retained results and weak point-program slots. */
     explicit SimfilExpressionCache(size_t maxEntries = DefaultMaxEntries);
 
     /** Release all retained expressions and failures. */
@@ -54,13 +56,16 @@ public:
     auto operator=(SimfilExpressionCache const&) -> SimfilExpressionCache& = delete;
 
     /**
-     * Return one shared AST, compiling on a miss and retaining the result while
-     * capacity permits. Deterministic compilation failures are retained too.
+     * Return one shared AST, compiling on a miss. Successful untyped or finalized
+     * MapSchema programs and deterministic compilation failures are retained.
+     * Published private point roots use weak ASTs: overlapping readers can share
+     * a compilation, but the next reader may recompile after the last one releases it.
      * compile runs under the cache's exclusive lock and must not re-enter this
-     * cache. Once full, new keys compile on each miss without evicting old keys.
+     * cache. At capacity, expired weak slots are reclaimed; live entries are
+     * never evicted to make room for a new key.
      *
      * `schemaIdentity` must be finalized; keys use the root's exact artifact identity and
-     * this layer name. Generic non-MapSchema roots are compiled without retention: their
+     * this layer name. Other generic roots are compiled without retention: their
      * caller-supplied identity strings do not establish equivalent schema content.
      * `compileContext` must distinguish every other compile-affecting input,
      * including constants, bindings, and custom compiler environment state. It

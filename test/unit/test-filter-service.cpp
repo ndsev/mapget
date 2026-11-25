@@ -850,8 +850,23 @@ TEST_CASE(
         "012b20825d4a00d50000000000000000");
     auto restricted = requestTile(true);
     REQUIRE(restricted->size() == 1);
+    REQUIRE(full->sourceId() == service.sourceCatalog().sources.at(0).descriptor.sourceId);
+    CHECK(restricted->sourceId() == full->sourceId());
     CHECK(restricted->at(0)->toJson() == expected);
     CHECK(requestTile(false)->toJson() == full->toJson());
+
+    auto filtered = std::make_shared<FeatureLayerFilterTilesRequest>(
+        "FilterMap", "Road", std::vector<PartitionId>{firstTile()}, filterDefinition());
+    PartitionSubsetLayer::Ptr output;
+    filtered->onFilterResult([&](auto layer) { output = std::move(layer); });
+    REQUIRE(service.request(filtered));
+    filtered->wait();
+    REQUIRE(output);
+    auto const* dependency = output->localSourceDependency();
+    REQUIRE(dependency);
+    CHECK(dependency->sourceId_ == restricted->sourceId());
+    CHECK(dependency->sourceTileKey_ == full->id());
+    CHECK(dependency->sourceFeatureCount_ == full->size());
     CHECK(dataSource->requestedTiles().size() == 1);
 }
 
@@ -2656,6 +2671,7 @@ TEST_CASE(
     failed->setError("output source unavailable");
     failed->setErrorCode(503);
     failed->setTtl(std::chrono::seconds{5});
+    failed->setSourceId(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     FeatureLayerFilterRequest definition{
@@ -2767,6 +2783,7 @@ TEST_CASE(
         cache->getStringPool(info.stringPoolId_));
     failed->setError("halo unavailable");
     failed->setTtl(std::chrono::seconds(5));
+    failed->setSourceId(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     auto definition = filterDefinition();

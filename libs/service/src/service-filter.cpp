@@ -113,6 +113,7 @@ bool FilterRequestExecution::SourceTileContribution::Lifetime::expiresBefore(Lif
 void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageBreakdown& usage)
     const
 {
+    usage.add("dependency-strings", stringMemoryUsage(dependency_.sourceId_));
     usage.add("warnings", stringVectorMemoryUsage(warnings_));
     if (error_)
         usage.add("error", stringMemoryUsage(*error_));
@@ -1143,10 +1144,7 @@ FilterRequestExecution::commitSource(
             });
         }
 
-        auto const dependency = TileSubsetDependency{
-            MapPartitionKey(source),
-            result.sourceFeatureCount_,
-        };
+        auto const dependency = TileSubsetDependency::fromSource(source);
         for (auto const& dependent : dependentOutputsBySource[sourceIndex]) {
             auto& output = outputs[dependent.outputIndex_];
             if (output.state_ != OutputTileState::State::Pending) {
@@ -1243,10 +1241,7 @@ tl::expected<void, simfil::Error> FilterRequestExecution::addRelationTargetContr
         });
     }
     SourceTileContribution targetContribution{
-        TileSubsetDependency{
-            targetKey,
-            static_cast<uint32_t>(targetLayer.size()),
-        },
+        TileSubsetDependency::fromSource(targetLayer),
         {},
         {},
         {},
@@ -2704,6 +2699,10 @@ bool detail::FilterRequestExecution::start(
     }
 
     for (auto const& channel : request->filter_.channels_) {
+        if (channel.scope_ == FeatureLayerFilterScope::ShapePoint) {
+            if (auto valid = channel.validateScopeOptions(); !valid)
+                return rejectStart(request, valid.error().message);
+        }
         if (channel.schemaId_ && *channel.schemaId_ != registration->info->schemaId_)
             return rejectStart(
                 request,

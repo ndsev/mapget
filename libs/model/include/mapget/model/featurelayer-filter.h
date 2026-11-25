@@ -32,6 +32,7 @@ enum class FeatureLayerFilterScope : uint8_t {
     Attribute,
     Relation,
     Auto,
+    ShapePoint,
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(
@@ -41,6 +42,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(
         {FeatureLayerFilterScope::Attribute, "attribute"},
         {FeatureLayerFilterScope::Relation, "relation"},
         {FeatureLayerFilterScope::Auto, "auto"},
+        {FeatureLayerFilterScope::ShapePoint, "shapepoint"},
     })
 
 /** Scalar request binding available as both a SIMFIL constant and overlay field. */
@@ -131,6 +133,10 @@ struct FeatureLayerFilterChannel
 
     /** Required exactly when scope is Relation. */
     std::optional<FeatureLayerStoredRelationOptions> relation_;
+
+    /** Validate projection and candidate-expansion options before any source partition is
+     * scheduled. */
+    [[nodiscard]] tl::expected<void, simfil::Error> validateScopeOptions() const;
 };
 
 /** One exact relation-traversal root, retained in stable request order. */

@@ -36,7 +36,7 @@ class MapSchema::Impl::CompositionBuilder
     /** Generated contexts are reconstructed after producer declarations have been merged. */
     bool queryRoot(size_t index) const
     {
-        return source(index).data(origins_[index].second).flags & QueryRootFlag;
+        return source(index).data(origins_[index].second).flags & (QueryRootFlag | PointQueryFlag);
     }
 
     /** Name IDs belong to their input dictionary, including application-specific kinds. */
@@ -439,6 +439,9 @@ public:
         : target_(target), inputs_(inputs)
     {
         for (size_t s = 0; s < inputs.size(); ++s) {
+            // A V8 producer can qualify a value with any of its expanded point
+            // types. Preserve all those handles, including in later compositions.
+            target_.expandedPointTypes |= inputs[s]->schema_->expandedPointTypes;
             offsets_.push_back(origins_.size());
             for (size_t id = 1; id <= inputs[s]->typeCount(); ++id) {
                 if (origins_.size() >= MaxEdges)
@@ -554,6 +557,9 @@ public:
                         previous->locality_ != declaration.locality_)
                         conflict(name, "forward relation contract differs");
                 }
+                if (auto points = origin.pointDeclarations.find(l);
+                    points != origin.pointDeclarations.end())
+                    target_.mergePointDeclarations(output->addr().index(), points->second);
                 auto roots = origin.featureRoots(source);
                 if (roots.empty())
                     output->setRootSchema(mapped(s, source.root));
@@ -572,35 +578,6 @@ public:
         }
         for (auto const& [key, index] : globalKeys)
             target_.pool.registerSchemaKey(std::string(key), mapped_[index]);
-
-        target_.prepareQueryRoots();
-        for (size_t s = 0; s < inputs_.size(); ++s) {
-            for (auto const& query : inputs_[s]->schema_->queryRoots) {
-                auto merged =
-                    target_.findQueryRoot(mapped(s, query.feature), mapped(s, query.attribute));
-                if (!merged)
-                    throw std::invalid_argument("Merged query context is unavailable.");
-                mapped_[slot(s, query.root)] = merged;
-            }
-            for (size_t id = 1; id <= inputs_[s]->typeCount(); ++id)
-                if (queryRoot(slot(s, TypeId(id))) && !mapped_[slot(s, TypeId(id))]) {
-                    for (size_t candidate = 1; candidate <= target_.pool.typeCount(); ++candidate)
-                        if ((target_.data(TypeId(candidate)).flags & QueryRootFlag) &&
-                            target_.pool.schemaType(TypeId(candidate)).kind() ==
-                                targetKind(slot(s, TypeId(id))) &&
-                            !target_.data(TypeId(candidate)).metaType)
-                        {
-                            mapped_[slot(s, TypeId(id))] = TypeId(candidate);
-                            break;
-                        }
-                    if (!mapped_[slot(s, TypeId(id))])
-                        throw std::invalid_argument("Unmapped generated query scalar.");
-                }
-            auto& remap = target_.contributorRemaps[std::string(inputs_[s]->schemaId())];
-            remap.resize(inputs_[s]->typeCount() + 1);
-            for (size_t id = 1; id < remap.size(); ++id)
-                remap[id] = mapped(s, TypeId(id));
-        }
 
         // Merge annotations one equivalence class at a time, then allocate CBOR
         // once. Repeated writes would leave superseded payloads in the ModelPool.
@@ -629,6 +606,36 @@ public:
             }
             target_.data(mapped_[i]).annotations = target_.annotation(merged);
         }
+        target_.prepareQueryRoots();
+        target_.preparePointSchemas();
+        std::map<std::string_view, TypeId, std::less<>> pointIds;
+        for (size_t i = 1; i < target_.types.size(); ++i)
+            if (target_.types[i].flags & PointQueryFlag)
+                pointIds.emplace(target_.text(target_.types[i].key), TypeId(i));
+        for (size_t s = 0; s < inputs_.size(); ++s) {
+            for (auto const& query : inputs_[s]->schema_->queryRoots) {
+                auto merged =
+                    target_.findQueryRoot(mapped(s, query.feature), mapped(s, query.attribute));
+                if (!merged)
+                    throw std::invalid_argument("Merged query context is unavailable.");
+                mapped_[slot(s, query.root)] = merged;
+            }
+            auto const& input = *inputs_[s]->schema_;
+            for (size_t id = 1; id < input.types.size(); ++id) {
+                auto const& row = input.types[id];
+                if (!(row.flags & PointQueryFlag))
+                    continue;
+                auto target = pointIds.find(input.text(row.key));
+                if (target == pointIds.end())
+                    throw std::invalid_argument("Merged point context is unavailable.");
+                mapped_[slot(s, TypeId(id))] = target->second;
+            }
+            auto& remap = target_.contributorRemaps[std::string(inputs_[s]->schemaId())];
+            remap.resize(inputs_[s]->typeCount() + 1);
+            for (size_t id = 1; id < remap.size(); ++id)
+                remap[id] = mapped(s, TypeId(id));
+        }
+
         for (auto const& query : target_.queryRoots)
             target_.data(query.root).annotations = target_.data(query.attribute).annotations;
     }

@@ -567,6 +567,27 @@ At the JSON level, a single validity is exposed as an object. Multiple validity 
 
 Here `offsetType` describes how `start` and `end` should be interpreted (for example as metric distance along the line string or as relative length fractions).
 
+A validity can also locate an attribute **value**, rather than describe where the attribute
+applies. Its optional `tag` names that purpose. For example, a house number may apply along
+a road range, while its building is several metres away. Both entries live under `validity`;
+only the untagged range supplies shape-point coverage. A property can reference the building
+without embedding its geometry a second time:
+
+```json
+{
+  "validity": [
+    {"offsetType": "RelativeLengthOffset", "start": 0.2, "end": 0.8},
+    {"tag": "house-position", "geometry": {"type": "MultiPoint", "coordinates": [[11.5, 48.1, 0]]}}
+  ],
+  "properties": [{"validityRef": {"$mapgetValidity": 1}}]
+}
+```
+
+This abbreviated property refers to **ordinal 1 of this attribute**, not to the first entry with
+a matching tag. A reference to a singleton is ordinal zero even though its JSON is not an array.
+GeoJSON import reconstructs the link. For measurements, [shape-point declarations](shape-point-measurements.md)
+determine which tagged points supply values and whether exact matching or interpolation applies.
+
 Transition-number validities are exposed semantically rather than as baked helper geometry:
 
 ```json
@@ -908,10 +929,23 @@ aggregate arrays which reference typed column entries:
   and geometries, relation identity/provenance/direction, and projected values;
 - `GroupEntry`: stable group key, representative feature/geometry, projected
   values, and all participating feature IDs.
+- A `ShapePointEntry` identifies a vertex by host feature ID, original geometry
+  ordinal and original vertex index. Its position is the source coordinate at
+  that index. Coincident coordinates can identify different rows.
 
 A channel's `scope()` determines which typed aggregate is terminal.
 Relation-channel feature entries are supporting endpoints rather than
 additional terminal rows.
+
+For a shape-point channel, `shapePointEntryAt(index)` looks up the row carried
+by a pick and `forEachShapePointEntry` walks the accepted vertices in source
+order. Rows from one source geometry share its ordinal, name and original type.
+Geometries from one host share its ID and feature projections. A consumer can
+draw a point using its position and ordered entry projections alone. To inspect
+its source attributes, fetch the host by canonical feature ID from the local
+dependency's partition and provider. Use
+`feature->shapePoints(geometryOrdinal).at(pointIndex)`; an absent geometry or
+vertex yields no point. For a geometry view, the index is relative to the visible slice.
 
 Protocol 5.3 projections are result sequences: the outer `values`/`hostValues`
 array corresponds positionally to the requested expressions, and every element
@@ -928,7 +962,8 @@ Each subset also carries:
 - `filterId + generation` semantic identity;
 - the timestamp and positive TTL pair of the finite-lifetime source
   dependency with the earliest absolute expiry, when one exists;
-- source dependencies and `sourceFeatureCount`;
+- source dependencies with the full partition key, the complete source's
+  `sourceFeatureCount` and its catalog `sourceId`;
 - inherited source `info()` statistics plus subset-owned terminal-entry and
   stored-geometry vertex counts;
 - aggregated structured issues and typed SIMFIL traces;
@@ -938,6 +973,12 @@ During service execution one output state may own an unpublished,
 single-writer work-in-progress subset. Cross-tile contributions contain source
 feature pointers/descriptors, not partially constructed model nodes. The
 completed value is serialized once and is immutable to consumers.
+
+The service sets the catalog provider on the partition with `PartitionLayer::setSourceId`.
+The cached partition, the local filter dependency and a feature-restricted clone
+retain that ID. A standalone builder without a catalog leaves the ID empty;
+the string-pool ID is not a substitute. Equal provider IDs (including two
+empty IDs in a standalone model) do not establish that two loads have identical content.
 
 ## Binary tile streaming
 
@@ -1060,7 +1101,7 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 6.3, including exact schema
+Binary readers and writers must both use protocol 6.5, including exact schema
 bindings, typed scalars and version-2 incoming manifests. Error and empty-tile
 expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
 string-pool caches are cleared by the normal startup compatibility check.

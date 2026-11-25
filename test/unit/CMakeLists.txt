@@ -10,6 +10,9 @@ add_executable(test.mapget
   test-feature-id-index.cpp
   test-foreign-feature-id.cpp
   test-model-geometry.cpp
+  test-shapepoint.cpp
+  test-attribute-validity-view.cpp
+  test-mapschema-pointseries.cpp
   test-pointcloud-sampler.cpp
   test-incoming-relations.cpp
   test-filter-service.cpp
@@ -84,6 +87,10 @@ if(MAPGET_WITH_JEMALLOC)
     ENVIRONMENT "MALLOC_CONF=background_thread:true,dirty_decay_ms:100,muzzy_decay_ms:0"
     TIMEOUT 20)
 endif()
+
+# Regenerate a native-produced lane fixture for wire-compatible WASM consumer tests.
+add_executable(generate-shape-point-fixture EXCLUDE_FROM_ALL generate-shape-point-fixture.cpp)
+target_link_libraries(generate-shape-point-fixture PRIVATE mapget-model)
 
 # The HTTP tests launch this peer; rebuild both sides after protocol/static-ID changes.
 add_dependencies(test.mapget test.mapget.datasource-server)

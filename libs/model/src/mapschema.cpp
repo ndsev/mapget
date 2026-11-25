@@ -33,8 +33,23 @@ using simfil::TypeId;
 
 #include "mapschema-composition.h"
 
+namespace
+{
+// A schema carries its own dictionary, including its static entries, in its checksum.
+// Seeding a V7 reader with later tile vocabulary would change the replayed byte stream.
+std::shared_ptr<simfil::StringPool> schemaDictionary()
+{
+    auto result = std::make_shared<simfil::StringPool>();
+    static StringPool const vocabulary("schema-static");
+    for (simfil::StringId id = simfil::StringPool::NextStaticId; id <= StringPool::MessageStr; ++id)
+        if (auto name = vocabulary.resolve(id))
+            result->addStaticKey(id, std::string(*name));
+    return result;
+}
+}  // namespace
+
 MapSchema::MapSchema(MapFormat format)
-    : SchemaPool(std::make_shared<StringPool>("schema")),
+    : SchemaPool(schemaDictionary()),
       schema_(std::make_unique<Impl>(*this, MapFormat::fromJson(format.toJson())))
 {
 }
@@ -481,6 +496,7 @@ void MapSchema::Impl::appendMetadata(std::function<void()> const& extension)
         }
         aliases.resize(aliasCount);
         types.resize(typeCount);
+        pointDeclarations.erase(pointDeclarations.lower_bound(layerCount), pointDeclarations.end());
         layers.resize(layerCount);
         layerBuild.resize(layerBuildCount);
         ownerRows.resize(ownerRowCount);
@@ -948,6 +964,7 @@ void MapSchema::Impl::compile()
     }
     normalizeRelations();
     prepareQueryRoots();
+    preparePointSchemas();
     for (size_t i = 0; i < descriptorKeys.size(); ++i)
         descriptorKeys[i] = intern(std::array<std::string_view, 21>{
             "name",
@@ -1095,7 +1112,8 @@ void MapSchema::Impl::validate() const
     std::vector<bool> usedOwners(ownerRows.size());
     for (size_t id = 1; id < types.size(); ++id) {
         auto const& d = types[id];
-        if (d.flags & ~8u)
+        if (d.flags & ~(QueryRootFlag | PointQueryFlag) ||
+            d.flags == (QueryRootFlag | PointQueryFlag))
             throw std::invalid_argument("Invalid map-type flags.");
         for (auto address :
              {d.key, d.pointer, d.metaType, d.zserioType, d.attributeType, d.attributeCode})
@@ -1124,6 +1142,27 @@ void MapSchema::Impl::validate() const
         }
         if (d.annotations)
             (void)annotation(d.annotations);
+        if (wireVersion >= ExpandedPointVersion && !d.flags) {
+            // Producer data must never depend on a generated view: composition copies
+            // physical definitions first, then rebuilds query contexts in its own namespace.
+            auto physical = [&](TypeId child)
+            {
+                if (child && (types[child].flags & PointQueryFlag))
+                    throw std::invalid_argument("Producer type references a point query context.");
+            };
+            auto definition = pool.schemaType(TypeId(id));
+            physical(definition.baseType().id());
+            for (auto child : definition.alternatives())
+                physical(child);
+            for (auto child : definition.elements())
+                physical(child);
+            definition.forEachDirectField(
+                [&](auto const& field)
+                {
+                    for (auto child : field.types())
+                        physical(child);
+                });
+        }
         if (auto base = pool.schemaType(TypeId(id)).baseType().id()) {
             if ((types[base].flags & QueryRootFlag) ||
                 ((d.flags & QueryRootFlag) &&
@@ -1140,6 +1179,8 @@ void MapSchema::Impl::validate() const
     }
     for (auto const& alias : aliases) {
         type(alias.id);
+        if (types[alias.id].flags & PointQueryFlag)
+            throw std::invalid_argument("Producer alias references a point query context.");
         text(alias.key);
         if (alias.layer > layers.size())
             throw std::invalid_argument("Unknown schema alias layer.");
@@ -1334,6 +1375,119 @@ void MapSchema::Impl::string(S& s, std::string& value, size_t limit, size_t& mem
     s.text1b(value, limit);
 }
 
+/** Serialize a native point member. Charge every dynamic allocation before resizing. */
+template <class S, class T>
+void MapSchema::Impl::pointValue(S& s, T& value, size_t& memory)
+{
+    if constexpr (std::is_same_v<T, std::string>)
+        string(s, value, point_schema::MaxText, memory);
+    else if constexpr (std::is_enum_v<T>) {
+        auto tag = static_cast<uint8_t>(value);
+        s.value1b(tag);
+        if constexpr (simfil::detail::bitsery_input_archive<S>)
+            value = static_cast<T>(tag);
+    }
+    else if constexpr (std::is_same_v<T, bool>)
+        s.boolValue(value);
+    else if constexpr (std::is_arithmetic_v<T>)
+        s.value8b(value);
+    else if constexpr (requires { value.has_value(); }) {
+        bool present = value.has_value();
+        s.boolValue(present);
+        if constexpr (simfil::detail::bitsery_input_archive<S>)
+            if (present)
+                value.emplace();
+        if (present)
+            pointValue(s, *value, memory);
+    }
+    else if constexpr (requires { value.capacity(); })
+        container(
+            s,
+            value,
+            point_schema::maxCount<typename T::value_type>,
+            memory,
+            [&](auto& archive, auto& item) { pointValue(archive, item, memory); });
+    else
+        point_schema::members(
+            value,
+            [&](std::string_view key, auto& member)
+            {
+                if constexpr (std::is_same_v<T, PointSeries>) {
+                    // V8/V9 recorded a destination, not a producer-defined tag.
+                    // Only the disabled value has a lossless interpretation.
+                    if (wireVersion < TaggedPointVersion && key == "markerTag") {
+                        uint8_t legacy = 0;
+                        s.value1b(legacy);
+                        if (legacy || !value.markerTag_.empty())
+                            throw std::invalid_argument(
+                                "Regenerate legacy point markers with a producer-defined markerTag.");
+                        return;
+                    }
+                }
+                pointValue(s, member, memory);
+            });
+}
+
+/** Sparse per-layer declarations. Derived root IDs are verified/reindexed from the type graph. */
+template <class S>
+void MapSchema::Impl::pointWire(S& s, size_t& memory)
+{
+    if (wireVersion >= TaggedPointVersion)
+        s.boolValue(expandedPointTypes);
+    else if constexpr (simfil::detail::bitsery_input_archive<S>)
+        expandedPointTypes = wireVersion == ExpandedPointVersion;
+    uint32_t count = pointDeclarations.size();
+    s.value4b(count);
+    if (count > layers.size())
+        throw std::invalid_argument("Invalid point declaration layer count.");
+    if constexpr (simfil::detail::bitsery_input_archive<S>) {
+        auto charge = sizeof(decltype(pointDeclarations)::value_type) + 3 * sizeof(void*);
+        if (count > memory / charge)
+            throw std::length_error("Point declaration layers exceed their allocation budget.");
+        memory -= count * charge;
+    }
+    auto layerIt = pointDeclarations.begin();
+    for (uint32_t i = 0; i < count; ++i) {
+        uint16_t index = 0;
+        if constexpr (!simfil::detail::bitsery_input_archive<S>)
+            index = uint16_t((layerIt++)->first);
+        s.value2b(index);
+        if (index >= layers.size())
+            throw std::invalid_argument("Invalid point declaration layer.");
+        if constexpr (simfil::detail::bitsery_input_archive<S>)
+            if (pointDeclarations.contains(index))
+                throw std::invalid_argument("Duplicate point declaration layer.");
+        auto& entries = pointDeclarations[index];
+        uint32_t codecs = entries.codecs.size();
+        s.value4b(codecs);
+        if (codecs > UINT16_MAX)
+            throw std::length_error("Too many portable point codecs.");
+        if constexpr (simfil::detail::bitsery_input_archive<S>) {
+            auto charge = sizeof(typename decltype(entries.codecs)::value_type) + 3 * sizeof(void*);
+            if (codecs > memory / charge)
+                throw std::length_error("Point codecs exceed their allocation budget.");
+            memory -= codecs * charge;
+            for (uint32_t c = 0; c < codecs; ++c) {
+                std::string name;
+                pointValue(s, name, memory);
+                auto [it, inserted] = entries.codecs.try_emplace(std::move(name));
+                if (!inserted)
+                    throw std::invalid_argument("Duplicate point codec name.");
+                pointValue(s, it->second, memory);
+            }
+        }
+        else
+            for (auto& [name, codec] : entries.codecs) {
+                auto key = name;
+                pointValue(s, key, memory);
+                pointValue(s, codec, memory);
+            }
+        pointValue(s, entries.series, memory);
+        if (entries.empty())
+            throw std::invalid_argument("Empty point declaration layer.");
+    }
+}
+
 template <class S>
 void MapSchema::Impl::readWrite(S& s, size_t budget)
 {
@@ -1465,6 +1619,8 @@ void MapSchema::Impl::readWrite(S& s, size_t budget)
             string(archive, constituent.first, 128, memory);
             mapFormat(archive, constituent.second);
         });
+    if (wireVersion >= ExpandedPointVersion)
+        pointWire(s, memory);
 }
 
 void MapSchema::Impl::writeBody(std::ostream& output) const
@@ -1537,7 +1693,7 @@ tl::expected<void, simfil::Error> MapSchema::write(std::ostream& output) const
         auto payload = data.str();
         bitsery::Serializer<bitsery::OutputStreamAdapter> s(output);
         uint32_t magic = 0x4843534d;  // MSCH
-        uint32_t version = Impl::CodecVersion;
+        uint32_t version = schema_->wireVersion;
         s.value4b(magic);
         s.value4b(version);
         auto id = std::string(schemaId());
@@ -1564,7 +1720,8 @@ MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, siz
     uint32_t magic = 0, version = 0;
     s.value4b(magic);
     s.value4b(version);
-    if (magic != 0x4843534d || version != Impl::CodecVersion)
+    if (magic != 0x4843534d || version < Impl::LegacyCodecVersion ||
+        version > Impl::TaggedPointVersion)
         throw std::invalid_argument("Unsupported MapSchema binary format.");
     std::string identity, payload;
     size_t memory = bytes.size();
@@ -1580,15 +1737,17 @@ MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, siz
     // Every input is verified before consulting the cache; a warm artifact must
     // never conceal a truncated body or a wrong expected identity.
     return getOrBuild(
-        identity,
-        [identity, payload = std::move(payload), maxBytes]
+        "read-v" + std::to_string(version) + ":" + identity,
+        [identity, payload = std::move(payload), maxBytes, version]
         {
             auto result = std::make_shared<MapSchema>();
+            result->schema_->wireVersion = version;
             result->schema_
                 ->readBody(std::vector<uint8_t>(payload.begin(), payload.end()), maxBytes);
             result->schema_->validate();
             result->schema_->validatePool();
             result->schema_->index();
+            result->schema_->preparePointSchemas(true);
             // Reject noncanonical identities, hidden data and duplicate dictionary IDs.
             std::ostringstream canonical(std::ios::binary);
             result->schema_->writeBody(canonical);
@@ -2472,8 +2631,11 @@ bool LayerSchema::iterate(IterCallback const& callback) const
 
 MemoryUsageBreakdown MapSchema::memoryUsage() const
 {
-    if (schema_->memorySummary)
-        return *schema_->memorySummary;
+    if (schema_->memorySummary) {
+        auto result = *schema_->memorySummary;
+        schema_->accountPointViews(result);
+        return result;
+    }
     MemoryUsageBreakdown result;
     result.add(
         "format",
@@ -2487,6 +2649,7 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
     for (auto const& [name, version] : schema_->format.subsystems_)
         result.add("subsystem-text", stringMemoryUsage(name) + stringMemoryUsage(version));
     result.add("query-contexts", schema_->queryRoots.memory_usage());
+    schema_->pointMemoryUsage(result);
     result.add("object", {sizeof(*this) + sizeof(Impl), sizeof(*this) + sizeof(Impl)});
     result.add("model-pool", memoryUsageStats().total());
     result.add("dictionary", strings()->memoryUsage());
@@ -2547,17 +2710,25 @@ MemoryUsageBreakdown MapSchema::memoryUsage() const
 void MapSchema::Impl::summarize()
 {
     auto counts = pool.schemaStatistics();
-    size_t producedCount = 0, relationCount = 0;
+    size_t producedCount = 0, pointHostCount = 0, relationCount = 0;
     for (auto const& layer : layers) {
         producedCount += featureRoots(layer).size();
+        if (LayerType(layer.type) == LayerType::Features)
+            pointHostCount += featureRoots(layer).size();
         relationCount += relationIds(layer).size();
     }
+    auto pointTypes = std::count_if(
+        types.begin(),
+        types.end(),
+        [](auto const& t) { return (t.flags & PointQueryFlag) != 0; });
     memorySummary = pool.memoryUsage();
     statistics = {
         {"counts",
          {{"types", types.empty() ? 0 : types.size() - 1},
-          {"physicalTypes", types.empty() ? 0 : types.size() - 1 - queryRoots.size()},
-          {"queryContexts", queryRoots.size()},
+          {"physicalTypes", types.empty() ? 0 : types.size() - 1 - queryRoots.size() - pointTypes},
+          {"queryContexts", queryRoots.size() + pointTypes},
+          {"shapePointRoots", wireVersion == LegacyCodecVersion ? 0 : pointHostCount},
+          {"attributeQueryContexts", queryRoots.size()},
           {"fields", counts.fields},
           {"fieldEdges", counts.fieldEdges},
           {"contextFields", counts.contextFields},
@@ -2586,7 +2757,11 @@ nlohmann::json MapSchema::statistics() const
 {
     if (!finalized())
         throw std::logic_error("MapSchema statistics require a finalized graph.");
-    return schema_->statistics;
+    auto result = schema_->statistics;
+    auto memory = *schema_->memorySummary;
+    schema_->accountPointViews(memory, &result["counts"]);
+    result["memory"] = memory.toJson();
+    return result;
 }
 
 std::span<TypeId const> MapSchema::schemaRemap(std::string_view sourceIdentity) const

@@ -212,6 +212,11 @@ void TileLoadJob::run() noexcept
         // filter/direct consumer, but those CPU/transport phases must not
         // consume the datasource's backend-concurrency budget.
         releasePermit();
+        if (layer->layerInfo()->type_ == LayerType::Features) {
+            if (isCancelled())
+                throw TileLoadCancelled();
+            layer->setSourceId(registration_->sourceId);
+        }
         scheduler_.completeTileJob(*state_, layer, true);
     }
     catch (TileLoadCancelled const&) {

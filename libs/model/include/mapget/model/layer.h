@@ -13,6 +13,7 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <utility>
 #include <tl/expected.hpp>
 
 namespace simfil
@@ -136,6 +137,12 @@ public:
 
     /** Exact schema artifact pinned by this partition, independent of datasource reloads. */
     [[nodiscard]] std::string_view schemaId() const;
+
+    /** Catalog provider that published this partition. Standalone builders may have no provider. */
+    [[nodiscard]] std::string const& sourceId() const { return sourceId_; }
+
+    /** Retain the supplying catalog entry, including on feature-restricted inspection replies. */
+    void setSourceId(std::string sourceId) { sourceId_ = std::move(sourceId); }
 
     /** Install an exact, in-memory schema resolver for a partition's ModelPool payload. */
     void
@@ -261,6 +268,7 @@ protected:
     PartitionId partitionId_;
     std::string stringPoolId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
+    std::string sourceId_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
     std::optional<int> errorCode_;

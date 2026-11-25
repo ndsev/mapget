@@ -130,6 +130,7 @@ PartitionFeatureLayer::Ptr cloneInspectionFeatures(
         if (feature) result->clone(cache, source, *feature, feature->id()->typeId(),
                                    feature->id()->keyValuePairs());
     }
+    result->setSourceId(source->sourceId());
     return result;
 }
 

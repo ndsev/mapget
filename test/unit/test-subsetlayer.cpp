@@ -5,7 +5,10 @@
 #include <string>
 #include <vector>
 
+#include "mapget/model/featurelayer-filter.h"
 #include "mapget/model/featurelayer.h"
+#include "mapget/model/incoming-relations.h"
+#include "mapget/model/pointnode.h"
 #include "mapget/model/stream.h"
 #include "mapget/model/subsetlayer.h"
 
@@ -108,8 +111,6 @@ TEST_CASE("All subset scopes preserve row-local projection errors on the wire", 
     auto subset = std::make_shared<PartitionSubsetLayer>(
         TileId::fromWgs84(11, 48, 13), "ProjectionErrors", "TestMap", info, strings);
     auto id = subset->newFeatureId("Road", {{"roadId", int64_t{1}}});
-    // Bare test dictionaries have no datasource-populated ID labels yet.
-    (void)id->keyValuePairs();
     auto geometry = pointGeometry(*subset, 1);
     std::vector<std::string> fields{"broken"};
     std::vector<simfil::ModelNode::Ptr> values{subset->newArray(1, true)};
@@ -157,6 +158,202 @@ TEST_CASE("All subset scopes preserve row-local projection errors on the wire", 
     });
 }
 
+TEST_CASE(
+    "Restricted inspection preserves the provider, geometry slots and validity axis",
+    "[test.subsetlayer][shapepoint]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("RoadDictionary");
+    auto source = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(11, 48, 13),
+        "RoadDictionary",
+        "Map",
+        info,
+        strings);
+    source->setSourceId("roads-provider");
+    auto road = source->newFeature("Road", {{"roadId", int64_t{1}}});
+    source->newFeature("Road", {{"roadId", int64_t{2}}});
+    for (std::string_view name : {"centerline", "ADAS"}) {
+        auto line = source->newGeometry(GeomType::Line, 2);
+        line->setName(name);
+        line->append({11.0, 48.0, 0});
+        line->append({11.001, 48.001, 0});
+        road->addGeometry(line);
+        if (name == "ADAS") {
+            // The repeated geometry shares a buffer; the validity axis is its first slot.
+            road->addGeometry(line);
+            auto sequence = source->newAttrPointSequence(road, line);
+            auto slope = road->attributeLayers()->newLayer("Adas")->newAttribute("SLOPE");
+            slope->addField("raw", source->newValue(int64_t{-13}));
+            QualifiedSourceDataReference reference{
+                .address_ = SourceDataAddress::fromBitPosition(48, 8),
+                .layerId_ = strings->emplace("raw").value(),
+                .qualifier_ = strings->emplace("sample").value()};
+            slope->setSourceDataReferences(
+                source->newSourceDataReferenceCollection({&reference, 1}));
+            auto validities = slope->validity();
+            validities->newAttrPointIndexRange(sequence, 0, 1);
+            auto bounded = validities->newRange(Validity::RelativeLengthOffset, 0.25, 0.75, "ADAS");
+            bounded->setFeatureId(road->id());
+        }
+    }
+
+    std::vector<std::string> selected{"Road.1"};
+    auto restricted = cloneInspectionFeatures(source, selected);
+    REQUIRE(restricted->size() == 1);
+    CHECK(restricted->sourceId() == source->sourceId());
+    REQUIRE(restricted->numAttrPointSequences() == 1);
+    CHECK(restricted->attrPointSequenceAt(0)->geometryIndex() == 1);
+    auto clone = restricted->find("Road.1");
+    REQUIRE(clone);
+    REQUIRE(clone->geomOrNull());
+    REQUIRE(clone->geomOrNull()->numGeometries() == 3);
+    CHECK(clone->toJson() == road->toJson());
+    for (uint32_t ordinal = 0; ordinal < 3; ++ordinal) {
+        auto points = clone->shapePoints(ordinal);
+        REQUIRE(points.geometry());
+        CHECK(points.geometry()->name() == (ordinal == 0 ? "centerline" : "ADAS"));
+        REQUIRE(points.at(1));
+        CHECK(points.at(1)->position() == road->shapePoints(ordinal).at(1)->position());
+        CHECK_FALSE(points.at(2));
+    }
+    CHECK_FALSE(clone->shapePoints(3).at(0));
+    CHECK_FALSE(restricted->find("Road.2"));
+
+    std::stringstream wire;
+    REQUIRE(restricted->write(wire));
+    auto encoded = wire.str();
+    std::vector<uint8_t> bytes(encoded.begin(), encoded.end());
+    auto metadata = [&](auto const&, auto const&) { return info; };
+    PartitionLayer header(bytes, metadata);
+    CHECK(header.sourceId() == source->sourceId());
+    auto decoded = std::make_shared<
+        PartitionFeatureLayer>(bytes, metadata, [&](auto const&) { return strings; });
+    CHECK(decoded->toServiceJson().at("sourceId") == source->sourceId());
+    REQUIRE(decoded->find("Road.1"));
+    CHECK(decoded->find("Road.1")->toJson() == clone->toJson());
+}
+
+TEST_CASE(
+    "Filter channels share the source partition's actual provider and complete feature count",
+    "[test.subsetlayer][feature-layer-filter]")
+{
+    auto strings = std::make_shared<StringPool>("RoadDictionary");
+    auto source = std::make_shared<PartitionFeatureLayer>(
+        TileId::fromWgs84(11, 48, 13),
+        "RoadDictionary",
+        "Map",
+        subsetLayerInfo(),
+        strings);
+    std::string provider;
+    SECTION("Standalone model has no catalog provider")
+    {
+        CHECK(source->sourceId().empty());
+        CHECK_FALSE(source->toServiceJson().contains("sourceId"));
+    }
+    SECTION("Catalog provider differs from the string pool ID")
+    {
+        provider = "roads-provider";
+        source->setSourceId(provider);
+    }
+    for (int64_t id : {1, 2})
+        source->newFeature("Road", {{"roadId", id}})->addPoint({11, 48, 0});
+    FeatureLayerFilterRequest request;
+    request.channels_ = {{.channelId_ = "first"}, {.channelId_ = "second"}};
+    auto result = request.filterSource(*source, true);
+    REQUIRE(result);
+    REQUIRE(result->layer_);
+    auto const& subset = *result->layer_;
+    CHECK(subset.at(0)->featureEntryCount() == 2);
+    CHECK(subset.at(1)->featureEntryCount() == 2);
+    REQUIRE(subset.dependencies().size() == 1);
+    auto dep = subset.localSourceDependency();
+    REQUIRE(dep);
+    CHECK(dep->sourceTileKey_ == source->id());
+    CHECK(dep->sourceFeatureCount_ == 2);
+    CHECK(dep->sourceId_ == provider);
+}
+
+TEST_CASE(
+    "Shape-point wire rows preserve original identity, position and independent slots",
+    "[test.subsetlayer][shapepoint]")
+{
+    auto info = subsetLayerInfo();
+    auto strings = std::make_shared<StringPool>("PointWirePool");
+    auto subset = std::make_shared<PartitionSubsetLayer>(
+        TileId::fromWgs84(11, 48, 13),
+        strings->stringPoolId_,
+        "PointMap",
+        info,
+        strings);
+    subset->setGeometryAnchor({11.0, 48.0, 0.0});
+    auto id = subset->newFeatureId("Road", {{"roadId", int64_t{7}}});
+    auto const canonicalId = id->toString();
+    std::vector<std::string> hostFields{"roadId"}, pointFields{"curvature", "slope"};
+    auto channel =
+        subset->newChannel("vertex", Scope::ShapePoint, 2, "ADAS", hostFields, pointFields);
+    std::array hostSlots{projectedScalar(*subset, int64_t{7})};
+    std::array pointSlots{
+        projectedScalar(*subset, -0.15296),
+        simfil::ModelNode::Ptr(subset->newArray(0))};
+    std::array errors{ProjectedValueError{1, "evaluation", "Ambiguous slope"}};
+    auto host = channel->newShapePointHost(id, hostSlots);
+    auto geometry = channel->newShapePointGeometry(host, 1, GeomType::Line, "ADAS");
+    Point location{11.0625, 48.25, 543.5};
+    channel->newShapePointEntry(geometry, 1, location, pointSlots, errors);
+    channel->newShapePointEntry(geometry, 3, location, pointSlots, errors);
+
+    // The projection schema and geometry handle belong to exactly one channel.
+    auto other = subset->newChannel("other", Scope::ShapePoint, 2, {});
+    CHECK_THROWS(other->newShapePointEntry(geometry, 1, location));
+    CHECK_THROWS(channel->newShapePointEntry(geometry, 1, location));
+    CHECK_THROWS(channel->newShapePointGeometry(host, 0, GeomType::Line, "centerline"));
+    CHECK_FALSE(channel->shapePointEntryAt(2));
+    CHECK(subset->numVertices() == 2);
+    CHECK(subset->info().at("Filter/Entries/ShapePoints#count") == 2);
+
+    std::stringstream stream;
+    REQUIRE(subset->write(stream));
+    auto const encoded = stream.str();
+    auto decoded = std::make_shared<PartitionSubsetLayer>(
+        std::vector<uint8_t>(encoded.begin(), encoded.end()),
+        [&](auto const&, auto const&) { return info; },
+        [&](auto const&) { return strings; });
+    auto rows = decoded->at(0);
+    REQUIRE(rows->shapePointEntryCount() == 2);
+    CHECK(rows->entryCount() == 2);
+    auto first = rows->shapePointEntryAt(0);
+    auto second = rows->shapePointEntryAt(1);
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first->featureId()->toString() == canonicalId);
+    CHECK(first->geometryOrdinal() == 1);
+    CHECK(first->sourceGeometryType() == GeomType::Line);
+    CHECK(first->geometryName() == "ADAS");
+    CHECK(first->pointIndex() == 1);
+    CHECK(second->pointIndex() == 3);
+    CHECK(first->position() == location);
+    CHECK(first->hostValues()->addr() == second->hostValues()->addr());
+    CHECK(first->valueErrors() == std::vector<ProjectedValueError>(errors.begin(), errors.end()));
+    auto json = first->toJson();
+    CHECK(json["values"] == nlohmann::json::array({{-0.15296}, nlohmann::json::array()}));
+    CHECK(json["sourceGeometryType"] == "line");
+    CHECK(json["position"] == nlohmann::json(location));
+    auto generic = static_cast<simfil::ModelNode const&>(*first).get(StringPool::PositionStr);
+    REQUIRE(generic);
+    CHECK(generic->toJson() == json["position"]);
+    CHECK(decoded->resolve<PointNode>(*generic)->toJson() == json["position"]);
+    CHECK(rows->toJson()["shapePointEntries"][0] == json);
+    std::vector<uint32_t> seen;
+    CHECK_FALSE(rows->forEachShapePointEntry(
+        [&](auto const& entry)
+        {
+            seen.push_back(entry->pointIndex());
+            return false;
+        }));
+    CHECK(seen == std::vector<uint32_t>{1});
+}
+
 TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.subsetlayer]")
 {
     auto info = subsetLayerInfo();
@@ -182,10 +379,12 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
         {
             MapPartitionKey(LayerType::Features, "TestMap", "Road", haloTile),
             3,
+            "roads",
         },
         {
             MapPartitionKey(LayerType::Features, "TestMap", "Road", tileId),
             11,
+            "roads",
         },
     });
     subset->addIssue({
@@ -309,6 +508,17 @@ TEST_CASE("PartitionSubsetLayer owns channel schemas and typed entries", "[test.
     REQUIRE(subset->size() == 4);
     REQUIRE(subset->info()["Load/Backend#us"] == 42);
     REQUIRE(subset->localSourceFeatureCount() == 11);
+    REQUIRE(subset->localSourceDependency());
+    auto const local = *subset->localSourceDependency();
+    REQUIRE(local.sourceId_ == "roads");
+    subset->addDependency(local);
+    auto conflicting = local;
+    conflicting.sourceId_ = "other-provider";
+    REQUIRE_THROWS(subset->addDependency(conflicting));
+    conflicting = local;
+    ++conflicting.sourceFeatureCount_;
+    REQUIRE_THROWS(subset->addDependency(conflicting));
+    REQUIRE(*subset->localSourceDependency() == local);
     REQUIRE(subset->dependencies().size() == 2);
     REQUIRE(subset->issues().size() == 1);
     REQUIRE(subset->glbAttachmentName() == "road-mesh");

@@ -1,6 +1,7 @@
 #include "mapget/model/simfilexpressioncache.h"
 #include "mapget/model/layerschema.h"
 #include "mapget/model/mapschema.h"
+#include "mapschema-pointquery.h"
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +18,8 @@ namespace mapget
 
 class SimfilExpressionCache::Impl
 {
+    using Result = tl::expected<simfil::SharedAST, simfil::Error>;
+
 public:
     explicit Impl(size_t maxEntries) : maxEntries_(maxEntries) {}
 
@@ -27,10 +30,12 @@ public:
         std::string_view compileContext,
         CompileFunction const& compile)
     {
-        // Only MapSchema's verified content identity establishes graph equivalence across
-        // readers. Generic pools may be anonymous or carry arbitrary caller-supplied names.
-        auto const* rootOwner = dynamic_cast<MapSchema const*>(options.rootSchema.pool());
-        bool cacheable = !options.rootSchema || (rootOwner && rootOwner->finalized());
+        // Both trusted owners derive their identities from verified source content.
+        // A generic caller can publish the same string but not the same typed namespace.
+        auto const* pool = options.rootSchema.pool();
+        auto const* map = dynamic_cast<MapSchema const*>(pool);
+        bool const pointRoot = pool && !map && isPublishedPointQueryPool(pool);
+        bool const cacheable = !options.rootSchema || (map && map->finalized()) || pointRoot;
         CacheKey key{
             std::string(query),
             options.any,
@@ -44,11 +49,22 @@ public:
             std::string(compileContext),
         };
 
+        auto lookup = [&]() -> std::optional<Result> {
+            if (pointRoot) {
+                if (auto it = pointPrograms_.find(key); it != pointPrograms_.end())
+                    if (auto ast = it->second.lock())
+                        return Result(std::move(ast));
+            }
+            if (auto found = cache_.find(key); found != cache_.end()) {
+                return found->second;
+            }
+            return std::nullopt;
+        };
         if (cacheable) {
             std::shared_lock lock(mutex_);
-            if (auto found = cache_.find(key); found != cache_.end()) {
+            if (auto hit = lookup()) {
                 ++hits_;
-                return found->second.result();
+                return std::move(*hit);
             }
         }
 
@@ -56,10 +72,12 @@ public:
         // same first-use expression concurrently. Hits remain shared-lock only.
         std::unique_lock lock(mutex_);
         if (cacheable) {
-            if (auto found = cache_.find(key); found != cache_.end()) {
+            if (auto hit = lookup()) {
                 ++hits_;
-                return found->second.result();
+                return std::move(*hit);
             }
+            if (pointRoot)
+                pointPrograms_.erase(key);  // A miss for an existing weak key means it expired.
         }
         ++misses_;
 
@@ -74,26 +92,34 @@ public:
                 .count());
         ++compiles_;
 
-        Entry entry;
+        Result result;
         if (compiled) {
-            entry.ast_ = simfil::SharedAST(std::move(*compiled));
+            result = simfil::SharedAST(std::move(*compiled));
         }
         else {
-            entry.error_ = compiled.error();
+            result = tl::unexpected(std::move(compiled.error()));
             ++failedCompiles_;
         }
 
-        if (!cacheable || cache_.size() >= maxEntries_)
-            return entry.result();
-
-        auto inserted = cache_.emplace(std::move(key), std::move(entry));
-        return inserted.first->second.result();
+        if (cacheable && maxEntries_) {
+            if (entries() >= maxEntries_)
+                std::erase_if(pointPrograms_, [](auto const& pair) { return pair.second.expired(); });
+            if (entries() < maxEntries_) {
+                // A schema-bound expression can own its compilation pool through an AST child.
+                if (pointRoot && result)
+                    pointPrograms_.emplace(std::move(key), *result);
+                else
+                    cache_.emplace(std::move(key), result);
+            }
+        }
+        return result;
     }
 
     void clear()
     {
         std::unique_lock lock(mutex_);
         cache_.clear();
+        pointPrograms_.clear();
         hits_.store(0, std::memory_order_relaxed);
         misses_.store(0, std::memory_order_relaxed);
         compiles_.store(0, std::memory_order_relaxed);
@@ -105,7 +131,7 @@ public:
     {
         std::shared_lock lock(mutex_);
         return {
-            cache_.size(),
+            entries(),
             hits_.load(std::memory_order_relaxed),
             misses_.load(std::memory_order_relaxed),
             compiles_.load(std::memory_order_relaxed),
@@ -117,11 +143,10 @@ public:
     simfil::MemoryUsage memoryUsage() const
     {
         std::shared_lock lock(mutex_);
-        simfil::MemoryUsage result{
-            cache_.size() * (sizeof(CacheKey) + sizeof(Entry)),
-            cache_.size() * (sizeof(decltype(cache_)::value_type) + 3 * sizeof(void*)),
-        };
-        for (auto const& [key, entry] : cache_) {
+        simfil::MemoryUsage result{};
+        auto accountKey = [&](CacheKey const& key, size_t valueBytes) {
+            result.logicalBytes += sizeof(CacheKey) + valueBytes;
+            result.allocatedBytes += sizeof(CacheKey) + valueBytes + 3 * sizeof(void*);
             result.logicalBytes += key.query_.size() + key.compileContext_.size();
             result.allocatedBytes += key.query_.capacity() + 1 + key.compileContext_.capacity() + 1;
             for (auto const* identity : {&key.schemaIdentity_.first, &key.schemaIdentity_.second}) {
@@ -129,15 +154,20 @@ public:
                 result.logicalBytes += usage.logicalBytes;
                 result.allocatedBytes += usage.allocatedBytes;
             }
-            if (entry.error_) {
-                result.logicalBytes += entry.error_->message.size();
-                result.allocatedBytes += entry.error_->message.capacity() + 1;
+        };
+        for (auto const& [key, entry] : cache_) {
+            accountKey(key, sizeof(entry));
+            if (!entry) {
+                result.logicalBytes += entry.error().message.size();
+                result.allocatedBytes += entry.error().message.capacity() + 1;
             }
-            if (entry.ast_) {
+            else if (*entry) {
                 result.logicalBytes += sizeof(simfil::AST);
                 result.allocatedBytes += sizeof(simfil::AST);
             }
         }
+        for (auto const& [key, weak] : pointPrograms_)
+            accountKey(key, sizeof(weak));
         result.allocatedBytes = std::max(result.logicalBytes, result.allocatedBytes);
         return result;
     }
@@ -173,22 +203,12 @@ private:
         }
     };
 
-    struct Entry
-    {
-        simfil::SharedAST ast_;
-        std::optional<simfil::Error> error_;
-
-        [[nodiscard]] tl::expected<simfil::SharedAST, simfil::Error> result() const
-        {
-            if (error_)
-                return tl::unexpected(*error_);
-            return ast_;
-        }
-    };
+    size_t entries() const { return cache_.size() + pointPrograms_.size(); }
 
     size_t maxEntries_ = DefaultMaxEntries;
     mutable std::shared_mutex mutex_;
-    std::map<CacheKey, Entry> cache_;
+    std::map<CacheKey, Result> cache_;
+    std::map<CacheKey, std::weak_ptr<simfil::AST const>> pointPrograms_;
     std::atomic_uint64_t hits_ = 0;
     std::atomic_uint64_t misses_ = 0;
     std::atomic_uint64_t compiles_ = 0;

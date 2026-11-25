@@ -20,6 +20,20 @@ enum class GeomType : uint8_t {
                    // bounds
 };
 
+/** Stable source geometry spelling used in statistics and shape-point subset JSON. */
+constexpr char const* geometryTypeName(GeomType type)
+{
+    switch (type) {
+    case GeomType::Points: return "points";
+    case GeomType::Line: return "line";
+    case GeomType::Polygon: return "polygon";
+    case GeomType::Mesh: return "mesh";
+    case GeomType::AABB: return "aabb";
+    case GeomType::GltfNodeIndex: return "gltf-node-index";
+    }
+    return "unknown";
+}
+
 enum class GeometryPointViewKind : uint8_t {
     RawSize,
     BoundsOrigin,

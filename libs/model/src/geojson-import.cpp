@@ -16,8 +16,11 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cmath>
+#include <functional>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,11 +35,31 @@ namespace mapget
 namespace
 {
 using AttrPointSequenceRegistry = std::vector<model_ptr<AttrPointSequence>>;
+using BindValidityReference = std::function<model_ptr<ValidityReference>(uint32_t)>;
 
 /** Raise a consistently prefixed import error. */
 [[noreturn]] void raiseImport(std::string const& message)
 {
     raiseFmt("PartitionFeatureLayer::fromJson: {}", message);
+}
+
+/** Check the JSON type and range before narrowing a wire ordinal. */
+[[nodiscard]] uint32_t uint32FromJson(nlohmann::json const& value, std::string_view field)
+{
+    if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<int64_t>() < 0) ||
+        value.get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+    {
+        raiseImport(fmt::format("{} must be an integer in uint32 range.", field));
+    }
+    return value.get<uint32_t>();
+}
+
+/** Do not let a JSON boolean or non-finite programmatic input become a position. */
+[[nodiscard]] double positionNumber(nlohmann::json const& value)
+{
+    if (!value.is_number() || !std::isfinite(value.get<double>()))
+        raiseImport("A coordinate or validity offset must be a finite number.");
+    return value.get<double>();
 }
 
 /** Parse mapget validity direction labels, including legacy aliases. */
@@ -112,9 +135,9 @@ offsetTypeFromJson(nlohmann::json const& json)
         raiseImport("Expected GeoJSON coordinate array with 2 or 3 numeric elements.");
     }
     return Point{
-        json.at(0).get<double>(),
-        json.at(1).get<double>(),
-        json.size() >= 3 ? json.at(2).get<double>() : 0.0};
+        positionNumber(json.at(0)),
+        positionNumber(json.at(1)),
+        json.size() >= 3 ? positionNumber(json.at(2)) : 0.0};
 }
 
 /** Resolve a compact `$mapgetAttrPointSequence` token against imported definitions. */
@@ -122,19 +145,13 @@ offsetTypeFromJson(nlohmann::json const& json)
     nlohmann::json const& json,
     AttrPointSequenceRegistry const& sequences)
 {
-    if (!json.is_object() || json.size() != 1 || !json.contains("$mapgetAttrPointSequence") ||
-        !json.at("$mapgetAttrPointSequence").is_number_integer())
-    {
+    if (!json.is_object() || json.size() != 1 || !json.contains("$mapgetAttrPointSequence")) {
         raiseImport(
             "AttrPointSequence reference must be encoded as "
             "{'$mapgetAttrPointSequence': <non-negative integer>}.");
     }
-    auto const encodedIndex = json.at("$mapgetAttrPointSequence").get<int64_t>();
-    if (encodedIndex < 0 ||
-        static_cast<uint64_t>(encodedIndex) > std::numeric_limits<uint32_t>::max()) {
-        raiseImport("AttrPointSequence reference index is outside uint32 range.");
-    }
-    auto const index = static_cast<uint32_t>(encodedIndex);
+    auto const index =
+        uint32FromJson(json.at("$mapgetAttrPointSequence"), "$mapgetAttrPointSequence");
     if (index >= sequences.size()) {
         raiseImport(fmt::format(
             "AttrPointSequence reference {} is out of range ({} definitions).",
@@ -177,86 +194,101 @@ void validateIdPartValue(FeatureIdentity::Part idPart, std::variant<int64_t, std
     }
 }
 
-/** Detect compact references to a feature-local top-level relation. */
-[[nodiscard]] bool isRelationReferenceJson(nlohmann::json const& json)
+/** Only the exact singleton object is a native reference, not a producer object with extra keys. */
+[[nodiscard]] bool isPropertyReference(nlohmann::json const& json)
 {
-    return json.is_object() && json.size() == 1 && json.contains("$mapgetRelation");
+    return json.is_object() && json.size() == 1 &&
+        (json.contains("$mapgetRelation") || json.contains("$mapgetValidity") ||
+         json.contains("$mapgetAttrPointSequence"));
 }
 
-/** Recursively check whether generic JSON import needs mapget-specific
- * relation-reference handling.
- */
-[[nodiscard]] bool containsRelationReferenceJson(nlohmann::json const& json)
+/** A subtree without native references can go through simfil's shared tagged-JSON reader. */
+[[nodiscard]] bool containsPropertyReference(nlohmann::json const& json)
 {
-    if (isRelationReferenceJson(json)) {
-        return true;
-    }
-    if (json.is_array()) {
-        return std::any_of(
-            json.begin(),
-            json.end(),
-            [](auto const& child) { return containsRelationReferenceJson(child); });
-    }
-    if (json.is_object()) {
-        return std::any_of(
-            json.begin(),
-            json.end(),
-            [](auto const& child) { return containsRelationReferenceJson(child); });
-    }
-    return false;
+    return isPropertyReference(json) ||
+        (json.is_structured() && std::any_of(json.begin(), json.end(), containsPropertyReference));
 }
 
-/** Delegate generic object/array/scalar import to simfil's shared JSON builder unless relation refs
- * require feature context. */
+/** Typed metadata and ignored extension members have no attribute to own a validity token. */
+void rejectValidityReferences(nlohmann::json const& json)
+{
+    if (json.is_object() && json.size() == 1 && json.contains("$mapgetValidity"))
+        raiseImport("$mapgetValidity is only valid inside an attribute's payload.");
+    if (json.is_structured())
+        std::for_each(json.begin(), json.end(), rejectValidityReferences);
+}
+
+/** A simfil multimap wraps every field, even a singleton array-valued field, in an outer array. */
+template <class Fn>
+void forPropertyValues(bool multimap, nlohmann::json const& value, Fn&& visit)
+{
+    if (!multimap) {
+        visit(value);
+        return;
+    }
+    if (!value.is_array())
+        raiseImport("Expected an array of values for a multimap field.");
+    for (auto const& item : value)
+        visit(item);
+}
+
+/** Decode generic property trees, binding compact references in their original owner scope. */
 [[nodiscard]] simfil::ModelNode::Ptr importGenericNode(
     PartitionFeatureLayer& tile,
     nlohmann::json const& json,
-    model_ptr<Feature> const& feature = {})
+    model_ptr<Feature> const& feature,
+    BindValidityReference const& bindValidity = {})
 {
-    if (isRelationReferenceJson(json)) {
-        if (!feature) {
-            raiseImport("$mapgetRelation can only be imported inside feature properties.");
+    if (isPropertyReference(json)) {
+        if (auto it = json.find("$mapgetValidity"); it != json.end()) {
+            if (!bindValidity)
+                raiseImport("$mapgetValidity is only valid inside an attribute's payload.");
+            return bindValidity(uint32FromJson(*it, "$mapgetValidity"));
         }
-        auto const& relationIndexJson = json.at("$mapgetRelation");
-        if (!relationIndexJson.is_number_integer() && !relationIndexJson.is_number_unsigned()) {
-            raiseImport("$mapgetRelation must be encoded as an integer.");
+        if (auto it = json.find("$mapgetAttrPointSequence"); it != json.end()) {
+            auto index = uint32FromJson(*it, "$mapgetAttrPointSequence");
+            if (index >= tile.numAttrPointSequences())
+                raiseImport(fmt::format("AttrPointSequence reference {} is out of range.", index));
+            return tile.resolve<AttrPointSequenceReference>(simfil::ModelNodeAddress{
+                PartitionFeatureLayer::ColumnId::AttrPointSequenceReferences,
+                index});
         }
-        uint64_t relationIndex = 0;
-        if (relationIndexJson.is_number_unsigned()) {
-            relationIndex = relationIndexJson.get<uint64_t>();
-        }
-        else {
-            auto const signedIndex = relationIndexJson.get<int64_t>();
-            if (signedIndex < 0) {
-                raiseImport("$mapgetRelation must not be negative.");
-            }
-            relationIndex = static_cast<uint64_t>(signedIndex);
-        }
+        auto relationIndex = uint32FromJson(json.at("$mapgetRelation"), "$mapgetRelation");
         if (relationIndex >= Relation::InvalidFeatureRelationIndex) {
             raiseImport("$mapgetRelation exceeds the supported relation-reference range.");
         }
-        auto relation = feature->getRelation(static_cast<uint32_t>(relationIndex));
+        auto relation = feature->getRelation(relationIndex);
         if (!relation) {
             raiseImport(fmt::format("Feature has no relation at index {}.", relationIndex));
         }
         return tile.newRelationReference(relation);
     }
 
-    if (containsRelationReferenceJson(json)) {
+    if (containsPropertyReference(json)) {
         if (json.is_array()) {
             auto array = tile.newArray(json.size(), true);
             for (auto const& item : json) {
-                array->append(importGenericNode(tile, item, feature));
+                array->append(importGenericNode(tile, item, feature, bindValidity));
             }
             return array;
         }
         if (json.is_object()) {
-            auto object = tile.newObject(json.size());
+            bool const multimap = json.contains("_multimap") && json.at("_multimap") == true;
+            auto object = tile.newObject(json.size(), !multimap);
             for (auto const& [key, value] : json.items()) {
-                auto result = object->addField(key, importGenericNode(tile, value, feature));
-                if (!result) {
-                    raiseImport(result.error().message);
-                }
+                if (multimap && key == "_multimap")
+                    continue;
+                forPropertyValues(
+                    multimap,
+                    value,
+                    [&](nlohmann::json const& item)
+                    {
+                        auto result = object->addField(
+                            key,
+                            importGenericNode(tile, item, feature, bindValidity));
+                        if (!result)
+                            raiseImport(result.error().message);
+                    });
             }
             return object;
         }
@@ -793,29 +825,46 @@ void importFeatureGeometry(
     feature->addGeometry(geometry);
 }
 
-/** Import one validity or validity list into mapget's MultiValidity container. */
+/** Borrow the singleton or array elements from the immutable import document. */
+[[nodiscard]] std::span<nlohmann::json const> validityEntries(nlohmann::json const& json)
+{
+    if (json.is_array())
+        return json.get_ref<nlohmann::json::array_t const&>();
+    return {&json, 1};
+}
+
+/** Append stored validity entries after shared sequence definitions exist. */
 void importValidityCollection(
     PartitionFeatureLayer& tile,
-    model_ptr<Feature> hostFeature,
     model_ptr<MultiValidity> collection,
-    nlohmann::json const& json,
+    std::span<nlohmann::json const> values,
     GeoJsonImportOptions const& options,
     AttrPointSequenceRegistry const& attrPointSequences)
 {
-    auto values = json.is_array() ? json : nlohmann::json::array({json});
     for (auto const& value : values) {
         if (!value.is_object()) {
             raiseImport("Validity entries must be JSON objects.");
         }
 
-        auto validity = tile.newValidity();
+        std::optional<Validity::Direction> direction;
         if (value.contains("direction")) {
-            auto direction = directionFromJson(value.at("direction"));
+            direction = directionFromJson(value.at("direction"));
             if (!direction) {
                 raiseImport(
                     fmt::format("Unknown validity direction '{}'.", value.at("direction").dump()));
             }
+            if (value.size() == 1) {
+                collection->newDirection(*direction);
+                continue;
+            }
+        }
+        auto validity = tile.newValidity();
+        if (direction)
             validity->setDirection(*direction);
+        if (auto tag = value.find("tag"); tag != value.end()) {
+            if (!tag->is_string() || tag->get_ref<std::string const&>().empty())
+                raiseImport("Validity tag must be a non-empty string.");
+            validity->setTag(tag->get_ref<std::string const&>());
         }
         if (auto name = geometryNameFromJson(value)) {
             validity->setGeometryName(*name);
@@ -843,7 +892,7 @@ void importValidityCollection(
                 *fromEnd,
                 toFeatureId,
                 *toEnd,
-                value.at("transitionNumber").get<uint32_t>());
+                uint32FromJson(value.at("transitionNumber"), "transitionNumber"));
             collection->append(validity);
             continue;
         }
@@ -863,7 +912,7 @@ void importValidityCollection(
             }
             validity->setAttrPointIndex(
                 importAttrPointSequenceReference(indexJson.at("sequence"), attrPointSequences),
-                indexJson.at("index").get<uint32_t>());
+                uint32FromJson(indexJson.at("index"), "attrPointIndex.index"));
             collection->append(validity);
             continue;
         }
@@ -877,8 +926,8 @@ void importValidityCollection(
             }
             validity->setAttrPointIndexRange(
                 importAttrPointSequenceReference(rangeJson.at("sequence"), attrPointSequences),
-                rangeJson.at("start").get<uint32_t>(),
-                rangeJson.at("end").get<uint32_t>());
+                uint32FromJson(rangeJson.at("start"), "attrPointIndexRange.start"),
+                uint32FromJson(rangeJson.at("end"), "attrPointIndexRange.end"));
             collection->append(validity);
             continue;
         }
@@ -899,7 +948,7 @@ void importValidityCollection(
             if (offsetType && *offsetType != Validity::GeoPosOffset) {
                 // Non-geospatial offsets reuse the `point` field name for historic JSON
                 // compatibility.
-                validity->setOffsetPoint(*offsetType, value.at("point").get<double>());
+                validity->setOffsetPoint(*offsetType, positionNumber(value.at("point")));
             }
             else {
                 validity->setOffsetPoint(pointFromCoordinateJson(value.at("point")));
@@ -915,8 +964,8 @@ void importValidityCollection(
             if (offsetType && *offsetType != Validity::GeoPosOffset) {
                 validity->setOffsetRange(
                     *offsetType,
-                    value.at("start").get<double>(),
-                    value.at("end").get<double>());
+                    positionNumber(value.at("start")),
+                    positionNumber(value.at("end")));
             }
             else {
                 validity->setOffsetRange(
@@ -931,11 +980,49 @@ void importValidityCollection(
     }
 }
 
-struct DeferredAttributeValidity
+/** An exported suffix can contain stored points with the same tag as a virtual series.
+ * Only discard the suffix the fully populated occurrence can actually regenerate. */
+struct DeferredMarkerTail
 {
     model_ptr<Feature> hostFeature_;
     model_ptr<Attribute> attribute_;
-    nlohmann::json validityJson_;
+    std::string_view layerName_;
+    std::span<nlohmann::json const> entries_;
+    size_t firstCandidate_;
+
+    void finish(
+        PartitionFeatureLayer& tile,
+        GeoJsonImportOptions const& options,
+        AttrPointSequenceRegistry const& sequences)
+    {
+        auto stored = attribute_->validityOrNull();
+        auto const storedCount = stored ? stored->size() : 0;
+        auto view = attribute_->validityView(hostFeature_, layerName_);
+        auto const markerCount = view.size() - storedCount;
+        size_t keep = entries_.size();
+        if (markerCount <= keep - firstCandidate_) {
+            auto tail = entries_.last(markerCount);
+            bool matches = true;
+            for (uint32_t i = 0; i < markerCount; ++i) {
+                auto marker = view.at(storedCount + i);
+                if (!marker || marker->toJson() != tail[i]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches)
+                keep -= markerCount;
+        }
+        if (storedCount > keep)
+            raiseImport("$mapgetValidity cannot reference a record-derived marker.");
+        if (keep > storedCount)
+            importValidityCollection(
+                tile,
+                attribute_->validity(),
+                entries_.subspan(storedCount, keep - storedCount),
+                options,
+                sequences);
+    }
 };
 
 /** Defer relation import until feature IDs, host geometry and shared
@@ -944,7 +1031,7 @@ struct DeferredAttributeValidity
 struct DeferredRelation
 {
     model_ptr<Feature> feature_;
-    nlohmann::json relationJson_;
+    nlohmann::json const& relationJson_;
 };
 
 /** Defer property import until top-level relations are available for
@@ -953,41 +1040,113 @@ struct DeferredRelation
 struct DeferredProperties
 {
     model_ptr<Feature> feature_;
-    nlohmann::json propertiesJson_;
+    nlohmann::json const& propertiesJson_;
 };
 
-/** Import one attribute payload object, excluding deferred validity handling. */
+/** Only record-position declarations synthesize tagged points. TaggedValidity reads stored ones. */
+[[nodiscard]] bool
+mayBeProjectedMarker(nlohmann::json const& entry, std::span<PointSeries const> declarations)
+{
+    auto tag = entry.find("tag");
+    if (tag == entry.end() || !tag->is_string() || !entry.contains("point") ||
+        entry.contains("direction"))
+        return false;
+    return std::ranges::any_of(
+        declarations,
+        [&](PointSeries const& series)
+        {
+            return series.position_.kind_ != PointSeries::Position::Kind::TaggedValidity &&
+                !series.markerTag_.empty() &&
+                series.markerTag_ == tag->get_ref<std::string const&>();
+        });
+}
+
+/** Import one occurrence's stored validities before binding its property references.
+ * JSON member order is not the dependency order: a reference may precede `validity`. */
 void importAttributeObject(
     PartitionFeatureLayer& tile,
-    model_ptr<Feature> hostFeature,
+    model_ptr<Feature> const& hostFeature,
+    std::string_view layerName,
     model_ptr<Attribute> attribute,
     nlohmann::json const& json,
     GeoJsonImportOptions const& options,
-    std::vector<DeferredAttributeValidity>& deferredValidities)
+    AttrPointSequenceRegistry const& sequences,
+    std::vector<DeferredMarkerTail>& markerTails)
 {
-    if (!json.is_object()) {
+    if (!json.is_object() || isPropertyReference(json)) {
         raiseImport(fmt::format("Attribute '{}' must be encoded as an object.", attribute->name()));
     }
 
-    for (auto const& [key, value] : json.items()) {
-        if (key == "_multimap") {
-            continue;
-        }
-        if (key == "validity") {
-            deferredValidities.push_back(DeferredAttributeValidity{hostFeature, attribute, value});
-            continue;
-        }
-        if (key == "_sourceData" || key == "sourceData") {
-            if (auto refs = importSourceDataReferences(tile, value)) {
-                attribute->setSourceDataReferences(*refs);
-            }
-            continue;
-        }
-        auto result = attribute->addField(key, importGenericNode(tile, value, hostFeature));
-        if (!result) {
-            raiseImport(result.error().message);
-        }
+    bool const multimap = json.contains("_multimap") && json.at("_multimap") == true;
+    std::span<nlohmann::json const> entries;
+    if (auto it = json.find("validity"); it != json.end()) {
+        rejectValidityReferences(*it);
+        if (multimap && (!it->is_array() || it->size() != 1))
+            raiseImport("An attribute multimap must have exactly one validity field.");
+        entries = validityEntries(multimap ? it->front() : *it);
+        if (entries.empty())
+            (void)attribute->validity();  // Explicit [] is not omitted applicability.
     }
+
+    size_t firstCandidate = entries.size();
+    if (auto schema = tile.layerSchema(); schema && !entries.empty()) {
+        auto declarations =
+            schema->pointSeries(hostFeature->typeId(), layerName, attribute->name());
+        while (firstCandidate && mayBeProjectedMarker(entries[firstCandidate - 1], declarations))
+            --firstCandidate;
+    }
+
+    size_t storedCount = 0;
+    auto storeThrough = [&](size_t count)
+    {
+        if (count > storedCount) {
+            importValidityCollection(
+                tile,
+                attribute->validity(),
+                entries.subspan(storedCount, count - storedCount),
+                options,
+                sequences);
+            storedCount = count;
+        }
+    };
+    storeThrough(firstCandidate);
+    BindValidityReference bindValidity = [&](uint32_t index)
+    {
+        if (index >= entries.size())
+            raiseImport(fmt::format(
+                "Attribute '{}' has no validity at index {}.",
+                attribute->name(),
+                index));
+        // A stored point can use a series' tag. Materialize its slot first; finish()
+        // rejects links into the actual derived suffix once all raw records are available.
+        storeThrough(static_cast<size_t>(index) + 1);
+        return tile.newValidityReference(attribute, index);
+    };
+
+    for (auto const& [key, value] : json.items()) {
+        if ((multimap && key == "_multimap") || key == "validity") {
+            continue;
+        }
+        forPropertyValues(
+            multimap,
+            value,
+            [&](nlohmann::json const& item)
+            {
+                if (key == "_sourceData" || key == "sourceData") {
+                    rejectValidityReferences(item);
+                    if (auto refs = importSourceDataReferences(tile, item))
+                        attribute->setSourceDataReferences(*refs);
+                    return;
+                }
+                auto result = attribute->addField(
+                    key,
+                    importGenericNode(tile, item, hostFeature, bindValidity));
+                if (!result)
+                    raiseImport(result.error().message);
+            });
+    }
+    if (firstCandidate < entries.size())
+        markerTails.push_back({hostFeature, attribute, layerName, entries, firstCandidate});
 }
 
 /** Import one attribute-layer object, preserving duplicate attribute names and optional instance id
@@ -998,7 +1157,8 @@ void importAttributeLayerObject(
     std::string const& layerName,
     nlohmann::json const& layerJson,
     GeoJsonImportOptions const& options,
-    std::vector<DeferredAttributeValidity>& deferredValidities)
+    AttrPointSequenceRegistry const& sequences,
+    std::vector<DeferredMarkerTail>& markerTails)
 {
     if (!layerJson.is_object()) {
         raiseImport(fmt::format("Attribute layer '{}' must be a JSON object.", layerName));
@@ -1028,10 +1188,12 @@ void importAttributeLayerObject(
             importAttributeObject(
                 tile,
                 feature,
+                layerName,
                 attribute,
                 attributeJson,
                 options,
-                deferredValidities);
+                sequences,
+                markerTails);
         };
 
         if (attrValue.is_array()) {
@@ -1051,9 +1213,10 @@ void importProperties(
     model_ptr<Feature> feature,
     nlohmann::json const& propertiesJson,
     GeoJsonImportOptions const& options,
-    std::vector<DeferredAttributeValidity>& deferredValidities)
+    AttrPointSequenceRegistry const& sequences,
+    std::vector<DeferredMarkerTail>& markerTails)
 {
-    if (!propertiesJson.is_object()) {
+    if (!propertiesJson.is_object() || isPropertyReference(propertiesJson)) {
         raiseImport("Feature properties must be encoded as an object.");
     }
 
@@ -1073,7 +1236,8 @@ void importProperties(
                         layerName,
                         layerElement,
                         options,
-                        deferredValidities);
+                        sequences,
+                        markerTails);
                 }
             }
             else {
@@ -1083,46 +1247,61 @@ void importProperties(
                     layerName,
                     layerValue,
                     options,
-                    deferredValidities);
+                    sequences,
+                    markerTails);
             }
         }
     }
 
-    for (auto const& [key, value] : propertiesJson.items()) {
-        if (key == "layer") {
+    bool const multimap = propertiesJson.contains("_multimap") &&
+        propertiesJson.at("_multimap") == true;
+    for (auto const& [key, field] : propertiesJson.items()) {
+        if (key == "layer" || (multimap && key == "_multimap")) {
             // `properties.layer` is reserved for exported attribute layers.
             continue;
         }
-        if (!options.strict_ && options.objectPropertiesAsAttributeLayers_ && value.is_object()) {
-            // Best-effort mode may reinterpret nested objects as attribute layers for plain
-            // GeoJSON.
-            auto attrLayer = feature->attributeLayers()->newLayer(key);
-            for (auto const& [attrName, attrValue] : value.items()) {
-                auto attribute = attrLayer->newAttribute(attrName);
-                if (attrValue.is_object()) {
-                    importAttributeObject(
-                        tile,
-                        feature,
-                        attribute,
-                        attrValue,
-                        options,
-                        deferredValidities);
-                }
-                else {
-                    auto result =
-                        attribute->addField(attrName, importGenericNode(tile, attrValue, feature));
-                    if (!result) {
-                        raiseImport(result.error().message);
+        forPropertyValues(
+            multimap,
+            field,
+            [&](nlohmann::json const& value)
+            {
+                if (!options.strict_ && options.objectPropertiesAsAttributeLayers_ &&
+                    value.is_object() && !isPropertyReference(value))
+                {
+                    // Best-effort mode may reinterpret nested objects as attribute layers for plain
+                    // GeoJSON.
+                    auto attrLayer = feature->attributeLayers()->newLayer(key);
+                    for (auto const& [attrName, attrValue] : value.items()) {
+                        auto attribute = attrLayer->newAttribute(attrName);
+                        if (attrValue.is_object()) {
+                            importAttributeObject(
+                                tile,
+                                feature,
+                                key,
+                                attribute,
+                                attrValue,
+                                options,
+                                sequences,
+                                markerTails);
+                        }
+                        else {
+                            auto result = attribute->addField(
+                                attrName,
+                                importGenericNode(tile, attrValue, feature));
+                            if (!result) {
+                                raiseImport(result.error().message);
+                            }
+                        }
                     }
+                    return;
                 }
-            }
-            continue;
-        }
 
-        auto result = feature->attributes()->addField(key, importGenericNode(tile, value, feature));
-        if (!result) {
-            raiseImport(result.error().message);
-        }
+                auto result =
+                    feature->attributes()->addField(key, importGenericNode(tile, value, feature));
+                if (!result) {
+                    raiseImport(result.error().message);
+                }
+            });
     }
 }
 
@@ -1153,18 +1332,16 @@ void importRelation(
     if (relationJson.contains("sourceValidity")) {
         importValidityCollection(
             tile,
-            feature,
             relation->sourceValidity(),
-            relationJson.at("sourceValidity"),
+            validityEntries(relationJson.at("sourceValidity")),
             options,
             attrPointSequences);
     }
     if (relationJson.contains("targetValidity")) {
         importValidityCollection(
             tile,
-            feature,
             relation->targetValidity(),
-            relationJson.at("targetValidity"),
+            validityEntries(relationJson.at("targetValidity")),
             options,
             attrPointSequences);
     }
@@ -1227,8 +1404,8 @@ importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJ
                 "Every AttrPointSequence must define id, featureId, geometryIndex, and "
                 "attrPoints.");
         }
-        auto const expectedId = static_cast<uint32_t>(result.size());
-        if (sequenceJson.at("id").get<uint32_t>() != expectedId) {
+        auto const expectedId = result.size();
+        if (uint32FromJson(sequenceJson.at("id"), "AttrPointSequence id") != expectedId) {
             raiseImport(fmt::format(
                 "AttrPointSequence id {} is not the expected contiguous id {}.",
                 sequenceJson.at("id").dump(),
@@ -1243,8 +1420,9 @@ importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJ
                 "AttrPointSequence references missing feature '{}'.",
                 sequenceJson.at("featureId").get<std::string>()));
         }
-        auto geometry =
-            featureGeometryAt(feature, sequenceJson.at("geometryIndex").get<uint32_t>());
+        auto geometry = featureGeometryAt(
+            feature,
+            uint32FromJson(sequenceJson.at("geometryIndex"), "geometryIndex"));
         if (auto geometryName = sequenceJson.find("geometryName");
             geometryName != sequenceJson.end()) {
             if (!geometryName->is_string() || geometry->name() != geometryName->get<std::string>())
@@ -1270,7 +1448,7 @@ importAttrPointSequences(PartitionFeatureLayer& tile, nlohmann::json const& geoJ
                 }
             }
             sequence->appendAttrPoint(
-                pointJson.at("index").get<uint32_t>(),
+                uint32FromJson(pointJson.at("index"), "AttrPoint index"),
                 pointFromCoordinateJson(pointJson.at("point")),
                 pointSourceData);
         }
@@ -1328,6 +1506,9 @@ void importGeoJson(
     if (!geoJson.contains("features") || !geoJson.at("features").is_array()) {
         raiseImport("GeoJSON FeatureCollection is missing an array-valued 'features' field.");
     }
+    for (auto const& [key, value] : geoJson.items())
+        if (key != "features")
+            rejectValidityReferences(value);
 
     if (options.strict_) {
         if (geoJson.contains("glbAttachment")) {
@@ -1397,7 +1578,7 @@ void importGeoJson(
         }
     }
 
-    std::vector<DeferredAttributeValidity> deferredValidities;
+    std::vector<DeferredMarkerTail> markerTails;
     std::vector<DeferredRelation> deferredRelations;
     std::vector<DeferredProperties> deferredProperties;
 
@@ -1409,6 +1590,9 @@ void importGeoJson(
         if (featureJson.value("type", "") != "Feature") {
             raiseImport("Every feature entry must have type 'Feature'.");
         }
+        for (auto const& [key, value] : featureJson.items())
+            if (key != "properties" && key != "attributes")
+                rejectValidityReferences(value);
 
         auto const typeId = determineFeatureType(tile, featureJson, options);
         KeyValuePairs fullIdParts;
@@ -1497,19 +1681,13 @@ void importGeoJson(
             deferred.feature_,
             deferred.propertiesJson_,
             options,
-            deferredValidities);
+            attrPointSequences,
+            markerTails);
     }
 
-    // Attribute validities may reference local features and property import creates the attributes.
-    for (auto& deferred : deferredValidities) {
-        importValidityCollection(
-            tile,
-            deferred.hostFeature_,
-            deferred.attribute_->validity(),
-            deferred.validityJson_,
-            options,
-            attrPointSequences);
-    }
+    // A series may select a branch using a host property imported after its attribute layer.
+    for (auto& tail : markerTails)
+        tail.finish(tile, options, attrPointSequences);
 }
 
 void PartitionFeatureLayer::fromJson(

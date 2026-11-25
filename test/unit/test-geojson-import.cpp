@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -132,6 +133,73 @@ template<typename T>
 void requireExpectedOk(tl::expected<T, simfil::Error> const& result)
 {
     REQUIRE(result);
+}
+
+/** An ordinary GeoJSON occurrence, with two vertices for tests that declare dense markers. */
+nlohmann::json profileDocument(nlohmann::json profile)
+{
+    auto doc = R"json({
+      "type":"FeatureCollection", "features":[{
+        "type":"Feature", "typeId":"AnyFeature", "tileId":131073, "featureIndex":0,
+        "geometry":{"type":"LineString", "coordinates":[[0,0],[1,0]]}
+      }]
+    })json"_json;
+    doc["features"][0]["properties"]["layer"]["measurements"]["profile"] = std::move(profile);
+    return doc;
+}
+
+/** Inspect physical attributes, not the feature's projected property nodes. */
+std::vector<model_ptr<Attribute>> storedProfiles(PartitionFeatureLayer& tile)
+{
+    auto feature = tile.find("AnyFeature.131073.0");
+    REQUIRE(feature);
+    std::vector<model_ptr<Attribute>> result;
+    feature->attributeLayers()->forEachLayer(
+        [&](auto name, auto const& layer)
+        {
+            if (name == "measurements") {
+                layer->forEachAttribute(
+                    [&](auto const& attr)
+                    {
+                        if (attr->name() == "profile")
+                            result.push_back(attr);
+                        return true;
+                    });
+            }
+            return true;
+        });
+    return result;
+}
+
+/** Use the same input shape with either a record-derived or a persisted position axis. */
+std::shared_ptr<LayerInfo> profileSchema(PointSeries::Position::Kind axis)
+{
+    auto map = std::make_shared<MapSchema>();
+    auto layer = map->newLayer("GeoJsonAny", LayerType::Features);
+    (void)layer->newFeature(
+        {"AnyFeature",
+         {{{"tileId", {}, IdPartDataType::I64}, {"featureIndex", {}, IdPartDataType::U32}}}});
+    auto type = map->newAttribute("Measurement");
+    auto number = map->primitive(simfil::SchemaType::Kind::Int);
+    type.addField("records", map->schemaType(map->arrayOf(number)));
+    layer->bindAttribute(type, "AnyFeature", "measurements", "profile");
+    PointSeries series;
+    series.featureType_ = "AnyFeature";
+    series.attributeLayer_ = "measurements";
+    series.attribute_ = "profile";
+    series.records_ = {"records"};
+    series.position_.kind_ = axis;
+    series.markerTag_ = "sample";
+    series.fields_ = {{"reading", {}, {}, {}}};
+    series.omittedValidityCovers_ = true;
+    layer->addPointSeries(std::move(series));
+    map->finalize();
+    auto info = std::make_shared<LayerInfo>();
+    info->layerId_ = "GeoJsonAny";
+    DataSourceInfo source;
+    source.layers_.emplace(info->layerId_, info);
+    source.setMapSchema(map);
+    return source.getLayer(info->layerId_);
 }
 
 }  // namespace
@@ -584,4 +652,214 @@ TEST_CASE("Strict feature JSON preserves and validates diagnostics", "[GeoJsonIm
         broken["warnings"] = invalid;
         REQUIRE_THROWS(makeTile(131073, info)->fromJson(broken));
     }
+}
+
+TEST_CASE("Nested GeoJSON references bind to stored slots of each occurrence", "[GeoJsonImport]")
+{
+    auto info = makeGenericLayerInfo();
+    auto first = R"json({
+      "_multimap":true,
+      "aBefore":[{"_multimap":true,
+                  "links":[{"$mapgetValidity":0},[{"$mapgetValidity":0}]],
+                  "relation":[{"$mapgetRelation":0}], "sequence":[{"$mapgetAttrPointSequence":0}],
+                  "blob":[{"_bytes":true,"hex":"41","number":65}]}, 7],
+      "validity":[{"tag":"inserted","attrPointIndex":{"sequence":{"$mapgetAttrPointSequence":0},"index":1}}],
+      "zAfter":[[{"$mapgetValidity":0}]]
+    })json"_json;
+    auto second = first;
+    second["validity"][0] = R"({"tag":"end","offsetType":"BufferOffset","point":1})"_json;
+    auto input = profileDocument(nlohmann::json::array({first, second}));
+    input["attrPointSequences"] = R"([{"id":0,"featureId":"AnyFeature.131073.0","geometryIndex":0,
+                                      "attrPoints":[{"index":1,"point":[0.5,0]}]}])"_json;
+    input["features"][0]["relations"] = R"([{"name":"self","target":"AnyFeature.131073.0"}])"_json;
+
+    auto tile = makeTile(131073, info);
+    tile->fromJson(input);
+    auto profiles = storedProfiles(*tile);
+    REQUIRE(profiles.size() == 2);
+    for (size_t i = 0; i < profiles.size(); ++i) {
+        auto const& attribute = profiles[i];
+        auto list = attribute->validityOrNull();
+        REQUIRE(list);
+        REQUIRE(list->size() == 1);
+        auto mixed = attribute->get(tile->strings()->get("aBefore"));
+        auto sequence = tile->resolve<AttrPointSequenceReference>(
+            *mixed->get(tile->strings()->get("sequence")));
+        REQUIRE(sequence->sequence()->addr() == tile->attrPointSequenceAt(0)->addr());
+        auto relation =
+            tile->resolve<RelationReference>(*mixed->get(tile->strings()->get("relation")));
+        REQUIRE(relation->relation()->featureRelationIndex() == 0);
+        for (auto node :
+             {mixed->get(tile->strings()->get("links")),
+              attribute->get(tile->strings()->get("zAfter"))->at(0)})
+        {
+            auto ref = tile->resolve<ValidityReference>(*node);
+            REQUIRE(ref->index() == 0);
+            REQUIRE(ref->validity()->addr() == list->at(0)->addr());
+            REQUIRE(ref->validity()->tag() == (i == 0 ? "inserted" : "end"));
+            REQUIRE(ref->validity()->direction() == Validity::Empty);
+        }
+    }
+    auto const json = tile->toJson();
+    REQUIRE(
+        json.at("features").at(0).at("properties").at("layer").at("measurements").at("profile") ==
+        nlohmann::json::array({first, second}));
+}
+
+TEST_CASE(
+    "GeoJSON validity tokens reject invalid numbers, owners and missing slots",
+    "[GeoJsonImport]")
+{
+    auto info = makeGenericLayerInfo();
+    auto profile = R"({"a":[{"link":{"$mapgetValidity":0}}],"validity":{"direction":"NONE"}})"_json;
+    for (nlohmann::json bad : std::vector<nlohmann::json>{
+             -1,
+             0.0,
+             0.5,
+             true,
+             nullptr,
+             "0",
+             1,
+             uint64_t{1} << 32,
+             std::numeric_limits<uint64_t>::max()})
+    {
+        CAPTURE(bad);
+        auto broken = profile;
+        broken["a"][0]["link"]["$mapgetValidity"] = bad;
+        REQUIRE_THROWS(makeTile(131073, info)->fromJson(profileDocument(broken)));
+    }
+    for (auto absent : {nlohmann::json::object(), R"({"validity":[]})"_json}) {
+        absent["a"] = profile.at("a");
+        REQUIRE_THROWS(makeTile(131073, info)
+                           ->fromJson(profileDocument(nlohmann::json::array({profile, absent}))));
+    }
+    for (auto options :
+         {GeoJsonImportOptions{},
+          GeoJsonImportOptions{.strict_ = false, .objectPropertiesAsAttributeLayers_ = true}})
+    {
+        auto broken = profileDocument(profile);
+        broken["features"][0]["properties"]["link"] = R"({"$mapgetValidity":0})"_json;
+        REQUIRE_THROWS(makeTile(131073, info)->fromJson(broken, options));
+    }
+    auto outside = profileDocument(profile);
+    outside["features"][0]["relations"] = R"([{"name":"self","target":"AnyFeature.131073.0",
+                                              "sourceValidity":{"$mapgetValidity":0}}])"_json;
+    REQUIRE_THROWS(makeTile(131073, info)->fromJson(outside));
+    for (auto tag : std::vector<nlohmann::json>{true, 12, nullptr, ""}) {
+        auto broken = profile;
+        broken["validity"]["tag"] = tag;
+        REQUIRE_THROWS(makeTile(131073, info)->fromJson(profileDocument(broken)));
+    }
+    auto ordinary = profileDocument(profile);
+    auto& properties = ordinary["features"][0]["properties"];
+    properties["link"] = R"({"$mapgetValidity":99,"label":"ordinary object"})"_json;
+    auto tile = makeTile(131073, info);
+    tile->fromJson(ordinary);
+    REQUIRE(tile->toJson()["features"][0]["properties"]["link"] == properties["link"]);
+}
+
+TEST_CASE("GeoJSON reimport strips only regenerated markers", "[GeoJsonImport]")
+{
+    auto info = profileSchema(PointSeries::Position::Kind::Dense);
+    auto profile = R"({"records":[10,20]})"_json;
+    size_t storedCount = 0;
+    SECTION("Marker-only export means omitted assignment") {}
+    SECTION("Explicit empty assignment is exported as NONE before the markers")
+    {
+        profile["validity"] = nlohmann::json::array();
+        storedCount = 1;
+    }
+    SECTION("Same-tag stored points stay addressable before the derived suffix")
+    {
+        profile["aRef"] = R"({"$mapgetValidity":0})"_json;
+        profile["validity"] = R"({"tag":"sample","offsetType":"BufferOffset","point":1})"_json;
+        storedCount = 1;
+    }
+
+    auto original = makeTile(131073, info);
+    original->fromJson(profileDocument(profile));
+    auto exported = original->toJson();
+    auto& payload = exported["features"][0]["properties"]["layer"]["measurements"]["profile"];
+    auto const& entries = payload.at("validity");
+    REQUIRE(entries.size() == storedCount + 2);
+    REQUIRE(entries.at(storedCount).at("tag") == "sample");
+    REQUIRE_FALSE(entries.at(storedCount).contains("direction"));
+
+    auto imported = makeTile(131073, info);
+    imported->fromJson(exported);
+    auto attributes = storedProfiles(*imported);
+    REQUIRE(attributes.size() == 1);
+    auto stored = attributes.front()->validityOrNull();
+    if (!storedCount) {
+        REQUIRE_FALSE(stored);
+    }
+    else {
+        REQUIRE(stored);
+        REQUIRE(stored->size() == storedCount);
+        if (profile.contains("aRef")) {
+            auto ref = imported->resolve<ValidityReference>(
+                *attributes.front()->get(imported->strings()->get("aRef")));
+            REQUIRE(ref->validity()->tag() == "sample");
+            REQUIRE(ref->validity()->addr() == stored->at(0)->addr());
+        }
+        else {
+            REQUIRE(imported->resolve<Validity>(*stored->at(0))->direction() == Validity::None);
+        }
+    }
+    REQUIRE(imported->toJson() == exported);
+
+    // Without this use-site declaration the JSON positions are real stored annotations.
+    auto plain = makeTile(131073, makeGenericLayerInfo());
+    plain->fromJson(exported);
+    auto plainProfiles = storedProfiles(*plain);
+    REQUIRE(plainProfiles.size() == 1);
+    auto retained = plainProfiles.front()->validityOrNull();
+    REQUIRE(retained);
+    REQUIRE(retained->size() == entries.size());
+    REQUIRE(plain->resolve<Validity>(*retained->at(storedCount))->tag() == "sample");
+
+    payload["bad"] = {{"$mapgetValidity", storedCount}};
+    REQUIRE_THROWS(makeTile(131073, info)->fromJson(exported));
+}
+
+TEST_CASE("TaggedValidity GeoJSON positions are inputs, not disposable markers", "[GeoJsonImport]")
+{
+    auto info = profileSchema(PointSeries::Position::Kind::TaggedValidity);
+    auto tile = makeTile(131073, info);
+    auto profile = R"({
+      "records":[10,20], "link":{"$mapgetValidity":1},
+      "validity":[{"tag":"sample","offsetType":"BufferOffset","point":0},
+                  {"tag":"sample","offsetType":"BufferOffset","point":1}]
+    })"_json;
+    tile->fromJson(profileDocument(profile));
+    auto attributes = storedProfiles(*tile);
+    REQUIRE(attributes.size() == 1);
+    auto attr = attributes.front();
+    REQUIRE(attr->validityOrNull());
+    REQUIRE(attr->validityOrNull()->size() == 2);
+    auto ref = tile->resolve<ValidityReference>(*attr->get(tile->strings()->get("link")));
+    REQUIRE(ref->index() == 1);
+    REQUIRE(ref->validity()->tag() == "sample");
+    REQUIRE(ref->validity()->offsetPoint()->x == 1.);
+}
+
+TEST_CASE(
+    "GeoJSON retains absent and explicitly empty validity without a marker suffix",
+    "[GeoJsonImport]")
+{
+    auto info = profileSchema(PointSeries::Position::Kind::Dense);
+    auto profiles =
+        R"([{},{"validity":[]},{"validity":{"tag":"sample","offsetType":"BufferOffset","point":0}}])"_json;
+    auto tile = makeTile(131073, info);
+    tile->fromJson(profileDocument(profiles));
+    auto attrs = storedProfiles(*tile);
+    REQUIRE(attrs.size() == 3);
+    REQUIRE_FALSE(attrs[0]->validityOrNull());
+    REQUIRE(attrs[1]->validityOrNull());
+    REQUIRE(attrs[1]->validityOrNull()->size() == 0);
+    REQUIRE(attrs[2]->validityOrNull());
+    REQUIRE(attrs[2]->validityOrNull()->size() == 1);
+    REQUIRE(
+        tile->toJson()["features"][0]["properties"]["layer"]["measurements"]["profile"] ==
+        profiles);
 }

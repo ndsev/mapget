@@ -176,6 +176,7 @@ MemoryUsageBreakdown PartitionLayer::memoryUsage() const
     result.add("object", {sizeof(PartitionLayer), sizeof(PartitionLayer)});
     result.add("string-pool-id", stringMemoryUsage(stringPoolId_));
     result.add("map-id", stringMemoryUsage(mapId_));
+    result.add("source-id", stringMemoryUsage(sourceId_));
     if (error_) {
         result.add("error", stringMemoryUsage(*error_));
     }
@@ -245,6 +246,7 @@ PartitionLayer::PartitionLayer(
     if (artifactId != schemaId())
         throw std::invalid_argument(
             "Partition schema does not match installed metadata; discard stale payload.");
+    s.text1b(sourceId_, input.size());
 
     int64_t timestamp = 0;
     s.value8b(timestamp);
@@ -483,6 +485,7 @@ tl::expected<void, simfil::Error> PartitionLayer::write(std::ostream& outputStre
     s.text1b(stringPoolId_, std::numeric_limits<uint32_t>::max());
     auto artifactId = std::string(schemaId());
     s.text1b(artifactId, std::numeric_limits<uint32_t>::max());
+    s.text1b(sourceId_, std::numeric_limits<uint32_t>::max());
     s.value8b(duration_cast<microseconds>(timestamp_.time_since_epoch()).count());
     s.value1b(ttl_.has_value());
     if (ttl_)
@@ -539,6 +542,8 @@ nlohmann::json PartitionLayer::toServiceJson() const
     }
     addDiagnosticsToJson(result);
     result["schemaId"] = schemaId();
+    if (!sourceId_.empty())
+        result["sourceId"] = sourceId_;
     // Service envelopes expose the same lifetime as binary headers, including
     // subset/source-data responses whose model JSON has no header fields.
     result["timestamp"] =

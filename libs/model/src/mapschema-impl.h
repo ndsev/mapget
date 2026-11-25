@@ -2,6 +2,7 @@
 
 #include "mapget/model/mapschema.h"
 #include "mapschema-json.h"
+#include "mapschema-pointseries.h"
 #include "simfil/model/schema-type.h"
 
 #include <algorithm>
@@ -31,7 +32,10 @@ struct MapSchema::Impl
         AttributeOwner,
         AttributeOwners
     };
-    static constexpr uint32_t CodecVersion = 7;
+    static constexpr uint32_t LegacyCodecVersion = 7;
+    static constexpr uint32_t ExpandedPointVersion = 8;
+    static constexpr uint32_t TaggedPointVersion = 10;
+    static constexpr uint32_t PointQueryFlag = 16;
     static constexpr size_t MaxEdges = 4 * 1024 * 1024;
     static constexpr size_t GlobalLayer = std::numeric_limits<size_t>::max();
     static constexpr uint32_t QueryRootFlag = 8;
@@ -213,6 +217,30 @@ struct MapSchema::Impl
     std::map<std::string, std::vector<TypeId>, std::less<>> contributorRemaps;
     class CompositionBuilder;
     class JsonCompiler;
+    class PointBuilder;
+    class PointQueryPool;
+    struct PointViewSlot;
+    // Sparse by layer: immutable descriptors and a derived feature-to-query-root lookup.
+    std::map<size_t, point_schema::Declarations> pointDeclarations;
+    std::map<std::pair<size_t, StringId>, TypeId> pointRoots;
+    // New artifacts use per-host views unless a contributor has expanded type IDs to remap.
+    bool expandedPointTypes = false;
+    mutable std::mutex pointQueryMutex;
+    mutable std::map<std::pair<size_t, StringId>, std::shared_ptr<PointViewSlot>> pointViews;
+    TypeId pointResultAny = 0;
+    simfil::SchemaType pointQueryType(LayerSchema const&, std::string_view feature) const;
+    void accountPointViews(MemoryUsageBreakdown& memory, nlohmann::json* counts = nullptr) const;
+    uint32_t wireVersion = LegacyCodecVersion;
+    bool pointsPrepared = false;
+    void preparePointSchemas(bool verify = false);
+    void mergePointDeclarations(size_t layer, point_schema::Declarations const& source);
+    nlohmann::json pointDeclarationsJson(size_t layer) const;
+    void importPointDeclarations(size_t layer, nlohmann::json const& json);
+    void pointMemoryUsage(MemoryUsageBreakdown&) const;
+    template <class S, class T>
+    void pointValue(S& archive, T& value, size_t& memory);
+    template <class S>
+    void pointWire(S& archive, size_t& memory);
     class OwnerDescriptor;
     simfil::ModelColumn<LayerData> layers;
     std::vector<LayerBuildData> layerBuild;

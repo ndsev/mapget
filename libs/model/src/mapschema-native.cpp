@@ -379,7 +379,8 @@ TypeId MapSchema::builtin(Builtin type)
         "AttrPoint",
         "AttrPointSequence",
         "AttrPointIndex",
-        "AttrPointIndexRange"};
+        "AttrPointIndexRange",
+        "ValidityReference"};
     if (size_t(type) >= std::size(names))
         throw std::invalid_argument("Unknown mapget built-in type.");
     auto key = "mapget:" + std::string(names[size_t(type)]);
@@ -408,6 +409,24 @@ TypeId MapSchema::builtin(Builtin type)
     auto sourceLinks = [&]
     {
         field("_sourceData", builtin(Builtin::SourceDataReferences));
+    };
+    auto delegateFields = [&](TypeId reference, TypeId target)
+    {
+        // Snapshot the edges before appending to the same field arena.
+        std::vector<std::pair<std::string, std::vector<TypeId>>> fields;
+        schemaType(target).forEachDirectField(
+            [&](simfil::SchemaField const& item)
+            {
+                auto children = item.types();
+                fields.emplace_back(
+                    item.name(),
+                    std::vector<TypeId>(children.begin(), children.end()));
+            });
+        for (auto const& [name, children] : fields) {
+            for (auto child : children)
+                addFieldSchema(reference, name, child);
+            setFieldRole(reference, name, simfil::SchemaType::FieldRole::Context);
+        }
     };
     // PointNode enumerates three numbers, but also exposes named coordinate lookup.
     auto point = [&]
@@ -494,6 +513,7 @@ TypeId MapSchema::builtin(Builtin type)
         break;
     }
     case Builtin::Validity: {
+        field("tag", string);
         field("direction", strings({"COMPLETE", "POSITIVE", "NEGATIVE", "EMPTY", "NONE"}));
         field("geometryName", string);
         field("geometry", builtin(Builtin::Geometry));
@@ -525,6 +545,18 @@ TypeId MapSchema::builtin(Builtin type)
         addAlternative(id, arrayOf(builtin(Builtin::Validity)));
         registerSchemaKey("#/definitions/validity", id);
         break;
+    case Builtin::ValidityReference: {
+        auto ordinal = addSchema(Kind::Int);
+        setNullable(ordinal, false);
+        setJsonSchemaAnnotations(ordinal, {{"minimum", 0}, {"maximum", UINT32_MAX}});
+        schemaType(ordinal).seal();
+        field("$mapgetValidity", ordinal, true);
+        delegateFields(id, builtin(Builtin::Validity));
+        // Named lookup follows the target; serialized properties contain only the ordinal.
+        setJsonSchemaAnnotations(id, {{"maxProperties", 1}});
+        registerSchemaKey("#/definitions/validityReference", id);
+        break;
+    }
     case Builtin::Relation:
         field("name", string, true);
         field("target", builtin(Builtin::FeatureId));
@@ -537,21 +569,7 @@ TypeId MapSchema::builtin(Builtin type)
         addFieldSchema(reference, "$mapgetRelation", integer);
         setFieldRequired(reference, "$mapgetRelation", true);
         auto relation = builtin(Builtin::Relation);
-        // Indexed references enumerate only the index, but retain explicit relation lookup.
-        std::vector<std::pair<std::string, std::vector<TypeId>>> fields;
-        schemaType(relation).forEachDirectField(
-            [&](simfil::SchemaField const& item)
-            {
-                auto children = item.types();
-                fields.emplace_back(
-                    item.name(),
-                    std::vector<TypeId>(children.begin(), children.end()));
-            });
-        for (auto const& [name, children] : fields) {
-            for (auto child : children)
-                addFieldSchema(reference, name, child);
-            setFieldRole(reference, name, simfil::SchemaType::FieldRole::Context);
-        }
+        delegateFields(reference, relation);
         schemaType(reference).seal();
         setComposition(id, Composition::AnyOf);
         addAlternative(id, reference);
