@@ -140,6 +140,31 @@ uint32_t wireVersion(std::vector<uint8_t> const& data)
     REQUIRE(magic == 0x4843534d);  // MSCH
     return version;
 }
+
+/** Exercise payload validation independently of the envelope checksum and expected identity. */
+std::vector<uint8_t> rewriteArtifact(std::vector<uint8_t> const& data, auto mutate)
+{
+    using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
+    bitsery::Deserializer<Adapter> reader(Adapter(data.begin(), data.end()));
+    uint32_t magic = 0, version = 0;
+    std::string id, payload;
+    reader.value4b(magic);
+    reader.value4b(version);
+    reader.text1b(id, 128);
+    reader.text1b(payload, data.size());
+    REQUIRE(reader.adapter().isCompletedSuccessfully());
+    mutate(version, payload);
+    id = "mapget-schema:sha256:" + picosha2::hash256_hex_string(payload);
+    std::ostringstream output(std::ios::binary);
+    bitsery::Serializer<bitsery::OutputStreamAdapter> writer(output);
+    writer.value4b(magic);
+    writer.value4b(version);
+    writer.text1b(id, 128);
+    writer.text1b(payload, UINT32_MAX);
+    writer.adapter().flush();
+    auto result = output.str();
+    return {result.begin(), result.end()};
+}
 }  // namespace
 
 TEST_CASE(
@@ -153,7 +178,7 @@ TEST_CASE(
     s.sampling_ = PointSeries::Sampling::Linear;
     s.geometryName_ = "profile";
     s.omittedValidityCovers_ = true;
-    s.markers_ = PointSeries::Markers::AppendToValidity;
+    s.markerTag_ = "speed-anchor";
     s.branches_ = {"attributeValue", "branches"};
     s.branchTarget_ = {"target"};
     s.hostTarget_ = {"roadKey"};
@@ -168,6 +193,9 @@ TEST_CASE(
     auto binary = bytes(*f.map);
     auto decoded = MapSchema::read(binary, f.map->schemaId());
     auto json = f.layer->toJsonSchema();
+    auto const& jsonSeries = json.at("x-mapget").at("pointMeasurements").at("series").at(0);
+    CHECK(jsonSeries.at("markerTag") == "speed-anchor");
+    CHECK_FALSE(jsonSeries.contains("markers"));
     auto imported = LayerSchema::fromJsonSchema(json);
     REQUIRE(bytes(*decoded) == binary);
     for (auto layer : {f.layer, decoded->layer("Roads"), imported}) {
@@ -176,7 +204,8 @@ TEST_CASE(
         auto const& series = layer->pointSeries().front();
         CHECK(series.assignmentMeasure_ == s.assignmentMeasure_);
         CHECK(series.omittedValidityCovers_);
-        CHECK(series.markers_ == s.markers_);
+        CHECK(series.markerTag_ == s.markerTag_);
+        CHECK(map->strings()->get(series.markerTag_) != 0);
         CHECK(series.geometryName_ == s.geometryName_);
         CHECK(series.hostTarget_ == s.hostTarget_);
         CHECK(series.position_.bitsFromAttribute_ == s.position_.bitsFromAttribute_);
@@ -384,6 +413,14 @@ TEST_CASE(
     {
         s.fields_.push_back(s.fields_[0]);
     }
+    SECTION("oversized marker tag")
+    {
+        s.markerTag_.assign(4097, 'x');
+    }
+    SECTION("marker tag contains a nul")
+    {
+        s.markerTag_ = std::string("a\0b", 3);
+    }
     SECTION("an unresolved referenced branch must not fall back to the primary")
     {
         s.branches_ = {"attributeValue", "branches"};
@@ -446,7 +483,8 @@ TEST_CASE(
 {
     Profile a, b;
     auto descriptor = a.series();
-    descriptor.markers_ = PointSeries::Markers::PointValidities;
+    descriptor.position_ = {.kind_ = PointSeries::Position::Kind::TaggedValidity};
+    descriptor.markerTag_ = "speed-anchor";
     auto codec = a.codec();
     a.layer->addPointCodec("decode", codec);
     a.layer->addPointSeries(descriptor);
@@ -475,6 +513,17 @@ TEST_CASE(
         descriptor.sampling_ = PointSeries::Sampling::Linear;
         conflict = true;
     }
+    SECTION("same output cannot change its marker tag")
+    {
+        descriptor.markerTag_ = "posted-limit";
+        conflict = true;
+    }
+    SECTION("distinct outputs cannot give one stored tag competing record layouts")
+    {
+        descriptor.fields_[0].name_ = "secondSpeed";
+        descriptor.alternative_ = {"key"};
+        conflict = true;
+    }
     b.layer->addPointCodec("decode", codec);
     b.layer->addPointSeries(descriptor);
     b.map->finalize();
@@ -486,6 +535,8 @@ TEST_CASE(
     }
     auto merged = MapSchema::compose({}, inputs);
     auto layer = merged->layer("Roads");
+    REQUIRE(layer->pointSeries().size() == 1);
+    CHECK(layer->pointSeries().front().markerTag_ == descriptor.markerTag_);
     auto physical = attribute(merged->schemaType(layer->featureSchema("Road")));
     auto query = merged->schemaType(layer->attributeQuerySchema("Road", physical.id()));
     auto occ = occurrence(layer->shapePointQueryType("Road"));
@@ -524,6 +575,9 @@ TEST_CASE(
     extension.layer->addPointSeries(extension.series());
     extension.layer->addPointCodec("decode", extension.codec());
     extension.map->finalize();
+    REQUIRE(extension.layer->pointSeries().front().markerTag_.empty());
+    auto overlay = extension.layer->attributeQuerySchema("Road", extension.attr.id());
+    CHECK_FALSE(extension.map->schemaType(overlay).field("$samples"));
     auto original = base.layer->shapePointQueryType("Road");
     auto specialized = extension.layer->shapePointQueryType("Road");
     REQUIRE(specialized);
@@ -592,7 +646,7 @@ TEST_CASE(
     // The producer has more names/edges but no extra payload types.
     CHECK(wide->typeCount() == small->typeCount());
     auto before = bytes(*wide);
-    REQUIRE(wireVersion(before) == 9);
+    REQUIRE(wireVersion(before) == 10);
     auto decoded = MapSchema::read(before, wide->schemaId());
     for (auto map : {MapSchema::ConstPtr(wide), decoded}) {
         auto counts = map->statistics().at("counts");
@@ -775,13 +829,12 @@ TEST_CASE(
 {
     Profile fresh;
     auto series = fresh.series();
-    series.markers_ = PointSeries::Markers::AppendToValidity;
+    series.markerTag_ = "speed-anchor";
     fresh.layer->addPointSeries(series);
     fresh.layer->addPointCodec("decode", fresh.codec());
     fresh.map->finalize();
-    REQUIRE(wireVersion(bytes(*fresh.map)) == 9);
+    REQUIRE(wireVersion(bytes(*fresh.map)) == 10);
     MapSchema::ConstPtr old;
-    uint32_t effectiveVersion = 9;
     SECTION("V7 has no point view and does not force expanded output")
     {
         old = MapSchema::read(golden("mapschema-v7.bin"));
@@ -803,12 +856,34 @@ TEST_CASE(
         auto lane = old->layer("Lane")->shapePointQueryType("Lane");
         REQUIRE(occurrence(lane, "LaneAdasLayerWithGeo", "CURVATURE").field("curvature"));
         CHECK(bytes(*old) == data);
-        effectiveVersion = 8;
+    }
+    SECTION("V9 marker-free compact declarations keep their original identity")
+    {
+        Profile legacy;
+        auto row = legacy.series();
+        row.attributeLayer_ = "other";
+        row.attribute_ = "UNSAMPLED";
+        legacy.layer->addPointSeries(row);
+        legacy.layer->addPointCodec("decode", legacy.codec());
+        legacy.map->finalize();
+        auto data = rewriteArtifact(bytes(*legacy.map), [](auto& version, auto& payload) {
+            REQUIRE(version == 10);
+            // This one-layer inventory has one codec. A disabled V9 marker is
+            // byte-identical to the V10 empty tag; only the layout byte is new.
+            static constexpr char prefix[] = "\0\1\0\0\0\0\0\1\0\0\0\6decode";
+            auto layout = payload.find(std::string_view(prefix, sizeof(prefix) - 1));
+            REQUIRE(layout != std::string::npos);
+            payload.erase(layout, 1);
+            version = 9;
+        });
+        old = MapSchema::read(data);
+        CHECK(bytes(*old) == data);
+        CHECK(old->layer("Roads")->pointSeries().front().markerTag_.empty());
     }
     std::array<MapSchema::ConstPtr, 2> inputs{old, fresh.map};
     auto merged = MapSchema::compose({}, inputs);
     auto data = bytes(*merged);
-    CHECK(wireVersion(data) == effectiveVersion);
+    CHECK(wireVersion(data) == 10);
     for (auto const& source : inputs) {
         for (size_t i = 1; i <= source->typeCount(); ++i) {
             auto id = merged->remapSchema(source->schemaId(), simfil::TypeId(i));
@@ -818,9 +893,13 @@ TEST_CASE(
     auto restored = MapSchema::read(data, merged->schemaId());
     CHECK(bytes(*restored) == data);
     REQUIRE(occurrence(restored->layer("Roads")->shapePointQueryType("Road")).field("speed"));
-    if (effectiveVersion == 8) {
+    auto seriesRows = restored->layer("Roads")->pointSeries("Road", "rules", "SPEED");
+    REQUIRE(seriesRows.size() == 1);
+    CHECK(seriesRows.front().markerTag_ == series.markerTag_);
+    if (old->layer("Lane")) {
         auto lane = restored->layer("Lane")->shapePointQueryType("Lane");
         REQUIRE(occurrence(lane, "LaneAdasLayerWithGeo", "CURVATURE").field("curvature"));
+        CHECK(lane.pool() == restored.get());  // The V8 contributor's handles remain published.
     }
 }
 
@@ -830,12 +909,12 @@ TEST_CASE(
 {
     Profile f;
     auto first = f.series();
-    first.markers_ = PointSeries::Markers::PointValidities;
+    first.markerTag_ = "speed-anchor";
     auto other = first;
     other.attributeLayer_ = "other";
     other.attribute_ = "UNSAMPLED";
     other.fields_.front().name_ = "limit";
-    other.markers_ = PointSeries::Markers::AppendToValidity;
+    other.markerTag_ = "limit-anchor";
     f.layer->addPointSeries(first);
     f.layer->addPointSeries(other);
     f.layer->addPointCodec("decode", f.codec());
@@ -867,11 +946,17 @@ TEST_CASE(
             REQUIRE(found != types.end());
             checkSpeedCandidate(map->schemaType(*found).field(field).type().itemType());
         }
-        auto validities = overlay.field("pointValidities");
+        CHECK(layer->pointSeries("Road", "rules", "SPEED").front().markerTag_ == "speed-anchor");
+        CHECK(
+            layer->pointSeries("Road", "other", "UNSAMPLED").front().markerTag_ == "limit-anchor");
+        auto validities = overlay.field("validity");
         REQUIRE(validities);
         CHECK(validities.role() == Role::Data);
-        CHECK(validities.type().itemType().id() == map->findSchema("mapget:Validity"));
-        CHECK_FALSE(validities.type().itemType().field("$samples"));
+        CHECK(validities.type().id() == map->findSchema("mapget:Validities"));
+        auto entry = map->schemaType(map->findSchema("mapget:Validity"));
+        CHECK(entry.field("tag").type().kind() == Kind::String);
+        CHECK_FALSE(entry.field("$samples"));
+        CHECK_FALSE(overlay.field("pointValidities"));
         CHECK_FALSE(map->schemaType(f.attr.id()).field("pointValidities"));
     }
 }
@@ -985,37 +1070,217 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Tagged validity positions use occurrence order instead of record position operands",
+    "[mapschema][pointseries]")
+{
+    Profile f;
+    auto s = f.series();
+    using K = PointSeries::Position::Kind;
+    s.position_ = {.kind_ = K::TaggedValidity};
+    s.markerTag_ = "survey-station";
+    s.fields_.push_back({"rawReading", {"rawSpeed"}, {}, {}});
+    bool valid = false;
+    SECTION("exact")
+    {
+        valid = true;
+    }
+    SECTION("linear")
+    {
+        s.sampling_ = PointSeries::Sampling::Linear;
+        valid = true;
+    }
+    SECTION("no tag")
+    {
+        s.markerTag_.clear();
+    }
+    SECTION("raw position")
+    {
+        s.position_.field_ = {"at"};
+    }
+    SECTION("record width")
+    {
+        s.position_.bits_ = {"key"};
+    }
+    SECTION("attribute width")
+    {
+        s.position_.bitsFromAttribute_ = {"attributeValue", "width"};
+    }
+    SECTION("assignment origin")
+    {
+        s.position_.fromAssignmentStart_ = true;
+    }
+    SECTION("reverse")
+    {
+        s.position_.reverse_ = true;
+    }
+    SECTION("parallel columns")
+    {
+        s.parallel_ = true;
+    }
+    SECTION("interval endpoint")
+    {
+        s.position_.end_ = {"at"};
+    }
+    SECTION("as an interval axis")
+    {
+        s.position_ = {.kind_ = K::Interval, .field_ = {"at"}, .end_ = {"at"},
+                       .intervalAxis_ = K::TaggedValidity};
+    }
+    SECTION("distance conversion")
+    {
+        s.position_.distanceScale_ = .01;
+    }
+    SECTION("vertex measure array")
+    {
+        s.position_.vertexMeasures_ = {"stations"};
+    }
+    if (!valid) {
+        CHECK_THROWS_AS(f.layer->addPointSeries(s), std::invalid_argument);
+        CHECK(f.layer->pointSeries().empty());
+        return;
+    }
+
+    auto record = f.map->newObjectType();
+    record.addField("rawSpeed", f.record.field("rawSpeed").type());
+    f.payload.addField("observations", f.map->schemaType(f.map->arrayOf(record.id())));
+    s.records_ = {"attributeValue", "observations"};
+    f.layer->addPointSeries(s);
+    f.layer->addPointCodec("decode", f.codec());
+    f.map->finalize();
+    auto data = bytes(*f.map);
+    REQUIRE(wireVersion(data) == 10);
+    auto json = f.layer->toJsonSchema();
+    auto const& series = json.at("x-mapget").at("pointMeasurements").at("series").at(0);
+    CHECK(series.at("position").at("kind") == "taggedValidity");
+    auto decoded = MapSchema::read(data);
+    for (auto layer : {f.layer, decoded->layer("Roads"), LayerSchema::fromJsonSchema(json)}) {
+        auto rows = layer->pointSeries("Road", "rules", "SPEED");
+        REQUIRE(rows.size() == 1);
+        CHECK(rows.front().position_.kind_ == K::TaggedValidity);
+        CHECK(rows.front().markerTag_ == s.markerTag_);
+        CHECK(rows.front().sampling_ == s.sampling_);
+        auto point = occurrence(layer->shapePointQueryType("Road"));
+        CHECK(point.field("rawReading"));
+        checkSpeedCandidate(point.field("$samples").type().field("speed").type().itemType());
+        auto map = layer->mapSchema();
+        auto host = map->schemaType(layer->featureSchema("Road"));
+        auto overlay = map->schemaType(layer->attributeQuerySchema("Road", attribute(host).id()));
+        checkSpeedCandidate(overlay.field("$samples").type().field("speed").type().itemType());
+    }
+    // A stored-position declaration cannot get its tags from a generated query overlay.
+    auto entry = f.map->findSchema("mapget:Validity");
+    json.at("definitions").at(std::to_string(entry)).at("properties").at("tag") =
+        {{"$ref", "#/definitions/" + std::to_string(f.integer.id())}};
+    CHECK_THROWS(LayerSchema::fromJsonSchema(json));
+}
+
+TEST_CASE("A stored tag selects one record layout per owner and target geometry",
+          "[mapschema][pointseries]")
+{
+    Profile f;
+    auto a = f.series();
+    a.position_ = {.kind_ = PointSeries::Position::Kind::TaggedValidity};
+    a.markerTag_ = "station";
+    a.geometryName_ = "axis";
+    auto b = a;
+    b.fields_.front().name_ = "limit";  // Distinct outputs alone do not disambiguate a stored row.
+    bool conflict = true;
+    SECTION("identical named target") {}
+    SECTION("two unqualified selectors")
+    {
+        a.geometryName_.reset();
+        b.geometryName_.reset();
+    }
+    SECTION("unqualified selector before a named selector") { b.geometryName_.reset(); }
+    SECTION("unqualified selector after a named selector") { a.geometryName_.reset(); }
+    SECTION("disjoint named geometries")
+    {
+        b.geometryName_ = "centerline";
+        conflict = false;
+    }
+    SECTION("disjoint geometry types")
+    {
+        b.geometryType_ = GeomType::Polygon;
+        conflict = false;
+    }
+    SECTION("different stored tags")
+    {
+        b.markerTag_ = "sign";
+        conflict = false;
+    }
+    SECTION("different named use of the same physical attribute")
+    {
+        b.attributeLayer_ = "other";
+        b.attribute_ = "UNSAMPLED";
+        conflict = false;
+    }
+    SECTION("a generated marker does not read the stored slot")
+    {
+        b.position_ = f.series().position_;
+        conflict = false;
+    }
+    f.layer->addPointSeries(a);
+    f.layer->addPointSeries(b);
+    f.layer->addPointCodec("decode", f.codec());
+    if (conflict)
+        CHECK_THROWS_AS(f.map->finalize(), std::invalid_argument);
+    else {
+        f.map->finalize();
+        CHECK(MapSchema::read(bytes(*f.map))->layer("Roads")->pointSeries().size() == 2);
+    }
+}
+
+TEST_CASE(
+    "Malformed marker declarations do not partially import a layer", "[mapschema][pointseries]")
+{
+    Profile f;
+    auto s = f.series();
+    s.markerTag_ = "speed-anchor";
+    f.layer->addPointSeries(s);
+    f.layer->addPointCodec("decode", f.codec());
+    f.map->finalize();
+    auto good = f.layer->toJsonSchema();
+    auto bad = good;
+    auto& row = bad.at("x-mapget").at("pointMeasurements").at("series").at(0);
+    SECTION("tag must be a string")
+    {
+        row["markerTag"] = 2;
+    }
+    SECTION("legacy destination is not a producer tag")
+    {
+        row.erase("markerTag");
+        row["markers"] = "appendToValidity";
+    }
+    SECTION("stored positions require an explicit tag")
+    {
+        row.erase("markerTag");
+        row["position"] = {{"kind", "taggedValidity"}};
+    }
+    auto target = std::make_shared<MapSchema>();
+    CHECK_THROWS(target->importLayer("Roads", LayerType::Features, bad));
+    CHECK(target->typeCount() == 0);
+    CHECK_FALSE(target->layer("Roads"));
+    auto layer = target->importLayer("Roads", LayerType::Features, good);
+    target->finalize();
+    REQUIRE(layer->pointSeries().size() == 1);
+    CHECK(layer->pointSeries().front().markerTag_ == s.markerTag_);
+}
+
+TEST_CASE(
     "Checksum-valid point artifacts still validate the expanded or compact representation",
     "[mapschema][pointseries]")
 {
     Profile f;
-    f.layer->addPointSeries(f.series());
+    auto s = f.series();
+    s.markerTag_ = "speed-marker";
+    f.layer->addPointSeries(s);
     f.layer->addPointCodec("decode", f.codec());
     f.map->finalize();
     auto reject = [](std::vector<uint8_t> const& data, auto mutate)
     {
         auto warm = MapSchema::read(data);
-        using Adapter = bitsery::InputBufferAdapter<std::vector<uint8_t>>;
-        bitsery::Deserializer<Adapter> reader(Adapter(data.begin(), data.end()));
-        uint32_t magic = 0, version = 0;
-        std::string id, payload;
-        reader.value4b(magic);
-        reader.value4b(version);
-        reader.text1b(id, 128);
-        reader.text1b(payload, data.size());
-        REQUIRE(reader.adapter().isCompletedSuccessfully());
-        mutate(version, payload);
-        id = "mapget-schema:sha256:" + picosha2::hash256_hex_string(payload);
-        std::ostringstream output(std::ios::binary);
-        bitsery::Serializer<bitsery::OutputStreamAdapter> writer(output);
-        writer.value4b(magic);
-        writer.value4b(version);
-        writer.text1b(id, 128);
-        writer.text1b(payload, UINT32_MAX);
-        writer.adapter().flush();
-        auto mutated = output.str();
-        CHECK_THROWS(MapSchema::read(
-            std::span(reinterpret_cast<uint8_t const*>(mutated.data()), mutated.size())));
+        auto mutated = rewriteArtifact(data, mutate);
+        CHECK_THROWS(MapSchema::read(mutated));
     };
     SECTION("old version with the same cached identity")
     {
@@ -1023,11 +1288,11 @@ TEST_CASE(
             bytes(*f.map),
             [](auto& version, auto&)
             {
-                REQUIRE(version == 9);
-                version = 8;
+                REQUIRE(version == 10);
+                version = 9;
             });
     }
-    SECTION("V9 accessor changed independently of the producer graph")
+    SECTION("accessor changed independently of the producer graph")
     {
         reject(
             bytes(*f.map),
@@ -1036,6 +1301,44 @@ TEST_CASE(
                 auto field = payload.find("rawSpeed");
                 REQUIRE(field != std::string::npos);
                 payload.replace(field, 8, "badSpeed");
+            });
+    }
+    SECTION("tag spelling missing from the published dictionary")
+    {
+        reject(
+            bytes(*f.map),
+            [](auto&, auto& payload)
+            {
+                auto tag = payload.find("speed-marker");
+                REQUIRE(tag != std::string::npos);
+                REQUIRE(payload.find("speed-marker", tag + 1) != std::string::npos);
+                payload[tag] = 'X';
+            });
+    }
+    SECTION("public validity no longer declares a tag")
+    {
+        reject(
+            bytes(*f.map),
+            [](auto&, auto& payload)
+            {
+                auto tag = payload.find("\x03tag");
+                REQUIRE(tag != std::string::npos);
+                payload[tag + 1] = 'X';
+            });
+    }
+    SECTION("old destination bytes cannot supply a producer tag")
+    {
+        reject(
+            golden("mapschema-v8.bin"),
+            [](auto&, auto& payload)
+            {
+                // In this fixed V8 declaration the marker byte follows the field's unit and codec.
+                constexpr std::string_view tail = "m^-1\rcurvatureCode";
+                auto field = payload.find(tail);
+                REQUIRE(field != std::string::npos);
+                auto& destination = payload.at(field + tail.size());
+                REQUIRE(destination == 0);
+                destination = 1;
             });
     }
     SECTION("V8 expanded use-site key does not match its declaration")

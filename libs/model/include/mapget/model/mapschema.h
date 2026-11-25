@@ -32,7 +32,8 @@ public:
         AttrPoint,
         AttrPointSequence,
         AttrPointIndex,
-        AttrPointIndexRange
+        AttrPointIndexRange,
+        ValidityReference  ///< Explicit property reference: {"$mapgetValidity": ordinal}.
     };
 
     /** Begin a mutable artifact with its own dictionary and normalized format identity. */

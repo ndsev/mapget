@@ -19,7 +19,6 @@ struct PointSeries
     using Path = std::vector<std::string>;
     enum class Measure { Wgs84Planar2D, GeographicMetres };
     enum class Sampling { Exact, Linear };
-    enum class Markers { None, AppendToValidity, PointValidities };
 
     struct Position
     {
@@ -30,7 +29,8 @@ struct PointSeries
             Distance,
             LogicalIndex,
             Interval,
-            VertexMeasure
+            VertexMeasure,
+            TaggedValidity  ///< Match records to stored validities with markerTag_, in order.
         };
         Kind kind_ = Kind::Dense;
         Path field_;  ///< Index, fraction numerator, distance, or interval start in a record.
@@ -81,7 +81,9 @@ struct PointSeries
     Position position_;
     Sampling sampling_ = Sampling::Exact;
     std::vector<Field> fields_;
-    Markers markers_ = Markers::None;
+    /** TaggedValidity selects stored anchors by this tag. Other axes use it to label
+     * generated anchors in `validity`; empty disables generated markers. */
+    std::string markerTag_;
 
     // A shared payload can also contain per-target local profiles. The target key is
     // compared in the canonical host's identity, not by geometry or record order.

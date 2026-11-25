@@ -201,6 +201,8 @@ struct PartitionFeatureLayer::Impl
         complexFeatureDataRefs_;
     simfil::ModelColumn<Attribute::Data, simfil::detail::ColumnPageSize> attributes_;
     simfil::ModelColumn<Validity::Data, simfil::detail::ColumnPageSize> validities_;
+    simfil::ModelColumn<ValidityReference::Data, simfil::detail::ColumnPageSize / 4>
+        validityReferences_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayers_;
     simfil::ModelColumn<simfil::ArrayIndex, simfil::detail::ColumnPageSize / 2> attrLayerLists_;
     simfil::ModelColumn<Relation::Data, simfil::detail::ColumnPageSize / 2> relations_;
@@ -254,6 +256,23 @@ struct PartitionFeatureLayer::Impl
 
     // SIMFIL schema lookup, runtime environment, and immutable compile cache.
     simfil::model_ptr<LayerSchema> layerSchema_;
+
+    /** Publish view-only spellings on the write side; readers never extend a tile's dictionary. */
+    tl::expected<void, simfil::Error> registerPointNames(simfil::StringPool& strings) const
+    {
+        if (layerSchema_) {
+            for (auto const& series : layerSchema_->pointSeries()) {
+                if (!series.markerTag_.empty()) {
+                    if (auto id = strings.emplace(series.markerTag_); !id)
+                        return tl::unexpected(id.error());
+                }
+                for (auto const& field : series.fields_)
+                    if (auto id = strings.emplace(field.name_); !id)
+                        return tl::unexpected(id.error());
+            }
+        }
+        return {};
+    }
     std::unique_ptr<simfil::Environment> expressionEnvironment_;
     SimfilExpressionCache expressionCache_;
     std::mutex expressionEvaluationMutex_;
@@ -309,6 +328,7 @@ struct PartitionFeatureLayer::Impl
         s.object(relations_);
         s.object(attrPoints_);
         s.object(attrPointSequences_);
+        s.object(validityReferences_);
         readWriteFeatureIndex(s);
     }
 
@@ -330,17 +350,8 @@ PartitionFeatureLayer::PartitionFeatureLayer(
     : PartitionFeatureModelLayerBase(tileId, stringPoolId, mapId, layerInfo, strings),
       impl_(std::make_unique<Impl>(strings, layerInfo))
 {
-    // Publish decoded field spellings even when a source stores its values under
-    // different names. Read-side point evaluation never interns into a published tile.
-    if (auto schema = layerSchema())
-        for (auto const& series : schema->pointSeries()) {
-            if (series.markers_ == PointSeries::Markers::PointValidities &&
-                !strings->emplace("pointValidities"))
-                throw std::length_error("Point validity name exceeds the tile dictionary.");
-            for (auto const& field : series.fields_)
-                if (!strings->emplace(field.name_))
-                    throw std::length_error("Point-series field name exceeds the tile dictionary.");
-        }
+    if (auto result = impl_->registerPointNames(*strings); !result)
+        throw std::length_error(result.error().message);
     setSchemaPool(layerInfo_->schemaOwner());
     impl_->geometryAnchor_ = Point(
         tileId.kind() == PartitionKind::Tile ?
@@ -727,6 +738,26 @@ PartitionFeatureLayer::newRelationReference(model_ptr<Relation> const& relation)
     return RelationReference(
         shared_from_this(),
         {ColumnId::RelationReferences, relation->addr().index()},
+        mpKey_);
+}
+
+model_ptr<ValidityReference>
+PartitionFeatureLayer::newValidityReference(model_ptr<Attribute> const& owner, uint32_t index)
+{
+    if (!owner || owner->borrowedModel() != this)
+        raise("ValidityReference requires an attribute from the same layer.");
+    auto collection = owner->validityOrNull();
+    if (!collection || index >= collection->size())
+        raiseFmt("No stored attribute validity at ordinal {}.", index);
+    auto slot = impl_->validityReferences_.size();
+    checkModelNodeIndex(slot);
+    auto& data = impl_->validityReferences_.emplace_back(ValidityReference::Data{
+        .attribute_ = owner->addr(),
+        .index_ = index});
+    return ValidityReference(
+        data,
+        shared_from_this(),
+        {ColumnId::ValidityReferences, static_cast<uint32_t>(slot)},
         mpKey_);
 }
 
@@ -1203,6 +1234,20 @@ resolveInternal(tag<Relation>, PartitionFeatureLayer const& model, ModelNode con
 }
 
 template <>
+model_ptr<ValidityReference>
+resolveInternal(tag<ValidityReference>, PartitionFeatureLayer const& model, ModelNode const& node)
+{
+    if (node.addr().column() != PartitionFeatureLayer::ColumnId::ValidityReferences ||
+        node.addr().index() >= model.impl_->validityReferences_.size())
+        raise("Invalid attribute validity reference.");
+    return ValidityReference(
+        model.impl_->validityReferences_.at(node.addr().index()),
+        model.shared_from_this(),
+        node.addr(),
+        model.mpKey_);
+}
+
+template <>
 model_ptr<RelationReference>
 resolveInternal(tag<RelationReference>, PartitionFeatureLayer const& model, ModelNode const& node)
 {
@@ -1372,6 +1417,7 @@ PartitionFeatureLayer::resolve(const ModelNode& n, const simfil::Model::ResolveF
     case ColumnId::AttributeLayers: cb(*resolve<AttributeLayer>(n)); return {};
     case ColumnId::AttributeLayerLists: cb(*resolve<AttributeLayerList>(n)); return {};
     case ColumnId::Relations: cb(*resolve<Relation>(n)); return {};
+    case ColumnId::ValidityReferences: cb(*resolve<ValidityReference>(n)); return {};
     case ColumnId::RelationReferences: cb(*resolve<RelationReference>(n)); return {};
     case ColumnId::AttrPoints: cb(*resolve<AttrPoint>(n)); return {};
     case ColumnId::AttrPointSequences: cb(*resolve<AttrPointSequence>(n)); return {};
@@ -1853,6 +1899,7 @@ nlohmann::json PartitionFeatureLayer::serializationSizeStats() const
     featureLayer["feature-complex-data"] = impl_->complexFeatureData_.byte_size();
     featureLayer["feature-complex-data-refs"] = impl_->complexFeatureDataRefs_.byte_size();
     featureLayer["attributes"] = impl_->attributes_.byte_size();
+    featureLayer["validity-references"] = impl_->validityReferences_.byte_size();
     featureLayer["validities"] = impl_->validities_.byte_size();
     featureLayer["feature-ids"] = featureIds_.byte_size();
     featureLayer["attribute-layers"] = impl_->attrLayers_.byte_size();
@@ -2211,6 +2258,7 @@ MemoryUsageBreakdown PartitionFeatureLayer::memoryUsage() const
     result.add("feature-layer.complex-data", impl_->complexFeatureData_.memory_usage());
     result.add("feature-layer.complex-data-refs", impl_->complexFeatureDataRefs_.memory_usage());
     result.add("feature-layer.attributes", impl_->attributes_.memory_usage());
+    result.add("feature-layer.validity-references", impl_->validityReferences_.memory_usage());
     result.add("feature-layer.validities", impl_->validities_.memory_usage());
     result.add("feature-layer.attribute-layers", impl_->attrLayers_.memory_usage());
     result.add("feature-layer.attribute-layer-lists", impl_->attrLayerLists_.memory_usage());
@@ -2308,6 +2356,21 @@ PartitionFeatureLayer::setStrings(std::shared_ptr<simfil::StringPool> const& new
     if (!oldDict || *newDict == *oldDict)
         return {};
 
+    if (auto result = impl_->registerPointNames(*newDict); !result)
+        return result;
+    for (auto& validity : impl_->validities_) {
+        if (validity.tag_) {
+            auto name = oldDict->resolve(validity.tag_);
+            if (!name)
+                return tl::unexpected(simfil::Error{
+                    simfil::Error::FieldNotFound,
+                    "Validity tag is missing from the tile dictionary."});
+            auto id = newDict->emplace(*name);
+            if (!id)
+                return tl::unexpected<simfil::Error>(id.error());
+            validity.tag_ = *id;
+        }
+    }
     // Re-map old string IDs to new string IDs
     for (auto& attr : impl_->attributes_) {
         if (auto resolvedName = oldDict->resolve(attr.name_)) {
@@ -2631,6 +2694,8 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
         }
         }
         newNode->setGeometryName(resolved->geometryName());
+        if (auto tag = resolved->tag())
+            newNode->setTag(*tag);
         // An AttrPointSequence also exposes its host ID through featureId().
         // Copy only an explicitly stored selector. The cloned sequence already
         // resolves its own host, even when an add-on remaps that feature's ID.
@@ -2715,6 +2780,22 @@ ModelNode::Ptr PartitionFeatureLayer::cloneNode(
                 *cloneNode(context, cache, otherLayer, resolved->targetValidityOrNull())));
         }
         cloneSourceDataReferences(resolved, newNode);
+        break;
+    }
+    case ColumnId::ValidityReferences: {
+        auto ref = otherLayer->resolve<ValidityReference>(*otherNode);
+        // Publish the reference before following its owner: the owner's property tree can
+        // point right back at us, including when the reference itself is the clone root.
+        auto slot = impl_->validityReferences_.size();
+        checkModelNodeIndex(slot);
+        auto& data = impl_->validityReferences_.emplace_back(ValidityReference::Data{
+            .attribute_ = {},
+            .index_ = ref->index()});
+        newCacheNode = resolve<ValidityReference>(ModelNodeAddress{
+            ColumnId::ValidityReferences,
+            static_cast<uint32_t>(slot)});
+        auto owner = otherLayer->resolve<Attribute>(ref->data_->attribute_);
+        data.attribute_ = cloneNode(context, cache, otherLayer, owner)->addr();
         break;
     }
     case ColumnId::RelationReferences: {

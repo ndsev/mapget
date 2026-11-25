@@ -132,6 +132,8 @@ StringPool::StringPool(const std::string_view& stringPoolId) : stringPoolId_(str
     addStaticKey(PathStr, "path");
     addStaticKey(AlternativeStr, "alternative");
     addStaticKey(OverlayGeometryOrdinalStr, "$geometryOrdinal");
+    addStaticKey(TagStr, "tag");
+    addStaticKey(MapgetValidityStr, "$mapgetValidity");
 }
 
 tl::expected<void, simfil::Error>

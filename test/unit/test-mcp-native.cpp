@@ -194,8 +194,7 @@ public:
 /** Serve the same measured lane as the filter/inspection fixture over the native MCP tool. */
 class NativeMarkerSource final : public NativeSource
 {
-    PartitionFeatureLayer::Ptr lane_ =
-        test::shapePointLane(false, PointSeries::Markers::AppendToValidity);
+    PartitionFeatureLayer::Ptr lane_ = test::shapePointLane(false, "adas-measurement-point");
 
 public:
     NativeMarkerSource()

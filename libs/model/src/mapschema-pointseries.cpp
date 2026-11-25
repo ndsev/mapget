@@ -32,14 +32,13 @@ constexpr auto enumNames()
              "distance",
              "logicalIndex",
              "interval",
-             "vertexMeasure"});
+             "vertexMeasure",
+             "taggedValidity"});
     else if constexpr (std::is_same_v<E, GeomType>)
         return std::to_array<std::string_view>(
             {"points", "line", "polygon", "mesh", "aabb", "gltfNodeIndex"});
     else if constexpr (std::is_same_v<E, PointSeries::Sampling>)
         return std::to_array<std::string_view>({"exact", "linear"});
-    else if constexpr (std::is_same_v<E, PointSeries::Markers>)
-        return std::to_array<std::string_view>({"none", "appendToValidity", "pointValidities"});
     else {
         static_assert(std::is_same_v<E, PointSeries::Measure>);
         return std::to_array<std::string_view>({"wgs84Planar2D", "geographicMetres"});
@@ -228,7 +227,7 @@ void checkSeries(PointSeries const& s)
     bool interval = p.kind_ == K::Interval;
     auto axis = interval ? p.intervalAxis_ : p.kind_;
     if (interval &&
-        (axis == K::Interval || axis == K::Dense || p.end_.empty() ||
+        (axis == K::Interval || axis == K::Dense || axis == K::TaggedValidity || p.end_.empty() ||
          s.sampling_ != PointSeries::Sampling::Exact))
         invalid("invalid interval axis, bounds or sampling");
     if (!interval &&
@@ -245,6 +244,10 @@ void checkSeries(PointSeries const& s)
         invalid("distanceScale must be a positive distance conversion");
     if (axis == K::Dense && !p.field_.empty())
         invalid("dense alignment has no position field");
+    if (axis == K::TaggedValidity &&
+        (s.markerTag_.empty() || !p.field_.empty() || s.parallel_ || p.fromAssignmentStart_ ||
+         p.reverse_))
+        invalid("taggedValidity needs a markerTag and uses stored positions in record order");
     for (auto const& field : s.fields_)
         if (field.name_.empty() || field.name_.front() == '$')
             invalid("empty or reserved point output name");
@@ -405,12 +408,7 @@ class MapSchema::Impl::PointBuilder
     std::map<std::string, TypeId, std::less<>> generated_;
     std::set<TypeId> used_;
     TypeId integer_ = 0, number_ = 0, string_ = 0, indices_ = 0, path_ = 0;
-    struct MarkerContext
-    {
-        Nodes samples;
-        bool append = false, separate = false;
-    };
-    std::map<TypeId, MarkerContext> markers_;
+    std::map<TypeId, Nodes> markerSamples_;
 
     void charge(size_t n = 1)
     {
@@ -779,7 +777,18 @@ class MapSchema::Impl::PointBuilder
         };
         auto const& p = s.position_;
         auto axis = p.kind_ == Position::Kind::Interval ? p.intervalAxis_ : p.kind_;
-        if (axis != Position::Kind::Dense) {
+        if (axis == Position::Kind::TaggedValidity) {
+            // Follow stored Attribute positions, not a virtual marker or a record's own field.
+            for (auto id : follow(attributes, {"validity"})) {
+                Nodes entries{id};
+                if (only(pool_.schemaType(id), Value::Array))
+                    entries = elements(entries);
+                for (auto tag : follow(entries, {"tag"}))
+                    if (!only(pool_.schemaType(tag), Value::String))
+                        invalid("taggedValidity requires stored string tags");
+            }
+        }
+        else if (axis != Position::Kind::Dense) {
             auto start = operand(p.field_);
             std::optional<Bound> upper;
             if (axis == Position::Kind::Fraction) {
@@ -899,10 +908,7 @@ class MapSchema::Impl::PointBuilder
         Fields* fields)
     {
         Fields samples, markerFields;
-        bool append = false, separate = false;
         for (auto series : site.series) {
-            append |= series->markers_ == PointSeries::Markers::AppendToValidity;
-            separate |= series->markers_ == PointSeries::Markers::PointValidities;
             for (auto& [name, out] : outputs(layer, *series, site.attributes, feature)) {
                 auto sampleKey = childKey(key + "/sample", name);
                 Fields contributors{
@@ -926,13 +932,13 @@ class MapSchema::Impl::PointBuilder
                     candidate["alternative"].types = raw(std::move(out.alternative));
                 auto value = node(sampleKey, Kind::Object, std::move(candidate));
                 samples[name] = node(sampleKey + "/list", Kind::Array, {}, {value});
-                if (series->markers_ != PointSeries::Markers::None)
+                if (!view_ && !series->markerTag_.empty())
                     markerFields[name] = samples[name];
                 if (fields)
                     (*fields)[name] = std::move(out.physical);
             }
         }
-        if (!view_ && !markerFields.empty()) {
+        if (!markerFields.empty()) {
             auto marker = node(key + "/marker-samples", Kind::Object, std::move(markerFields));
             // Some tiles annotate a union Attribute, others its selected physical arm.
             // The shared attribute-query root must include all *possible* named uses.
@@ -942,10 +948,7 @@ class MapSchema::Impl::PointBuilder
             bool bound = false;
             for (auto attr : attrs)
                 if (auto query = graph_.findQueryRoot(feature, attr)) {
-                    auto& context = markers_[query];
-                    context.samples.push_back(marker);
-                    context.append |= append;
-                    context.separate |= separate;
+                    markerSamples_[query].push_back(marker);
                     bound = true;
                 }
             if (!bound)
@@ -976,12 +979,11 @@ class MapSchema::Impl::PointBuilder
         // These are procedural members (or occurrence routing hints), not ordinary
         // stored payload members. Named lookup still delegates to the raw Attribute.
         for (auto name :
-             {"validity",
-              "pointValidities",
-              "_sourceData",
-              "_mapgetPointSeriesBranch",
-              "_mapgetPointSeriesGeometry"})
+             {"validity", "_sourceData", "_mapgetPointSeriesBranch", "_mapgetPointSeriesGeometry"})
             hide(name);
+        // V8 expanded roots hid this spelling even when it was only a producer payload field.
+        if (verify_ && graph_.wireVersion == ExpandedPointVersion)
+            hide("pointValidities");
         if (!site.series.empty())
             hide("attributeValue");
         for (auto series : site.series) {
@@ -1077,16 +1079,21 @@ class MapSchema::Impl::PointBuilder
      */
     void markerOverlays()
     {
-        auto builtin = [&](std::string_view key, MapSchema::Builtin shape)
-        {
-            auto id = pool_.findSchema(key);
-            if (!id && !verify_)
-                id = pool_.builtin(shape);
-            if (!id)
-                invalid("missing native validity schema for a marker use");
-            return id;
-        };
-        for (auto& [query, ctx] : markers_) {
+        if (markerSamples_.empty())
+            return;
+        auto validities = verify_ ? pool_.findSchema("mapget:Validities") :
+                                    pool_.builtin(MapSchema::Builtin::Validities);
+        auto entry = pool_.schemaType(pool_.findSchema("mapget:Validity"));
+        auto shape = pool_.schemaType(validities);
+        auto tag = entry.field("tag");
+        auto arms = shape.alternatives();
+        if (!entry || shape.composition() != Schema::Composition::AnyOf || arms.size() != 2 ||
+            arms.front() != entry.id() || pool_.schemaType(arms.back()).itemType() != entry ||
+            !tag || tag.required() != false || tag.role() != Role::Data || tag.multimap() ||
+            tag.types().size() != 1 || tag.type().kind() != Kind::String ||
+            tag.type().nullable() != false)
+            invalid("marker use requires singleton/array validities with an optional string tag");
+        for (auto& [query, samples] : markerSamples_) {
             auto bind = [&](std::string_view name, Nodes ids, Role role)
             {
                 unique(ids);
@@ -1104,19 +1111,8 @@ class MapSchema::Impl::PointBuilder
                     pool_.setFieldRequired(query, name, false);
                 }
             };
-            bind("$samples", ctx.samples, Role::Context);
-            if (ctx.append)
-                bind(
-                    "validity",
-                    {builtin("mapget:Validities", MapSchema::Builtin::Validities)},
-                    Role::Data);
-            if (ctx.separate) {
-                auto item = builtin("mapget:Validity", MapSchema::Builtin::Validity);
-                bind(
-                    "pointValidities",
-                    {node("marker-validities", Kind::Array, {}, {item})},
-                    Role::Data);
-            }
+            bind("$samples", std::move(samples), Role::Context);
+            bind("validity", {validities}, Role::Data);
         }
     }
 
@@ -1146,13 +1142,28 @@ class MapSchema::Impl::PointBuilder
         if (!std::ranges::is_sorted(entries.series, {}, seriesKey))
             invalid("noncanonical series order");
         std::set<std::tuple<std::string, std::string, std::string, StringId>> outputNames;
+        using StoredTag = std::tuple<std::string_view, std::string_view, std::string_view,
+                                     GeomType, std::string_view>;
+        std::map<StoredTag, std::set<std::string_view>> taggedGeometries;
         for (auto const& row : entries.series) {
             if (!std::ranges::is_sorted(row.fields_, {}, &PointSeries::Field::name_))
                 invalid("noncanonical field order");
-            for (auto key : {&row.featureType_, &row.attributeLayer_, &row.attribute_})
+            for (auto key :
+                 {&row.featureType_, &row.attributeLayer_, &row.attribute_, &row.markerTag_})
                 registerName(*key);
             if (row.geometryName_)
                 registerName(*row.geometryName_);
+            if (row.position_.kind_ == Position::Kind::TaggedValidity) {
+                auto& names = taggedGeometries[{row.featureType_, row.attributeLayer_,
+                                                row.attribute_, row.geometryType_, row.markerTag_}];
+                std::string_view geometry =
+                    row.geometryName_ ? std::string_view(*row.geometryName_) : "";
+                // An unqualified selector can match any single geometry of this type.
+                if ((geometry.empty() && !names.empty()) || names.contains("") ||
+                    !names.insert(geometry).second)
+                    invalid("overlapping stored tag " + row.markerTag_ + " on " + row.featureType_ +
+                            "/" + row.attributeLayer_ + "/" + row.attribute_);
+            }
             auto path = [&](Path const& names)
             {
                 for (auto const& name : names)
@@ -1242,7 +1253,7 @@ public:
                 invalid("generated point types in a legacy schema");
             return;
         }
-        bool expanded = graph_.wireVersion == ExpandedPointVersion;
+        bool expanded = graph_.expandedPointTypes;
         for (auto& [index, rows] : graph_.pointDeclarations)
             declarations(index, rows);
         for (size_t i = 0; i < graph_.layers.size(); ++i) {
@@ -1320,12 +1331,13 @@ public:
         markerOverlays();
         if (used_.size() != generated_.size())
             invalid("orphan generated type");
-        auto version = used_.empty() && graph_.pointDeclarations.empty() ? LegacyCodecVersion :
-            expanded                                                     ? ExpandedPointVersion :
-                                                                           PointCodecVersion;
-        if (verify_ && graph_.wireVersion != version)
-            invalid("noncanonical point artifact version");
-        graph_.wireVersion = version;
+        bool hasPoints = !used_.empty() || !graph_.pointDeclarations.empty();
+        if (verify_) {
+            if (!hasPoints)
+                invalid("noncanonical point artifact version");
+        }
+        else
+            graph_.wireVersion = hasPoints ? TaggedPointVersion : LegacyCodecVersion;
     }
 };
 
@@ -1375,7 +1387,7 @@ MapSchema::Impl::pointQueryType(LayerSchema const& layer, std::string_view featu
     if (!frozen || wireVersion == LegacyCodecVersion || !layer.producesFeatureType(feature))
         return {};
     auto key = std::pair{size_t(layer.addr().index()), dictionary.get(feature)};
-    if (wireVersion == ExpandedPointVersion) {
+    if (expandedPointTypes) {
         auto it = pointRoots.find(key);
         return it == pointRoots.end() ? Schema{} : pool.schemaType(it->second).retain();
     }

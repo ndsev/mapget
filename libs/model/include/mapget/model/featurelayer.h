@@ -61,6 +61,7 @@ class PartitionFeatureLayer : public PartitionFeatureModelLayerBase
     friend class Feature;
     friend class Relation;
     friend class RelationReference;
+    friend class ValidityReference;
     friend class AttrPoint;
     friend class AttrPointArray;
     friend class AttrPointSequence;
@@ -207,6 +208,10 @@ public:
      * feature's top-level relation list.
      */
     model_ptr<RelationReference> newRelationReference(model_ptr<Relation> const& relation);
+
+    /** Bind a property to a stored validity in its owning attribute, not to a tag or coordinate. */
+    model_ptr<ValidityReference>
+    newValidityReference(model_ptr<Attribute> const& owner, uint32_t index);
 
     /**
      * Create a shared sequence over a line with at least two shape points.

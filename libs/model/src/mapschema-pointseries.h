@@ -16,7 +16,7 @@ struct Declarations
     bool empty() const { return series.empty() && codecs.empty(); }
 };
 
-// This is the V8 wire member order. The JSON projection uses the same members by name.
+// V10 wire order. The JSON projection uses the same members by name.
 template <class U, class F>
 void memberPointers(F&& field)
 {
@@ -35,7 +35,7 @@ void memberPointers(F&& field)
         POINT_MEMBER(position);
         POINT_MEMBER(sampling);
         POINT_MEMBER(fields);
-        POINT_MEMBER(markers);
+        POINT_MEMBER(markerTag);
         POINT_MEMBER(branches);
         POINT_MEMBER(branchTarget);
         POINT_MEMBER(branchRecords);

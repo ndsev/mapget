@@ -3,6 +3,8 @@
 #include "featurelayer.h"
 #include "mapschema.h"
 
+#include <fmt/core.h>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -206,6 +208,26 @@ void SeriesReader::select() const
                     idx.count != axis_->geometry_->numPoints())
                     throw PointQueryError(
                         "Dense point series does not match geometry vertex count.");
+                if (decl_.position_.kind_ == Kind::TaggedValidity) {
+                    auto stored = occurrence_->validityOrNull();
+                    for (uint32_t i = 0; stored && i < stored->size(); ++i) {
+                        if (!(i % 128))
+                            axis_->check();
+                        auto validity = occurrence_->model().resolve<Validity>(*stored->at(i));
+                        if (validity->tag() == decl_.markerTag_) {
+                            idx.storedMarkerOrdinals.push_back(i);
+                            if (validity->geometryDescriptionType() ==
+                                Validity::AttrPointIndexValidity)
+                                idx.hasLogicalMarkers = true;
+                        }
+                    }
+                    if (idx.count != idx.storedMarkerOrdinals.size())
+                        throw PointQueryError(fmt::format(
+                            "Point series has {} records but {} stored validities tagged '{}'.",
+                            idx.count,
+                            idx.storedMarkerOrdinals.size(),
+                            decl_.markerTag_));
+                }
             }
             index_ = std::move(selection);
         });
@@ -288,36 +310,47 @@ SeriesReader::Index const& SeriesReader::index() const
             auto logical = decl_.position_.kind_ == Kind::LogicalIndex ||
                 (decl_.position_.kind_ == Kind::Interval &&
                  decl_.position_.intervalAxis_ == Kind::LogicalIndex);
-            // Logical position readers can use an attachment-specific sequence; don't
-            // alias those positions solely because the raw records happen to be shared.
+            auto tagged = decl_.position_.kind_ == Kind::TaggedValidity;
+            // A shared raw array does not imply shared logical sequences or stored anchors.
+            RecordIndexes::NodeKey owner{};
+            if (logical || tagged)
+                owner = {occurrence_->borrowedModel(), occurrence_->addr().value_};
             auto table = axis_->indexes->get(
-                {idx.records->borrowedModel(),
-                 idx.records->addr().value_,
-                 &decl_,
-                 width,
-                 logical ? occurrence_->addr().value_ : 0U});
+                {{idx.records->borrowedModel(), idx.records->addr().value_}, &decl_, width, owner});
             std::call_once(
                 table->built,
                 [&]
                 {
                     decltype(table->alternatives) alternatives;
-                    for (uint32_t i = 0; i < idx.count; ++i) {
-                        if (!(i % 128))
-                            axis_->check();
-                        RecordIndexes::Fraction fraction, endFraction;
-                        auto start = station(idx, i, decl_.position_.field_, &fraction);
-                        auto end = decl_.position_.kind_ == Kind::Interval ?
-                            station(idx, i, decl_.position_.end_, &endFraction) :
-                            start;
-                        if (endFraction.denominator ?
-                                fraction.compare(endFraction) > 0 :
-                                end < start)
-                            throw PointQueryError("Point interval has reversed bounds.");
+                    auto append =
+                        [&](uint32_t i, double start, double end, RecordIndexes::Fraction fraction)
+                    {
                         auto branch = decl_.alternative_.empty() ?
                             RecordIndexes::Alternative{} :
                             alternativeKey(member(idx, i, decl_.alternative_));
                         alternatives[std::move(branch)]
                             .ordered.push_back({start, end, i, fraction});
+                    };
+                    if (tagged) {
+                        forEachStoredStation(
+                            idx,
+                            [&](uint32_t i, double vertex) { append(i, vertex, vertex, {}); });
+                    }
+                    else {
+                        for (uint32_t i = 0; i < idx.count; ++i) {
+                            if (!(i % 128))
+                                axis_->check();
+                            RecordIndexes::Fraction fraction, endFraction;
+                            auto start = station(idx, i, decl_.position_.field_, &fraction);
+                            auto end = decl_.position_.kind_ == Kind::Interval ?
+                                station(idx, i, decl_.position_.end_, &endFraction) :
+                                start;
+                            if (endFraction.denominator ?
+                                    fraction.compare(endFraction) > 0 :
+                                    end < start)
+                                throw PointQueryError("Point interval has reversed bounds.");
+                            append(i, start, end, fraction);
+                        }
                     }
                     uint32_t work = 0;
                     for (auto& [key, continuation] : alternatives) {
@@ -418,26 +451,28 @@ std::vector<double> const& SeriesReader::measures() const
     return measuredAxis_;
 }
 
+double SeriesReader::logicalIndex(AttrPointSequence const& seq, uint32_t original)
+{
+    auto inserted = seq.attrPoints();
+    // Insertion i precedes original vertex (logicalIndex[i] - i).
+    uint32_t lo = 0, hi = seq.attrPointCount();
+    while (lo < hi) {
+        auto mid = lo + (hi - lo) / 2;
+        if (inserted->attrPointAt(mid)->index() - mid <= original)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return double(original) + lo;
+}
+
 double SeriesReader::axisValue(double vertex, Kind kind) const
 {
     if (kind == Kind::LogicalIndex) {
         auto const& seq = *sequence();
-        auto inserted = seq.attrPoints();
-        auto logical = [&](uint32_t original)
-        {
-            // Insertion i precedes original vertex (logicalIndex[i] - i).
-            uint32_t lo = 0, hi = seq.attrPointCount();
-            while (lo < hi) {
-                auto mid = lo + (hi - lo) / 2;
-                if (inserted->attrPointAt(mid)->index() - mid <= original)
-                    lo = mid + 1;
-                else
-                    hi = mid;
-            }
-            return double(original) + lo;
-        };
         auto i = static_cast<uint32_t>(vertex);
-        return vertex == i ? logical(i) : std::lerp(logical(i), logical(i + 1), vertex - i);
+        auto a = logicalIndex(seq, i);
+        return vertex == i ? a : std::lerp(a, logicalIndex(seq, i + 1), vertex - i);
     }
     if (kind == Kind::VertexMeasure) {
         auto const& values = measures();

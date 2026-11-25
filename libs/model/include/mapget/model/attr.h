@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "geometry.h"
 #include "simfil/overlay.h"
 #include "sourcedatareference.h"
@@ -13,32 +15,25 @@ class Attribute;
 
 /** Read-only public validity layout for one attachment of a possibly shared Attribute.
  * Keep this view while iterating: its record readers and geometry axes are query-local.
- * A detached Attribute's validityOrNull() always refers to stored applicability alone.
+ * A detached Attribute's validityOrNull() always refers to stored entries, never synthesized
+ * markers.
  */
 class AttributeValidityView
 {
 public:
-    /** Public validity: stored entries first, then appendToValidity records in source order. */
+    /** Public validity: stored entries first, then tagged measurement records in source order. */
     [[nodiscard]] uint32_t size() const;
     [[nodiscard]] model_ptr<Validity> at(uint32_t index) const;
 
-    /** Separate pointValidities array. These records never extend assignment coverage. */
-    [[nodiscard]] uint32_t pointCount() const;
-    [[nodiscard]] model_ptr<Validity> pointAt(uint32_t index) const;
-    /** True for a declared separate virtual array, including an empty one. A raw
-     * producer field with the same name is not by itself a marker declaration. */
-    [[nodiscard]] bool hasVirtualPointValidities() const;
-
-    /** Exact candidates keyed by output field. Stored validities have no measurement sample.
+    /** Exact candidates keyed by output field. Assignments and annotations not selected by a
+     * series have no sample, whether or not they share coordinates with a measurement.
      * Candidate contributors carry the path into the raw attribute and its record ordinal;
      * lookup-only _sourceData on a candidate retains the enclosing Attribute's source references.
      */
-    [[nodiscard]] simfil::ModelNode::Ptr
-    markerSamples(uint32_t index, bool pointValidities = false) const;
-    [[nodiscard]] simfil::ModelNode::Ptr
-    markerSample(uint32_t index, std::string_view field, bool pointValidities = false) const;
+    [[nodiscard]] simfil::ModelNode::Ptr markerSamples(uint32_t index) const;
+    [[nodiscard]] simfil::ModelNode::Ptr markerSample(uint32_t index, std::string_view field) const;
 
-    /** Attribute payload with its public validity layouts (including singleton unwrapping). */
+    /** Attribute payload with one public validity list (a singleton is unwrapped). */
     [[nodiscard]] simfil::ModelNode::Ptr node() const { return node_; }
 
     /** Attribute filter/inspection context. Index zero is also the no-validity fallback. */
@@ -50,7 +45,6 @@ private:
     struct State;
     AttributeValidityView() = default;
     [[nodiscard]] simfil::ModelNode::Ptr publicNode() const;
-    [[nodiscard]] simfil::ModelNode::Ptr storedPoints() const;
     [[nodiscard]] PartitionFeatureLayer const& model() const;
     simfil::ModelNode::Ptr node_, host_;
     model_ptr<MultiValidity> stored_;
@@ -70,13 +64,17 @@ class Attribute : public simfil::ProceduralObject<2, Attribute, PartitionFeature
 
 public:
     /**
-     * Stored applicability only. validity() creates storage on demand;
+     * Stored assignments and supplemental annotations only. validity() creates storage on demand;
      * validityOrNull() inspects without allocation. Supplied validities must
      * belong to the same model pool. Use validityView() for public markers.
      */
     [[nodiscard]] model_ptr<MultiValidity> validity();
     [[nodiscard]] model_ptr<MultiValidity> validityOrNull() const;
     void setValidity(const model_ptr<MultiValidity>& validities) const;
+
+    /** Append value annotations without mutating another attribute's shared assignment.
+     * Returns the first added ordinal. Bind property references after this call. */
+    uint32_t appendTaggedValidities(std::span<model_ptr<Validity> const> annotations);
 
     [[nodiscard]] AttributeValidityView
     validityView(model_ptr<Feature> const& feature, std::string_view layerName) const;

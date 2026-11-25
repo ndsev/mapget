@@ -154,6 +154,7 @@ public:
      * - Version 6.4:
      *   + Shape-point subset rows preserve original geometry/vertex identity and typed projections.
      *   + Dependencies and feature snapshots carry a source revision for matching picks to data.
+     *   + Unified tagged validities and attribute-local validity references.
      */
     static constexpr Version CurrentProtocolVersion{6, 4, 0};
 

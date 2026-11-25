@@ -32,7 +32,9 @@ struct MapSchema::Impl
         AttributeOwner,
         AttributeOwners
     };
-    static constexpr uint32_t LegacyCodecVersion = 7, ExpandedPointVersion = 8, PointCodecVersion = 9;
+    static constexpr uint32_t LegacyCodecVersion = 7;
+    static constexpr uint32_t ExpandedPointVersion = 8;
+    static constexpr uint32_t TaggedPointVersion = 10;
     static constexpr uint32_t PointQueryFlag = 16;
     static constexpr size_t MaxEdges = 4 * 1024 * 1024;
     static constexpr size_t GlobalLayer = std::numeric_limits<size_t>::max();
@@ -221,7 +223,8 @@ struct MapSchema::Impl
     // Sparse by layer: immutable descriptors and a derived feature-to-query-root lookup.
     std::map<size_t, point_schema::Declarations> pointDeclarations;
     std::map<std::pair<size_t, StringId>, TypeId> pointRoots;
-    // V9 point queries are per-host compiled views, not types in the wire artifact.
+    // New artifacts use per-host views unless a contributor has expanded type IDs to remap.
+    bool expandedPointTypes = false;
     mutable std::mutex pointQueryMutex;
     mutable std::map<std::pair<size_t, StringId>, std::shared_ptr<PointViewSlot>> pointViews;
     TypeId pointResultAny = 0;

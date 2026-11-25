@@ -14,7 +14,7 @@ namespace mapget::test
  */
 inline PartitionFeatureLayer::Ptr shapePointLane(
     bool repeatedSample = false,
-    PointSeries::Markers markers = PointSeries::Markers::None,
+    std::string markerTag = {},
     std::string_view firstGeometryName = "centerline")
 {
     auto map = std::make_shared<MapSchema>();
@@ -28,11 +28,6 @@ inline PartitionFeatureLayer::Ptr shapePointLane(
     auto records = map->schemaType(map->arrayOf(record.id()));
     auto attribute = map->newAttribute("adasMeasurement");
     attribute.addField("records", records);
-    if (markers == PointSeries::Markers::PointValidities) {
-        attribute.addField(
-            "pointValidities",
-            map->schemaType(map->builtin(MapSchema::Builtin::Validities)));
-    }
     layer->addPointCodec("curvatureCode", {.tableOnly_ = true, .codes_ = {{7, -0.15296}}});
     for (auto const name : {std::string_view("CURVATURE"), std::string_view("SLOPE_ARRAY")}) {
         layer->bindAttribute(attribute, "Lane", "LaneAdasLayerWithGeo", name);
@@ -49,7 +44,7 @@ inline PartitionFeatureLayer::Ptr shapePointLane(
                   {"code"},
                   curvature ? "m^-1" : "%",
                   curvature ? "curvatureCode" : ""}},
-            .markers_ = markers,
+            .markerTag_ = markerTag,
         };
         layer->addPointSeries(std::move(series));
     }

@@ -93,7 +93,7 @@ protected:
 /**
  * Represents an attribute or relation validity with respect to a feature's geometry.
  */
-class Validity : public simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>
+class Validity : public simfil::ProceduralObject<8, Validity, PartitionFeatureLayer>
 {
     friend class PartitionFeatureLayer;
     friend class PointNode;
@@ -150,6 +150,11 @@ public:
      */
     [[nodiscard]] GeometryOffsetType geometryOffsetType() const;
     [[nodiscard]] GeometryDescriptionType geometryDescriptionType() const;
+
+    /** Optional producer tag identifying a value/measurement rather than assignment coverage. */
+    [[nodiscard]] std::optional<std::string_view> tag() const;
+    /** Materialize only this occurrence when setting a nonempty tag; empty clears it. */
+    void setTag(std::string_view tag);
 
     /** Referenced layer-local geometry name used for validity resolution. */
     [[nodiscard]] std::optional<std::string_view> geometryName() const;
@@ -259,7 +264,7 @@ protected:
 
 public:
     explicit Validity(simfil::detail::mp_key key)
-        : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(key)
+        : simfil::ProceduralObject<8, Validity, PartitionFeatureLayer>(key)
     {
     }
     Validity(Direction direction,
@@ -290,7 +295,7 @@ protected:
         GeometryOffsetType type,
         double offset,
         double vertex,
-        Direction direction,
+        simfil::StringId tag,
         bool named,
         bool planar,
         std::optional<Point> const& explicitPosition = std::nullopt);
@@ -459,4 +464,35 @@ private:
     using simfil::BaseArray<PartitionFeatureModelLayerBase, Validity>::BaseArray;
 };
 
+/** Attribute-local link. Key lookup follows the target, while enumeration and GeoJSON
+ * expose only the ordinal so the geometry occurs exactly once in the feature. */
+class ValidityReference
+    : public simfil::ProceduralObject<1, ValidityReference, PartitionFeatureLayer>
+{
+    friend class PartitionFeatureLayer;
+
+public:
+    struct Data
+    {
+        MODEL_COLUMN_TYPE(8);
+        simfil::ModelNodeAddress attribute_;
+        uint32_t index_;
+    };
+
+    explicit ValidityReference(simfil::detail::mp_key key) : ProceduralObject(key) {}
+    ValidityReference(
+        Data const& data,
+        simfil::ModelConstPtr layer,
+        simfil::ModelNodeAddress address,
+        simfil::detail::mp_key key);
+
+    /** Ordinal in the owning attribute's validity view, including singleton ordinal zero. */
+    [[nodiscard]] uint32_t index() const { return data_->index_; }
+    /** Follow the slot rather than an immutable target address: a simple validity may upgrade. */
+    [[nodiscard]] model_ptr<Validity> validity() const;
+    [[nodiscard]] simfil::ModelNode::Ptr get(simfil::StringId const& field) const override;
+
+private:
+    Data const* data_ = nullptr;
+};
 }

@@ -141,9 +141,38 @@ model_ptr<MultiValidity> Attribute::validityOrNull() const
     return model().resolve<MultiValidity>(data_->validities_);
 }
 
+uint32_t Attribute::appendTaggedValidities(std::span<model_ptr<Validity> const> annotations)
+{
+    auto stored = validityOrNull();
+    uint32_t count = stored ? stored->size() : 0;
+    if (annotations.empty())
+        return count;
+    for (auto const& v : annotations)
+        if (!v || v->borrowedModel() != borrowedModel() ||
+            v->addr().column() != PartitionFeatureLayer::ColumnId::Validities || !v->tag())
+            throw std::invalid_argument(
+                "Value annotations require stored, tagged validities from the owning tile.");
+
+    // Keep the original assignment shared; only this attachment gains the property geometries.
+    uint32_t first = stored && !count ? 1 : count;
+    if (annotations.size() > UINT32_MAX - first)
+        throw std::length_error("Too many tagged validities on one attribute.");
+    auto combined = model().newValidityCollection(first + annotations.size());
+    if (stored && !count)
+        combined->newDirection(Validity::None);  // Explicitly empty is not an omitted assignment.
+    for (uint32_t i = 0; i < count; ++i)
+        combined->append(model().resolve<Validity>(*stored->at(i)));
+    for (auto const& v : annotations)
+        combined->append(v);
+    setValidity(combined);
+    return first;
+}
+
 void Attribute::setValidity(const model_ptr<MultiValidity>& validities) const
 {
-    data_->validities_ = validities ? validities->addr() : ModelNodeAddress();;
+    if (validities && validities->borrowedModel() != borrowedModel())
+        throw std::invalid_argument("Validity collection must belong to the attribute's tile.");
+    data_->validities_ = validities ? validities->addr() : ModelNodeAddress{};
 }
 
 }

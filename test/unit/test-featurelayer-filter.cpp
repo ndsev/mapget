@@ -811,7 +811,7 @@ TEST_CASE(
     "Attribute filtering links each appended marker to its actual measurement record",
     "[feature-layer-filter][shapepoint][point-marker]")
 {
-    auto source = test::shapePointLane(false, PointSeries::Markers::AppendToValidity);
+    auto source = test::shapePointLane(false, "adas-measurement-point");
     FeatureLayerFilterRequest request{
         .channels_ = {{
             .channelId_ = "anchors",
@@ -848,29 +848,13 @@ TEST_CASE(
                 });
             return true;
         });
-
-    // The alternate public layout exposes pointValidities as a payload field.
-    // Its marker records do not introduce new stored/append-to-validity candidates.
-    source = test::shapePointLane(false, PointSeries::Markers::PointValidities);
-    request.channels_.front().entryFilter_ = "$name == 'CURVATURE'";
-    request.channels_.front().entryFields_ = {"$validityCount", "count(pointValidities.*)"};
-    result = request.filter(*source);
-    REQUIRE(result);
-    channel = (*result)->at(0);
-    REQUIRE(channel->attributeValidityEntryCount() == 1);
-    channel->forEachAttributeValidityEntry(
-        [](auto const& entry)
-        {
-            CHECK(entry->values()->toJson() == R"([[1],[1]])"_json);
-            return true;
-        });
 }
 
 TEST_CASE(
     "An ambiguous marker geometry remains a local attribute issue",
     "[feature-layer-filter][shapepoint][point-marker]")
 {
-    auto source = test::shapePointLane(false, PointSeries::Markers::AppendToValidity, "ADAS");
+    auto source = test::shapePointLane(false, "adas-measurement-point", "ADAS");
     FeatureLayerFilterRequest request{
         .channels_ =
             {{.channelId_ = "anchors", .scope_ = FeatureLayerFilterScope::Attribute},

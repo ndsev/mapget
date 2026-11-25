@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 namespace mapget::shape
 {
@@ -120,6 +121,8 @@ bool Axis::selects(PointSeries const& decl, Attribute const& attr) const
         if (!(i % 128))
             check();
         auto v = attr.model().resolve<Validity>(*valid->at(i));
+        if (v->tag())
+            continue;  // Value geometries cannot choose the assignment geometry.
         if (auto ref = v->featureId(); ref && !owns(*ref))
             continue;
         auto p = v->attrPointIndex();
@@ -359,5 +362,136 @@ Axis::coverage(Validity const& v, PointSeries::Measure measure, bool declared) c
             return std::minmax(*a, *b);
     }
     return {};
+}
+
+std::span<uint32_t const> RecordIndexes::verticesAt(Axis const& axis, Point p)
+{
+    auto finite = [](Point q)
+    {
+        return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
+    };
+    if (!finite(p))
+        return {};
+    std::call_once(
+        verticesBuilt_,
+        [&]
+        {
+            decltype(verticesByPosition_) positions;
+            auto vertices = model_ptr<PointBufferNode>::make(
+                axis.geometry_->owningModel(),
+                axis.geometry_->addr());
+            for (uint32_t i = 0; i < vertices->size(); ++i) {
+                if (!(i % 256))
+                    axis.check();
+                auto q = vertices->pointAt(i);
+                if (finite(q))
+                    positions[{q.x, q.y, q.z}].push_back(i);
+            }
+            verticesByPosition_ = std::move(positions);
+        });
+    auto it = verticesByPosition_.find({p.x, p.y, p.z});
+    if (it == verticesByPosition_.end())
+        return {};
+    return it->second;
+}
+
+void SeriesReader::forEachStoredStation(
+    Index const& idx,
+    std::function<void(uint32_t, double)> const& emit) const
+{
+    auto const& geometry = axis_->geometry_;
+    if (idx.storedMarkerOrdinals.empty() || !geometry || !geometry->numPoints())
+        return;
+
+    // Native line offsets resolve the first named line or the default line, not
+    // necessarily the pinned series geometry. A standalone point is not a line offset.
+    auto name = geometry->name();
+    std::optional<uint32_t> firstNamedLine;
+    std::set<RecordIndexes::NodeKey> otherPointGeometries;
+    uint32_t ordinal = 0;
+    axis_->host_->geomOrNull()->forEachGeometry(
+        [&](auto const& g)
+        {
+            if (!(ordinal % 128))
+                axis_->check();
+            if (!firstNamedLine && g->geomType() == GeomType::Line && g->name() == name)
+                firstNamedLine = ordinal;
+            if (ordinal != axis_->ordinal_ && g->geomType() == GeomType::Points)
+                otherPointGeometries.emplace(g->borrowedModel(), g->addr().value_);
+            ++ordinal;
+            return true;
+        });
+    auto vertices = model_ptr<PointBufferNode>::make(geometry->owningModel(), geometry->addr());
+    auto stored = occurrence_->validityOrNull();
+    for (uint32_t i = 0; i < idx.count; ++i) {
+        if (!(i % 128))
+            axis_->check();
+        auto v = occurrence_->model().resolve<Validity>(*stored->at(idx.storedMarkerOrdinals[i]));
+        auto referencedName = v->geometryName();
+        if ((referencedName && referencedName != name) || v->direction() == Validity::None)
+            continue;
+        if (auto ref = v->featureId(); ref && !axis_->owns(*ref))
+            continue;
+        if (auto g = v->simpleGeometry()) {
+            if (g->geomType() != GeomType::Points || g->numPoints() != 1)
+                continue;
+            if (g->borrowedModel() == geometry->borrowedModel() && g->addr() == geometry->addr()) {
+                emit(i, 0.);
+                continue;
+            }
+            if (g->addr().column() == PartitionFeatureLayer::ColumnId::GeometryViews) {
+                // A vertex slice has identity even if another vertex has identical XYZ.
+                auto slice = model_ptr<PointBufferNode>::make(g->owningModel(), g->addr());
+                if (g->borrowedModel() == geometry->borrowedModel() &&
+                    slice->baseGeometryAddress() == vertices->baseGeometryAddress())
+                {
+                    auto vertex = std::get<int64_t>(slice->at(0)->runtimeData()) -
+                        std::get<int64_t>(vertices->at(0)->runtimeData());
+                    if (vertex >= 0 && vertex < vertices->size())
+                        emit(i, double(vertex));
+                }
+            }
+            else if (!otherPointGeometries.contains({g->borrowedModel(), g->addr().value_})) {
+                // A detached absolute point (e.g. a house) does not request projection.
+                for (auto vertex : axis_->indexes->verticesAt(*axis_, g->pointAt(0)))
+                    emit(i, vertex);
+            }
+            continue;
+        }
+        if (v->geometryDescriptionType() == Validity::AttrPointIndexValidity) {
+            if (auto span = axis_->coverage(*v, decl_.measure_, true))
+                emit(i, span->first);
+            continue;
+        }
+        auto p = v->offsetPoint();
+        if (!p || geometry->geomType() != GeomType::Line ||
+            !(referencedName ? firstNamedLine == axis_->ordinal_ : axis_->fallbackGeometry()))
+            continue;
+        switch (v->geometryOffsetType()) {
+        case Validity::BufferOffset:
+            if (p->x >= 0 && p->x < vertices->size())
+                emit(i, std::trunc(p->x));  // Native buffer offsets address an original vertex.
+            break;
+        case Validity::MetricLengthOffset:
+        case Validity::RelativeLengthOffset: {
+            // Stored validity lengths are geographic metres, even when interpolation
+            // between the resulting anchors uses the producer's planar measure.
+            constexpr auto metres = PointSeries::Measure::GeographicMetres;
+            auto length = axis_->distanceAt(axis_->last(), metres);
+            auto distance = v->geometryOffsetType() == Validity::RelativeLengthOffset ?
+                std::clamp(p->x, 0., 1.) * length :
+                std::clamp(p->x, 0., length);
+            if (auto vertex = axis_->vertexAt(distance, metres))
+                emit(i, *vertex);
+            break;
+        }
+        case Validity::GeoPosOffset:
+            // Unlike SimpleGeometry, a geographic line offset explicitly requests projection.
+            if (auto span = axis_->coverage(*v, decl_.measure_, false))
+                emit(i, span->first);
+            break;
+        default: break;
+        }
+    }
 }
 }  // namespace mapget::shape

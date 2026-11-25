@@ -98,6 +98,8 @@ struct ValidityData
     GeometryDescription geomDescr_{};
     // Compact layer-local geometry-name index. Zero means unnamed/unrestricted.
     uint8_t referencedGeometryName_ = 0;
+    // Optional annotation purpose; occupies the padding before the address.
+    simfil::StringId tag_ = 0;
     simfil::ModelNodeAddress featureAddress_;
 };
 

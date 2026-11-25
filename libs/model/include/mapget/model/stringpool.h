@@ -144,6 +144,8 @@ struct StringPool : public simfil::StringPool
         PathStr,
         AlternativeStr,
         OverlayGeometryOrdinalStr,
+        TagStr,
+        MapgetValidityStr,
     };
 
     // Shared vocabulary must have one ID: name lookup and procedural fields use the same key.
@@ -151,7 +153,7 @@ struct StringPool : public simfil::StringPool
     static constexpr simfil::StringId SchemaBitmaskStr = simfil::StringPool::SchemaBitmask;
 
     static_assert(
-        int(OverlayGeometryOrdinalStr) < int(FirstDynamicId),
+        int(MapgetValidityStr) < int(FirstDynamicId),
         "Mapget static keys must not overlap dynamic strings.");
 
     explicit StringPool(const std::string_view& stringPoolId);

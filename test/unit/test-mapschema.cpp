@@ -169,6 +169,87 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "Tagged validity entries and explicit property references retain distinct closed shapes",
+    "[mapschema][schema-native]")
+{
+    using Builtin = MapSchema::Builtin;
+    using Kind = simfil::SchemaType::Kind;
+    using Role = simfil::SchemaType::FieldRole;
+    using Json = nlohmann::json;
+    auto map = std::make_shared<MapSchema>();
+    auto layer = map->newLayer("Measurements", LayerType::SourceData);
+    auto attribute = map->newAttribute("measurement");
+    CHECK_FALSE(map->findSchema("mapget:ValidityReference"));
+    attribute.addField("housePosition", map->schemaType(map->builtin(Builtin::ValidityReference)));
+    layer->setRootSchema(attribute.id());
+    map->finalize();
+    auto decoded = MapSchema::read(bytes(*map));
+    auto imported = LayerSchema::fromJsonSchema(layer->toJsonSchema());
+    for (auto current : {layer, decoded->layer("Measurements"), imported}) {
+        auto type = current->mapSchema()->schemaType(current->rootSchema());
+        auto validities = type.field("validity").type();
+        REQUIRE(validities.composition() == simfil::SchemaType::Composition::AnyOf);
+        auto arms = validities.alternatives();
+        REQUIRE(arms.size() == 2);
+        auto entry = current->mapSchema()->schemaType(arms.front());
+        REQUIRE(current->mapSchema()->schemaType(arms.back()).itemType() == entry);
+        CHECK_FALSE(entry.open());
+        auto tag = entry.field("tag");
+        REQUIRE(tag);
+        CHECK(tag.role() == Role::Data);
+        CHECK(tag.required() == false);
+        CHECK(tag.type().kind() == Kind::String);
+        CHECK(tag.type().nullable() == false);
+        CHECK(entry.field("direction").required() == false);
+        CHECK_FALSE(entry.field("$mapgetValidity"));
+
+        auto link = type.field("housePosition").type();
+        REQUIRE(link);
+        CHECK_FALSE(link.open());
+        auto ordinal = link.field("$mapgetValidity");
+        REQUIRE(ordinal);
+        CHECK(ordinal.role() == Role::Data);
+        CHECK(ordinal.required() == true);
+        CHECK(ordinal.type().kind() == Kind::Int);
+        entry.forEachDirectField(
+            [&](auto const& field)
+            {
+                auto lookup = link.field(field.name());
+                REQUIRE(lookup);
+                CHECK(lookup.role() == Role::Context);
+                CHECK(lookup.type() == field.type());
+            });
+
+        nlohmann::json_schema::json_validator validator;
+        validator.set_root_schema(current->toJsonSchema());
+        Json reference = {{"$mapgetValidity", 0}};
+        Json sequence = {{"$mapgetAttrPointSequence", 0}};
+        Json group = Json::array({
+            {{"direction", "POSITIVE"}},
+            {{"tag", "entrance"}, {"geometry", {{"type", "Point"}, {"coordinates", {1, 2, 3}}}}},
+            {{"tag", "sign"}, {"offsetType", "BufferOffset"}, {"point", 2}},
+            {{"tag", "survey"}, {"geometryName", "axis"}, {"start", 0}, {"end", 1}},
+            {{"tag", "junction"}, {"from", "Road.1"}, {"to", "Road.2"}, {"transitionNumber", 0}},
+            {{"tag", "logical"}, {"attrPointIndex", {{"sequence", sequence}, {"index", 1}}}}
+        });
+        for (auto const& validity : group)
+            CHECK_NOTHROW(
+                validator.validate({{"validity", validity}, {"housePosition", reference}}));
+        CHECK_NOTHROW(validator.validate({{"validity", group}}));
+        CHECK_THROWS(validator.validate({{"validity", {{"tag", 3}}}}));
+        CHECK_THROWS(validator.validate({{"validity", {{"tag", nullptr}}}}));
+        CHECK_THROWS(validator.validate({{"validity", {{"tag", "survey"}, {"bogus", 1}}}}));
+        CHECK_THROWS(validator.validate({{"validity", reference}}));
+        CHECK_THROWS(validator.validate({{"housePosition", Json::object()}}));
+        CHECK_THROWS(validator.validate({{"housePosition", {{"tag", "survey"}}}}));
+        for (Json invalid : {Json(-1), Json(1.5), Json("0"), Json(uint64_t{UINT32_MAX} + 1)})
+            CHECK_THROWS(validator.validate({{"housePosition", {{"$mapgetValidity", invalid}}}}));
+        reference["tag"] = "survey";
+        CHECK_THROWS(validator.validate({{"housePosition", reference}}));
+    }
+}
+
+TEST_CASE(
     "Shared Attribute types retain use-site selection without per-name type allocation",
     "[mapschema][schema-native]")
 {
@@ -585,7 +666,7 @@ std::pair<size_t, size_t> binaryColumn(std::string const& payload, size_t start,
     throw std::logic_error("Unreachable binary column index.");
 }
 
-/** Mutate the map metadata column in a checksum-valid v7/v8/v9 payload, so
+/** Mutate the shared map metadata prefix in a checksum-valid payload, so
  * malformed-graph tests reach the structural reader rather than the digest check. */
 std::vector<uint8_t>
 mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)> const& change)
@@ -599,7 +680,7 @@ mutateDomains(MapSchema const& schema, std::function<void(std::string&, size_t)>
     input.value4b(version);
     input.text1b(identity, 128);
     input.text1b(payload, 64 * 1024 * 1024);
-    REQUIRE((version == 7 || version == 8 || version == 9));
+    REQUIRE((version >= 7 && version <= 10));
     REQUIRE(input.adapter().isCompletedSuccessfully());
     std::vector<uint8_t> body(payload.begin(), payload.end());
     bitsery::Deserializer<Adapter> content(Adapter(body.begin(), body.end()));

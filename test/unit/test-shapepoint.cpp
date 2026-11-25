@@ -10,6 +10,7 @@
 #include "shape-point-lane-fixture.h"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <future>
 #include <iterator>
@@ -292,6 +293,170 @@ TEST_CASE("Repeated measurements require a choice, but never lose raw record ord
     auto duplicate = f.host->attributeLayers()->newLayer("profiles");
     duplicate->addAttribute(f.attr);
     REQUIRE(f.occurrences(1)->size() == 2);
+}
+
+TEST_CASE(
+    "Stored tagged anchors pair by occurrence but sample only their original geometry",
+    "[shapepoint][tagged-validity]")
+{
+    auto s = Profile::declaration(Kind::Dense);
+    s.position_.kind_ = Kind::TaggedValidity;
+    s.markerTag_ = "survey";
+    auto readerFor = [](Profile const& f, model_ptr<Attribute> const& attr)
+    {
+        return shape::SeriesReader(
+            std::make_shared<shape::Axis>(f.host, 0, nullptr),
+            attr,
+            f.schema->pointSeries("Path", "profiles", "PROFILE").front(),
+            f.schema);
+    };
+    SECTION("Other geometries consume their own records, not a station on the selected road")
+    {
+        s.geometryName_ = "road";
+        Profile f(s);
+        auto road = f.host->shapePoints(0).geometry();
+        road->setName("road");
+        f.host->addLine({{0, 0}, {1, 0}, {2, 0}});  // Native unnamed offsets target this line.
+        auto other = f.tile->newFeature("Path", {{"key", int64_t{2}}});
+        other->addGeometry(road);  // Even the very same geometry does not make this the same host.
+        auto stored = f.attr->validity();
+        stored->newRange(Validity::BufferOffset, 1, 2, "road");
+        auto anchor = [&](model_ptr<Validity> v, int raw)
+        {
+            v->setTag(s.markerTag_);
+            f.record(0, 0, raw);
+        };
+        auto absolute = [&](Point p, int raw)
+        {
+            auto g = f.tile->newGeometry(GeomType::Points);
+            g->append(p);
+            anchor(stored->newGeometry(g), raw);
+        };
+        anchor(stored->newPoint(Validity::BufferOffset, 0, "road"), 10);
+        stored->newPoint(Validity::BufferOffset, 1, "road")->setTag("unrelated");
+        anchor(stored->newPoint(Validity::BufferOffset, 1), 20);
+        auto foreign = stored->newPoint(Validity::BufferOffset, 1, "road");
+        foreign->setFeatureId(other->id());
+        anchor(foreign, 30);
+        absolute({1, 6}, 40);     // Do not project a building to the road.
+        absolute({1, 0, 6}, 50);  // Matching XY alone is not matching XYZ.
+        absolute(road->pointAt(1), 60);
+        anchor(stored->newPoint(Validity::BufferOffset, 1, "road"), 70);
+        anchor(stored->newPoint(Validity::BufferOffset, 2, "road"), 80);
+        anchor(stored->newPoint(Validity::BufferOffset, 1, "missing"), 90);
+        auto wrong =
+            f.tile->newGeometryView(GeomType::Points, 1, 1, f.host->shapePoints(1).geometry());
+        anchor(stored->newGeometry(wrong), 100);
+
+        auto reader = readerFor(f, f.attr);
+        CHECK(std::ranges::equal(
+            reader.storedMarkerOrdinals(),
+            std::array{1u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u}));
+        CHECK(reader.markerCount() == 0);
+        CHECK_FALSE(reader.marker(0));
+        auto native = reader.markerSample(3, reader.declaration().fields_.front())->toJson();
+        CHECK(native["value"] == 40);
+        CHECK(native["contributors"][0]["path"] == Json::array({"rows", 3, "raw"}));
+
+        CHECK(f.occurrences(0)->size() == 0);
+        CHECK(f.field(f.occurrence(1), "$validities")->toJson() == Json::array({0}));
+        auto samples = f.samples(1);
+        REQUIRE(samples.size() == 2);
+        CHECK(samples[0]["value"] == 60);
+        CHECK(samples[0]["contributors"][0]["recordIndex"] == 5);
+        CHECK(samples[1]["value"] == 70);
+        CHECK(samples[1]["contributors"][0]["recordIndex"] == 6);
+        CHECK_THROWS_AS(f.reading(1), PointQueryError);
+        CHECK(f.reading(2) == 80);
+    }
+    SECTION("A shared raw array does not share another owner's station index")
+    {
+        s.omittedValidityCovers_ = true;
+        Profile f(s);
+        auto other = f.host->attributeLayers()->newLayer("profiles")->newAttribute("PROFILE");
+        REQUIRE(other->addField("rows", f.rows));
+        for (int i : {0, 2}) {
+            f.record(0, 0, 10 + i);
+            f.attr->validity()->newPoint(Validity::BufferOffset, i)->setTag(s.markerTag_);
+            other->validity()->newPoint(Validity::BufferOffset, 2 - i)->setTag(s.markerTag_);
+        }
+        auto points = f.host->shapePoints(0);
+        for (int i : {0, 2, 1, 0}) {
+            auto uses = f.field(points.at(i)->queryContext(), "$attributes");
+            REQUIRE(uses->size() == 2);
+            auto first = f.field(uses->at(0), "reading")->toJson();
+            auto second = f.field(uses->at(1), "reading")->toJson();
+            if (i == 1) {
+                CHECK(first.is_null());
+                CHECK(second.is_null());
+            }
+            else {
+                CHECK(first == 10 + i);
+                CHECK(second == 12 - i);
+            }
+        }
+        CHECK(points.work().recordIndexes == 2);
+        CHECK(points.work().recordsIndexed == 4);
+    }
+    SECTION("Interpolation weights use the declared measure, not vertex ordinal distance")
+    {
+        s.sampling_ = PointSeries::Sampling::Linear;
+        s.measure_ =
+            GENERATE(PointSeries::Measure::Wgs84Planar2D, PointSeries::Measure::GeographicMetres);
+        Profile f(s, {{0, 60}, {1, 60}, {1, 63}});
+        auto g = f.host->shapePoints(0).geometry();
+        auto stored = f.attr->validity();
+        stored->newPoint(Validity::BufferOffset, 1);  // Only the interior vertex is covered.
+        auto firstLeg = g->pointAt(0).geographicDistanceTo(g->pointAt(1));
+        // The stored fraction resolves halfway along the first leg in native metres.
+        stored->newPoint(Validity::RelativeLengthOffset, .5 * firstLeg / g->length())
+            ->setTag(s.markerTag_);
+        stored->newPoint(Validity::BufferOffset, 2)->setTag(s.markerTag_);
+        f.record(0, 0, 0);
+        f.record(0, 0, 100);
+        auto t = s.measure_ == PointSeries::Measure::Wgs84Planar2D ?
+            .5 / 3.5 :
+            .5 * firstLeg / (g->length() - .5 * firstLeg);
+        auto sample = f.samples(1).at(0);
+        CHECK(sample["value"].get<double>() == Catch::Approx(100. * t));
+        CHECK(sample["contributors"][1]["weight"].get<double>() == Catch::Approx(t));
+        CHECK(f.occurrences(0)->size() == 0);
+    }
+    SECTION("An inserted logical anchor measures its authored path, not a chord midpoint")
+    {
+        s.sampling_ = PointSeries::Sampling::Linear;
+        s.omittedValidityCovers_ = true;
+        Profile f(s, {{0, 0}, {1, 0}, {5, 0}});
+        auto seq = f.tile->newAttrPointSequence(f.host, f.host->shapePoints(0).geometry());
+        seq->appendAttrPoint(1, {1, 3});  // A, inserted, B, C; inserted to B is 3, B to C is 4.
+        auto stored = f.attr->validity();
+        stored->newAttrPointIndex(seq, 1)->setTag(s.markerTag_);
+        stored->newPoint(Validity::BufferOffset, 2)->setTag(s.markerTag_);
+        f.record(0, 0, 0);
+        f.record(0, 0, 70);
+        CHECK(f.reading(0).is_null());
+        CHECK(f.reading(1).get<double>() == Catch::Approx(30.));
+        CHECK(f.reading(2) == 70);
+    }
+    SECTION("An omitted record array is inactive; a present one must match exactly")
+    {
+        Profile f(s);
+        auto absent = f.tile->newAttribute("PROFILE");
+        absent->validity()->newPoint(Validity::BufferOffset, 0)->setTag(s.markerTag_);
+        CHECK(readerFor(f, absent).storedMarkerOrdinals().empty());
+        auto null = f.tile->resolve<simfil::ModelNode>(
+            simfil::ModelNodeAddress{simfil::Model::Null, 1},
+            simfil::ScalarValueType{});
+        REQUIRE(absent->addField("rows", null));
+        CHECK(readerFor(f, absent).storedMarkerOrdinals().empty());
+        auto reader = readerFor(f, f.attr);
+        CHECK(reader.storedMarkerOrdinals().empty());  // Present [] and zero matching tags.
+        f.attr->validity()->newPoint(Validity::BufferOffset, 0)->setTag(s.markerTag_);
+        CHECK_THROWS_AS(readerFor(f, f.attr).storedMarkerOrdinals(), PointQueryError);
+        f.record(0, 0, 1);
+        f.record(0, 0, 2);
+        CHECK_THROWS_AS(readerFor(f, f.attr).storedMarkerOrdinals(), PointQueryError);
+    }
 }
 
 TEST_CASE(

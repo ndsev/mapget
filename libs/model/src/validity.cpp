@@ -22,10 +22,10 @@ struct MarkerPosition
     double offset;
     double vertex;
     simfil::ModelNodeAddress geometry;
+    simfil::StringId tag;
     Validity::GeometryOffsetType type;
-    Validity::Direction direction;
-    uint8_t named;
-    uint8_t planar;
+    uint8_t named : 1;
+    uint8_t planar : 1;
 };
 static_assert(std::is_trivially_copyable_v<MarkerPosition> && sizeof(MarkerPosition) == 24);
 using MarkerCoordinates = std::array<double, 3>;
@@ -524,6 +524,9 @@ void Validity::ensureMaterialized()
     if (!upgraded || !upgraded->data_) {
         raise("Failed to materialize simple validity.");
     }
+    // The caller may immediately store or slice this handle (e.g. a tagged
+    // property annotation). Its address must follow the upgraded owner slot too.
+    addr_ = upgradedAddress;
     data_ = upgraded->data_;
     fields_ = upgraded->fields_;
 }
@@ -555,12 +558,44 @@ void Validity::setFeatureId(model_ptr<FeatureId> featureId)
     data_->featureAddress_ = featureId->addr();
 }
 
+ValidityReference::ValidityReference(
+    Data const& data,
+    simfil::ModelConstPtr layer,
+    simfil::ModelNodeAddress address,
+    simfil::detail::mp_key key)
+    : ProceduralObject(std::move(layer), address, key), data_(&data)
+{
+    fields_.emplace_back(
+        StringPool::MapgetValidityStr,
+        [](ValidityReference const& self) {
+            return model_ptr<simfil::ValueNode>::make(
+                static_cast<int64_t>(self.index()),
+                self.model_);
+        });
+}
+
+model_ptr<Validity> ValidityReference::validity() const
+{
+    auto collection = model().resolve<Attribute>(data_->attribute_)->validityOrNull();
+    auto target = collection ? collection->at(index()) : simfil::ModelNode::Ptr{};
+    if (!target)
+        raise("ValidityReference ordinal is out of range.");
+    return model().resolve<Validity>(*target);
+}
+
+simfil::ModelNode::Ptr ValidityReference::get(simfil::StringId const& field) const
+{
+    return field == StringPool::MapgetValidityStr ?
+        ProceduralObject::get(field) :
+        validity()->get(field);
+}
+
 Validity::Validity(
     Validity::Direction direction,
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<8, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
       simpleDirection_(direction)
 {
     if (direction != Empty) {
@@ -590,7 +625,7 @@ Validity::Validity(
     simfil::ModelConstPtr layer,
     simfil::ModelNodeAddress a,
     simfil::detail::mp_key key)
-    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
+    : simfil::ProceduralObject<8, Validity, PartitionFeatureLayer>(std::move(layer), a, key),
       data_(data)
 {
     exposeFields();
@@ -602,12 +637,12 @@ model_ptr<Validity> Validity::view(
     GeometryOffsetType type,
     double offset,
     double vertex,
-    Direction direction,
+    simfil::StringId tag,
     bool named,
     bool planar,
     std::optional<Point> const& explicitPosition)
 {
-    MarkerPosition position{offset, vertex, geometry->addr(), type, direction, named, planar};
+    MarkerPosition position{offset, vertex, geometry->addr(), tag, type, named, planar};
     simfil::ByteArray payload{
         std::string_view{reinterpret_cast<char const*>(&position), sizeof(position)}};
     if (explicitPosition) {
@@ -622,7 +657,7 @@ model_ptr<Validity> Validity::view(
 }
 
 Validity::Validity(simfil::ModelNode const& marker, simfil::detail::mp_key key)
-    : simfil::ProceduralObject<7, Validity, PartitionFeatureLayer>(
+    : simfil::ProceduralObject<8, Validity, PartitionFeatureLayer>(
           marker.owningModel(),
           marker.addr(),
           key)
@@ -641,6 +676,13 @@ void Validity::exposeFields()
                     directionToString(self.direction()),
                     self.model_);
             });
+
+    if (tag()) {
+        fields_.emplace_back(
+            StringPool::TagStr,
+            [](Validity const& self)
+            { return model_ptr<simfil::ValueNode>::make(*self.tag(), self.model_); });
+    }
 
     if (auto referencedGeometryName = geometryName()) {
         fields_.emplace_back(
@@ -777,7 +819,7 @@ void Validity::setDirection(const Validity::Direction& v)
 Validity::Direction Validity::direction() const
 {
     if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView)
-        return markerPosition(*this).direction;
+        return Empty;  // A measurement has a position, not an assignment direction.
     if (!data_) {
         return simpleDirection_;
     }
@@ -802,6 +844,31 @@ Validity::GeometryDescriptionType Validity::geometryDescriptionType() const
         return NoGeometry;
     }
     return data_->geomDescrType_;
+}
+
+std::optional<std::string_view> Validity::tag() const
+{
+    auto id = addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView ?
+        markerPosition(*this).tag :
+        (data_ ? data_->tag_ : 0);
+    return id ? model().strings()->resolve(id) : std::nullopt;
+}
+
+void Validity::setTag(std::string_view tag)
+{
+    if (tag.empty() && !this->tag())
+        return;
+    ensureMaterialized();
+    simfil::StringId id = 0;
+    if (!tag.empty()) {
+        auto interned = model().strings()->emplace(tag);
+        if (!interned)
+            raise(interned.error().message);
+        id = *interned;
+    }
+    data_->tag_ = id;
+    fields_.clear();
+    exposeFields();
 }
 
 void Validity::setGeometryName(std::optional<std::string_view> geometryName)
@@ -1084,6 +1151,9 @@ SelfContainedGeometry Validity::computeGeometry(
     if (transitionPivotIndex) {
         *transitionPivotIndex = std::numeric_limits<uint32_t>::max();
     }
+    // An explicit exclusion has no drawable geometry, even on a host with a default line.
+    if (direction() == None)
+        return {};
     if (addr().column() == PartitionFeatureLayer::ColumnId::MarkerValidityView) {
         // Never reselect by name: two geometries with that name can be distinct.
         auto m = markerPosition(*this);

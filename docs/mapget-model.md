@@ -567,6 +567,27 @@ At the JSON level, a single validity is exposed as an object. Multiple validity 
 
 Here `offsetType` describes how `start` and `end` should be interpreted (for example as metric distance along the line string or as relative length fractions).
 
+A validity can also locate an attribute **value**, rather than describe where the attribute
+applies. Its optional `tag` names that purpose. For example, a house number may apply along
+a road range, while its building is several metres away. Both entries live under `validity`;
+only the untagged range supplies shape-point coverage. A property can reference the building
+without embedding its geometry a second time:
+
+```json
+{
+  "validity": [
+    {"offsetType": "RelativeLengthOffset", "start": 0.2, "end": 0.8},
+    {"tag": "house-position", "geometry": {"type": "MultiPoint", "coordinates": [[11.5, 48.1, 0]]}}
+  ],
+  "properties": [{"validityRef": {"$mapgetValidity": 1}}]
+}
+```
+
+This abbreviated property refers to **ordinal 1 of this attribute**, not to the first entry with
+a matching tag. A reference to a singleton is ordinal zero even though its JSON is not an array.
+GeoJSON import reconstructs the link. For measurements, [shape-point declarations](shape-point-measurements.md)
+determine which tagged points supply values and whether exact matching or interpolation applies.
+
 Transition-number validities are exposed semantically rather than as baked helper geometry:
 
 ```json

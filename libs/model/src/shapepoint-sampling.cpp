@@ -149,6 +149,47 @@ SeriesReader::Sample SeriesReader::decode(
     return s;
 }
 
+std::array<double, 3> SeriesReader::taggedDistances(
+    Index const& idx,
+    Record const& left,
+    uint32_t vertex,
+    Record const& right) const
+{
+    auto stored = occurrence_->validityOrNull();
+    auto logical = [&](Record const& r)
+    {
+        auto node = stored->at(idx.storedMarkerOrdinals[r.ordinal]);
+        return occurrence_->model().resolve<Validity>(*node)->attrPointIndex();
+    };
+    auto a = logical(left), b = logical(right);
+    auto measure = decl_.measure_;
+    if (!a && !b)
+        return {
+            axis_->distanceAt(left.station, measure),
+            axis_->distanceAt(vertex, measure),
+            axis_->distanceAt(right.station, measure)};
+    auto seq = a ? a->sequence() : b->sequence();
+    if (a && b && seq->addr() != b->sequence()->addr())
+        throw PointQueryError("Tagged interpolation anchors refer to different logical sequences.");
+    // logicalVertex orders insertions between original vertices; that ordering is
+    // not a physical distance. Measure on the sequence containing the authored point.
+    auto original = [&](double station)
+    {
+        auto i = static_cast<uint32_t>(station);
+        auto d = axis_->logicalDistanceAt(*seq, logicalIndex(*seq, i), measure);
+        return station == i ?
+            d :
+            std::lerp(
+                d,
+                axis_->logicalDistanceAt(*seq, logicalIndex(*seq, i + 1), measure),
+                station - i);
+    };
+    return {
+        a ? axis_->logicalDistanceAt(*seq, a->index(), measure) : original(left.station),
+        original(vertex),
+        b ? axis_->logicalDistanceAt(*seq, b->index(), measure) : original(right.station)};
+}
+
 std::vector<SeriesReader::Sample> SeriesReader::samples(
     uint32_t vertex,
     PointSeries::Field const& field,
@@ -265,9 +306,11 @@ std::vector<SeriesReader::Sample> SeriesReader::samples(
         auto va = number(a.value), vb = number(b.value);
         if (!va || !vb || !a.status.empty() || !b.status.empty())
             continue;
+        bool vertexKey = kind == Kind::VertexIndex || kind == Kind::LogicalIndex ||
+            kind == Kind::TaggedValidity;
         auto distance = [&](double station)
         {
-            if (kind != Kind::VertexIndex && kind != Kind::LogicalIndex)
+            if (!vertexKey)
                 return station;
             // Index keys select the endpoints, not the interpolation weight: authored
             // vertices need not be evenly spaced on the road.
@@ -282,14 +325,16 @@ std::vector<SeriesReader::Sample> SeriesReader::samples(
                 axis_->logicalDistanceAt(*sequence(), station, decl_.measure_) :
                 axis_->distanceAt(station, decl_.measure_);
         };
-        auto da = distance(left->station), db = distance(it->station);
+        auto [da, atDistance, db] = kind == Kind::TaggedValidity && idx.hasLogicalMarkers ?
+            taggedDistances(idx, *left, vertex, *it) :
+            std::array{distance(left->station), distance(at), distance(it->station)};
         if (da == db) {
-            if (kind == Kind::VertexIndex || kind == Kind::LogicalIndex)
+            if (vertexKey)
                 continue;  // coincident anchors
             throw PointQueryError(
                 "Interpolation anchors are closer than the geometry-measure precision.");
         }
-        auto t = (distance(at) - da) / (db - da);
+        auto t = (atDistance - da) / (db - da);
         a.value = Context::scalar(std::lerp(*va, *vb, t));
         a.contributors = {{left->ordinal, 1 - t}, {it->ordinal, t}};
         result.push_back(std::move(a));
@@ -373,11 +418,24 @@ Node SeriesReader::explain(Sample const& sample, PointSeries::Field const& field
 
 uint32_t SeriesReader::markerCount() const
 {
+    if (decl_.position_.kind_ == Kind::TaggedValidity)
+        return 0;
     select();
     return index_.count;
 }
+
+std::span<uint32_t const> SeriesReader::storedMarkerOrdinals() const
+{
+    if (decl_.position_.kind_ != Kind::TaggedValidity)
+        return {};
+    select();
+    return index_.storedMarkerOrdinals;
+}
+
 std::optional<double> SeriesReader::markerStation(uint32_t i) const
 {
+    if (decl_.position_.kind_ == Kind::TaggedValidity)
+        return {};  // The stored validity is the marker; there is no offset to synthesize.
     select();
     if (i >= index_.count)
         return {};
@@ -388,8 +446,12 @@ std::optional<double> SeriesReader::markerStation(uint32_t i) const
         if (decl_.position_.fromAssignmentStart_) {
             auto validities = occurrence_->validityOrNull();
             std::optional<Axis::Span> match;
+            bool hasAssignment = validities && !validities->size();
             for (uint32_t j = 0; validities && j < validities->size(); ++j) {
                 auto v = occurrence_->model().resolve<Validity>(*validities->at(j));
+                if (v->tag())
+                    continue;
+                hasAssignment = true;
                 auto span =
                     axis_->coverage(*v, decl_.assignmentMeasure_.value_or(decl_.measure_), true);
                 if (!span)
@@ -400,7 +462,7 @@ std::optional<double> SeriesReader::markerStation(uint32_t i) const
             }
             if (match)
                 origin = *match;
-            else if (validities || !decl_.omittedValidityCovers_)
+            else if (hasAssignment || !decl_.omittedValidityCovers_)
                 return {};
         }
         auto a = axisValue(origin.first, kind), b = axisValue(origin.second, kind);

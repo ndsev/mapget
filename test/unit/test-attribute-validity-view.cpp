@@ -10,12 +10,12 @@ namespace
 {
 using namespace mapget;
 using Json = nlohmann::json;
-using Markers = PointSeries::Markers;
+constexpr std::string_view SPEED_TAG = "drivepath-speed-point";
+constexpr std::string_view ADAS_TAG = "adas-measurement-point";
 using Node = simfil::ModelNode::Ptr;
 
 // The drivepath_1 fixture's validity prefix is an interior assignment; the
-// two speed records are at 0 and 1. Percentage ADAS publishes an independent
-// always-array field (even for zero records), with COMPLETE named markers.
+// two speed records are at 0 and 1. Both declarations use the same tagged public view.
 struct Profile
 {
     MapSchema::Ptr map = std::make_shared<MapSchema>();
@@ -30,7 +30,7 @@ struct Profile
     model_ptr<Geometry> line;
 
     explicit Profile(
-        Markers markers,
+        std::string_view markerTag,
         bool branched = false,
         PointSeries::Position::Kind kind = PointSeries::Position::Kind::Fraction)
     {
@@ -44,15 +44,11 @@ struct Profile
         payload.addField("records", rows);
         auto attribute = map->newAttribute("Profile");
         attribute.addField("attributeValue", payload);
-        if (markers == Markers::PointValidities)
-            attribute.addField(
-                "pointValidities",
-                map->schemaType(map->builtin(MapSchema::Builtin::Validities)));
         PointSeries series;
         series.featureType_ = "Path";
         series.attributeLayer_ = "profiles";
         series.attribute_ = "SPEED";
-        if (markers == Markers::PointValidities)
+        if (markerTag == ADAS_TAG)
             series.geometryName_ = "ADAS";
         series.records_ = {"attributeValue", "records"};
         series.position_.kind_ = kind;
@@ -61,7 +57,7 @@ struct Profile
             series.position_.bits_ = {"bits"};
         series.measure_ = PointSeries::Measure::Wgs84Planar2D;
         series.fields_ = {{"normalSpeed", {"speed"}, "km/h", {}}};
-        series.markers_ = markers;
+        series.markerTag_ = markerTag;
         if (branched) {
             auto branch = map->newObjectType();
             branch.addField("target", integer);
@@ -89,7 +85,7 @@ struct Profile
         tile->setGeometryAnchor({10, 70});
         host = tile->newFeature("Path", {{"key", int64_t{1}}});
         line = host->geom()->newGeometry(GeomType::Line);
-        if (markers == Markers::PointValidities)
+        if (markerTag == ADAS_TAG)
             line->setName("ADAS");
         for (Point p : {Point{10, 70, 0}, Point{11, 70, 10}, Point{11, 71, 20}})
             line->append(p);
@@ -132,7 +128,7 @@ TEST_CASE(
     "DrivePath public markers index raw anchors, never assignment coverage",
     "[attribute-markers]")
 {
-    Profile f(Markers::AppendToValidity);
+    Profile f(SPEED_TAG);
     f.attr->validity()->newRange(Validity::RelativeLengthOffset, 20. / 127., 40. / 127.);
     f.add(0, 1, 80);
     f.add(1, 1, 60);
@@ -147,16 +143,14 @@ TEST_CASE(
     REQUIRE(view.size() == 3);
     REQUIRE(f.attr->schemaType());
     CHECK(f.publicAttribute(f.host)->schemaType() == f.attr->schemaType());
-    REQUIRE(view.pointCount() == 0);
-    CHECK_FALSE(view.hasVirtualPointValidities());
     REQUIRE_FALSE(view.at(3));
     REQUIRE_FALSE(view.markerSamples(0));
     REQUIRE_FALSE(view.markerSample(2, "absent"));
     REQUIRE(view.at(0)->offsetRange());
     Json expected = Json::array(
         {{{"start", 20. / 127.}, {"end", 40. / 127.}, {"offsetType", "RelativeLengthOffset"}},
-         {{"point", 0.}, {"offsetType", "RelativeLengthOffset"}},
-         {{"point", 1.}, {"offsetType", "RelativeLengthOffset"}}});
+         {{"tag", SPEED_TAG}, {"point", 0.}, {"offsetType", "RelativeLengthOffset"}},
+         {{"tag", SPEED_TAG}, {"point", 1.}, {"offsetType", "RelativeLengthOffset"}}});
     CHECK(view.node()->toJson()["validity"] == expected);
     CHECK(f.publicAttribute(f.host)->toJson() == view.node()->toJson());
     CHECK(f.host->toJson()["properties"]["layer"]["profiles"]["SPEED"] == view.node()->toJson());
@@ -211,10 +205,11 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Percentage markers preserve named separate arrays and their source geometry",
+    "Tagged percentage markers preserve duplicate stations without making an empty assignment "
+    "apply",
     "[attribute-markers]")
 {
-    Profile f(Markers::PointValidities);
+    Profile f(ADAS_TAG);
     // Two identically named geometries: only the occurrence discriminator selects the second.
     auto selected = f.host->geom()->newGeometry(GeomType::Line);
     selected->setName("ADAS");
@@ -224,46 +219,41 @@ TEST_CASE(
     f.attr->setPointSeriesGeometry(1);
     (void)f.attr->validity();  // Explicit empty, not a whole-feature assignment.
     auto empty = f.attr->validityView(f.host, "profiles");
-    CHECK(empty.pointCount() == 0);
-    CHECK(empty.hasVirtualPointValidities());
-    CHECK(empty.node()->toJson()["pointValidities"] == Json::array());
     CHECK(empty.node()->toJson()["validity"] == Json::array());
 
     for (auto [pos, speed] : {std::pair{0, 80}, {31, 71}, {31, 70}, {127, 60}})
         f.add(pos, 7, speed);
     auto view = f.attr->validityView(f.host, "profiles");
-    REQUIRE(view.size() == 0);
-    REQUIRE(view.pointCount() == 4);
-    CHECK_FALSE(view.at(0));
-    CHECK_FALSE(view.pointAt(4));
-    CHECK_FALSE(view.markerSamples(1));
+    REQUIRE(view.size() == 5);
+    CHECK(view.at(0)->direction() == Validity::None);
+    CHECK(view.at(0)->computeGeometry(f.host->geomOrNull()).points_.empty());
+    CHECK_FALSE(view.at(5));
+    CHECK_FALSE(view.markerSamples(0));
     auto fallback = view.queryContext(0, 0);
-    CHECK(fallback->get(StringPool::OverlayHasValidityStr)->toJson() == false);
     auto json = f.publicAttribute(f.host)->toJson();
-    REQUIRE(json["pointValidities"].is_array());
+    REQUIRE_FALSE(json.contains("pointValidities"));
     CHECK_FALSE(json.contains("_mapgetPointSeriesGeometry"));
-    REQUIRE(json["pointValidities"].size() == 4);
+    REQUIRE(json["validity"].size() == 5);
     auto expected = Json{
-        {"direction", "COMPLETE"},
+        {"tag", ADAS_TAG},
         {"geometryName", "ADAS"},
         {"offsetType", "RelativeLengthOffset"},
         {"point", 31. / 127.}};
-    CHECK(json["pointValidities"][1] == expected);
-    CHECK(json["pointValidities"][2] == expected);
-    Node sliced = fallback->get(f.strings->get("pointValidities"))->at(2);
+    CHECK(json["validity"][2] == expected);
+    CHECK(json["validity"][3] == expected);
+    Node sliced = fallback->get(StringPool::ValidityStr)->at(2);
     auto marker = f.tile->resolve<Validity>(*sliced);
     CHECK(marker->geometryName() == "ADAS");
-    CHECK(marker->direction() == Validity::Both);
+    CHECK(marker->tag() == ADAS_TAG);
+    CHECK(marker->direction() == Validity::Empty);
     CHECK(marker->geometryDescriptionType() == Validity::OffsetPointValidity);
     auto position = marker->computeGeometry(f.host->geomOrNull());
     REQUIRE(position.points_.size() == 1);
     // In planar WGS84 the two one-degree segments have equal length, unlike metres at 70N.
     CHECK(position.points_[0].x == Catch::Approx(15. + 2. * 31. / 127.));
     CHECK(position.points_[0].z == Catch::Approx(20. * 31. / 127.));
-    CHECK(view.markerSample(1, "normalSpeed", true)->toJson()["value"] == 71);
-    CHECK(
-        view.markerSamples(2, true)->toJson()["normalSpeed"][0]["contributors"][0]["recordIndex"] ==
-        2);
+    CHECK(view.markerSample(2, "normalSpeed")->toJson()["value"] == 71);
+    CHECK(view.markerSamples(3)->toJson()["normalSpeed"][0]["contributors"][0]["recordIndex"] == 2);
     CHECK(f.host->toJson()["properties"]["layer"]["profiles"]["SPEED"] == json);
 }
 
@@ -271,7 +261,7 @@ TEST_CASE(
     "An inserted logical marker keeps its explicit off-segment coordinates",
     "[attribute-markers]")
 {
-    Profile f(Markers::AppendToValidity, false, PointSeries::Position::Kind::LogicalIndex);
+    Profile f(SPEED_TAG, false, PointSeries::Position::Kind::LogicalIndex);
     auto sequence = f.tile->newAttrPointSequence(f.host, f.line);
     auto inserted = sequence->appendAttrPoint(1, {10.4, 70.7, 94});
     REQUIRE(inserted);
@@ -289,14 +279,14 @@ TEST_CASE(
     REQUIRE(original.points_.size() == 1);
     CHECK(original.points_[0] == f.line->pointAt(1));
     CHECK(f.line->numPoints() == 3);
-    CHECK(sliced->toJson().size() == 2);
+    CHECK(sliced->toJson().size() == 3);
 }
 
 TEST_CASE(
     "Public attribute traversal preserves attachment order and reads only requested anchors",
     "[attribute-markers]")
 {
-    Profile f(Markers::AppendToValidity);
+    Profile f(SPEED_TAG);
     f.add(1, 1, 60);
     f.add(0, 1, 80);
     SECTION("Multimaps retain ordinary layer IDs and unsorted source records")
@@ -351,8 +341,6 @@ TEST_CASE(
         rows->append(f.tile->newValue("raw payload"));
         REQUIRE(f.attr->addField("pointValidities", rows));
         auto view = f.attr->validityView(f.host, "profiles");
-        CHECK_FALSE(view.hasVirtualPointValidities());
-        CHECK_FALSE(view.pointAt(0));
         CHECK(view.node()->toJson()["pointValidities"] == Json::array({"raw payload"}));
     }
     SECTION("A stored geometry selects its own markers among otherwise eligible lines")
@@ -391,7 +379,7 @@ TEST_CASE(
 
 TEST_CASE("Shared marker profiles retain the host and exact branch path", "[attribute-markers]")
 {
-    Profile f(Markers::AppendToValidity, true);
+    Profile f(SPEED_TAG, true);
     f.add(0, 1, 80);
     auto branchRows = f.tile->newArray();
     f.add(1, 1, 40, branchRows);
@@ -419,3 +407,121 @@ TEST_CASE("Shared marker profiles retain the host and exact branch path", "[attr
     CHECK(result["contributors"][0]["path"] == Json::array({"branches", 0, "rows", 0, "speed"}));
 }
 }  // namespace
+
+TEST_CASE(
+    "Property references identify slots, not tags, positions or shared assignments",
+    "[attribute-markers][validity-reference]")
+{
+    static_assert(sizeof(ValidityData) == 64);
+    Profile f(SPEED_TAG);
+    auto other = f.layer->newAttribute("OTHER");
+    auto assignments = f.tile->newValidityCollection(1, true);
+    assignments->newDirection(Validity::Positive);
+    f.attr->setValidity(assignments);
+    other->setValidity(assignments);
+
+    std::array<model_ptr<Validity>, 2> points;
+    for (auto& point : points) {
+        point = f.tile->newValidity();
+        point->setOffsetPoint(Validity::BufferOffset, 1.);
+        point->setTag("house-position");
+    }
+    auto first = f.attr->appendTaggedValidities(points);
+    REQUIRE(first == 1);
+    REQUIRE(other->validityOrNull()->size() == 1);
+    CHECK(
+        other->validityOrNull()->at(0)->addr().column() ==
+        PartitionFeatureLayer::ColumnId::SimpleValidity);
+
+    auto ref = f.tile->newValidityReference(f.attr, first + 1);
+    auto properties = f.tile->newArray(2, true);
+    properties->append(f.tile->newValidityReference(f.attr, first));
+    properties->append(ref);
+    REQUIRE(f.attr->addField("properties", properties));
+    REQUIRE(ref->index() == 2);
+    REQUIRE(ref->validity()->addr() == points[1]->addr());
+    CHECK(ref->validity()->addr() != points[0]->addr());
+    CHECK(ref->get(StringPool::TagStr)->toJson() == "house-position");
+    CHECK(ref->toJson() == Json{{"$mapgetValidity", 2}});
+    CHECK_THROWS(f.tile->newValidityReference(other, first));
+
+    SECTION("clone rooted at the reference retains the owner and the exact shared child")
+    {
+        auto dst = std::make_shared<PartitionFeatureLayer>(
+            f.tile->tileId(),
+            "clone",
+            "Map",
+            f.info,
+            std::make_shared<StringPool>("clone"));
+        PartitionFeatureLayer::CloneCache cache;
+        auto clonedRef = dst->resolve<ValidityReference>(*dst->clone(cache, f.tile, ref));
+        auto clonedAttr = dst->resolve<Attribute>(*dst->clone(cache, f.tile, f.attr));
+        auto slot = clonedAttr->validityOrNull()->at(2);
+        REQUIRE(slot);
+        CHECK(clonedRef->validity()->addr() == slot->addr());
+        auto props = clonedAttr->get(dst->strings()->get("properties"));
+        CHECK(props->at(1)->addr() == clonedRef->addr());
+        CHECK(clonedRef->validity()->tag() == "house-position");
+    }
+    SECTION("binary re-read and dictionary replacement preserve tags and index")
+    {
+        f.add(1, 1, 80);
+        auto bytes = f.bytes();
+        auto copy = std::make_shared<PartitionFeatureLayer>(
+            std::vector<uint8_t>(bytes.begin(), bytes.end()),
+            [&](auto&&, auto&&) { return f.info; },
+            [&](auto&&) { return f.strings; });
+        auto dict = std::make_shared<StringPool>("replacement");
+        REQUIRE(dict->emplace("distinct-first-key"));
+        REQUIRE(copy->setStrings(dict));
+        auto copyRef = copy->resolve<ValidityReference>(ref->addr());
+        REQUIRE(copyRef->index() == 2);
+        CHECK(copyRef->validity()->tag() == "house-position");
+        CHECK(copyRef->get(StringPool::MapgetValidityStr)->toJson() == 2);
+        auto view = copy->resolve<Attribute>(f.attr->addr())
+                        ->validityView(copy->resolve<Feature>(f.host->addr()), "profiles");
+        REQUIRE(view.at(3)->tag() == SPEED_TAG);
+        CHECK(view.markerSamples(3)->get(dict->get("normalSpeed"))->at(0)->toJson()["value"] == 80);
+    }
+}
+
+TEST_CASE(
+    "A tagged value on a vertex does not make its attribute apply there",
+    "[attribute-markers][validity-reference][shapepoint]")
+{
+    Profile f(SPEED_TAG);
+    f.attr->validity()->newRange(Validity::BufferOffset, 0., 1.);
+    auto valueLocation = f.tile->newValidity();
+    valueLocation->setOffsetPoint(Validity::BufferOffset, 2.);
+    valueLocation->setTag("house-position");
+    std::array annotations{valueLocation};
+    auto ordinal = f.attr->appendTaggedValidities(annotations);
+    f.add(1, 1, 80);  // An actual measurement at the excluded endpoint, too.
+    auto publicView = f.attr->validityView(f.host, "profiles");
+    REQUIRE(publicView.size() == 3);
+    CHECK(publicView.at(ordinal)->tag() == "house-position");
+    CHECK(publicView.at(2)->tag() == SPEED_TAG);
+    CHECK(publicView.markerSample(2, "normalSpeed")->toJson()["value"] == 80);
+    auto vertex = f.host->shapePoints(0).at(2);
+    REQUIRE(vertex);
+    CHECK(vertex->queryContext()->get(StringPool::OverlayAttributesStr)->size() == 0);
+}
+
+TEST_CASE(
+    "Tagging a compact directional validity upgrades only its owning slot",
+    "[attribute-markers][validity-reference]")
+{
+    Profile f(SPEED_TAG);
+    auto first = f.attr->validity()->newDirection(Validity::Positive);
+    auto second = f.attr->validity()->newDirection(Validity::Positive);
+    auto ref = f.tile->newValidityReference(f.attr, 0);
+    first->setTag("");
+    REQUIRE(first->addr().column() == PartitionFeatureLayer::ColumnId::SimpleValidity);
+    first->setTag("value-location");
+    REQUIRE(first->addr() == ref->validity()->addr());
+    Node sliced = first;
+    CHECK(sliced->get(StringPool::TagStr)->toJson() == "value-location");
+    CHECK(second->addr().column() == PartitionFeatureLayer::ColumnId::SimpleValidity);
+    CHECK_FALSE(second->tag());
+    CHECK(ref->toJson() == Json{{"$mapgetValidity", 0}});
+}

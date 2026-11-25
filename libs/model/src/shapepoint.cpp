@@ -86,19 +86,22 @@ public:
                         measure = contract->assignmentMeasure_.value_or(contract->measure_);
                         bound.reader =
                             std::make_shared<SeriesReader>(axis, attr, *contract, schema);
-                        // Applicability belongs to this attachment, not to the shared payload.
-                        // An explicitly empty collection must never turn into whole-path coverage.
-                        if (!validities)
-                            bound.unrestricted = contract->omittedValidityCovers_;
                     }
-                    if (!bound.unrestricted)
-                        for (uint32_t i = 0; validities && i < validities->size(); ++i) {
-                            if (!(i % 128))
-                                axis->check();
-                            auto v = attr->model().resolve<Validity>(*validities->at(i));
-                            if (auto span = axis->coverage(*v, measure, contract != nullptr))
-                                bound.assignments.emplace_back(i, *span);
-                        }
+                    bool hasAssignment = false;
+                    for (uint32_t i = 0; validities && i < validities->size(); ++i) {
+                        if (!(i % 128))
+                            axis->check();
+                        auto v = attr->model().resolve<Validity>(*validities->at(i));
+                        if (v->tag())
+                            continue;  // A value annotation never extends assignment coverage.
+                        hasAssignment = true;
+                        if (auto span = axis->coverage(*v, measure, contract != nullptr))
+                            bound.assignments.emplace_back(i, *span);
+                    }
+                    // The explicitly empty collection returned above. A nonempty list of
+                    // annotations alone has no assignment of its own.
+                    bound.unrestricted = !hasAssignment && contract &&
+                        contract->omittedValidityCovers_;
                     if (bound.unrestricted || !bound.assignments.empty())
                         next.push_back(std::move(bound));
                 };
@@ -196,7 +199,7 @@ public:
                 {
                     auto id = strings_->get(key);
                     if (!id || projections_.contains(id) || key.starts_with("_mapgetPointSeries") ||
-                        key == "pointValidities" || key == "_sourceData")
+                        key == "_sourceData")
                         return true;
                     if (!occurrence_->contracts.empty()) {
                         if (key == "attributeValue")

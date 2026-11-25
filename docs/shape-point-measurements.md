@@ -41,7 +41,7 @@ the source paths, numeric operands, output types and codec references before
 publication. Layer JSON interchange uses `x-mapget.pointMeasurements.series`
 and `codecs`.
 
-The V9 artifact contains the producer types, point declarations and the types
+The compact artifact contains the producer types, point declarations and the types
 of decoded results and their explanations. It does **not** contain an occurrence
 object and list for every attribute on every feature. On first use,
 `layer->shapePointQueryType(featureName)` derives the named and enumerable
@@ -63,13 +63,11 @@ schema measured roughly 0.6–18 ms to construct a cold host view, and
 3.7–4.6 MB of allocated capacity per view. Those are machine- and
 schema-dependent measurements, not latency guarantees or process RSS.
 
-V7 artifacts keep their original identity. Filtering for an original point's
-index or geometry still works, but V7 has no typed point root or declared
-samples. V8 artifacts retain their expanded point roots. Composing
-with a V8 producer preserves that layout so all its type IDs can still be
-translated; newly built V9-only composites use compact artifacts. Consumers
-that only read through V8 must be updated before publishing V9 artifacts.
-This changes the schema artifact version, not the tile stream framing.
+New point-series declarations use V10, which carries the producer-defined marker tag.
+Existing V7 schemas have no declared samples. V8 and V9 schemas without a legacy
+marker destination can still be read; a schema that used that destination must be
+regenerated. Mapget cannot infer whether an old marker represents an ADAS measurement,
+a speed anchor or another kind of location. Update native and WASM consumers together.
 
 ## Coverage is not sampling
 
@@ -91,6 +89,7 @@ never means complete coverage.
 | Fraction / Distance | Read the declared numerator and width, or scale distances into metres. A fraction is `p/(2^bits-1)`; widths may be per record or per enclosing occurrence. |
 | VertexMeasure | A producer-retained, finite, strictly monotone M array, one entry per original vertex. M is not inferred from elevation or the XY chord. |
 | Interval | Supply start/end paths, the axis and endpoint inclusivity. Return all covering records. |
+| TaggedValidity | Pair each record with the next stored point validity bearing the declaration's tag. Other tags and assignment ranges are skipped. |
 | Parallel columns | Resolve the position and value columns on `records_`. Pair by raw row ordinal, validate lengths and retain repeated positions. |
 
 Exact sampling never snaps an off-vertex marker to an original index. Linear
@@ -105,10 +104,25 @@ are explicit declaration choices.
 With anchors 80 and 60 at the ends of a line, a **covered** midpoint yields 70
 and two contributors of weight 0.5. The same anchors over a short stored assignment
 that excludes the midpoint yield no occurrence there. Attribute-scope inspection
-can still show both original anchors in either case. Set `markers_` to
-`AppendToValidity` or `PointValidities` only when that public marker layout is
-part of the datasource contract. `attr->validityOrNull()` is the **stored**
-coverage; `attr->validityView(host, layerName)` is the lazy public view.
+can still show both original anchors in either case. Set `markerTag_` on the
+series to publish tagged point validities after the stored entries, in raw record
+order. The view and matcher read the same records; no per-vertex table is stored.
+Untagged assignments alone determine coverage. A marker outside the assigned
+range can be inspected but cannot make its attribute apply at that vertex.
+With markers present, an explicitly empty assignment starts the public list
+with `{"direction":"NONE"}`; an omitted assignment does not. One entry is
+still unwrapped as an object in GeoJSON.
+
+When the producer already stores the positions as tagged validities, select
+`TaggedValidity` instead of a raw position field. Dense/indexed layouts need
+no synthesized markers.
+
+To link a nested field to a point without repeating the geometry, append the
+tagged locations with `Attribute::appendTaggedValidities` and use the returned
+ordinal to create a `ValidityReference`. GeoJSON enumerates just
+`{"$mapgetValidity": n}`; named lookup can follow the target. The tag describes
+the point, not its identity. Even coincident points with the same tag retain
+distinct indices.
 
 An occurrence attached to another feature may refer to a different record array
 inside a shared payload. Declare `branches_`, `branchTarget_`, `branchRecords_`

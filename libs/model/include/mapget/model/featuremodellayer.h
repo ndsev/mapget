@@ -155,6 +155,7 @@ public:
         AttrPointIndexRangeView,
         ShapePointEntries,
         ShapePointPositions,
+        ValidityReferences,
     }; };
 
     /**

@@ -1408,13 +1408,34 @@ void MapSchema::Impl::pointValue(S& s, T& value, size_t& memory)
             memory,
             [&](auto& archive, auto& item) { pointValue(archive, item, memory); });
     else
-        point_schema::members(value, [&](auto, auto& member) { pointValue(s, member, memory); });
+        point_schema::members(
+            value,
+            [&](std::string_view key, auto& member)
+            {
+                if constexpr (std::is_same_v<T, PointSeries>) {
+                    // V8/V9 recorded a destination, not a producer-defined tag.
+                    // Only the disabled value has a lossless interpretation.
+                    if (wireVersion < TaggedPointVersion && key == "markerTag") {
+                        uint8_t legacy = 0;
+                        s.value1b(legacy);
+                        if (legacy || !value.markerTag_.empty())
+                            throw std::invalid_argument(
+                                "Regenerate legacy point markers with a producer-defined markerTag.");
+                        return;
+                    }
+                }
+                pointValue(s, member, memory);
+            });
 }
 
 /** Sparse per-layer declarations. Derived root IDs are verified/reindexed from the type graph. */
 template <class S>
 void MapSchema::Impl::pointWire(S& s, size_t& memory)
 {
+    if (wireVersion >= TaggedPointVersion)
+        s.boolValue(expandedPointTypes);
+    else if constexpr (simfil::detail::bitsery_input_archive<S>)
+        expandedPointTypes = wireVersion == ExpandedPointVersion;
     uint32_t count = pointDeclarations.size();
     s.value4b(count);
     if (count > layers.size())
@@ -1699,9 +1720,8 @@ MapSchema::read(std::span<uint8_t const> bytes, std::string_view expectedId, siz
     uint32_t magic = 0, version = 0;
     s.value4b(magic);
     s.value4b(version);
-    if (magic != 0x4843534d ||
-        (version != Impl::LegacyCodecVersion && version != Impl::ExpandedPointVersion &&
-         version != Impl::PointCodecVersion))
+    if (magic != 0x4843534d || version < Impl::LegacyCodecVersion ||
+        version > Impl::TaggedPointVersion)
         throw std::invalid_argument("Unsupported MapSchema binary format.");
     std::string identity, payload;
     size_t memory = bytes.size();
@@ -2707,7 +2727,7 @@ void MapSchema::Impl::summarize()
          {{"types", types.empty() ? 0 : types.size() - 1},
           {"physicalTypes", types.empty() ? 0 : types.size() - 1 - queryRoots.size() - pointTypes},
           {"queryContexts", queryRoots.size() + pointTypes},
-          {"shapePointRoots", wireVersion == PointCodecVersion ? pointHostCount : pointRoots.size()},
+          {"shapePointRoots", wireVersion == LegacyCodecVersion ? 0 : pointHostCount},
           {"attributeQueryContexts", queryRoots.size()},
           {"fields", counts.fields},
           {"fieldEdges", counts.fieldEdges},
