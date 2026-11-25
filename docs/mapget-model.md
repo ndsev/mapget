@@ -942,9 +942,10 @@ by a pick and `forEachShapePointEntry` walks the accepted vertices in source
 order. Rows from one source geometry share its ordinal, name and original type.
 Geometries from one host share its ID and feature projections. A consumer can
 draw a point using its position and ordered entry projections alone. To inspect
-its source attributes, fetch the host in the local dependency's partition,
-match its source revision and use `feature->shapePoints(geometryOrdinal).at(pointIndex)`.
-For a geometry view, the index is relative to the visible slice.
+its source attributes, fetch the host by canonical feature ID from the local
+dependency's partition and provider. Use
+`feature->shapePoints(geometryOrdinal).at(pointIndex)`; an absent geometry or
+vertex yields no point. For a geometry view, the index is relative to the visible slice.
 
 Protocol 5.3 projections are result sequences: the outer `values`/`hostValues`
 array corresponds positionally to the requested expressions, and every element
@@ -961,8 +962,8 @@ Each subset also carries:
 - `filterId + generation` semantic identity;
 - the timestamp and positive TTL pair of the finite-lifetime source
   dependency with the earliest absolute expiry, when one exists;
-- source dependencies with the full partition key, `sourceFeatureCount`,
-  catalog `sourceId` and complete feature `sourceRevision`;
+- source dependencies with the full partition key, the complete source's
+  `sourceFeatureCount` and its catalog `sourceId`;
 - inherited source `info()` statistics plus subset-owned terminal-entry and
   stored-geometry vertex counts;
 - aggregated structured issues and typed SIMFIL traces;
@@ -973,15 +974,11 @@ single-writer work-in-progress subset. Cross-tile contributions contain source
 feature pointers/descriptors, not partially constructed model nodes. The
 completed value is serialized once and is immutable to consumers.
 
-A datasource with an authoritative revision covering its complete converted
-feature partition and exact schema can supply it through
-`publishSourceSnapshot(sourceId, revision)`. Otherwise the service computes
-a SHA-256 digest of the ordered features, geometry slots and original vertices,
-typed attribute occurrences, validity selectors and source-record references.
-It computes this after add-on composition, outside the scheduler lock. The
-source key, schema and model contents determine the digest. Dictionary numbering,
-load times, TTLs and cache eviction do not. The subset's local dependency
-and a feature-restricted inspection response both carry the complete revision.
+The service sets the catalog provider on the partition with `PartitionLayer::setSourceId`.
+The cached partition, the local filter dependency and a feature-restricted clone
+retain that ID. A standalone builder without a catalog leaves the ID empty;
+the string-pool ID is not a substitute. Equal provider IDs (including two
+empty IDs in a standalone model) do not establish that two loads have identical content.
 
 ## Binary tile streaming
 
@@ -1104,7 +1101,7 @@ Feature and subset JSON include `warnings` when nonempty and `error` when set. S
 
 `PartitionFeatureLayer::newFeature()` still rejects duplicate identities before allocating. It throws `DuplicateFeatureIdError`, including the retained canonical identity, rejected ID parts and partition key. Producers that support best-effort conversion may catch only this exception at the individual source-record boundary.
 
-Binary readers and writers must both use protocol 6.4, including exact schema
+Binary readers and writers must both use protocol 6.5, including exact schema
 bindings, typed scalars and version-2 incoming manifests. Error and empty-tile
 expiry reuse the existing timestamp and TTL fields. Incompatible SQLite tile and
 string-pool caches are cleared by the normal startup compatibility check.

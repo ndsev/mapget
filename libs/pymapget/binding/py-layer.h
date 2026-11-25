@@ -643,7 +643,6 @@ void bindTileLayer(py::module_& m)
             "Get the fully qualified partition key.")
         .def("map_id", &PartitionLayer::mapId, "Get the map id.")
         .def("source_id", &PartitionLayer::sourceId, "Catalog provider that published this partition.")
-        .def("source_revision", &PartitionLayer::sourceRevision, "Revision of the complete source feature partition.")
         .def(
             "layer_id",
             [](PartitionLayer const& self) { return self.layerInfo()->layerId_; },
@@ -1125,7 +1124,6 @@ void bindTileLayer(py::module_& m)
                     item["source_feature_count"] =
                         dependency.sourceFeatureCount_;
                     item["source_id"] = dependency.sourceId_;
-                    item["source_revision"] = dependency.sourceRevision_;
                     result.append(std::move(item));
                 }
                 return result;

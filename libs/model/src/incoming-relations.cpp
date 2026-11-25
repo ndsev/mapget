@@ -130,9 +130,7 @@ PartitionFeatureLayer::Ptr cloneInspectionFeatures(
         if (feature) result->clone(cache, source, *feature, feature->id()->typeId(),
                                    feature->id()->keyValuePairs());
     }
-    // Ordinals in an inspection link belong to the complete source, including
-    // when only one feature (or an empty response) fits the request.
-    result->publishSourceSnapshot(source->sourceId(), source->sourceRevision());
+    result->setSourceId(source->sourceId());
     return result;
 }
 

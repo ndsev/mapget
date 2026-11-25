@@ -575,7 +575,7 @@ build/bin/generate-shape-point-fixture build/shape-point-fixture
 and `dictionary.frame` holds a complete framed string-pool message. The files
 `source.bin`, `selected.bin` and `subset.bin` are raw partition payloads
 from the production writers. `expected.json` records the original ordinals,
-projection values, revision and selected raw measurement for pick verification.
+projection values, catalog provider and selected raw measurement for pick verification.
 
 ### Point groups
 

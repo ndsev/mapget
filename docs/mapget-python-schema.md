@@ -89,12 +89,14 @@ envelope/graph and returns an immutable artifact. The default input bound is 64 
 and oversized input raise; no partial schema is installed. Supply the expected token whenever
 the bytes correspond to advertised metadata. This format is neither JSON Schema nor a tile stream.
 
-The current wire formats are tile-stream protocol **6.4**, MapSchema codec **8** for point-series declarations (**7** otherwise) and
+The current wire formats are tile-stream protocol **6.5**, MapSchema codec **8** for point-series declarations (**7** otherwise) and
 embedded simfil SchemaPool codec **4**. The `rawValue` and field-multiplicity static-dictionary additions shift
 mapget field IDs, so 6.1/6.2 streams are incompatible even though their framing is unchanged.
 MapSchema codec 7 stores identity definitions once at map level and produced feature roots
 per layer in canonical columns and arenas; older artifacts are not accepted.
-Stream compatibility requires equal major/minor versions and ignores patch. Rebuild the
+The 6.5 stream does not accept pre-release 6.4 partition payloads; this change does not
+alter MapSchema or the dictionary field IDs. Stream compatibility requires equal major/minor
+versions and ignores patch. Rebuild the
 Python wheel, native consumers and erdblick WASM together; old framed payloads and unsupported
 schema artifacts are rejected rather than reinterpreted under the new IDs.
 

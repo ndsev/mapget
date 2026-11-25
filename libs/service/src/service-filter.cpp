@@ -114,7 +114,6 @@ void FilterRequestExecution::SourceTileContribution::addMemoryUsage(MemoryUsageB
     const
 {
     usage.add("dependency-strings", stringMemoryUsage(dependency_.sourceId_));
-    usage.add("dependency-strings", stringMemoryUsage(dependency_.sourceRevision_));
     usage.add("warnings", stringVectorMemoryUsage(warnings_));
     if (error_)
         usage.add("error", stringMemoryUsage(*error_));

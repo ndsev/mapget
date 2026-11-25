@@ -49,7 +49,6 @@ add_library(mapget-model STATIC
   src/memory.cpp
   src/featuremodellayer.cpp
   src/featurelayer.cpp
-  src/source-revision.cpp
   src/subsetlayer.cpp
   src/featurelayer-filter.cpp
   src/incoming-relations.cpp

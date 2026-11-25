@@ -446,7 +446,7 @@ KeyValueViewPairs FeatureId::keyValuePairs() const
     } else {
         if (data_.useCommonTilePrefix_)
             appendNamed(model().getIdPrefix());
-        // Feature strings and source revisions only need the schema's names.
+        // Formatting a feature ID only needs the schema's names.
         // Interning those names here would mutate the producer's dictionary
         // during filtering or produce incomplete IDs when the pool is frozen.
         forEachVisiblePart(model(), data_, values_, [&](auto name, uint32_t, auto const& value) {

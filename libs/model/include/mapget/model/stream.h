@@ -153,10 +153,12 @@ public:
      *   + MapSchema codec 7 / SchemaPool codec 4 use canonical columns and arenas.
      * - Version 6.4:
      *   + Shape-point subset rows preserve original geometry/vertex identity and typed projections.
-     *   + Dependencies and feature snapshots carry a source revision for matching picks to data.
+     *   + Dependencies and partition headers identify the supplying catalog entry.
      *   + Unified tagged validities and attribute-local validity references.
+     * - Version 6.5:
+     *   - Removed the tile content fingerprint from partition headers and subset dependencies.
      */
-    static constexpr Version CurrentProtocolVersion{6, 4, 0};
+    static constexpr Version CurrentProtocolVersion{6, 5, 0};
 
     /** Highest sent dictionary ID per source string-pool namespace. */
     using StringPoolOffsetMap = std::unordered_map<std::string, simfil::StringId>;

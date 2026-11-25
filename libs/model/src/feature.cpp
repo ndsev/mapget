@@ -29,8 +29,8 @@ model_ptr<Feature> resolveFeatureByRootIndex(PartitionFeatureLayer const& model,
     return model.resolve<Feature>(**rootResult);
 }
 
-// Generic property traversal and export know the host. Typed storage traversal
-// (clone, fingerprint, conversion) must never read or hash virtual markers.
+// Generic traversal and export know the host. Cloning and conversion use the
+// stored attribute layers so that virtual markers are not materialized.
 model_ptr<AttributeLayerList> publicAttributeLayers(model_ptr<Feature> const& feature)
 {
     auto stored = feature->attributeLayersOrNull();

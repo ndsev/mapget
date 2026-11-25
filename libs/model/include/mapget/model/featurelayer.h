@@ -163,21 +163,6 @@ public:
     ~PartitionFeatureLayer() override;
 
     /**
-     * Return the complete source snapshot. Published models and restricted
-     * clones reuse the stored revision. A mutable standalone builder computes
-     * it from its current contents, so serializing before a later edit is safe.
-     */
-    [[nodiscard]] std::string sourceRevision() const override;
-
-    /**
-     * Publish a finished partition under its resolved catalog provider. A
-     * supplier may provide an opaque revision covering all geometry, attributes,
-     * provenance, and the exact schema. Otherwise compute a content digest here.
-     * Call after the last edit, before sharing the result with cache and clients.
-     */
-    void publishSourceSnapshot(std::string sourceId, std::string revision = {});
-
-    /**
      * Creates a new feature and insert it into this tile layer.
      * The featureIdParts (which do not include the getIdPrefix of the layer)
      * must conform to an existing UniqueIdComposition for the feature typeId

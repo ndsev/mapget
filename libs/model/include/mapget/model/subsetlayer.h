@@ -69,9 +69,8 @@ struct TileSubsetDependency
     MapPartitionKey sourceTileKey_;
     uint32_t sourceFeatureCount_ = 0;
     std::string sourceId_;
-    std::string sourceRevision_;
 
-    /** Capture identity once for this partition, before copying a dependency to its outputs. */
+    /** Identify the provider and the source partition consulted by a filter. */
     static TileSubsetDependency fromSource(PartitionFeatureLayer const& source);
     bool operator==(TileSubsetDependency const&) const = default;
 };
@@ -730,7 +729,7 @@ public:
     /** Copy timestamp, TTL, info, legal text and warnings; preserve this subset's identity. */
     void adoptSourceInfo(PartitionFeatureLayer const& source);
 
-    /** Sort and deduplicate source keys, rejecting conflicting counts, providers or revisions. */
+    /** Sort and deduplicate source keys, rejecting conflicting counts or providers. */
     void setDependencies(std::vector<TileSubsetDependency> dependencies);
     void addDependency(TileSubsetDependency dependency);
     [[nodiscard]] std::vector<TileSubsetDependency> const& dependencies() const;

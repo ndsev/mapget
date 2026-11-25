@@ -52,6 +52,9 @@ def exercise(source, port):
     """Run the documented client in its own process, separate from Python datasource callbacks."""
     base = f"http://127.0.0.1:{port}"
     client = mapget.Client("127.0.0.1", port)
+    with urllib.request.urlopen(f"{base}/sources", timeout=10) as response:
+        provider, = (item["sourceId"] for item in json.load(response) if item["mapId"] == source.MAP)
+    assert provider
     # This is the developer-guide snippet's typed discovery/load path.
     associations = client.discover_objects(mapget.ObjectDiscoveryRequest(
         source.MAP, source.LAYER, PackedTileId.from_wgs84(*source.START, source.LEVEL)))
@@ -78,19 +81,15 @@ def exercise(source, port):
     payload = json.loads(payloads.splitlines()[0])
     assert payload["partition"] == request["partitions"][0]
     assert payload["features"][0]["id"] == canonical_id
-    assert payload["sourceId"] == layer.source_id()
-    assert payload["sourceRevision"] == layer.source_revision()
-    assert payload["sourceRevision"]
-    # Inspection asks the recorded provider for just the picked host. Even an
-    # empty selection carries the revision of the complete source partition.
+    assert payload["sourceId"] == layer.source_id() == provider
+    # Empty and nonempty selections both retain the catalog provider.
     for feature_id, expected_ids in [(canonical_id, [canonical_id]), ("Road.0.0", [])]:
         selection = {**request, "sourceId": layer.source_id(), "featureIds": [{
             "partition": request["partitions"][0], "ids": [feature_id]}]}
         selected = json.loads(post(base, "/tiles", {
             "requests": [selection], "responseType": "jsonl"}).splitlines()[0])
         assert [feature["id"] for feature in selected["features"]] == expected_ids
-        assert selected["sourceId"] == layer.source_id()
-        assert selected["sourceRevision"] == layer.source_revision()
+        assert selected["sourceId"] == provider
     subsets = post(base, "/filter", {
         "requests": [request], "responseType": "jsonl",
         "channels": [{"channelId": "roads", "scope": "feature",
@@ -111,11 +110,9 @@ def exercise(source, port):
     assert channel["featureEntries"][0]["featureId"] == canonical_id
     # Each projected expression retains its complete result sequence, even for one scalar.
     assert channel["featureEntries"][0]["values"] == [["Example road"]]
+    source_key = f"Features:{source.MAP}:{source.LAYER}:object/{source.OBJECT_ID}"
     assert subset["dependencies"] == [{
-        "sourceTileKey": f"Features:{source.MAP}:{source.LAYER}:object/{source.OBJECT_ID}",
-        "sourceFeatureCount": 1,
-        "sourceId": payload["sourceId"],
-        "sourceRevision": payload["sourceRevision"]}]
+        "sourceTileKey": source_key, "sourceFeatureCount": 1, "sourceId": provider}]
 
     # A binary shape-point row contains the original index even when the first
     # vertex was filtered out. Its local dependency identifies the source above.
@@ -131,8 +128,8 @@ def exercise(source, port):
     assert (row.geometry_ordinal(), row.point_index()) == (0, 1)
     assert row.values().to_dict() == [[1]]
     assert points[0].shape_point_entry_at(1) is None
-    assert points.dependencies()[0]["source_id"] == layer.source_id()
-    assert points.dependencies()[0]["source_revision"] == layer.source_revision()
+    assert points.dependencies() == [{
+        "source_tile_key": source_key, "source_feature_count": 1, "source_id": provider}]
 
     empty = client.discover_objects(mapget.ObjectDiscoveryRequest(
         source.MAP, source.LAYER, PackedTileId.from_wgs84(0, 0, source.LEVEL)))

@@ -34,8 +34,8 @@ support:
   alias for JSON Lines.
 
 Binary producers and consumers must use the same major/minor stream version.
-Version 6.4.0 adds shape-point subset rows and source snapshot revisions.
-Readers check the version in the frame header. Deploy matching native servers,
+Version 6.5.0 retains shape-point rows and their catalog provider, but carries
+no tile content fingerprint. Readers reject incompatible 6.4 frames. Deploy matching native servers,
 binary datasource clients and browser WASM together. Point-series schema
 artifacts use MapSchema codec 8. Schemas without these declarations continue
 to use codec 7. Both embed SchemaPool codec 4.
@@ -447,13 +447,12 @@ At most 4096 distinct canonical feature IDs are accepted per envelope. The
 service may load/cache the complete source tile internally, but only the named
 features cross this response boundary.
 
-The common binary header and service JSON expose `sourceId` and an opaque
-`sourceRevision` for the complete feature partition. A response restricted
-to feature IDs keeps the same revision. To inspect an original geometry or
-vertex ordinal, request the recorded provider, then compare both values with
-the subset's local dependency before using the ordinal. An unchanged cold
-reload reproduces the revision. Changing source records or the effective
-schema produces a new revision even if the coordinates stay the same.
+The common binary header and service JSON identify the catalog provider by
+`sourceId`. A response restricted to feature IDs retains that provider, even
+if no requested feature exists. For a shape-point pick, request the recorded
+provider and partition, find the canonical feature ID, then look up the original
+geometry and vertex ordinals. A missing host or out-of-range ordinal yields no
+pick. Matching the provider does not prove that its data has not changed.
 
 `tileIdsByNextStage` and filter fields are rejected. Close the HTTP connection
 to cancel an in-flight stream.
@@ -594,7 +593,7 @@ three-component `position`. Feature and entry projections retain their ordered
 slots and per-expression errors. Filtering preserves source order, repeated
 coordinates and the indices of geometry slices. The terminal row ordinal counts
 only retained vertices. Picking or inspecting a row uses its original geometry
-and vertex ordinals and the local dependency's source snapshot revision.
+and vertex ordinals on the host from the local dependency's partition and provider.
 
 <!-- mcp:
 title: "Filter attribute contexts"
@@ -737,10 +736,9 @@ positive TTL, the subset does not expire. It also inherits source `info()` and
 contains:
 
 - ordered channels and their concrete scope/field schemas;
-- typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`, or
-  `GroupEntry` arrays;
-- source dependencies with `sourceTileKey`, `sourceFeatureCount`, `sourceId`
-  and `sourceRevision`;
+- typed `FeatureEntry`, `AttributeValidityEntry`, `RelationEntry`,
+  `ShapePointEntry` or `GroupEntry` arrays;
+- source dependencies with `sourceTileKey`, `sourceFeatureCount` and `sourceId`;
 - scalar `Filter/Entries/*#count` statistics and
   `Filter/Geometry/Vertices#count` for cheap pre-deserialization accounting;
 - aggregated issues and SIMFIL traces;

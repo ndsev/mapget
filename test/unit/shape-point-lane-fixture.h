@@ -86,7 +86,7 @@ inline PartitionFeatureLayer::Ptr shapePointLane(
     // Keep a second feature in the complete partition to exercise this distinction.
     (void)source->newFeature("Lane", {{"tileId", int64_t{545555028}}, {"laneId", int64_t{3}}});
     source->setTimestamp({});
-    source->publishSourceSnapshot("shape-point-test-source");
+    source->setSourceId("shape-point-test-source");
     return source;
 }
 

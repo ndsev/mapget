@@ -173,5 +173,5 @@ materialization, so failures inside SIMFIL's non-throwing callbacks become
 projection diagnostics. Direct native inspection still gets a `PointQueryError`
 at the failing read.
 
-For wire row layout, source snapshot checks and picking, see the
+For wire row layout, provider matching and original vertex lookup, see the
 [subset model](mapget-model.md) and the [native-to-WASM fixture](mapget-dev-guide.md#original-shape-points).

@@ -48,6 +48,16 @@ void generate(std::filesystem::path const& directory)
     }
     std::array ids{row->featureId()->toString()};
     auto selected = cloneInspectionFeatures(source, ids);
+    auto const* dependency = subset->localSourceDependency();
+    if (!dependency || dependency->sourceTileKey_ != source->id() ||
+        dependency->sourceFeatureCount_ != source->size() ||
+        dependency->sourceId_ != source->sourceId() || selected->sourceId() != source->sourceId() ||
+        selected->size() != 1)
+        throw std::runtime_error(
+            "Restricted tile and subset must identify the fixture provider and partition");
+    auto host = selected->find(ids.front());
+    if (!host || !host->shapePoints(row->geometryOrdinal()).at(row->pointIndex()))
+        throw std::runtime_error("The picked vertex is absent from the restricted fixture");
 
     DataSourceInfo catalog;
     catalog.mapId_ = source->mapId();
@@ -78,7 +88,6 @@ void generate(std::filesystem::path const& directory)
     auto expected = nlohmann::json{
         {"schemaId", schema->schemaId()},
         {"sourceId", source->sourceId()},
-        {"sourceRevision", source->sourceRevision()},
         {"partitionKey", MapPartitionKey(*source).toString()},
         {"channelOrdinal", 0},
         {"entryOrdinal", 0},

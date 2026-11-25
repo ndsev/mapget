@@ -949,13 +949,15 @@ TEST_CASE(
     auto strings = std::make_shared<StringPool>("diagnostics");
     auto tile = std::make_shared<PartitionFeatureLayer>(TileId::fromTileXY(0, 0, 1), "diagnostics", "Map", info, strings);
     auto source = createTestDataSourceInfo("diagnostics", "Map", info);
-    tile->publishSourceSnapshot("original-provider");
+    tile->setSourceId("original-provider");
     tile->setError("503");
     tile->setTtl(std::chrono::seconds(5));
     cache->putTileLayer(tile);
-    auto failed = cache->getTileLayer(tile->id(), source);
+    auto failed = cache->getTileLayer(tile->id(), source, tile->sourceId());
     REQUIRE(failed.tile);
     REQUIRE(failed.tile->error() == tile->error());
+    CHECK(failed.tile->sourceId() == tile->sourceId());
+    CHECK_FALSE(cache->getTileLayer(tile->id(), source, "replacement-provider").tile);
     tile->setTimestamp(std::chrono::system_clock::now() - std::chrono::seconds(6));
     cache->putTileLayer(tile);
     auto expired = cache->getTileLayer(tile->id(), source);
@@ -970,16 +972,19 @@ TEST_CASE(
     tile->setError(std::nullopt);
     tile->addWarning("duplicate feature id");
     cache->putTileLayer(tile);
-    auto restored = cache->getTileLayer(tile->id(), source).tile;
+    auto restored = cache->getTileLayer(tile->id(), source, tile->sourceId()).tile;
     REQUIRE(restored);
     REQUIRE(restored->warnings() == tile->warnings());
+    CHECK(restored->toServiceJson().at("sourceId") == tile->sourceId());
     REQUIRE_FALSE(restored->error());
     auto metadataInfo = createMetadataSourceDataLayerInfo();
     PartitionSourceDataLayer metadata(TileId{}, "diagnostics", "Map", metadataInfo, strings);
+    metadata.setSourceId("metadata-provider");
     metadata.addWarning("partial metadata");
     metadata.setTtl(std::chrono::seconds(5));
     REQUIRE(metadata.toJson().is_array());
     REQUIRE(metadata.toServiceJson()["data"] == metadata.toJson());
+    CHECK(metadata.toServiceJson().at("sourceId") == metadata.sourceId());
     REQUIRE(metadata.toServiceJson()["warnings"] == metadata.warnings());
     REQUIRE(metadata.toServiceJson()["ttl"] == 5000);
     REQUIRE(

@@ -851,9 +851,7 @@ TEST_CASE(
     auto restricted = requestTile(true);
     REQUIRE(restricted->size() == 1);
     REQUIRE(full->sourceId() == service.sourceCatalog().sources.at(0).descriptor.sourceId);
-    REQUIRE_FALSE(full->sourceRevision().empty());
     CHECK(restricted->sourceId() == full->sourceId());
-    CHECK(restricted->sourceRevision() == full->sourceRevision());
     CHECK(restricted->at(0)->toJson() == expected);
     CHECK(requestTile(false)->toJson() == full->toJson());
 
@@ -867,7 +865,8 @@ TEST_CASE(
     auto const* dependency = output->localSourceDependency();
     REQUIRE(dependency);
     CHECK(dependency->sourceId_ == restricted->sourceId());
-    CHECK(dependency->sourceRevision_ == restricted->sourceRevision());
+    CHECK(dependency->sourceTileKey_ == full->id());
+    CHECK(dependency->sourceFeatureCount_ == full->size());
     CHECK(dataSource->requestedTiles().size() == 1);
 }
 
@@ -2672,7 +2671,7 @@ TEST_CASE(
     failed->setError("output source unavailable");
     failed->setErrorCode(503);
     failed->setTtl(std::chrono::seconds{5});
-    failed->publishSourceSnapshot(service.sourceCatalog().sources.at(0).descriptor.sourceId);
+    failed->setSourceId(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     FeatureLayerFilterRequest definition{
@@ -2784,7 +2783,7 @@ TEST_CASE(
         cache->getStringPool(info.stringPoolId_));
     failed->setError("halo unavailable");
     failed->setTtl(std::chrono::seconds(5));
-    failed->publishSourceSnapshot(service.sourceCatalog().sources.at(0).descriptor.sourceId);
+    failed->setSourceId(service.sourceCatalog().sources.at(0).descriptor.sourceId);
     cache->putTileLayer(failed);
 
     auto definition = filterDefinition();

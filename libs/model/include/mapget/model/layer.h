@@ -13,6 +13,7 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <utility>
 #include <tl/expected.hpp>
 
 namespace simfil
@@ -140,12 +141,8 @@ public:
     /** Catalog provider that published this partition. Standalone builders may have no provider. */
     [[nodiscard]] std::string const& sourceId() const { return sourceId_; }
 
-    /**
-     * Identity of the complete feature partition from which this payload was taken.
-     * Available to header-only readers and retained by feature-restricted responses.
-     * Subset rows identify their source through the local subset dependency.
-     */
-    [[nodiscard]] virtual std::string sourceRevision() const { return sourceRevision_; }
+    /** Retain the supplying catalog entry, including on feature-restricted inspection replies. */
+    void setSourceId(std::string sourceId) { sourceId_ = std::move(sourceId); }
 
     /** Install an exact, in-memory schema resolver for a partition's ModelPool payload. */
     void
@@ -272,7 +269,6 @@ protected:
     std::string stringPoolId_; // Identifier of the string-pool/datasource instance
     std::string mapId_;
     std::string sourceId_;
-    std::string sourceRevision_;
     std::shared_ptr<LayerInfo> layerInfo_;
     std::optional<std::string> error_;
     std::optional<int> errorCode_;

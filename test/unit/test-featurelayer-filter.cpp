@@ -595,7 +595,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Lane curvature point projections round-trip with the source snapshot and a missing slope",
+    "Lane curvature point projections round-trip with their provider, ordinals and a missing slope",
     "[feature-layer-filter][shapepoint][point-wire-golden]")
 {
     auto lane = test::shapePointLane();
@@ -615,7 +615,9 @@ TEST_CASE(
     CHECK(row->values()->toJson() == R"([[-0.15296],[null]])"_json);
     CHECK(row->valueErrors().empty());
     REQUIRE(subset->localSourceDependency());
-    CHECK(subset->localSourceDependency()->sourceRevision_ == lane->sourceRevision());
+    CHECK(subset->localSourceDependency()->sourceId_ == lane->sourceId());
+    CHECK(subset->localSourceDependency()->sourceTileKey_ == lane->id());
+    CHECK(subset->localSourceFeatureCount() == lane->size());
 
     auto sourcePoint = lane->at(0)->shapePoints(row->geometryOrdinal()).at(row->pointIndex());
     REQUIRE(sourcePoint);
