@@ -23,6 +23,10 @@ To try a newer release candidate **when one is available**, use a separate
 virtual environment and run `python -m pip install --pre mapget`. A normal
 install in a fresh environment selects the stable release instead.
 
+A new stable GitHub Release can appear before its wheels reach PyPI.
+If a just-announced version is not installable yet, check the release's
+`CI and Deploy` run; a release candidate is not required for a stable install.
+
 If you are working from the source tree, you can also build a native executable. In a clean checkout:
 
 ```bash

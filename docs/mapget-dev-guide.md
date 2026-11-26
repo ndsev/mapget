@@ -865,19 +865,63 @@ Both preserve unrelated public YAML; field PATCH does not reload datasources.
 
 ## Releases
 
-On `release/X.Y.Z`, set `MAPGET_VERSION` in `CMakeLists.txt` to `X.Y.Z`.
+**Stable release.** Set `MAPGET_VERSION` in `CMakeLists.txt` to `X.Y.Z` on
+`release/X.Y.Z`. After the canonical release PR merges into `main`, the
+publisher (an authorized maintainer, or Tron when enabled) publishes the
+**reviewed GitHub Release draft** as a final release. Set its tag to
+`vX.Y.Z` and its `target_commitish` to the **exact merge commit SHA**, not
+`main` or the release branch tip. Publishing the draft creates the tag in
+the same operation. If the tag already exists, GitHub ignores the requested
+target: verify its peeled commit first and stop on any mismatch. Never move
+a stable tag. See the [GitHub Releases API](https://docs.github.com/en/rest/releases/releases#update-a-release).
 
-**Preview before merging:** Manually run `CI and Deploy` on that release
-branch. It checks the CMake version, refuses a version already published as
-final, and publishes the next `X.Y.ZrcN` on PyPI after the tests pass
-(starting at `rc1`). Pull requests and ordinary branch builds do not publish
-a preview. See the [setup guide](mapget-setup.md#installing-mapget) for the
-stable and preview install commands.
+Publication is the release; PyPI follows it, not the reverse. The
+`release.published` event starts `CI and Deploy` on the tagged commit.
+CI checks the event SHA against the tag and checkout, requires an exact
+tag/CMake/SCM version match, tests the wheels and checks their package name
+and version before uploading. It does not create tags, publish drafts, or
+decide which PR is canonical. Tron's own version/readiness checks, when
+used, run **before** publishing; mapget's checks independently protect PyPI.
+A tag push, draft, prerelease, PR build or push to `main` cannot upload a
+stable wheel. Publish the final directly from its draft; editing an
+already-published GitHub prerelease is not the stable trigger.
 
-**Final release:** Merge the green release PR to `main`, wait for `CI and
-Deploy` to pass there, then run `Create Release` from `main` with `X.Y.Z`
-(no `v`). It verifies the CMake version and successful CI, creates `vX.Y.Z`,
-and dispatches the tagged wheel build. An RC is not retagged as the final.
+**Preview before merging.** Manually run `CI and Deploy` on
+`release/X.Y.Z` to publish the next PyPI `X.Y.ZrcN` (starting at `rc1`).
+Requests on that branch are serialized; a version already final on PyPI
+is refused. PRs build and test but upload nothing. Candidates do not create
+a tag or GitHub Release and are never retagged as final. See the
+[setup guide](mapget-setup.md#installing-mapget) for install commands.
+
+**Recovery.** If a stable wheel build or upload fails, rerun failed jobs
+on the original `release.published` Actions run. This keeps the same
+commit and version, reuses successful jobs' artifacts, and skips files
+already on PyPI. Do not dispatch on a tag, delete/recreate the release,
+or replace published files; changed code or wheels require a new version.
+If there was no run at all, check the publisher credential and workflow ref
+before planning recovery: a bare tag is not publication evidence.
+
+### One-time publisher cutover
+
+1. Before the first release on this path, ensure the new workflow is on
+   `main` **and** the commit to be released. Freeze tag/release creation
+   during the switch and let any old `Create Release` run finish. Historical
+   tags still contain their original workflows; do not dispatch on them.
+2. The old `Release tags are workflow-owned` ruleset restricts creation,
+   update and deletion of `v*.*.*` together. First install and verify an
+   **independent active update/deletion restriction** on the same tags,
+   with no publisher/deploy-key bypass. Only then change the old rule to
+   **creation only** and allow the authorized release team or publisher App
+   to create those tags. Do not grant bypass on the old combined rule.
+3. Verify the effective rules and publisher identity before resuming
+   publication. Use a maintainer's GitHub session or an appropriately scoped
+   GitHub App installation token with repository Contents write. A release
+   published by a workflow's own `GITHUB_TOKEN` [does not trigger another
+   release workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+   Retire the old write deploy key and `MAPGET_RELEASE_DEPLOY_KEY` secret.
+   The wheel workflow needs only Contents read and its existing PyPI upload
+   credential (`KE_PYPI_TOKEN`); the release publisher does not need that
+   PyPI credential.
 
 ## Datasource initialization recovery
 
