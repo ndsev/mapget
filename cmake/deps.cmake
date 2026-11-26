@@ -96,9 +96,13 @@ else()
 endif()
 
 # Switch to a release newer than 2.0.4 once available.
+set(_tiny_process_revision 8bbb5a211c5c9df8ee69301da9d22fb977b27dc1)
 CPMAddPackage(
     NAME tiny-process-library
-    URL "https://gitlab.com/eidheim/tiny-process-library/-/archive/8bbb5a211c5c9df8ee69301da9d22fb977b27dc1/tiny-process-library-8bbb5a211c5c9df8ee69301da9d22fb977b27dc1.tar.gz"
+    # GitLab can rate-limit CI runners. Both archives have the same digest.
+    URL
+        "https://gitlab.com/eidheim/tiny-process-library/-/archive/${_tiny_process_revision}/tiny-process-library-${_tiny_process_revision}.tar.gz"
+        "https://codeload.github.com/eidheim/tiny-process-library/tar.gz/${_tiny_process_revision}"
     URL_HASH SHA256=0ff45f47da95f1c36ce5e1e91342285301bf339150b34c3c5964687117ef01e5
     OPTIONS
         "BUILD_TESTING OFF")
