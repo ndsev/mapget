@@ -253,7 +253,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#57bd16a4b529dbe11806e6e436e0634606b45c36")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.3.0")
 endif()
 
 if (MAPGET_ENABLE_TESTING)
