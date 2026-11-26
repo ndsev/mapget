@@ -28,7 +28,12 @@ if(MAPGET_WITH_MCP)
     COMMANDS
       -f "python -m pip install -r ${CMAKE_CURRENT_LIST_DIR}/mcp-requirements.txt"
       -f "python ${CMAKE_CURRENT_LIST_DIR}/test-native-mcp.py $<TARGET_FILE:mapget>")
-  set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 240)
+  # On Intel macOS the SDK's cryptography dependency can require a source build.
+  # Bound setup separately so it cannot consume the protocol suite's runtime budget.
+  set_tests_properties(test-native-mcp PROPERTIES
+    LABELS integration
+    TIMEOUT 600
+    TIMEOUT_AFTER_MATCH "240;Starting native MCP protocol tests")
 
   add_test(NAME test-mcp-help-packaging
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-mcp-help-packaging.py"
