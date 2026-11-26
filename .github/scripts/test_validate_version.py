@@ -70,7 +70,7 @@ class ValidateVersionTest(unittest.TestCase):
             with self.subTest(action=action), self.assertRaises(ValueError):
                 determine_release_context(event, dict(payload, action=action))
         for ref in ["refs/heads/main", "refs/tags/2026.3.5", "refs/tags/v2026.03.5",
-                    "refs/tags/v2026.3.5rc1", "refs/tags/v2026.3.5.1"]:
+                    "refs/tags/v2026.3.5rc1", "refs/tags/v2026.3.5.1", "refs/tags/v2026.3.5\u0661"]:
             with self.subTest(ref=ref), self.assertRaises(ValueError):
                 determine_release_context(dict(event, GITHUB_REF=ref), payload)
 

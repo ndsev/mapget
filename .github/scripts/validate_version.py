@@ -18,8 +18,9 @@ from zipfile import BadZipFile, ZipFile
 
 
 CMAKE_VERSION_PATTERN = re.compile(r"set\(MAPGET_VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\)")
-RELEASE_VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}")
+RELEASE_VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}", re.ASCII)
 SCM_BASE_VERSION_PATTERN = re.compile(r"^([0-9]+\.[0-9]+\.[0-9]+)")
+RELEASE_CANDIDATE = "Release candidate"
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ def determine_release_context(
             raise ValueError(f"Expected a published, non-prerelease GitHub Release for {ref}.")
         return ReleaseContext(version, "Stable release")
     if event == "workflow_dispatch":
-        return ReleaseContext(release_version(ref, "refs/heads/release/"), "Release candidate")
+        return ReleaseContext(release_version(ref, "refs/heads/release/"), RELEASE_CANDIDATE)
     if (
         event == "pull_request"
         and environment.get("GITHUB_BASE_REF") == "main"
@@ -154,7 +155,7 @@ def validate_versions(
 
 def check_upload(context: ReleaseContext, version: str, directory: Path) -> None:
     """Check what Twine will actually upload, not just the version passed to CMake."""
-    if context.build_type == "Release candidate" and context.expected_version:
+    if context.build_type == RELEASE_CANDIDATE and context.expected_version:
         allowed = re.fullmatch(re.escape(context.expected_version) + r"rc[1-9][0-9]*", version) is not None
     else:
         allowed = context.is_stable and version == context.expected_version
@@ -220,7 +221,7 @@ def main() -> int:
 
     if output_path := os.environ.get("GITHUB_OUTPUT"):
         version = scm_version
-        if args.resolve_candidate and context.build_type == "Release candidate":
+        if args.resolve_candidate and context.build_type == RELEASE_CANDIDATE:
             with urlopen("https://pypi.org/pypi/mapget/json", timeout=30) as response:
                 version = next_candidate(cmake_version, json.load(response)["releases"])
         with open(output_path, "a", encoding="utf-8") as output:
