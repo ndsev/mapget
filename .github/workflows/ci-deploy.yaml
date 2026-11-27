@@ -3,22 +3,32 @@ name: CI and Deploy
 on:
   push:
     branches: [ master, main ]
-    tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ '**' ]
-  # The guarded release workflow creates the tag with GITHUB_TOKEN and then
-  # dispatches this workflow explicitly because token-authored pushes do not
-  # trigger another workflow run.
+  release:
+    types: [published]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize manual candidates until upload so two requests cannot choose the same rcN.
+concurrency:
+  group: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/') && format('mapget-rc-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   determine-version:
+    if: |
+      (github.event_name != 'release' || (!github.event.release.draft && !github.event.release.prerelease)) &&
+      (github.event_name != 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.release-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
       
@@ -28,7 +38,8 @@ jobs:
           python-version: '3.10'
       
       - name: Install setuptools_scm
-        run: pip install setuptools_scm
+        run: |
+          python -m pip install --only-binary=:all: setuptools-scm==10.2.1
 
       - name: Test version validation
         run: python .github/scripts/test_validate_version.py
@@ -37,32 +48,15 @@ jobs:
       # matrix instead of discovering the mismatch in the final deploy job.
       - name: Validate release version
         id: release-version
-        run: python .github/scripts/validate_version.py
+        run: python .github/scripts/validate_version.py --resolve-candidate
 
-      - name: Get version
-        id: version
-        env:
-          CMAKE_VERSION: ${{ steps.release-version.outputs.cmake_version }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$GITHUB_BASE_REF" == "main" && "$GITHUB_HEAD_REF" == release/* ]]; then
-            # Release PRs need installable intermediate wheels before the final
-            # release tag exists. Use the planned CMake version as the base so
-            # `release/2026.3.0` publishes `2026.3.0.devN`, not the SCM-inferred
-            # `2026.2.1.devN` from the previous release tag.
-            DEV_SERIAL=$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))
-            VERSION="${CMAKE_VERSION}.dev${DEV_SERIAL}"
-          else
-            VERSION=$(python -c "import setuptools_scm; print(setuptools_scm.get_version(local_scheme='no-local-version'))")
-          fi
-          echo "Version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   build-manylinux:
     needs: [determine-version]
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11"]
         arch: ["x86_64"]
     runs-on: ubuntu-latest
     container: ghcr.io/klebert-engineering/manylinux-cpp17-py${{ matrix.python-version }}-${{ matrix.arch }}:2025.1
@@ -75,6 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           submodules: false
       - name: Init submodules
         run: |
@@ -128,7 +123,6 @@ jobs:
       # The published standalone wheel keeps MCP enabled. Reuse its native
       # dependency build afterward to test product embedders that omit MCP.
       - name: Test MCP-free embedding build
-        if: matrix.python-version == '3.14'
         run: |
           . ./venv/bin/activate
           cmake -S . -B build -DMAPGET_WITH_MCP=OFF -DMAPGET_WITH_WHEEL=OFF
@@ -144,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11"]
     runs-on: ubuntu-24.04-arm
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
@@ -152,6 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           submodules: false
       - name: Init submodules
         run: |
@@ -198,18 +193,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, windows-2022]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          # Python 3.10 doesn't have ARM64 builds for macOS
-          - os: macos-15
-            python-version: "3.10"
+        os: [macos-15, macos-15-intel, windows-2022]
+        python-version: ["3.11"]
     env:
       SCCACHE_GHA_ENABLED: "true"
       USE_SCCACHE: ${{ !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           submodules: recursive
       - name: Run sccache-cache
         if: env.USE_SCCACHE == 'true'
@@ -217,7 +209,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: x64
+          architecture: ${{ matrix.os == 'macos-15' && 'arm64' || 'x64' }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -227,7 +219,8 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: |
           python -m pip install delocate
-          export MACOSX_DEPLOYMENT_TARGET=11.0  # ARM64 requires macOS 11.0+
+          export MACOSX_DEPLOYMENT_TARGET=11.0
+          export _PYTHON_HOST_PLATFORM="macosx-11.0-$(uname -m)"
           mkdir -p build && cd build
           SCCACHE_ARGS=()
           if [[ "$USE_SCCACHE" == "true" ]]; then
@@ -238,6 +231,7 @@ jobs:
           fi
           cmake .. -DCMAKE_BUILD_TYPE=Release "${SCCACHE_ARGS[@]}" \
                 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                -DCMAKE_OSX_ARCHITECTURES="$(uname -m)" \
                 -DPython3_ROOT_DIR="$pythonLocation" \
                 -DPython3_FIND_FRAMEWORK=LAST \
                 -DMAPGET_ENABLE_TESTING=ON \
@@ -293,16 +287,53 @@ jobs:
           cd build
           ctest -C Release --verbose --no-tests=error
 
+  test-shared-wheel:
+    name: Install the same Linux wheel on CPython ${{ matrix.python-version }}
+    needs: [determine-version, build-manylinux]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mapget-py3.11-ubuntu-latest-x86_64
+          path: dist
+      - name: Audit the stable Python ABI
+        if: matrix.python-version == '3.14'
+        run: |
+          python -m pip install --only-binary=:all: abi3audit==0.0.26
+          abi3audit --strict dist/*.whl
+      - name: Install and exercise the repaired stable-ABI wheel
+        env:
+          WHEEL_VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          test -f dist/mapget-*-cp310-abi3-*.whl
+          # Select only the artifact from this run, even if its version is on PyPI.
+          python -m pip install --only-binary=:all: --no-index --find-links dist --no-deps "mapget==$WHEEL_VERSION"
+          python -m pip install --only-binary=:all: "mapget==$WHEEL_VERSION"
+          python -m pip check
+          python test/integration/python-bindings-smoke.py
+
   deploy:
-    needs: [determine-version, build-manylinux, build-manylinux-aarch64, build]
+    needs: [determine-version, build-manylinux, build-manylinux-aarch64, build, test-shared-wheel]
     if: |
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/')) ||
-      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+      (github.event_name == 'release' && github.event.action == 'published' &&
+       !github.event.release.draft && !github.event.release.prerelease &&
+       github.ref == format('refs/tags/{0}', github.event.release.tag_name)) ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
       
@@ -311,20 +342,9 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install dependencies
+      - name: Install release validation and upload tools
         run: |
-          pip install setuptools wheel setuptools_scm twine
-      
-      - name: Set version from determine-version job
-        id: version
-        run: |
-          VERSION="${{ needs.determine-version.outputs.version }}"
-          echo "Version: $VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-      
-      - name: Validate version
-        run: |
-          python .github/scripts/validate_version.py
+          python -m pip install --only-binary=:all: setuptools-scm==10.2.1 twine==7.0.0
       
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -346,17 +366,18 @@ jobs:
           echo "Consolidated wheels:"
           ls -la dist/
       
+      - name: Verify package version before upload
+        env:
+          WHEEL_VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          python .github/scripts/validate_version.py --check-upload "$WHEEL_VERSION"
+          twine check --strict dist/*.whl
+
       - name: Upload to PyPI
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.KE_PYPI_TOKEN }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "Uploading release PR development version ${{ steps.version.outputs.version }} to PyPI..."
-          else
-            echo "Uploading release version ${{ steps.version.outputs.version }} to PyPI..."
-          fi
-          
           twine upload \
             --non-interactive \
             --skip-existing \

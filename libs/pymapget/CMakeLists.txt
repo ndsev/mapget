@@ -1,7 +1,7 @@
 project(pymapget CXX)
 
-pybind11_add_module(pymapget
-  MODULE
+nanobind_add_module(pymapget
+  BACKEND_MODULE nanobind_backend
     py-mapget.cpp
     binding/py-model.h
     binding/py-tileid.h
@@ -40,11 +40,15 @@ endif()
 add_wheel(pymapget
   NAME mapget
   AUTHOR "Klebert Engineering"
-  URL "https://github.com/klebert-engineering/mapget"
+  URL "https://github.com/ndsev/mapget"
+  PYTHON_REQUIRES ">=3.10"
+  LIMITED_API cp310
+  LICENSE_EXPRESSION "BSD-3-Clause"
+  README_PATH "${CMAKE_CURRENT_LIST_DIR}/../../README.md"
   VERSION "${MAPGET_VERSION}"
   DESCRIPTION "Python bindings for the mapget library."
   TARGET_DEPENDENCIES mapget-model mapget-http-datasource
-  MODULE_DEPENDENCIES ndslive-math
+  MODULE_DEPENDENCIES ndslive-math "nanobind-backend>=1.0,<2"
   LICENSE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE"
   DEPLOY_FILES ${DEPLOY_FILES})
 

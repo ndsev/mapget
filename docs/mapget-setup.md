@@ -4,13 +4,28 @@ Mapget is a small server–client stack for retrieving cached map features over 
 
 ## Installing mapget
 
-The recommended way to get started is to use the published Python package. On a recent Python 3 installation, you can install mapget with:
+Use 64-bit CPython 3.10 through 3.14 on Linux (x86_64 or aarch64), macOS
+(Intel or Apple Silicon), or Windows (x64). Python 3.9 is no longer supported.
+In a virtual environment, install the latest stable release with:
 
 ```bash
-pip install mapget
+python -m pip install mapget
 ```
 
-This gives you both the Python module and a `mapget` command-line tool which behaves the same as `python -m mapget`.
+This installs both the Python module and the `mapget` command, which behaves
+the same as `python -m mapget`. The same mapget wheel (`cp310-abi3`) serves
+all supported Python versions on a given platform and architecture. Let pip
+install its dependencies: it selects the matching `nanobind-backend` for your
+interpreter. For an offline installation, include that interpreter's backend
+wheel as well as the mapget wheel and its other dependencies.
+
+To try a newer release candidate **when one is available**, use a separate
+virtual environment and run `python -m pip install --pre mapget`. A normal
+install in a fresh environment selects the stable release instead.
+
+A new stable GitHub Release can appear before its wheels reach PyPI.
+If a just-announced version is not installable yet, check the release's
+`CI and Deploy` run; a release candidate is not required for a stable install.
 
 If you are working from the source tree, you can also build a native executable. In a clean checkout:
 

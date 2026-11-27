@@ -1,6 +1,4 @@
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
 #include <array>
 #include <cmath>
@@ -11,8 +9,6 @@
 
 #include "mapget/http-service/http-client.h"
 #include "py-schema.h"
-
-namespace py = pybind11;
 
 namespace {
 using json = nlohmann::json;
@@ -36,7 +32,7 @@ py::object json_to_py_value(const json& j)
         return py::float_(j.get<double>());
     }
     case json::value_t::string: {
-        return py::str(j.get<std::string>());
+        return py::cast(j.get<std::string>());
     }
     case json::value_t::array: {
         py::list py_list;
@@ -48,7 +44,7 @@ py::object json_to_py_value(const json& j)
     case json::value_t::object: {
         py::dict py_dict;
         for (json::const_iterator it = j.begin(); it != j.end(); ++it) {
-            py_dict[py::str(it.key())] = json_to_py_value(it.value());
+            py_dict[py::cast(it.key())] = json_to_py_value(it.value());
         }
         return py_dict;
     }
@@ -66,32 +62,32 @@ mapget::FeatureLayerFilterBinding filter_binding_from_python(
         return std::monostate{};
     }
     if (py::isinstance<py::bool_>(value)) {
-        return value.cast<bool>();
+        return py::cast<bool>(value);
     }
     if (py::isinstance<py::int_>(value)) {
         try {
-            return value.cast<int64_t>();
+            return py::cast<int64_t>(value);
         }
         catch (py::cast_error const&) {
             throw py::value_error(
-                "filter binding '" + name +
-                "' exceeds the signed 64-bit integer range");
+                ("filter binding '" + name +
+                "' exceeds the signed 64-bit integer range").c_str());
         }
     }
     if (py::isinstance<py::float_>(value)) {
-        auto const result = value.cast<double>();
+        auto const result = py::cast<double>(value);
         if (!std::isfinite(result)) {
             throw py::value_error(
-                "filter binding '" + name + "' must be finite");
+                ("filter binding '" + name + "' must be finite").c_str());
         }
         return result;
     }
     if (py::isinstance<py::str>(value)) {
-        return value.cast<std::string>();
+        return py::cast<std::string>(value);
     }
     throw py::value_error(
-        "filter binding '" + name +
-        "' must be None, bool, int, float, or str");
+        ("filter binding '" + name +
+        "' must be None, bool, int, float, or str").c_str());
 }
 
 std::map<std::string, mapget::FeatureLayerFilterBinding>
@@ -102,7 +98,7 @@ filter_bindings_from_python(py::dict const& bindings)
         if (!py::isinstance<py::str>(key)) {
             throw py::value_error("filter binding names must be strings");
         }
-        auto name = key.cast<std::string>();
+        auto name = py::cast<std::string>(key);
         if (name.empty()) {
             throw py::value_error("filter binding names must not be empty");
         }
@@ -116,8 +112,6 @@ filter_bindings_from_python(py::dict const& bindings)
 
 namespace mapget
 {
-
-namespace py = pybind11;
 
 class PyRequest : public LayerTilesRequest
 {
@@ -198,7 +192,7 @@ void bindHttpClient(py::module_& m)
 
     py::class_<FeatureLayerPointGridGroup>(m, "PointGridGroup")
         .def(
-            py::init(
+            py::new_(
                 [](std::array<double, 3> const& origin,
                    std::array<double, 3> const& cellSize)
                 {
@@ -222,7 +216,7 @@ void bindHttpClient(py::module_& m)
         m,
         "StoredRelationOptions")
         .def(
-            py::init(
+            py::new_(
                 [](std::optional<std::string> namePattern,
                    bool recursive,
                    bool mergeTwoway, bool incoming)
@@ -243,7 +237,7 @@ void bindHttpClient(py::module_& m)
 
     py::class_<FeatureLayerFilterRoot>(m, "FilterRoot")
         .def(
-            py::init(
+            py::new_(
                 [](py::object tileId,
                    std::string typeId,
                    KeyValuePairVec const& featureId,
@@ -263,7 +257,7 @@ void bindHttpClient(py::module_& m)
 
     py::class_<FeatureLayerFilterChannel>(m, "FilterChannel")
         .def(
-            py::init(
+            py::new_(
                 [](std::string channelId,
                    FeatureLayerFilterScope scope,
                    std::optional<std::string> featureFilter,
@@ -324,7 +318,7 @@ void bindHttpClient(py::module_& m)
             py::arg("group") = py::none(),
             py::arg("relation") = py::none());
 
-    py::class_<PyRequest, std::shared_ptr<PyRequest>>(m, "Request", R"pbdoc(
+    py::class_<PyRequest>(m, "Request", R"pbdoc(
         Client request for map data.
 
         A Request is defined by a map id, a map layer id, an array of tile ids,
@@ -337,7 +331,7 @@ void bindHttpClient(py::module_& m)
         iterator protocol.
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](const std::string& mapId,
                    const std::string& layerId,
                    py::iterable tiles,
@@ -404,7 +398,7 @@ void bindHttpClient(py::module_& m)
         )pbdoc",
             py::call_guard<py::gil_scoped_release>());
 
-    py::class_<PyFilterRequest, std::shared_ptr<PyFilterRequest>>(m, "FilterRequest", R"pbdoc(
+    py::class_<PyFilterRequest>(m, "FilterRequest", R"pbdoc(
         Client request for server-side filter evaluation.
 
         FilterRequest posts a simplified REST /filter request. Results are
@@ -412,7 +406,7 @@ void bindHttpClient(py::module_& m)
         iterating over the request object returned by Client.filter().
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](const std::string& mapId,
                    const std::string& layerId,
                    py::iterable tiles,
@@ -448,6 +442,7 @@ void bindHttpClient(py::module_& m)
                     req->onFilterResult(std::move(onResult));
                     if (onStatus) {
                         req->onStatus([callback = std::move(onStatus)](nlohmann::json const& status) {
+                            py::gil_scoped_acquire gil;
                             callback(json_to_py_value(status));
                         });
                     }
@@ -502,7 +497,7 @@ void bindHttpClient(py::module_& m)
         )pbdoc",
             py::call_guard<py::gil_scoped_release>());
 
-    py::class_<HttpClient, std::shared_ptr<HttpClient>>(m, "Client", R"pbdoc(
+    py::class_<HttpClient>(m, "Client", R"pbdoc(
         Synchronous HTTP client for a running mapget service.
 
         The client fetches `/sources` once during construction, keeps the
@@ -594,7 +589,7 @@ void bindHttpClient(py::module_& m)
                     py::gil_scoped_release release;
                     schema = self.getSchema(sourceId, expectedId);
                 }
-                return schema;
+                return finalizedSchema(std::move(schema));
             },
             py::arg("source_id"),
             py::arg("expected_schema_id"),

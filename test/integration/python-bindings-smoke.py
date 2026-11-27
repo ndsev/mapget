@@ -210,6 +210,17 @@ def main() -> int:
         )
         feature.set_source_data_references(source_refs)
 
+        coerced_refs = tile.new_source_data_references([
+            {"layer_id": 7, "qualifier": 1, "address": 10},
+            {"layerId": 8, "qualifier": 2, "address": 20},
+            (9, 3, 30),
+        ])
+        assert coerced_refs.to_list() == [
+            {"layer_id": "7", "qualifier": "1", "address": 10},
+            {"layer_id": "8", "qualifier": "2", "address": 20},
+            {"layer_id": "9", "qualifier": "3", "address": 30},
+        ]
+
     def fill_source_data_tile(tile: mapget.TileSourceDataLayer) -> None:
         tile.add_warning("partial source diagnostics")
         compound = tile.new_compound(2)

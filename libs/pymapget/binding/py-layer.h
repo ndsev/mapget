@@ -6,16 +6,13 @@
 #include "mapget/model/sourcedata.h"
 #include "mapget/model/sourcedatalayer.h"
 
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
 #include "simfil/simfil.h"
 
 #include "py-model.h"
 #include "py-schema.h"
 
-namespace py = pybind11;
 using namespace py::literals;
 
 namespace mapget
@@ -35,7 +32,7 @@ inline py::object layerJsonToPython(nlohmann::json const& j)
     case nlohmann::json::value_t::number_float:
         return py::float_(j.get<double>());
     case nlohmann::json::value_t::string:
-        return py::str(j.get<std::string>());
+        return py::cast(j.get<std::string>());
     case nlohmann::json::value_t::array: {
         py::list result;
         for (auto const& item : j) {
@@ -46,7 +43,7 @@ inline py::object layerJsonToPython(nlohmann::json const& j)
     case nlohmann::json::value_t::object: {
         py::dict result;
         for (auto const& [key, value] : j.items()) {
-            result[py::str(key)] = layerJsonToPython(value);
+            result[py::cast(key)] = layerJsonToPython(value);
         }
         return result;
     }
@@ -410,14 +407,15 @@ struct BoundSourceDataCompound : public BoundModelNode
 inline SourceDataAddress sourceDataAddressFromPython(py::handle value)
 {
     if (py::isinstance<SourceDataAddress>(value)) {
-        return value.cast<SourceDataAddress>();
+        return py::cast<SourceDataAddress>(value);
     }
-    return SourceDataAddress(value.cast<uint64_t>());
+    return SourceDataAddress(py::cast<uint64_t>(value));
 }
 
 inline model_ptr<SourceDataReferenceCollection>
 makeSourceDataReferences(PartitionFeatureLayer& self, py::iterable const& entries)
 {
+    auto asText = [](py::handle value) { return py::cast<std::string>(py::str(value)); };
     std::vector<QualifiedSourceDataReference> refs;
     for (auto const& item : entries) {
         std::string layerId;
@@ -425,23 +423,17 @@ makeSourceDataReferences(PartitionFeatureLayer& self, py::iterable const& entrie
         SourceDataAddress address;
 
         if (py::isinstance<py::dict>(item)) {
-            auto dict = py::reinterpret_borrow<py::dict>(item);
-            py::object layerIdObject;
-            if (dict.contains("layer_id")) {
-                layerIdObject = dict["layer_id"];
-            } else {
-                layerIdObject = dict["layerId"];
-            }
-            layerId = py::str(layerIdObject);
-            qualifier = py::str(dict["qualifier"]);
+            auto dict = py::borrow<py::dict>(item);
+            layerId = asText(dict[dict.contains("layer_id") ? "layer_id" : "layerId"]);
+            qualifier = asText(dict["qualifier"]);
             address = sourceDataAddressFromPython(dict["address"]);
         } else {
-            auto tuple = py::reinterpret_borrow<py::tuple>(item);
+            auto tuple = py::borrow<py::tuple>(item);
             if (tuple.size() != 3) {
                 throw py::value_error("source-data references must be dicts or (layer_id, qualifier, address) tuples");
             }
-            layerId = py::str(tuple[0]);
-            qualifier = py::str(tuple[1]);
+            layerId = asText(tuple[0]);
+            qualifier = asText(tuple[1]);
             address = sourceDataAddressFromPython(tuple[2]);
         }
 
@@ -470,11 +462,11 @@ void bindTileLayer(py::module_& m)
     using namespace simfil;
 
     py::class_<IncomingRelationReference>(m, "IncomingRelationReference", "A stored relation associated with an incoming target by the backend.")
-        .def_readonly("source", &IncomingRelationReference::source_, "Original source partition key.")
-        .def_readonly("feature_id", &IncomingRelationReference::featureId_, "Original source feature ID.")
-        .def_readonly("relation_index", &IncomingRelationReference::relationIndex_, "Original zero-based relation ordinal.")
-        .def_readonly("name", &IncomingRelationReference::name_, "Stored relation name.")
-        .def_readonly("target_feature_id", &IncomingRelationReference::targetFeatureId_, "Backend-resolved canonical target ID.");
+        .def_ro("source", &IncomingRelationReference::source_, "Original source partition key.")
+        .def_ro("feature_id", &IncomingRelationReference::featureId_, "Original source feature ID.")
+        .def_ro("relation_index", &IncomingRelationReference::relationIndex_, "Original zero-based relation ordinal.")
+        .def_ro("name", &IncomingRelationReference::name_, "Stored relation name.")
+        .def_ro("target_feature_id", &IncomingRelationReference::targetFeatureId_, "Backend-resolved canonical target ID.");
     py::enum_<IncomingRelationCollection::Status>(
         m,
         "IncomingRelationStatus",
@@ -513,36 +505,36 @@ void bindTileLayer(py::module_& m)
             [](IncomingRelationCollection const& value)
             { return layerJsonToPython(value.toJson()); },
             "Return the manifest as Python values.")
-        .def_readonly(
+        .def_ro(
             "target",
             &IncomingRelationCollection::target_,
             "Selected target partition key.")
-        .def_readonly(
+        .def_ro(
             "feature_id",
             &IncomingRelationCollection::featureId_,
             "Selected canonical feature ID.")
-        .def_readonly(
+        .def_ro(
             "snapshots",
             &IncomingRelationCollection::snapshots_,
             "Required feature snapshot keys.")
-        .def_readonly(
+        .def_ro(
             "relations",
             &IncomingRelationCollection::relations_,
             "Backend-associated source relation descriptors.")
-        .def_readonly(
+        .def_ro(
             "complete",
             &IncomingRelationCollection::complete_,
             "Whether all declared eligible families were fully inspected.")
-        .def_readonly(
+        .def_ro(
             "status",
             &IncomingRelationCollection::status_,
             "Typed outcome within scope, never a global completeness assertion.")
-        .def_readonly(
+        .def_ro(
             "scope",
             &IncomingRelationCollection::scope_,
             "Admitted provider partition keys, including providers with zero matching relations.")
-        .def_readonly("issues", &IncomingRelationCollection::issues_, "Partial-result diagnostics.")
-        .def_readonly(
+        .def_ro("issues", &IncomingRelationCollection::issues_, "Partial-result diagnostics.")
+        .def_ro(
             "expires_at_ms",
             &IncomingRelationCollection::expiresAtMs_,
             "Earliest finite dependency expiry, or None.");
@@ -564,7 +556,7 @@ void bindTileLayer(py::module_& m)
             return rows;
         }, "Return source-owned relation handles; no inverse edges are created.");
 
-    py::class_<PartitionLayer, PartitionLayer::Ptr>(m, "PartitionLayer", R"pbdoc(
+    py::class_<PartitionLayer>(m, "PartitionLayer", R"pbdoc(
         Common base class for mapget tile payloads.
 
         Exposes tile identity, layer identity, error metadata, TTL metadata, and
@@ -585,12 +577,12 @@ void bindTileLayer(py::module_& m)
             "layer_id",
             [](PartitionLayer const& self) { return self.layerInfo()->layerId_; },
             "Get the layer id.")
-        .def_property_readonly(
+        .def_prop_ro(
             "map_schema",
             [](PartitionLayer const& self)
-            { return self.layerInfo()->schemaOwner(); },
+            { return finalizedSchema(self.layerInfo()->schemaOwner()); },
             "Return this partition's immutable schema owner, not a newer catalog replacement.")
-        .def_property_readonly(
+        .def_prop_ro(
             "layer_schema",
             [](PartitionLayer const& self)
             {
@@ -667,7 +659,7 @@ void bindTileLayer(py::module_& m)
             py::arg("value"),
             "Set a JSON metadata field on this tile.");
 
-    py::class_<PartitionFeatureLayer, PartitionLayer, PartitionFeatureLayer::Ptr>(
+    py::class_<PartitionFeatureLayer, PartitionLayer>(
         m,
         "PartitionFeatureLayer",
         R"pbdoc(
@@ -937,7 +929,7 @@ void bindTileLayer(py::module_& m)
             R"pbdoc(
             Convert this tile to a GeoJSON feature collection.
         )pbdoc")
-        .def_property(
+        .def_prop_rw(
             "glb_attachment_name",
             [](PartitionFeatureLayer const& self) { return self.glbAttachmentName(); },
             [](PartitionFeatureLayer& self, std::optional<std::string> name)
@@ -976,7 +968,7 @@ void bindTileLayer(py::module_& m)
         .value("FORWARD", RelationDirection::Forward)
         .value("REVERSE", RelationDirection::Reverse);
 
-    py::class_<PartitionSourceDataLayer, PartitionLayer, PartitionSourceDataLayer::Ptr>(
+    py::class_<PartitionSourceDataLayer, PartitionLayer>(
         m,
         "PartitionSourceDataLayer",
         R"pbdoc(
@@ -1016,7 +1008,7 @@ void bindTileLayer(py::module_& m)
             {
                 auto matches = self.findSourceData(address, containing, maxNodes, maxMatches);
                 if (!matches)
-                    throw py::value_error(matches.error().message);
+                    throw py::value_error(matches.error().message.c_str());
                 std::vector<BoundSourceDataCompound> result;
                 result.reserve(matches->size());
                 for (auto& match : *matches)
@@ -1037,7 +1029,7 @@ void bindTileLayer(py::module_& m)
             [](PartitionSourceDataLayer& self) { return self.toJson().dump(); },
             "Convert this source-data layer to JSON.");
 
-    py::class_<PartitionSubsetLayer, PartitionLayer, PartitionSubsetLayer::Ptr>(
+    py::class_<PartitionSubsetLayer, PartitionLayer>(
         m,
         "PartitionSubsetLayer",
         R"pbdoc(

@@ -4,19 +4,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from email.parser import BytesHeaderParser
 from pathlib import Path
 from typing import Mapping
+from urllib.request import urlopen
+from zipfile import BadZipFile, ZipFile
 
 
 CMAKE_VERSION_PATTERN = re.compile(r"set\(MAPGET_VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\)")
-RELEASE_VERSION_PATTERN = re.compile(r"^v?([0-9]+\.[0-9]+\.[0-9]+)$")
-PLAIN_RELEASE_VERSION_PATTERN = re.compile(r"^([0-9]+\.[0-9]+\.[0-9]+)$")
+RELEASE_VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}", re.ASCII)
 SCM_BASE_VERSION_PATTERN = re.compile(r"^([0-9]+\.[0-9]+\.[0-9]+)")
+RELEASE_CANDIDATE = "Release candidate"
 
 
 @dataclass(frozen=True)
@@ -25,24 +29,17 @@ class ReleaseContext:
 
     expected_version: str | None
     build_type: str
-    require_scm_match: bool = False
+
+    @property
+    def is_stable(self) -> bool:
+        return self.build_type == "Stable release"
 
 
-def normalize_release_version(
-    value: str,
-    source: str,
-    *,
-    allow_leading_v: bool = True,
-) -> str:
-    """Return a strict three-component release version with controlled `v` handling."""
-    pattern = RELEASE_VERSION_PATTERN if allow_leading_v else PLAIN_RELEASE_VERSION_PATTERN
-    match = pattern.fullmatch(value)
-    if not match:
-        expected_format = "X.Y.Z or vX.Y.Z" if allow_leading_v else "X.Y.Z"
-        raise ValueError(
-            f"Invalid {source} version {value!r}; expected {expected_format}."
-        )
-    return match.group(1)
+def release_version(ref: str, prefix: str) -> str:
+    version = ref.removeprefix(prefix)
+    if not ref.startswith(prefix) or not RELEASE_VERSION_PATTERN.fullmatch(version):
+        raise ValueError(f"Invalid release ref {ref!r}; expected {prefix}X.Y.Z.")
+    return version
 
 
 def get_cmake_version(path: Path = Path("CMakeLists.txt")) -> str:
@@ -81,51 +78,51 @@ def get_base_version(version: str) -> str:
 
 def determine_release_context(
     environment: Mapping[str, str],
-    explicit_version: str | None = None,
+    payload: Mapping | None = None,
 ) -> ReleaseContext:
-    """Derive the expected version from a tag, release PR, or release-workflow input."""
-    expected = (
-        normalize_release_version(
-            explicit_version,
-            "requested release",
-            allow_leading_v=False,
-        )
-        if explicit_version
-        else None
-    )
-    build_type = "Requested release" if expected else "Development build"
-    require_scm_match = False
-
-    github_ref = environment.get("GITHUB_REF", "")
-    if github_ref.startswith("refs/tags/"):
-        tag_version = normalize_release_version(
-            github_ref.removeprefix("refs/tags/"),
-            "tag",
-        )
-        if expected and expected != tag_version:
-            raise ValueError(
-                f"Requested release {expected} does not match tag version {tag_version}."
-            )
-        expected = tag_version
-        build_type = "Tagged release"
-        require_scm_match = True
-    elif (
-        environment.get("GITHUB_EVENT_NAME") == "pull_request"
+    """Only a published stable release or a manual release-branch candidate can upload."""
+    event = environment.get("GITHUB_EVENT_NAME")
+    ref = environment.get("GITHUB_REF", "")
+    if event == "release":
+        version = release_version(ref, "refs/tags/v")
+        payload = payload or {}
+        release = payload.get("release") or {}
+        if (
+            payload.get("action") != "published"
+            or release.get("draft") is not False
+            or release.get("prerelease") is not False
+            or release.get("tag_name") != f"v{version}"
+        ):
+            raise ValueError(f"Expected a published, non-prerelease GitHub Release for {ref}.")
+        return ReleaseContext(version, "Stable release")
+    if event == "workflow_dispatch":
+        return ReleaseContext(release_version(ref, "refs/heads/release/"), RELEASE_CANDIDATE)
+    if (
+        event == "pull_request"
         and environment.get("GITHUB_BASE_REF") == "main"
         and environment.get("GITHUB_HEAD_REF", "").startswith("release/")
     ):
-        branch_version = normalize_release_version(
-            environment["GITHUB_HEAD_REF"].removeprefix("release/"),
-            "release branch",
-        )
-        if expected and expected != branch_version:
-            raise ValueError(
-                f"Requested release {expected} does not match release branch {branch_version}."
-            )
-        expected = branch_version
-        build_type = "Release pull request"
+        return ReleaseContext(release_version(environment["GITHUB_HEAD_REF"], "release/"), "Release pull request")
+    return ReleaseContext(None, "Development build")
 
-    return ReleaseContext(expected, build_type, require_scm_match)
+
+def verify_tag_checkout(tag_ref: str, event_sha: str) -> None:
+    """Compare commits, not tag objects (an annotated tag has its own SHA)."""
+    tag_commit = subprocess.check_output(
+        ["git", "rev-parse", "--verify", f"{tag_ref}^{{commit}}"], text=True
+    ).strip()
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if not event_sha or tag_commit != event_sha or head != event_sha:
+        raise ValueError(f"Release SHA mismatch: {tag_ref}={tag_commit}, HEAD={head}, event={event_sha}.")
+
+
+def next_candidate(base: str, releases: Mapping) -> str:
+    """Count only published candidates for this exact final version."""
+    if base in releases:
+        raise ValueError(f"Final release {base} is already on PyPI.")
+    pattern = re.compile(re.escape(base) + r"rc([0-9]+)")
+    numbers = (int(match[1]) for name in releases if (match := pattern.fullmatch(name)))
+    return f"{base}rc{max(numbers, default=0) + 1}"
 
 
 def validate_versions(
@@ -143,9 +140,9 @@ def validate_versions(
                 f"CMake version {cmake_version} does not match "
                 f"{context.build_type.lower()} version {context.expected_version}."
             )
-        if context.require_scm_match and scm_base_version != context.expected_version:
+        if context.is_stable and scm_version != context.expected_version:
             errors.append(
-                f"SCM base version {scm_base_version} does not match "
+                f"SCM version {scm_version} does not exactly match "
                 f"tag version {context.expected_version}."
             )
     elif scm_base_version.startswith("0."):
@@ -156,22 +153,51 @@ def validate_versions(
     return errors
 
 
+def check_upload(context: ReleaseContext, version: str, directory: Path) -> None:
+    """Check what Twine will actually upload, not just the version passed to CMake."""
+    if context.build_type == RELEASE_CANDIDATE and context.expected_version:
+        allowed = re.fullmatch(re.escape(context.expected_version) + r"rc[1-9][0-9]*", version) is not None
+    else:
+        allowed = context.is_stable and version == context.expected_version
+    if not allowed:
+        raise ValueError(f"{context.build_type} does not authorize uploading {version!r}.")
+    wheels = list(directory.glob("*.whl"))
+    if not wheels:
+        raise ValueError(f"No wheels to upload in {directory}.")
+    for wheel in wheels:
+        with ZipFile(wheel) as archive:
+            metadata = BytesHeaderParser().parsebytes(archive.read(f"mapget-{version}.dist-info/METADATA"))
+        if (
+            not wheel.name.startswith(f"mapget-{version}-")
+            or metadata["Name"] != "mapget"
+            or metadata["Version"] != version
+        ):
+            raise ValueError(f"{wheel.name} is not a wheel for mapget=={version}.")
+
+
 def main() -> int:
     """Validate the current checkout and publish resolved values to GitHub Actions."""
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--expected-version",
-        help="Release version requested by the guarded release workflow.",
-    )
+    parser.add_argument("--resolve-candidate", action="store_true",
+                        help="Choose the package version for a candidate build from PyPI.")
+    parser.add_argument("--check-upload", metavar="VERSION",
+                        help="Recheck publication eligibility and every wheel in dist/ before upload.")
     args = parser.parse_args()
 
     try:
         cmake_version = get_cmake_version()
         scm_version = get_scm_version()
         scm_base_version = get_base_version(scm_version)
-        context = determine_release_context(os.environ, args.expected_version)
+        payload = None
+        if os.getenv("GITHUB_EVENT_NAME") == "release":
+            payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+        context = determine_release_context(os.environ, payload)
+        if context.is_stable:
+            verify_tag_checkout(os.environ["GITHUB_REF"], os.environ["GITHUB_SHA"])
         errors = validate_versions(cmake_version, scm_version, context)
-    except ValueError as error:
+        if not errors and args.check_upload is not None:
+            check_upload(context, args.check_upload, Path("dist"))
+    except (ValueError, KeyError, OSError, BadZipFile, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}")
         return 1
 
@@ -194,8 +220,12 @@ def main() -> int:
     print("Version validation passed.")
 
     if output_path := os.environ.get("GITHUB_OUTPUT"):
+        version = scm_version
+        if args.resolve_candidate and context.build_type == RELEASE_CANDIDATE:
+            with urlopen("https://pypi.org/pypi/mapget/json", timeout=30) as response:
+                version = next_candidate(cmake_version, json.load(response)["releases"])
         with open(output_path, "a", encoding="utf-8") as output:
-            output.write(f"version={scm_version}\n")
+            output.write(f"version={version}\n")
             output.write(f"base_version={scm_base_version}\n")
             output.write(f"cmake_version={cmake_version}\n")
 
