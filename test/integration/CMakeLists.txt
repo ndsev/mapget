@@ -28,7 +28,12 @@ if(MAPGET_WITH_MCP)
     COMMANDS
       -f "python -m pip install -r ${CMAKE_CURRENT_LIST_DIR}/mcp-requirements.txt"
       -f "python ${CMAKE_CURRENT_LIST_DIR}/test-native-mcp.py $<TARGET_FILE:mapget>")
-  set_tests_properties(test-native-mcp PROPERTIES LABELS integration TIMEOUT 240)
+  # On Intel macOS the SDK's cryptography dependency can require a source build.
+  # Bound setup separately so it cannot consume the protocol suite's runtime budget.
+  set_tests_properties(test-native-mcp PROPERTIES
+    LABELS integration
+    TIMEOUT 600
+    TIMEOUT_AFTER_MATCH "240;Starting native MCP protocol tests")
 
   add_test(NAME test-mcp-help-packaging
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-mcp-help-packaging.py"
@@ -41,11 +46,14 @@ add_test(
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test-location-wof.py" "$<TARGET_FILE:mapget>" "${plazs_SOURCE_DIR}/tests/data/places.sqlite")
 set_tests_properties(test-location-wof PROPERTIES LABELS integration TIMEOUT 120)
 
+# add_wheel_test installs the selected local wheel with --no-deps. Ask pip to
+# satisfy that installed distribution's requirements, using the sibling math
+# checkout when available. No test needs a second list of runtime dependencies.
+set(mapget_test_packages "mapget==${MAPGET_VERSION}")
 if (EXISTS "${MAPGET_NDSMATH_PYTHON_DIR}/pyproject.toml")
-  set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ${MAPGET_NDSMATH_PYTHON_DIR}")
-else()
-  set(MAPGET_INSTALL_NDSMATH_PYTHON -f "python -m pip install ndslive-math")
+  string(APPEND mapget_test_packages " ${MAPGET_NDSMATH_PYTHON_DIR}")
 endif()
+set(MAPGET_INSTALL_WHEEL_DEPS -f "python -m pip install ${mapget_test_packages}")
 
 add_wheel_test(test-local-example
   WORKING_DIRECTORY
@@ -59,20 +67,20 @@ add_wheel_test(test-python-bindings-smoke
   WORKING_DIRECTORY
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
   COMMANDS
-    ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    ${MAPGET_INSTALL_WHEEL_DEPS}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-bindings-smoke.py")
 
 if(MAPGET_WITH_MCP)
   add_wheel_test(test-python-mcp-help-smoke
     WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-    COMMANDS ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    COMMANDS ${MAPGET_INSTALL_WHEEL_DEPS}
       -f "python ${CMAKE_CURRENT_LIST_DIR}/python-mcp-help-smoke.py")
   set_tests_properties(test-python-mcp-help-smoke PROPERTIES TIMEOUT 120)
 endif()
 
 add_wheel_test(test-python-schema2-smoke
   WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-  COMMANDS ${MAPGET_INSTALL_NDSMATH_PYTHON}
+  COMMANDS ${MAPGET_INSTALL_WHEEL_DEPS}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-schema2-smoke.py")
 set_tests_properties(test-python-schema2-smoke PROPERTIES TIMEOUT 120)
 
@@ -80,7 +88,7 @@ add_wheel_test(test-python-object-datasource-example
   WORKING_DIRECTORY
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
   COMMANDS
-    ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    ${MAPGET_INSTALL_WHEEL_DEPS}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-object-datasource-example.py $<TARGET_FILE:mapget>")
 set_tests_properties(test-python-object-datasource-example PROPERTIES TIMEOUT 120)
 
@@ -88,7 +96,7 @@ add_wheel_test(test-python-http-stream-close
   WORKING_DIRECTORY
     "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
   COMMANDS
-    ${MAPGET_INSTALL_NDSMATH_PYTHON}
+    ${MAPGET_INSTALL_WHEEL_DEPS}
     -f "python ${CMAKE_CURRENT_LIST_DIR}/python-http-stream-close.py $<TARGET_FILE:mapget>")
 set_tests_properties(test-python-http-stream-close PROPERTIES TIMEOUT 180)
 
@@ -97,7 +105,7 @@ if (TARGET mapget-location-database)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
       -f "python ${CMAKE_CURRENT_LIST_DIR}/python-location-database-smoke.py")
 endif()
 
@@ -108,7 +116,7 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
 
       # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
       -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-cpp"
@@ -135,7 +143,7 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
 
       # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
       -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-datasource-exe"
@@ -154,7 +162,7 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
 
       # Pick ports at test runtime (reduces CI flakiness vs. hard-coded ports)
       -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-cli-python"
@@ -179,7 +187,7 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
 
       # Pick ports + write config YAMLs at test runtime.
       -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-config-cpp"
@@ -207,7 +215,7 @@ if (NOT WITH_COVERAGE)
     WORKING_DIRECTORY
       "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMANDS
-      ${MAPGET_INSTALL_NDSMATH_PYTHON}
+      ${MAPGET_INSTALL_WHEEL_DEPS}
 
       # Pick ports + write config YAMLs at test runtime.
       -f "python ${MAPGET_PICK_PORTS_PY} --out-dir .integration/test-config-py"
@@ -227,4 +235,7 @@ if (NOT WITH_COVERAGE)
       # Request from cpp datasource
       -f "python -m mapget --config .integration/test-config-py/sample-first-datasource.yaml fetch"
   )
+  set_tests_properties(
+    test-cli-cpp test-cli-datasource-exe test-cli-python test-config-cpp test-config-py
+    PROPERTIES TIMEOUT 240)
 endif ()

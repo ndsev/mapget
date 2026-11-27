@@ -1607,4 +1607,5 @@ class NativeMcpConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     MAPGET_BINARY = Path(sys.argv.pop(1)).resolve()
+    print("Starting native MCP protocol tests", flush=True)
     unittest.main()

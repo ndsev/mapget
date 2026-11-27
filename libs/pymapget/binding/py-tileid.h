@@ -3,64 +3,45 @@
 #include "mapget/model/partitionid.h"
 #include "mapget/model/point.h"
 
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 
 #include <cstdint>
 #include <limits>
 
-namespace pybind11::detail
+namespace nanobind::detail
 {
 
 template <>
 struct type_caster<ndsmath::PackedTileId>
 {
-public:
-    PYBIND11_TYPE_CASTER(ndsmath::PackedTileId, const_name("ndslive.math.PackedTileId"));
+    NB_TYPE_CASTER(ndsmath::PackedTileId, const_name("ndslive.math.PackedTileId"))
 
-    bool load(handle src, bool)
+    bool from_python(handle src, uint32_t, cleanup_list*) noexcept
     {
-        if (!src || src.is_none())
-            return false;
-
         try {
-            auto const obj = pybind11::reinterpret_borrow<pybind11::object>(src);
-            auto const packedTileIdClass = pybind11::module_::import("ndslive.math").attr("PackedTileId");
-            if (!pybind11::isinstance(obj, packedTileIdClass))
+            auto type = py::module_::import_("ndslive.math").attr("PackedTileId");
+            int32_t packed;
+            if (!py::isinstance(src, type) || !py::try_cast(src.attr("value"), packed))
                 return false;
-
-            auto const rawValue = obj.attr("value").cast<int64_t>();
-            if (rawValue < std::numeric_limits<int32_t>::min() ||
-                rawValue > std::numeric_limits<int32_t>::max())
-                return false;
-
-            value = ndsmath::PackedTileId::fromValue(static_cast<int32_t>(rawValue));
+            value = ndsmath::PackedTileId::fromValue(packed);
             return true;
         }
-        catch (pybind11::error_already_set const& e) {
-            if (e.matches(PyExc_ImportError) || e.matches(PyExc_AttributeError) ||
-                e.matches(PyExc_TypeError) || e.matches(PyExc_ValueError)) {
-                return false;
-            }
-            throw;
-        }
-        catch (std::exception const&) {
+        catch (py::python_error const&) {
             return false;
         }
     }
 
-    static handle cast(ndsmath::PackedTileId const& src, return_value_policy, handle)
+    static handle from_cpp(ndsmath::PackedTileId const& src, rv_policy, cleanup_list*)
     {
         if (!src.isValid())
-            return pybind11::none().release();
+            return nanobind::none().release();
 
-        auto const packedTileIdClass = pybind11::module_::import("ndslive.math").attr("PackedTileId");
+        py::object packedTileIdClass = nanobind::module_::import_("ndslive.math").attr("PackedTileId");
         return packedTileIdClass.attr("from_value")(src.value()).release();
     }
 };
 
-}  // namespace pybind11::detail
+}  // namespace nanobind::detail
 
 void bindTileId(py::module_& m)
 {
@@ -80,9 +61,9 @@ void bindTileId(py::module_& m)
             py::arg("x") = 0,
             py::arg("y") = 0,
             py::arg("z") = 0)
-        .def_readwrite("x", &Point::x, "The x-component of the point.")
-        .def_readwrite("y", &Point::y, "The y-component of the point.")
-        .def_readwrite("z", &Point::z, "The z-component of the point.")
+        .def_rw("x", &Point::x, "The x-component of the point.")
+        .def_rw("y", &Point::y, "The y-component of the point.")
+        .def_rw("z", &Point::z, "The z-component of the point.")
         .def(
             "__eq__",
             &Point::operator==,
@@ -94,7 +75,7 @@ void bindTileId(py::module_& m)
             Convert the Point to a string representation.
             )pbdoc");
 
-    auto const packedTileIdClass = py::module_::import("ndslive.math").attr("PackedTileId");
+    py::object packedTileIdClass = py::module_::import_("ndslive.math").attr("PackedTileId");
     m.attr("TileId") = packedTileIdClass;
     m.attr("PackedTileId") = packedTileIdClass;
 }
@@ -103,8 +84,8 @@ void bindTileId(py::module_& m)
 inline mapget::PartitionId partitionIdFromPython(py::handle value)
 {
     if (py::isinstance<mapget::PartitionId>(value))
-        return value.cast<mapget::PartitionId>();
-    return mapget::PartitionId::tile(value.cast<mapget::TileId>());
+        return py::cast<mapget::PartitionId>(value);
+    return mapget::PartitionId::tile(py::cast<mapget::TileId>(value));
 }
 
 /** Keep Python tile requests convenient while accepting explicit object partitions. */
@@ -137,15 +118,15 @@ inline void bindPartitionId(py::module_& m)
             &PartitionId::object,
             py::arg("object_id"),
             "Create an object identity from an integer in 0..2**64-1.")
-        .def_property_readonly(
+        .def_prop_ro(
             "kind",
             &PartitionId::kind,
             "Identity tag; never inferred from the numeric value.")
-        .def_property_readonly(
+        .def_prop_ro(
             "tile_id",
             &PartitionId::tileId,
             "PackedTileId; raises for object identities.")
-        .def_property_readonly(
+        .def_prop_ro(
             "object_id",
             &PartitionId::objectId,
             "Unsigned object ID; raises for tile identities.")

@@ -96,9 +96,13 @@ else()
 endif()
 
 # Switch to a release newer than 2.0.4 once available.
+set(_tiny_process_revision 8bbb5a211c5c9df8ee69301da9d22fb977b27dc1)
 CPMAddPackage(
     NAME tiny-process-library
-    URL "https://gitlab.com/eidheim/tiny-process-library/-/archive/8bbb5a211c5c9df8ee69301da9d22fb977b27dc1/tiny-process-library-8bbb5a211c5c9df8ee69301da9d22fb977b27dc1.tar.gz"
+    # GitLab can rate-limit CI runners. Both archives have the same digest.
+    URL
+        "https://gitlab.com/eidheim/tiny-process-library/-/archive/${_tiny_process_revision}/tiny-process-library-${_tiny_process_revision}.tar.gz"
+        "https://codeload.github.com/eidheim/tiny-process-library/tar.gz/${_tiny_process_revision}"
     URL_HASH SHA256=0ff45f47da95f1c36ce5e1e91342285301bf339150b34c3c5964687117ef01e5
     OPTIONS
         "BUILD_TESTING OFF")
@@ -231,8 +235,14 @@ endif()
 
 endif ()
 
-if (MAPGET_WITH_WHEEL AND NOT TARGET pybind11)
-    CPMAddPackage("gh:pybind/pybind11@3.0.1")
+if (MAPGET_WITH_WHEEL)
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+    set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
+    find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module
+                 OPTIONAL_COMPONENTS Development.SABIModule)
+    CPMAddPackage(NAME nanobind GITHUB_REPOSITORY wjakob/nanobind
+                  GIT_TAG v3.1.0 DOWNLOAD_ONLY YES)
+    include("${nanobind_SOURCE_DIR}/cmake/nanobind-config.cmake")
 endif()
 
 if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
@@ -247,7 +257,7 @@ if (MAPGET_WITH_SERVICE OR MAPGET_WITH_HTTPLIB OR MAPGET_ENABLE_TESTING)
 endif()
 
 if (MAPGET_WITH_WHEEL AND NOT TARGET python-cmake-wheel)
-    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.2.8@1.2.8")
+    CPMAddPackage("gh:Klebert-Engineering/python-cmake-wheel#v1.3.0")
 endif()
 
 if (MAPGET_ENABLE_TESTING)

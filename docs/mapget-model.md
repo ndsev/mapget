@@ -136,6 +136,53 @@ resolves to a separately shared immutable graph before any partition is construc
 
 When a tile is parsed from the binary stream, the reader calls a `LayerInfoResolveFun` to obtain the matching `LayerInfo` for interpreting feature IDs and field layouts. Full feature-ID validation is explicit, as described above. A client first reads `/sources`, resolves its schema references and only then publishes bound metadata to its binary readers.
 
+### Worked Example: A Road Datasource
+
+This complete **producer input** can be passed to the Python `DataSourceServer` constructor.
+It declares the road layer and its IDs inline. It is not the catalog that a client receives.
+
+```json
+{
+  "mapId": "City",
+  "layers": {
+    "Roads": {
+      "type": "Features",
+      "partitionKind": "tile",
+      "zoomLevels": [0],
+      "coverage": [65536],
+      "featureTypes": [{
+        "name": "Road",
+        "uniqueIdCompositions": [
+          [{"partId": "id", "datatype": "U64"}],
+          [{"partId": "roadCode", "datatype": "STR"}]
+        ]
+      }]
+    }
+  },
+  "maxParallelJobs": 2,
+  "addOn": false
+}
+```
+
+| Field | What it means for this source |
+| --- | --- |
+| `mapId`, `layers` | Required. Requests select map `City` and layer `Roads`. The layer key is not the feature type (`Road`), nor the service-assigned source identifier. |
+| `type`, `partitionKind` | Defaults are `Features` and `tile`. Object layers use opaque unsigned IDs and must specify `tileAssociationLevel` for discovery. Do not decode an object ID as a packed tile. |
+| `zoomLevels`, `coverage` | Optional discovery hints. A packed integer denotes one tile; a rectangle uses `min` and `max` at the same level and optional row-major `filled` bits for sparse coverage. An omitted list advertises no explicit coverage, not proof that no features exist. |
+| `uniqueIdCompositions` | The first composition constructs a local canonical ID such as `Road.42`. Later compositions can identify a reference, not create a new feature. A source that accepts `roadCode` should implement locate to return candidates; declaring an ID part does not build an index. |
+| `maxParallelJobs`, `addOn` | Optional, defaulting to 8 and false. An add-on must match a base map/layer and contributes to the base partition; it is not a second independently requested road layer. |
+
+In discovery the producer publishes `mapFormat` and the content-derived `schemaId`, not
+the inline `featureTypes`. Clients retrieve that exact schema before decoding tiles.
+Let the producer generate its `stringPoolId`; it identifies its serialized strings, not
+its map, source or schema. A source reusing a native schema supplies its finalized owner
+instead of mixing inline definitions with a `schemaId`.
+
+For a reference into `City`, send named parts to the target, for example
+`{"mapId":"City","typeId":"Road","id":{"roadCode":"A7"}}` inside the
+[`/locate` request array](mapget-api.md#post-locate). Use the returned partition and
+canonical ID; the referring source need not declare the target's ID structure.
+
 <!-- mcp:
 title: "Feature model schema contract"
 keywords: ["schema", "feature types", "fields", "completion", "attribute contexts"]

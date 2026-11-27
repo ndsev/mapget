@@ -2,35 +2,23 @@
 
 #include "mapget/model/mapschema.h"
 
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
+#include "py-casters.h"
 #include <sstream>
-
-namespace pybind11::detail
-{
-// Register the non-cv Python type while retaining the native const shared owner.
-// No mutable ModelPool base, constructors or schema mutators are exposed below.
-template <>
-struct type_caster<mapget::MapSchema::ConstPtr>
-    : copyable_holder_caster<mapget::MapSchema, mapget::MapSchema::ConstPtr>
-{
-    static handle
-    cast(mapget::MapSchema::ConstPtr const& schema, return_value_policy policy, handle parent)
-    {
-        if (!schema || !schema->finalized())
-            throw value_error("A finalized MapSchema is required");
-        return copyable_holder_caster::cast(schema, policy, parent);
-    }
-};
-}  // namespace pybind11::detail
 
 namespace mapget
 {
 
-/** Bind immutable schema inspection and exact binary I/O, not a second Python schema registry. */
-inline void bindSchema(pybind11::module_& m)
+/** Only publish finalized schema owners; Python never receives a mutable builder. */
+inline MapSchema::ConstPtr finalizedSchema(MapSchema::ConstPtr schema)
 {
-    namespace py = pybind11;
+    if (!schema || !schema->finalized())
+        throw py::value_error("A finalized MapSchema is required");
+    return schema;
+}
+
+/** Bind immutable schema inspection and exact binary I/O, not a second Python schema registry. */
+inline void bindSchema(nanobind::module_& m)
+{
 
     py::class_<simfil::SchemaType>(m, "SchemaType", R"pbdoc(
         Immutable type view independently retaining its exact schema pool.
@@ -39,21 +27,21 @@ inline void bindSchema(pybind11::module_& m)
         descriptive strings; no scalar semantics may be inferred from it. Python
         receives retained values, never pointers to temporary native views.
     )pbdoc")
-        .def_property_readonly(
+        .def_prop_ro(
             "schema_id",
             [](simfil::SchemaType const& self)
             { return self ? std::string(self.pool()->identity()) : std::string{}; },
             "Exact artifact identity, or an empty string for unknown provenance.")
-        .def_property_readonly(
+        .def_prop_ro(
             "type_id",
             &simfil::SchemaType::id,
             "Graph-local numeric type ID; zero means unknown.")
-        .def_property_readonly(
+        .def_prop_ro(
             "type_name",
             [](simfil::SchemaType const& self)
             { return self ? std::string(self.typeName()) : std::string{}; },
             "Producer type name, or an empty string when unspecified.")
-        .def_property_readonly(
+        .def_prop_ro(
             "kind",
             [](simfil::SchemaType const& self)
             {
@@ -75,18 +63,18 @@ inline void bindSchema(pybind11::module_& m)
         bits is an exact Python integer, not a label-table index. Unknown bits and zero
         remain valid raw values. The type reference retains its graph after source destruction.
     )pbdoc")
-        .def_readonly(
+        .def_ro(
             "bits",
             &simfil::Bitmask::bits,
             "Exact unsigned 64-bit bits, including unknown bits.")
-        .def_property_readonly(
+        .def_prop_ro(
             "type",
             [](simfil::Bitmask const& self) { return self.type.retain(); },
             "Independently owner-retaining SchemaType.")
         .def(
             "to_dict",
             [](simfil::Bitmask const& self)
-            { return py::module_::import("json").attr("loads")(self.toJson().dump()); },
+            { return py::module_::import_("json").attr("loads")(self.toJson().dump()); },
             "Return simfil's exact {_bitmask, bits, schema, typeId} JSON representation.");
 
     py::class_<MapFormat>(m, "MapFormat", R"pbdoc(
@@ -98,11 +86,11 @@ inline void bindSchema(pybind11::module_& m)
         versions. Equal formats need not have equal schemas.
     )pbdoc")
         .def(
-            py::init(
+            py::new_(
                 [](std::string name, std::string version, py::object subsystems)
                 {
                     auto pairs = nlohmann::json::parse(
-                        py::module_::import("json").attr("dumps")(subsystems).cast<std::string>());
+                        py::cast<std::string>(py::module_::import_("json").attr("dumps")(subsystems)));
                     return MapFormat::fromJson(
                         {{"name", name}, {"version", version}, {"subsystems", std::move(pairs)}});
                 }),
@@ -111,19 +99,19 @@ inline void bindSchema(pybind11::module_& m)
             py::arg("subsystems") = py::tuple(),
             "Create a format from {name, version} entries (legacy name/version dictionaries are "
             "also accepted). Does not select, fetch or construct a schema.")
-        .def_readonly("name", &MapFormat::name_, "Source-format family, or an empty string.")
-        .def_readonly("version", &MapFormat::version_, "Exact base version, or an empty string.")
-        .def_property_readonly(
+        .def_ro("name", &MapFormat::name_, "Source-format family, or an empty string.")
+        .def_ro("version", &MapFormat::version_, "Exact base version, or an empty string.")
+        .def_prop_ro(
             "subsystems",
             [](MapFormat const& self) {
-                return py::module_::import("json")
+                return py::module_::import_("json")
                     .attr("loads")(self.toJson().at("subsystems").dump());
             },
             "Detached, sorted {name, version} entries; distinct versions of one name are retained.")
         .def(
             "to_dict",
             [](MapFormat const& self)
-            { return py::module_::import("json").attr("loads")(self.toJson().dump()); },
+            { return py::module_::import_("json").attr("loads")(self.toJson().dump()); },
             "Return a detached canonical mapFormat dictionary.")
         .def(
             "__eq__",
@@ -146,20 +134,20 @@ inline void bindSchema(pybind11::module_& m)
         optional parts may be omitted by a reference. Each Python part retains the
         exact native schema independently of its parent identity or tuple.
     )pbdoc")
-        .def_property_readonly("name", &FeatureIdentity::Part::name, "ID-part label (JSON partId).")
-        .def_property_readonly(
+        .def_prop_ro("name", &FeatureIdentity::Part::name, "ID-part label (JSON partId).")
+        .def_prop_ro(
             "description",
             &FeatureIdentity::Part::description,
             "Producer description, possibly empty.")
-        .def_property_readonly(
+        .def_prop_ro(
             "datatype",
             &FeatureIdentity::Part::datatype,
             "Declared IdPartDataType.")
-        .def_property_readonly(
+        .def_prop_ro(
             "is_synthetic",
             &FeatureIdentity::Part::synthetic,
             "Whether the converter adds this part.")
-        .def_property_readonly(
+        .def_prop_ro(
             "is_optional",
             &FeatureIdentity::Part::optional,
             "Whether a reference may omit this part.");
@@ -171,11 +159,11 @@ inline void bindSchema(pybind11::module_& m)
         reference-only identity need not be produced by any layer; consult
         LayerSchema.produced_feature_types before selecting a feature type.
     )pbdoc")
-        .def_property_readonly(
+        .def_prop_ro(
             "name",
             &FeatureIdentity::name,
             "Exact type name used in canonical IDs.")
-        .def_property_readonly(
+        .def_prop_ro(
             "unique_id_compositions",
             [](FeatureIdentity const& self)
             {
@@ -194,7 +182,7 @@ inline void bindSchema(pybind11::module_& m)
             alternatives. Every returned part independently retains the native schema.
         )pbdoc");
 
-    py::class_<MapSchema, MapSchema::ConstPtr>(m, "MapSchema", R"pbdoc(
+    py::class_<MapSchema>(m, "MapSchema", R"pbdoc(
         An immutable, shared native schema artifact with exact binary identity.
 
         Obtain it from DataSourceServer.map_schema, Client.get_schema, MapSchema.read,
@@ -218,7 +206,7 @@ inline void bindSchema(pybind11::module_& m)
                     py::gil_scoped_release release;
                     schema = MapSchema::read({bytes, size}, expectedId, maxBytes);
                 }
-                return schema;
+                return finalizedSchema(std::move(schema));
             },
             py::arg("data"),
             py::arg("expected_id") = "",
@@ -235,9 +223,9 @@ inline void bindSchema(pybind11::module_& m)
             "from_metadata",
             [](py::dict const& metadata)
             {
-                auto text = py::module_::import("json").attr("dumps")(metadata).cast<std::string>();
+                auto text = py::cast<std::string>(py::module_::import_("json").attr("dumps")(metadata));
                 auto info = DataSourceInfo::fromJson(nlohmann::json::parse(text));
-                return info.mapSchema_;
+                return finalizedSchema(info.mapSchema_);
             },
             py::arg("info_dict"),
             R"pbdoc(
@@ -259,26 +247,27 @@ inline void bindSchema(pybind11::module_& m)
                     if (!result)
                         throw std::runtime_error(result.error().message);
                 }
-                return py::bytes(stream.str());
+                auto data = stream.view();
+                return py::bytes(data.data(), data.size());
             },
             R"pbdoc(
             Return exact native binary bytes, including schema identity and dictionary.
             A serialization failure raises instead of returning partial bytes. The output
             is accepted by MapSchema.read; it is not JSON Schema or a tile stream.
         )pbdoc")
-        .def_property_readonly(
+        .def_prop_ro(
             "schema_id",
             [](MapSchema const& self) { return std::string(self.schemaId()); },
             "Exact opaque artifact identity. Local numeric type IDs require this token.")
-        .def_property_readonly(
+        .def_prop_ro(
             "format",
             [](MapSchema const& self) { return self.format(); },
             "Read-only MapFormat value; descriptive, not a cache key.")
-        .def_property_readonly(
+        .def_prop_ro(
             "layer_names",
             [](MapSchema const& self) { return py::tuple(py::cast(self.layerNames())); },
             "Tuple of schema root names. Catalog availability and authorization are separate.")
-        .def_property_readonly(
+        .def_prop_ro(
             "feature_identities",
             [](MapSchema const& self)
             {
@@ -295,12 +284,12 @@ inline void bindSchema(pybind11::module_& m)
             {
                 auto type = self.getTypeInfo(name, false);
                 if (!type)
-                    throw py::key_error(name);
+                    throw py::key_error(name.c_str());
                 return type.retain();
             },
             py::arg("name"),
             "Return an owner-retaining map-wide FeatureIdentity; unknown names raise KeyError.")
-        .def_property_readonly(
+        .def_prop_ro(
             "type_count",
             [](MapSchema const& self) { return self.typeCount(); },
             "Number of type definitions, excluding the unknown sentinel; not a maximum type ID.")
@@ -310,7 +299,7 @@ inline void bindSchema(pybind11::module_& m)
             {
                 auto type = self.schemaType(id);
                 if (!type)
-                    throw py::key_error(std::to_string(id));
+                    throw py::key_error(std::to_string(id).c_str());
                 return type.retain();
             },
             py::arg("type_id"),
@@ -325,10 +314,10 @@ inline void bindSchema(pybind11::module_& m)
                     py::gil_scoped_release release;
                     auto node = self.typeNode(id);
                     if (!node)
-                        throw py::key_error(std::to_string(id));
+                        throw py::key_error(std::to_string(id).c_str());
                     text = node->toJson().dump();
                 }
-                return py::module_::import("json").attr("loads")(text);
+                return py::module_::import_("json").attr("loads")(text);
             },
             py::arg("type_id"),
             R"pbdoc(
@@ -346,7 +335,7 @@ inline void bindSchema(pybind11::module_& m)
             {
                 auto layer = self.layer(name);
                 if (!layer)
-                    throw py::key_error(name);
+                    throw py::key_error(name.c_str());
                 return layer;
             },
             py::arg("layer_id"),
@@ -361,23 +350,23 @@ inline void bindSchema(pybind11::module_& m)
         Read-only layer view into a shared MapSchema, selected by canonical layer ID.
         Obtained from MapSchema.layer or a partition's layer_schema property.
     )pbdoc")
-        .def_property_readonly(
+        .def_prop_ro(
             "name",
             [](LayerSchema::Ptr const& self) { return std::string(self->name()); },
             "Exact canonical layer ID, not a display name or alias.")
-        .def_property_readonly(
+        .def_prop_ro(
             "type",
             [](LayerSchema::Ptr const& self) { return self->layerType(); },
             "LayerType required by the matching datasource LayerInfo.")
-        .def_property_readonly(
+        .def_prop_ro(
             "map_schema",
-            [](LayerSchema::Ptr const& self) { return self->mapSchema(); },
+            [](LayerSchema::Ptr const& self) { return finalizedSchema(self->mapSchema()); },
             "The immutable owner, retained independently of the datasource.")
-        .def_property_readonly(
+        .def_prop_ro(
             "root_schema",
             [](LayerSchema::Ptr const& self) { return self->rootSchema(); },
             "Layer root's graph-local numeric type ID; zero means unknown.")
-        .def_property_readonly(
+        .def_prop_ro(
             "produced_feature_types",
             [](LayerSchema::Ptr const& self) { return py::tuple(py::cast(self->featureTypes())); },
             "Tuple of produced feature-root names, excluding reference-only identity definitions.")
@@ -385,10 +374,10 @@ inline void bindSchema(pybind11::module_& m)
             "get_type_info",
             [](py::object self, std::string const& name)
             {
-                auto const& layer = self.cast<LayerSchema::Ptr const&>();
+                auto const& layer = py::cast<LayerSchema::Ptr const&>(self);
                 auto type = layer->getTypeInfo(name, false);
                 if (!type)
-                    throw py::key_error(name);
+                    throw py::key_error(name.c_str());
                 return type.retain();
             },
             py::arg("name"),
@@ -405,7 +394,7 @@ inline void bindSchema(pybind11::module_& m)
             [](LayerSchema::Ptr const& self)
             {
                 auto text = self->toJsonSchema().dump();
-                return py::module_::import("json").attr("loads")(text);
+                return py::module_::import_("json").attr("loads")(text);
             },
             R"pbdoc(
             Explicitly export a detached JSON Schema dictionary for interoperability.

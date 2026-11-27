@@ -1,10 +1,6 @@
-#include <pybind11/pybind11.h>
-#include <pybind11/stl_bind.h>
-#include <pybind11/stl.h>
-#include <pybind11/functional.h>
+#include "binding/py-casters.h"
 #include "fmt/format.h"
 
-namespace py = pybind11;
 using namespace py::literals;
 using namespace std::string_literals;
 
@@ -21,7 +17,7 @@ using namespace std::string_literals;
 
 #include "mapget/http-service/cli.h"
 
-PYBIND11_MODULE(pymapget, m)
+NB_MODULE(pymapget, m)
 {
     m.doc() = "";
 
